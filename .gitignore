@@ -66,6 +66,7 @@ gosec-results.sarif
 *.log
 dist/
 TODO.md
+plans/
 
 # Quick-start automation recordings (scripts/quickstart.sh default --record-dir)
 /artifact/
