@@ -29,7 +29,7 @@ BUILD_VM="build-${TART_GOLDEN_IMAGE}"
 
 # ─── Renovate-managed version pins ────────────────────────────────────────────
 # renovate: datasource=github-releases depName=actions/runner versioning=loose
-DEFAULT_RUNNER_VERSION="2.335.1"
+DEFAULT_RUNNER_VERSION="2.337.0"
 # renovate: datasource=custom.homebrew-formula depName=azure-cli packageName=azure-cli versioning=loose
 AZURE_CLI_VERSION="2.88.0"
 # renovate: datasource=custom.homebrew-formula depName=gh packageName=gh versioning=loose
