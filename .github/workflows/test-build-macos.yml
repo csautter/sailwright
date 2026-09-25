@@ -130,7 +130,7 @@ jobs:
           ftp-base-dir: /private
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         if: matrix.runs_on != 'windows-2025'
         with:
           python-version: "3.13"
