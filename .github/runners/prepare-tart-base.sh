@@ -41,7 +41,7 @@ GO_VERSION="1.26.5"
 # renovate: datasource=custom.homebrew-cask depName=utm packageName=utm versioning=loose
 UTM_VERSION="4.7.5"
 # renovate: datasource=custom.homebrew-formula depName=qemu packageName=qemu versioning=loose
-QEMU_VERSION="11.0.2"
+QEMU_VERSION="11.1.1"
 # renovate: datasource=custom.homebrew-formula depName=xz packageName=xz versioning=loose
 XZ_VERSION="5.8.3"
 # renovate: datasource=custom.homebrew-formula depName=ffmpeg packageName=ffmpeg versioning=loose
