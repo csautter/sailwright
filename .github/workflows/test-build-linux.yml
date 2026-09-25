@@ -763,7 +763,7 @@ jobs:
           cache: true
 
       - name: Download Ubuntu OCI build artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: ubuntu-oci-${{ matrix.ubuntu_type }}-${{ matrix.arch }}
           path: .dev-alchemy/cache/ubuntu
