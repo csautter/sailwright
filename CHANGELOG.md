@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0](https://github.com/csautter/sailwright/compare/v0.17.0...v0.18.0) (2026-07-23)
+
+
+### Added
+
+* created automation to generate example videos and gifs ([4f36e68](https://github.com/csautter/sailwright/commit/4f36e68d3ae859351d5b4450c90d70979c2d67eb))
+* **demo:** add side-by-side VM-build video and quickstart --no-cache ([8f03cc7](https://github.com/csautter/sailwright/commit/8f03cc7bd67751550070e44137ec8bd15762dc8c))
+* **demo:** add typed terminal demo for website and README ([8dabbc8](https://github.com/csautter/sailwright/commit/8dabbc8a09b376417d9363f293fec410f17202f6))
+* **quickstart:** add recorded end-to-end quick-start automation ([02c990f](https://github.com/csautter/sailwright/commit/02c990f6c3d41cc2738e4e59e294bada6e5858ff))
+
+
+### Fixed
+
+* **demo:** guard empty trim_args expansion under set -u ([1f4f45a](https://github.com/csautter/sailwright/commit/1f4f45a0f036e921c823b14651f9d7e672927f2c))
+* **quickstart:** harden recording collection and VNC capture ([46e7b25](https://github.com/csautter/sailwright/commit/46e7b25dc32908f6dfc0ba1313b36ba95efea09f))
+* **quickstart:** propagate recorded command's exit code through asciinema ([6c6cb60](https://github.com/csautter/sailwright/commit/6c6cb60cfe101b30549552142520f57c718b85b6))
+
 ## [0.17.0](https://github.com/csautter/sailwright/compare/v0.16.1...v0.17.0) (2026-07-18)
 
 
