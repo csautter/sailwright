@@ -53,7 +53,7 @@ XORRISO_VERSION="1.5.8.pl02"
 # renovate: datasource=custom.homebrew-formula depName=ansible packageName=ansible versioning=loose
 ANSIBLE_VERSION="14.1.0"
 # renovate: datasource=custom.homebrew-formula depName=python@3.13 packageName=python@3.13 versioning=loose
-PYTHON_3_13_VERSION="3.13.14"
+PYTHON_3_13_VERSION="3.13.15"
 
 RUNNER_VERSION="${RUNNER_VERSION:-$DEFAULT_RUNNER_VERSION}"
 # ───────────────────────────────────────────────────────────────────────────────
