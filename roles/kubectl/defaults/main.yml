@@ -1,4 +1,4 @@
-kubectl_version: "1.36.2"
+kubectl_version: "1.37.0"
 kubectl_apt_repository_version: "{{ 'v' ~ (kubectl_version | regex_replace('^v', '')).split('.')[0] ~ '.' ~ (kubectl_version | regex_replace('^v', '')).split('.')[1] }}"
 kubectl_apt_repository_base_url: "https://pkgs.k8s.io/core:/stable:/{{ kubectl_apt_repository_version }}/deb"
 kubectl_apt_repository_fallback_base_url: "https://download.opensuse.org/repositories/isv:/kubernetes:/core:/stable:/{{ kubectl_apt_repository_version }}/deb"
