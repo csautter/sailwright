@@ -10,10 +10,10 @@ ENV POWERSHELL_SHA256_X64="ddbc4a2d113bbd46d283cfedcbcd117a70caefd7673f41f2b4e00
 # renovate: datasource=custom.powershell-linux-arm64 depName=PowerShell/PowerShell version=7.6.6 versioning=semver
 ENV POWERSHELL_SHA256_ARM64="924829e54c983648f6f1419a2dc7f9433c861b2fb5bd57736ff096c24f133729"
 # renovate: datasource=custom.terragrunt-linux-amd64 depName=gruntwork-io/terragrunt versioning=semver
-ENV TERRAGRUNT_VERSION="1.1.1"
-ENV TERRAGRUNT_SHA256_AMD64="98b0400ba1ae27120adeeb98ba97e75eba0bab0b4cbd7b8bb148d4ed29e2f823"
-# renovate: datasource=custom.terragrunt-linux-arm64 depName=gruntwork-io/terragrunt version=1.1.1 versioning=semver
-ENV TERRAGRUNT_SHA256_ARM64="9662356c40130bfbcd20e88e556dfa33e487c31af153803aca85c8a299d48ab6"
+ENV TERRAGRUNT_VERSION="1.1.6"
+ENV TERRAGRUNT_SHA256_AMD64="d75a80bb264758ba00dabcb17f4b507fcdab4ca90d9e41f96750df036bf69b04"
+# renovate: datasource=custom.terragrunt-linux-arm64 depName=gruntwork-io/terragrunt version=1.1.6 versioning=semver
+ENV TERRAGRUNT_SHA256_ARM64="44b43df99bae7a309fdb831180bd9efb84fb145cf38a80c139e490395581649d"
 # renovate: datasource=custom.tflint-linux-amd64 depName=terraform-linters/tflint versioning=semver
 ENV TFLINT_VERSION="0.63.1"
 ENV TFLINT_SHA256_AMD64="8441a7d97df20431f19c9b9d27ff4c63e308c964e86660bc7cc0cf7bbe0725e8"
