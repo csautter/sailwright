@@ -15,7 +15,7 @@ export DEV_ALCHEMY_APP_DATA_DIR="$APP_DATA_DIR"
 export DEV_ALCHEMY_CACHE_DIR="$CACHE_DIR"
 
 # renovate: datasource=custom.virtio-win depName=virtio-win versioning=loose
-VIRTIO_WIN_VERSION="0.1.285-1"
+VIRTIO_WIN_VERSION="0.1.302-1"
 VIRTIO_WIN_FILE_VERSION="${VIRTIO_WIN_VERSION%-*}"
 VIRTIO_WIN_SHA256="e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976331"
 
