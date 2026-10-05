@@ -10,7 +10,7 @@ fi
 # renovate: datasource=custom.hashicorp depName=packer packageName=packer versioning=semver
 PACKER_VERSION="1.15.4"
 # renovate: datasource=custom.homebrew-formula depName=go packageName=go versioning=loose
-GO_VERSION="1.26.5"
+GO_VERSION="1.27.1"
 # renovate: datasource=custom.homebrew-cask depName=utm packageName=utm versioning=loose
 UTM_VERSION="4.7.5"
 # renovate: datasource=custom.homebrew-formula depName=qemu packageName=qemu versioning=loose
