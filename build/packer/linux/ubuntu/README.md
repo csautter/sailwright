@@ -29,7 +29,7 @@ $AppDataDir = if ($env:DEV_ALCHEMY_APP_DATA_DIR) { $env:DEV_ALCHEMY_APP_DATA_DIR
 $CacheDir = Join-Path $AppDataDir "cache"
 $env:DEV_ALCHEMY_CACHE_DIR = $CacheDir
 $env:DEV_ALCHEMY_PACKER_CACHE_DIR = Join-Path $AppDataDir "packer_cache"
-$isoPath = Join-Path $CacheDir "linux\ubuntu-24.04.4-live-server-amd64.iso"
+$isoPath = Join-Path $CacheDir "linux\ubuntu-24.04.5-live-server-amd64.iso"
 
 packer init build/packer/linux/ubuntu/linux-ubuntu-hyperv.pkr.hcl
 
