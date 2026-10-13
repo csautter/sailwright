@@ -21,6 +21,11 @@ _ALLOWED_FLAVORS: frozenset[str] = frozenset({"hyperv", "virtualbox"})
 # GitHub repo: only allow "owner/repo" with safe characters, no path traversal
 _REPO_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
+# Ownership marker applied to every broker-created resource group. delete_resource_group
+# requires this tag as a defense-in-depth companion to the name-prefix guard.
+RG_OWNER_TAG = "managed-by"
+RG_OWNER_TAG_VALUE = "gh-runner-broker"
+
 
 # EasyAuth v2 serialises Azure AD claim types as full URI strings.
 # Map them to their short JWT equivalents so the rest of the code
@@ -133,6 +138,10 @@ def handle_delete_resource_group(req: func.HttpRequest) -> func.HttpResponse:
         resource_group = body.get("resource-group", os.environ["RESOURCE_GROUP"])
         validate_source_group_name(resource_group)
         resource_client = ResourceManagementClient(credential, subscription_id)
+        # Defense in depth: require the broker's ownership tag in addition to the
+        # name-prefix check before deleting. A same-prefix RG that the broker did
+        # not create (missing tag, or nonexistent) is refused.
+        validate_source_group_ownership(resource_client, resource_group)
         # Delete the resource group and all resources within
         delete_async_op = resource_client.resource_groups.begin_delete(resource_group)
         delete_async_op.wait()
@@ -224,8 +233,16 @@ def handle_request_runner(req: func.HttpRequest) -> func.HttpResponse:
         credential, os.environ["SUBSCRIPTION_ID"]
     )
 
+    # Tag the RG with an ownership marker. This is a defense-in-depth companion to
+    # the name-prefix guard: delete_resource_group refuses any RG that lacks this
+    # tag, so a bug or a maliciously crafted same-prefix name cannot delete an
+    # unrelated resource group.
     resource_client.resource_groups.create_or_update(
-        resource_group, {"location": os.environ["LOCATION"]}
+        resource_group,
+        {
+            "location": os.environ["LOCATION"],
+            "tags": {RG_OWNER_TAG: RG_OWNER_TAG_VALUE},
+        },
     )
 
     # Support custom image via environment variable (expects ARM resource ID)
@@ -287,30 +304,21 @@ def handle_request_runner(req: func.HttpRequest) -> func.HttpResponse:
             },
         ).result()
 
-        # Create NSG (if not exists)
+        # Create NSG (if not exists).
+        #
+        # No inbound rules are added: the runner only needs OUTBOUND connectivity
+        # to GitHub, and the default NSG rules deny all inbound traffic. RDP (3389)
+        # was previously opened to `*` for first-run bootstrap debugging, which is
+        # now proven; leaving a public IP with RDP open to the whole internet is an
+        # unauthenticated attack surface (brute force, RDP CVEs). For the rare debug
+        # session, use Azure Bastion / just-in-time VM access instead of a standing
+        # inbound rule.
         nsg_name = os.environ.get("NSG_NAME", "gh-runner-nsg")
         nsg = network_client.network_security_groups.begin_create_or_update(
             resource_group,
             nsg_name,
             {
                 "location": location,
-            },
-        ).result()
-
-        # Add inbound rule for RDP (3389)
-        network_client.security_rules.begin_create_or_update(
-            resource_group,
-            nsg_name,
-            "Allow-RDP-Inbound",
-            {
-                "protocol": "Tcp",
-                "source_port_range": "*",
-                "destination_port_range": "3389",
-                "source_address_prefix": "*",
-                "destination_address_prefix": "*",
-                "access": "Allow",
-                "priority": 1000,
-                "direction": "Inbound",
             },
         ).result()
 
@@ -398,5 +406,23 @@ def handle_request_runner(req: func.HttpRequest) -> func.HttpResponse:
 def validate_source_group_name(name: str) -> bool:
     if not name.startswith("gh-runner-tmp"):
         raise Exception("Invalid source group name")
+
+    return True
+
+
+def validate_source_group_ownership(
+    resource_client: ResourceManagementClient, name: str
+) -> bool:
+    """Confirm the resource group carries the broker's ownership tag.
+
+    Refuses deletion if the RG does not exist or was not created by this broker
+    (missing/incorrect ``managed-by`` tag), even when its name matches the prefix.
+    """
+    rg = resource_client.resource_groups.get(name)
+    tags = rg.tags or {}
+    if tags.get(RG_OWNER_TAG) != RG_OWNER_TAG_VALUE:
+        raise Exception(
+            f"Resource group '{name}' is not owned by gh-runner-broker; refusing to delete"
+        )
 
     return True

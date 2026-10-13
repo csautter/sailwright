@@ -128,8 +128,11 @@ so first boot is mostly "enable Hyper-V + register," keeping paid runtime short.
   it for a throwaway runner token handed to the VM via cloud-init, never persisted
   ([function_app.py:186](../../scripts/gh-runner-func/function_app.py#L186)).
 - **Ephemeral isolation + blast-radius guard.** Own RG per job, `--ephemeral` runner,
-  full teardown; deletion refuses any name without the `gh-runner-tmp` prefix
-  ([function_app.py:398](../../scripts/gh-runner-func/function_app.py#L398)).
+  full teardown; deletion requires both the `gh-runner-tmp` name prefix and the
+  broker's `managed-by=gh-runner-broker` ownership tag
+  ([function_app.py:398](../../scripts/gh-runner-func/function_app.py#L398)). The broker
+  identity runs on a least-privilege custom role, not subscription-wide `Contributor`
+  ([manager.tf:142](../../deployments/terraform/modules/azure_gh_runner/manager.tf#L142)).
 - **Input validation.** Repo regex + flavor allowlist
   ([function_app.py:19](../../scripts/gh-runner-func/function_app.py#L19)).
 - **Supply chain.** Cosign keyless signing of release checksums
@@ -160,15 +163,22 @@ Near-zero idle baseline; compute is deleted (not stopped) between jobs.
 ## Known trade-offs
 
 Deliberate simplicity/cost trade-offs, tracked with a triage and fix plan in
-[plans/PLAN Runner Security Hardening 2026-07-26.md](../../plans/PLAN%20Runner%20Security%20Hardening%202026-07-26.md):
+[plans/PLAN Runner Security Hardening 2026-07-26.md](../../plans/PLAN%20Runner%20Security%20Hardening%202026-07-26.md).
+
+**Open:**
 
 | Trade-off | Where |
 | --- | --- |
-| NSG opens RDP 3389 to `*` on a public IP; no JIT | [function_app.py:300](../../scripts/gh-runner-func/function_app.py#L300) |
-| Function identity holds subscription-wide `Contributor` | [manager.tf:144](../../deployments/terraform/modules/azure_gh_runner/manager.tf#L144) |
-| `winrm_insecure = true` during image build | [windows-azure-gh-runner.pkr.hcl:89](../../build/gh_actions/windows-azure-gh-runner.pkr.hcl#L89) |
-| Key Vault `purge_protection_enabled = false` | [manager.tf:27](../../deployments/terraform/modules/azure_gh_runner/manager.tf#L27) |
-| RG-delete safety rests on the name-prefix guard | [function_app.py:398](../../scripts/gh-runner-func/function_app.py#L398) |
+| `winrm_insecure = true` during image build (transient Packer VM only) | [windows-azure-gh-runner.pkr.hcl:89](../../build/gh_actions/windows-azure-gh-runner.pkr.hcl#L89) |
+
+**Resolved (2026-07-26 hardening pass):**
+
+| Was | Now |
+| --- | --- |
+| NSG opened RDP 3389 to `*` on a public IP | Inbound RDP rule removed; NSG adds no inbound rules (runner is outbound-only) |
+| Function identity held subscription-wide `Contributor` | Least-privilege custom role `gh-runner-broker` (RG create/delete + `Microsoft.Compute/*` + `Microsoft.Network/*`, no data-plane/IAM) |
+| Key Vault `purge_protection_enabled = false` | `purge_protection_enabled = true` |
+| RG-delete safety rested on the name-prefix guard alone | Prefix guard **plus** required `managed-by=gh-runner-broker` ownership tag |
 
 ## Key files
 

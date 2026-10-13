@@ -94,12 +94,12 @@ Registers a GitHub Actions runner token, creates a resource group, and provision
 3. Calls `POST https://api.github.com/repos/{repo}/actions/runners/registration-token` to obtain a short-lived runner token.
 4. Loads and parameterises `runner-setup.ps1` with the token, repo URL, and virtualization flavor; base64-encodes it as VM `custom_data`.
 5. Creates (or reuses) the resource group in `LOCATION`.
-6. Provisions a VNet (`10.0.0.0/16`), subnet, public IP, NSG, and NIC.
+6. Provisions a VNet (`10.0.0.0/16`), subnet, public IP, NSG (no inbound rules), and NIC.
 7. Creates the VM using the image referenced by `CUSTOM_IMAGE_ID` + `-` + `virtualization-flavor`.
 8. If `VM_USE_SPOT=true`, first attempts a spot VM; falls back to a regular VM on failure.
 9. The VM boots, runs `runner-setup.ps1` via `custom_data`, installs Hyper-V or VirtualBox, and registers itself as a GitHub Actions runner.
 
-> **Security note:** The NSG currently opens RDP (TCP 3389) from `*`. Restrict `source_address_prefix` to known operator CIDRs or remove public RDP once runner bootstrapping is verified.
+> **Security note:** The NSG adds no inbound rules — the runner only needs outbound connectivity to GitHub, and the default rules deny all inbound. RDP (3389) is intentionally **not** opened. For the rare debug session, use Azure Bastion / just-in-time VM access rather than a standing inbound rule.
 
 ---
 
@@ -111,7 +111,7 @@ Deletes a resource group and all resources within it. Intended to be called by t
 
 | Field            | Type   | Required | Default                  | Description |
 |------------------|--------|----------|--------------------------|-------------|
-| `resource-group` | string | ❌        | `RESOURCE_GROUP` env var | Resource group to delete. Must start with `gh-runner-tmp`. |
+| `resource-group` | string | ❌        | `RESOURCE_GROUP` env var | Resource group to delete. Must start with `gh-runner-tmp` **and** carry the broker's `managed-by=gh-runner-broker` tag (applied at creation); otherwise deletion is refused. |
 
 **Example**
 
@@ -266,11 +266,11 @@ Or manually with Terragrunt from `deployments/terraform/env/azure_dev/azure_gh_r
 | Principal | Scope | Role | Purpose |
 |-----------|-------|------|---------|
 | Function App managed identity | Key Vault | Key Vault Secrets User | Read `github-runner-pat` and `github-runner-vm-admin-pw` |
-| Function App managed identity | Subscription | Contributor | Create/delete resource groups and VMs for runners |
+| Function App managed identity | Subscription | `gh-runner-broker` (custom) | Create/delete runner resource groups and their VM/network resources — no data-plane or IAM access |
 | `gh-actions-runner-broker` service principal | Function App | Contributor | Allow Entra app to manage its own Function App |
 | Deploying identity | Key Vault | Key Vault Secrets Officer | Seed secrets via Terraform/CLI |
 
-> ⚠️ The subscription-wide `Contributor` role for the Function App identity is broad. Consider scoping to a dedicated resource group or using custom roles limited to VM/networking/resource-group operations.
+> The Function App identity uses a least-privilege custom role (`gh-runner-broker`, defined in [`manager.tf`](../../deployments/terraform/modules/azure_gh_runner/manager.tf)) scoped to resource-group create/delete plus `Microsoft.Compute/*` and `Microsoft.Network/*`. It replaces the previous subscription-wide `Contributor` grant, so a compromised broker cannot read secrets or assign roles outside the runner domain.
 
 ---
 
