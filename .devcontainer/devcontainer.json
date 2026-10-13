@@ -1,48 +1,39 @@
-// For format details, see https://aka.ms/devcontainer.json. For config options, see the
-// README at: https://github.com/devcontainers/templates/tree/main/src/go .
 {
-	"name": "Go",
-	"build": {
-		"dockerfile": "Dockerfile"
-	},
-	"containerEnv": {
-    	"GOTOOLCHAIN": "auto"
-  	},
-	"mounts": [
-		"source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents/skills,target=/root/.agents/skills,type=bind,consistency=cached",
-		"source=devalchemy-vscode-server-data,target=/root/.vscode-server/data,type=volume"
-	],
-	"features": {
-		"ghcr.io/devcontainers/features/python:1": {}
-	},
-	"customizations": {
-		"vscode": {
-			"extensions": [
-				"HashiCorp.HCL",
-				"HashiCorp.terraform",
-				"openai.chatgpt",
-				"ms-azuretools.vscode-azurefunctions",
-				"emeraldwalk.runonsave"
-			]
-		}
-	},
-
-	// Features to add to the dev container. More info: https://containers.dev/features.
-	// "features": {},
-
-	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	// "forwardPorts": [],
-
-	// Use 'postCreateCommand' to run commands after the container is created.
-	// "postCreateCommand": "go version",
-
-	// Configure tool-specific properties.
-	// "customizations": {},
-
-	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
-	// "remoteUser": "root"
-	// using user root is just recommended with rootless docker
-	"remoteUser": "root",
-	"containerUser": "root",
- 	"updateRemoteUserUID": true
+  "name": "Go",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "containerEnv": {
+    "GOTOOLCHAIN": "auto"
+  },
+  "mounts": [
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents/skills,target=/root/.agents/skills,type=bind,consistency=cached",
+    "source=skills-vscode-server-data,target=/root/.vscode-server/data,type=volume",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents/skills,target=/root/.claude/skills,type=bind,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.codex/skills,target=/root/.codex/skills,type=bind,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents/agents,target=/root/.copilot/agents,type=bind,consistency=cached",
+    "source=skills-vscode-server-extensions,target=/root/.vscode-server/extensions,type=volume",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.codex/auth.json,target=/root/.codex-auth.json,type=bind,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude-devcontainer,target=/root/.claude,type=bind,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.local/share/opencode,target=/root/.local/share/opencode,type=bind,consistency=cached"
+  ],
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "HashiCorp.HCL",
+        "HashiCorp.terraform",
+        "openai.chatgpt",
+        "ms-azuretools.vscode-azurefunctions",
+        "emeraldwalk.runonsave",
+        "anthropic.claude-code"
+      ]
+    }
+  },
+  "remoteUser": "root",
+  "containerUser": "root",
+  "updateRemoteUserUID": true,
+  "postStartCommand": "mkdir -p /root/.codex && ln -sfn /root/.codex-auth.json /root/.codex/auth.json"
 }
