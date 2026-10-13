@@ -35,5 +35,5 @@
   "remoteUser": "root",
   "containerUser": "root",
   "updateRemoteUserUID": true,
-  "postStartCommand": "mkdir -p /root/.codex && ln -sfn /root/.codex-auth.json /root/.codex/auth.json"
+  "postStartCommand": "mkdir -p /root/.codex && ln -sfn /root/.codex-auth.json /root/.codex/auth.json ; nohup bash .devcontainer/install-extensions.sh >/tmp/install-extensions.log 2>&1 &"
 }
