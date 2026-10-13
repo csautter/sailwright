@@ -24,7 +24,11 @@ resource "azurerm_key_vault" "gh_runner_kv" {
   tenant_id                  = data.azurerm_client_config.current.tenant_id
   sku_name                   = "standard"
   rbac_authorization_enabled = true
-  purge_protection_enabled   = false
+  # Purge protection prevents a deleted secret/vault from being permanently purged
+  # before the soft-delete retention window elapses. This is irreversible once
+  # enabled, which is acceptable for this long-lived control-plane vault (it already
+  # carries prevent_destroy below).
+  purge_protection_enabled   = true
   soft_delete_retention_days = 7
 
   lifecycle {
@@ -139,10 +143,37 @@ resource "azurerm_role_assignment" "keyvault_secrets_user" {
   principal_id         = azurerm_linux_function_app.gh_runner_func_app.identity[0].principal_id
 }
 
-resource "azurerm_role_assignment" "function_contributor" {
-  scope                = data.azurerm_subscription.current.id
-  role_definition_name = "Contributor"
-  principal_id         = azurerm_linux_function_app.gh_runner_func_app.identity[0].principal_id
+# Least-privilege role for the runner broker in place of subscription-wide
+# Contributor. It can create/delete the per-job resource groups and manage the
+# compute + networking resources inside them, but has no data-plane access (e.g.
+# it cannot read Key Vault secrets outside its dedicated data-plane assignment)
+# and no IAM (role assignment) permissions, shrinking the blast radius if the
+# broker were ever compromised.
+resource "azurerm_role_definition" "gh_runner_broker" {
+  name        = "gh-runner-broker-${random_integer.suffix.result}"
+  scope       = data.azurerm_subscription.current.id
+  description = "Manage per-job GitHub runner resource groups and their VM/network resources. No data-plane or IAM access."
+
+  permissions {
+    actions = [
+      "Microsoft.Resources/subscriptions/resourceGroups/read",
+      "Microsoft.Resources/subscriptions/resourceGroups/write",
+      "Microsoft.Resources/subscriptions/resourceGroups/delete",
+      "Microsoft.Compute/*",
+      "Microsoft.Network/*",
+    ]
+    not_actions = []
+  }
+
+  assignable_scopes = [
+    data.azurerm_subscription.current.id,
+  ]
+}
+
+resource "azurerm_role_assignment" "function_runner_broker" {
+  scope              = data.azurerm_subscription.current.id
+  role_definition_id = azurerm_role_definition.gh_runner_broker.role_definition_resource_id
+  principal_id       = azurerm_linux_function_app.gh_runner_func_app.identity[0].principal_id
 }
 
 resource "azurerm_application_insights" "gh_runner_func_app" {
