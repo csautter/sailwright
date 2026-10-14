@@ -119,7 +119,9 @@ Remote cache backend reference:
 | Azure Blob Storage | `azure` | `subscription-id` |
 
 Callers that relied on the old implicit Azure behavior must now set `storage-backend: azure`
-and pass `subscription-id`.
+and pass `subscription-id`. The Terraform-managed storage account behind it is disabled by default
+(`build_cache_enabled = false` in `deployments/terraform/modules/azure_gh_runner`); enable it
+before using the `azure` backend.
 
 ### Set the runner CPU count or memory size and run up to 2 runners in parallel
 
