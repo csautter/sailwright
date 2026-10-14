@@ -1,4 +1,4 @@
-FROM ubuntu:24.04
+FROM ubuntu:25.10
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
