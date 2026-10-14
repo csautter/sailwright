@@ -1,0 +1,129 @@
+name: Build Azure Runner Image
+
+# Rebuilds the Windows golden image used by the Azure self-hosted runners
+# (build/gh_actions/windows-azure-gh-runner.pkr.hcl). The image is overwritten in
+# place, so runner requests fail for a few minutes while it is being replaced.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "build/gh_actions/**"
+      - "scripts/windows/sailwright-self-setup.ps1"
+      - "scripts/windows/install_oscdimg.ps1"
+      - ".github/workflows/build-azure-runner-image.yml"
+  pull_request:
+    paths:
+      - "build/gh_actions/**"
+      - "scripts/windows/sailwright-self-setup.ps1"
+      - "scripts/windows/install_oscdimg.ps1"
+      - ".github/workflows/build-azure-runner-image.yml"
+  schedule:
+    # 15th of every month, after Patch Tuesday, to pick up Windows updates
+    - cron: "0 6 15 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PACKER_VERSION: "1.16.1"
+
+jobs:
+  validate:
+    name: Validate Packer template
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Packer
+        uses: hashicorp/setup-packer@v3
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      - name: Validate
+        working-directory: build/gh_actions
+        run: |
+          packer init windows-azure-gh-runner.pkr.hcl
+          packer fmt -check windows-azure-gh-runner.pkr.hcl
+          packer validate \
+            -var tenant_id=00000000-0000-0000-0000-000000000000 \
+            -var subscription_id=00000000-0000-0000-0000-000000000000 \
+            windows-azure-gh-runner.pkr.hcl
+
+  build:
+    name: Build image
+    needs: [validate]
+    # The image builder identity only trusts main (see image_builder.tf).
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    concurrency:
+      group: azure-runner-image
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      BUILD_RESOURCE_GROUP: gh-actions-image-build-eastus2
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Packer
+        uses: hashicorp/setup-packer@v3
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_IMAGE_BUILDER_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Restrict WinRM to this runner
+        run: |
+          runner_ip="$(curl -fsS --retry 3 https://api.ipify.org)"
+          echo "PKR_VAR_allowed_inbound_ip_addresses=[\"${runner_ip}/32\"]" >> "${GITHUB_ENV}"
+
+      - name: Build image
+        env:
+          LOCATION: eastus2
+          PKR_VAR_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+          PKR_VAR_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          # Packer authenticates with GitHub OIDC itself, so tokens are refreshed
+          # during builds that outlast the az CLI login.
+          PKR_VAR_client_id: ${{ secrets.AZURE_IMAGE_BUILDER_CLIENT_ID }}
+        run: bash build/gh_actions/windows-azure-gh-runner-packer-build.sh
+
+      # The az CLI token from the first login may have expired during a long build.
+      - name: Azure Login for cleanup (OIDC)
+        if: failure() || cancelled()
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_IMAGE_BUILDER_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete leftover build resources
+        if: failure() || cancelled()
+        run: |
+          # Resources depend on each other (VM -> NIC -> IP/NSG/VNet), so delete in
+          # several passes until the build resource group is empty.
+          for attempt in 1 2 3 4 5; do
+            mapfile -t ids < <(az resource list -g "${BUILD_RESOURCE_GROUP}" --query "[].id" -o tsv)
+            if [ "${#ids[@]}" -eq 0 ]; then
+              echo "Build resource group is empty."
+              exit 0
+            fi
+            echo "Pass ${attempt}: deleting ${#ids[@]} resource(s)"
+            az resource delete --ids "${ids[@]}" || true
+            sleep 15
+          done
+          echo "::warning::Resources left in ${BUILD_RESOURCE_GROUP}; delete them manually."
+          az resource list -g "${BUILD_RESOURCE_GROUP}" -o table

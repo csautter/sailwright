@@ -20,6 +20,12 @@ variable "github_repository" {
   }
 }
 
+variable "build_cache_enabled" {
+  description = "Create the legacy Azure Blob build cache (gh-runner-storage-rg). CI uses the FTP backend, so this is off by default; switching it off deletes the cache and its blobs."
+  type        = bool
+  default     = false
+}
+
 variable "allowed_user_object_ids" {
   description = "Optional list of Entra user object IDs allowed to call broker endpoints directly."
   type        = list(string)

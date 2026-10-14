@@ -110,6 +110,16 @@ Packer golden image
 ([windows-azure-gh-runner.pkr.hcl](../../build/gh_actions/windows-azure-gh-runner.pkr.hcl))
 so first boot is mostly "enable Hyper-V + register," keeping paid runtime short.
 
+The image is rebuilt by
+[build-azure-runner-image.yml](../../.github/workflows/build-azure-runner-image.yml) on
+changes to the template or setup scripts on `main` (including Renovate's runner-version
+bumps) and monthly after Patch Tuesday. It runs as a separate `gh-actions-image-builder`
+identity that trusts only `main` and is Contributor on just the image and image-build
+resource groups
+([image_builder.tf](../../deployments/terraform/modules/azure_gh_runner/image_builder.tf)).
+The managed image is overwritten in place, so runner requests fail for the few minutes
+while it is being replaced.
+
 ## Security model
 
 - **GitHub OIDC federation to Entra, no stored secrets.** Two federated credentials
@@ -157,8 +167,14 @@ Near-zero idle baseline; compute is deleted (not stopped) between jobs.
   ([test-build-windows.yml:216](../../.github/workflows/test-build-windows.yml#L216)).
 - **Cheap orchestration** on free `ubuntu-latest`; only the build runs on the paid VM.
 - **LRS storage**, standard Key Vault
-  ([manager.tf:47](../../deployments/terraform/modules/azure_gh_runner/manager.tf#L47),
-  [cache.tf:12](../../deployments/terraform/modules/azure_gh_runner/cache.tf#L12)).
+  ([manager.tf:47](../../deployments/terraform/modules/azure_gh_runner/manager.tf#L47)).
+- **Golden image on Standard HDD** — stored images are billed per used GB and only read
+  at VM creation
+  ([windows-azure-gh-runner.pkr.hcl:97](../../build/gh_actions/windows-azure-gh-runner.pkr.hcl#L97));
+  only the Hyper-V image is built by default.
+- **Legacy Azure Blob build cache off by default** — CI uses FTP;
+  `build_cache_enabled = false` removes the storage account
+  ([cache.tf](../../deployments/terraform/modules/azure_gh_runner/cache.tf)).
 
 ## Known trade-offs
 

@@ -23,4 +23,6 @@ locals {
 
 inputs = {
   env = local.config.env
+  # Legacy Azure Blob build cache; CI uses FTP. false deletes the cache storage account.
+  build_cache_enabled = false
 }
