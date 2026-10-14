@@ -121,7 +121,7 @@ func ubuntuLiveServerISOURL(arch, version string) string {
 	if arch == "amd64" {
 		return fmt.Sprintf("https://releases.ubuntu.com/%s/%s", version, name)
 	}
-	return fmt.Sprintf("https://cdimage.ubuntu.com/releases/%s/release/%s", version, name)
+	return fmt.Sprintf("https://cdimage.ubuntu.com/ubuntu/releases/%s/release/%s", version, name)
 }
 
 func virtioWinISOFileVersion(version string) string {
