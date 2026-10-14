@@ -106,7 +106,10 @@ jobs:
           printf '%s\n' "$*" >> "${FAKE_CURL_LOG:-/dev/null}"
           for arg in "$@"; do
             if [ "$arg" = "--head" ]; then
-              exit 78
+              exit "${FAKE_CURL_HEAD_EXIT:-78}"
+            fi
+            if [ "$arg" = "--upload-file" ]; then
+              exit "${FAKE_CURL_UPLOAD_EXIT:-0}"
             fi
           done
           exit 0
@@ -172,6 +175,18 @@ jobs:
           run_upload '[{"local-path":"'"$overwrite_source"'","blob-name":"overwrite/item.bin","overwrite":true}]'
           test "$(cat "$local_cache/overwrite/item.bin")" = "new-payload"
 
+          # Remote cache failures must warn instead of failing the job.
+          flaky_source="$workspace/source/flaky.bin"
+          printf 'flaky-payload' > "$flaky_source"
+          FAKE_CURL_HEAD_EXIT=28 run_upload '[{"local-path":"'"$flaky_source"'","blob-name":"flaky/check.bin"}]' > "$root/flaky-check.out"
+          grep -F "::warning title=Build cache upload skipped::Could not check FTP object /cache/flaky/check.bin" "$root/flaky-check.out" >/dev/null
+          if grep -F -- "--upload-file" "$FAKE_CURL_LOG" | grep -F "flaky/check.bin" >/dev/null; then
+            echo "Upload must be skipped when the FTP object check fails" >&2
+            exit 1
+          fi
+          FAKE_CURL_UPLOAD_EXIT=25 run_upload '[{"local-path":"'"$flaky_source"'","blob-name":"flaky/upload.bin"}]' > "$root/flaky-upload.out"
+          grep -F "::warning title=Build cache upload skipped::Failed to upload FTP object /cache/flaky/upload.bin" "$root/flaky-upload.out" >/dev/null
+
       - name: Test PowerShell local cache behavior
         shell: pwsh
         run: |
@@ -233,7 +248,10 @@ jobs:
           printf '%s\n' "$*" >> "${FAKE_CURL_LOG:-/dev/null}"
           for arg in "$@"; do
             if [ "$arg" = "--head" ]; then
-              exit 78
+              exit "${FAKE_CURL_HEAD_EXIT:-78}"
+            fi
+            if [ "$arg" = "--upload-file" ]; then
+              exit "${FAKE_CURL_UPLOAD_EXIT:-0}"
             fi
           done
           exit 0
@@ -270,6 +288,28 @@ jobs:
               Set-Content -Path $overwriteSource -Value 'new-payload' -NoNewline
               Invoke-CacheScript -Script $uploadScript -Files (ConvertTo-CacheJson @(@{'local-path' = $overwriteSource; 'blob-name' = 'overwrite/item.bin'; 'overwrite' = $true}))
               Assert-FileContent -Path $overwriteCache -Expected 'new-payload'
+
+              # Remote cache failures must warn instead of failing the job.
+              $flakySource = Join-Path $workspace 'source/flaky.bin'
+              Set-Content -Path $flakySource -Value 'flaky-payload' -NoNewline
+              $env:FAKE_CURL_HEAD_EXIT = '28'
+              $checkOutput = Invoke-CacheScript -Script $uploadScript -Files (ConvertTo-CacheJson @(@{'local-path' = $flakySource; 'blob-name' = 'flaky/check.bin'})) 6>&1 | Out-String
+              Remove-Item Env:FAKE_CURL_HEAD_EXIT
+              if ($checkOutput -notmatch [regex]::Escape('::warning title=Build cache upload skipped::Could not check FTP object /cache/flaky/check.bin')) {
+                  throw "Expected a warning when the FTP object check fails. Output: $checkOutput"
+              }
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Expected LASTEXITCODE to be reset after a failed FTP object check, got $LASTEXITCODE."
+              }
+              $env:FAKE_CURL_UPLOAD_EXIT = '25'
+              $uploadOutput = Invoke-CacheScript -Script $uploadScript -Files (ConvertTo-CacheJson @(@{'local-path' = $flakySource; 'blob-name' = 'flaky/upload.bin'})) 6>&1 | Out-String
+              Remove-Item Env:FAKE_CURL_UPLOAD_EXIT
+              if ($uploadOutput -notmatch [regex]::Escape('::warning title=Build cache upload skipped::Failed to upload FTP object /cache/flaky/upload.bin')) {
+                  throw "Expected a warning when the FTP upload fails. Output: $uploadOutput"
+              }
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Expected LASTEXITCODE to be reset after a failed FTP upload, got $LASTEXITCODE."
+              }
           } finally {
               Remove-Item -Path $root -Recurse -Force -ErrorAction SilentlyContinue
           }
