@@ -91,7 +91,10 @@ source "azure-arm" "windows-azure-gh-runner" {
   winrm_use_ssl                     = true
   winrm_username                    = "packer"
 
-  managed_image_storage_account_type = "Premium_LRS" # Premium SSD
+  # Stored images are billed per used GB like snapshots. The image is only read when a
+  # runner VM is created, so Standard HDD is enough; the VM OS disk type is set
+  # independently by the runner broker (scripts/gh-runner-func/function_app.py).
+  managed_image_storage_account_type = "Standard_LRS"
 
   spot {
     eviction_policy = "Delete"
