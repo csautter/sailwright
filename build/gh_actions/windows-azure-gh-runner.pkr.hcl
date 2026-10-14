@@ -27,12 +27,40 @@ variable "github_actions_version" {
 
 variable "image_resource_group" {
   type    = string
-  default = "gh-actions-images"
+  default = "gh-actions-images-eastus2"
 }
 
-variable "location" {
+# Existing resource group (managed by Terraform) for Packer's temporary VM, network
+# and Key Vault. The build location is taken from this resource group.
+variable "build_resource_group" {
   type    = string
-  default = "East US"
+  default = "gh-actions-image-build-eastus2"
+}
+
+# Source addresses allowed to reach WinRM on the build VM. Empty keeps the plugin
+# default (open); CI passes the GitHub runner's public IP.
+variable "allowed_inbound_ip_addresses" {
+  type    = list(string)
+  default = []
+}
+
+# Set in CI to authenticate with GitHub OIDC. The plugin requests fresh tokens itself,
+# so builds longer than the az CLI token lifetime keep working. Empty uses the local
+# az CLI login.
+variable "client_id" {
+  type    = string
+  default = ""
+}
+
+variable "oidc_request_url" {
+  type    = string
+  default = env("ACTIONS_ID_TOKEN_REQUEST_URL")
+}
+
+variable "oidc_request_token" {
+  type      = string
+  default   = env("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+  sensitive = true
 }
 
 variable "virtualization_flavor" {
@@ -73,9 +101,12 @@ source "azure-arm" "windows-azure-gh-runner" {
   azure_tags = {
     task = "Image deployment"
   }
-  temp_resource_group_name          = "packerResourceGroup_temp"
-  location                          = var.location
-  use_azure_cli_auth                = true
+  build_resource_group_name         = var.build_resource_group
+  allowed_inbound_ip_addresses      = var.allowed_inbound_ip_addresses
+  use_azure_cli_auth                = var.client_id == ""
+  client_id                         = var.client_id
+  oidc_request_url                  = var.client_id == "" ? "" : var.oidc_request_url
+  oidc_request_token                = var.client_id == "" ? "" : var.oidc_request_token
   communicator                      = "winrm"
   image_offer                       = "WindowsServer"
   image_publisher                   = "MicrosoftWindowsServer"
