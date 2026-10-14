@@ -110,6 +110,16 @@ Packer golden image
 ([windows-azure-gh-runner.pkr.hcl](../../build/gh_actions/windows-azure-gh-runner.pkr.hcl))
 so first boot is mostly "enable Hyper-V + register," keeping paid runtime short.
 
+The image is rebuilt by
+[build-azure-runner-image.yml](../../.github/workflows/build-azure-runner-image.yml) on
+changes to the template or setup scripts on `main` (including Renovate's runner-version
+bumps) and monthly after Patch Tuesday. It runs as a separate `gh-actions-image-builder`
+identity that trusts only `main` and is Contributor on just the image and image-build
+resource groups
+([image_builder.tf](../../deployments/terraform/modules/azure_gh_runner/image_builder.tf)).
+The managed image is overwritten in place, so runner requests fail for the few minutes
+while it is being replaced.
+
 ## Security model
 
 - **GitHub OIDC federation to Entra, no stored secrets.** Two federated credentials

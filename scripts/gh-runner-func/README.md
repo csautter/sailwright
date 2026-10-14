@@ -169,6 +169,8 @@ Terraform builds these subjects from the `github_repository` module variable.
 
 The workflow must request the OIDC token with `permissions: id-token: write` and exchange it for an Azure AD token scoped to `api://<client-id>`.
 
+The golden image build ([build-azure-runner-image.yml](../../.github/workflows/build-azure-runner-image.yml)) uses a separate app, `gh-actions-image-builder`, whose only federated credential (`github-actions-main`) trusts `repo:csautter/sailwright:ref:refs/heads/main`. Pull request workflows therefore cannot replace the image. Its client ID (Terraform output `image_builder_client_id`) is stored as the repository secret `AZURE_IMAGE_BUILDER_CLIENT_ID`.
+
 ---
 
 ## Required app settings
@@ -238,6 +240,9 @@ The full infrastructure is managed by Terraform in `deployments/terraform/module
 | Function App | `gh-runner-func-app-<suffix>` | Linux, Python 3.11, Consumption (Y1) plan. |
 | App Insights | `gh-runner-func-app-<suffix>` | Linked to Function App. |
 | Entra app registration | `gh-actions-runner-broker` | API audience; pre-authorises Azure CLI client. |
+| Entra app registration | `gh-actions-image-builder` | Golden image build in CI; federated credential for `main` only. |
+| Resource group (images) | `gh-actions-images-<runner_location>` | Managed images referenced by `CUSTOM_IMAGE_ID`. |
+| Resource group (image build) | `gh-actions-image-build-<runner_location>` | Packer's temporary build VM, network and Key Vault. |
 | Federated credentials | `github-actions`, `github-actions-pr` | Workload identity for CI. |
 
 The random suffix is stable after initial deployment (`ignore_changes = all`). New environments get a random value in the range `10000–99999`.
@@ -269,6 +274,7 @@ Or manually with Terragrunt from `deployments/terraform/env/azure_dev/azure_gh_r
 | Function App managed identity | Subscription | `gh-runner-broker` (custom) | Create/delete runner resource groups and their VM/network resources — no data-plane or IAM access |
 | `gh-actions-runner-broker` service principal | Function App | Contributor | Allow Entra app to manage its own Function App |
 | Deploying identity | Key Vault | Key Vault Secrets Officer | Seed secrets via Terraform/CLI |
+| `gh-actions-image-builder` service principal | Image and image-build resource groups | Contributor | Build and replace the golden image with Packer |
 
 > The Function App identity uses a least-privilege custom role (`gh-runner-broker`, defined in [`manager.tf`](../../deployments/terraform/modules/azure_gh_runner/manager.tf)) scoped to resource-group create/delete plus `Microsoft.Compute/*` and `Microsoft.Network/*`. It replaces the previous subscription-wide `Contributor` grant, so a compromised broker cannot read secrets or assign roles outside the runner domain.
 
