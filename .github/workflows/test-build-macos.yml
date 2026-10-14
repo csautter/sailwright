@@ -78,7 +78,7 @@ jobs:
             packer_start_only: "true"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.4-live-server-arm64.iso"},
+              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-arm64.iso"},
                {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_all.deb"}]
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuServerAmd64OnMacos
@@ -88,7 +88,7 @@ jobs:
             packer_start_only: "true"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.4-live-server-amd64.iso"}]
+              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-amd64.iso"}]
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuDesktopArm64OnMacos
             deploy_test_name: TestDeployUtmUbuntuDesktopArm64OnMacos
@@ -97,7 +97,7 @@ jobs:
             packer_start_only: "true"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.4-live-server-arm64.iso"},
+              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-arm64.iso"},
                {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_all.deb"}]
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuDesktopAmd64OnMacos
@@ -107,7 +107,7 @@ jobs:
             packer_start_only: "true"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.4-live-server-amd64.iso"}]
+              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-amd64.iso"}]
     steps:
       - name: Checkout code
         uses: actions/checkout@v7

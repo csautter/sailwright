@@ -9,7 +9,7 @@ packer {
 
 variable "ubuntu_version" {
   type    = string
-  default = "24.04.4"
+  default = "24.04.5"
 }
 
 variable "iso_url" {

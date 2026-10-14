@@ -183,7 +183,7 @@ jobs:
             packer_start_only: "false"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.4-live-server-amd64.iso"}]
+              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-amd64.iso"}]
           - vm_os: ubuntu
             ubuntu_type: desktop
             arch: amd64
@@ -193,7 +193,7 @@ jobs:
             packer_start_only: "false"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.4-live-server-amd64.iso"}]
+              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-amd64.iso"}]
           - vm_os: windows11
             ubuntu_type: ""
             arch: amd64
@@ -215,7 +215,7 @@ jobs:
             packer_start_only: "false"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.4-live-server-arm64.iso"},
+              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-arm64.iso"},
                {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_all.deb"}]
           - vm_os: ubuntu
             ubuntu_type: desktop
@@ -226,7 +226,7 @@ jobs:
             packer_start_only: "false"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.4-live-server-arm64.iso"},
+              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-arm64.iso"},
                {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_all.deb"}]
           - vm_os: windows11
             ubuntu_type: ""
@@ -426,7 +426,7 @@ jobs:
             packer_start_only: "false"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.4-live-server-amd64.iso"}]
+              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-amd64.iso"}]
           - vm_os: ubuntu
             ubuntu_type: desktop
             arch: amd64
@@ -435,7 +435,7 @@ jobs:
             packer_start_only: "false"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.4-live-server-amd64.iso"}]
+              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-amd64.iso"}]
           - vm_os: windows11
             ubuntu_type: ""
             arch: amd64
@@ -583,7 +583,7 @@ jobs:
             packer_start_only: "false"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.4-live-server-arm64.iso"},
+              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-arm64.iso"},
                {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_all.deb"}]
           - vm_os: ubuntu
             ubuntu_type: desktop
@@ -593,7 +593,7 @@ jobs:
             packer_start_only: "false"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.4-live-server-arm64.iso"},
+              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-arm64.iso"},
                {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_all.deb"}]
           - vm_os: windows11
             ubuntu_type: ""
