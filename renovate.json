@@ -267,7 +267,7 @@
       ]
     },
     "ubuntu-live-server-arm64": {
-      "defaultRegistryUrlTemplate": "https://cdimage.ubuntu.com/releases/24.04/release/SHA256SUMS",
+      "defaultRegistryUrlTemplate": "https://cdimage.ubuntu.com/ubuntu/releases/24.04/release/SHA256SUMS",
       "format": "plain",
       "transformTemplates": [
         "{ \"releases\": $map(releases[$match(version, /^[a-f0-9]{64} \\*ubuntu-[0-9]{2}\\.[0-9]{2}(\\.[0-9]+)?-live-server-arm64\\.iso$/)], function($v) { { \"version\": $replace($split($v.version, \" *ubuntu-\")[1], /-live-server-arm64\\.iso$/, \"\"), \"digest\": $split($v.version, \" *ubuntu-\")[0] } }) }"

@@ -30,6 +30,14 @@ function Write-Fail {
     throw $Message
 }
 
+# The remote cache is an optimization: report problems without failing the job.
+function Write-CacheSkippedWarning {
+    param([Parameter(Mandatory = $true)][string]$Message)
+    Write-Host "::warning title=Build cache upload skipped::$Message"
+    # The Actions PowerShell wrapper exits with $LASTEXITCODE, which still holds curl's code.
+    $global:LASTEXITCODE = 0
+}
+
 function Normalize-EndpointUrl {
     param([Parameter(Mandatory = $true)][string]$Endpoint)
 
@@ -292,9 +300,17 @@ function Upload-ToFtp {
     $key = Get-FtpKeyForBlob $BlobName
     $url = Get-FtpRemoteUrl $key
 
-    if (-not $Overwrite -and (Test-FtpObject -Url $url)) {
-        Write-Host "  [ok] FTP object $script:FtpBaseDirNormalized/$key already exists - skipping upload."
-        return
+    if (-not $Overwrite) {
+        try {
+            $exists = Test-FtpObject -Url $url
+        } catch {
+            Write-CacheSkippedWarning "Could not check FTP object $script:FtpBaseDirNormalized/$key; not uploading it."
+            return
+        }
+        if ($exists) {
+            Write-Host "  [ok] FTP object $script:FtpBaseDirNormalized/$key already exists - skipping upload."
+            return
+        }
     }
 
     if ($Overwrite) {
@@ -304,7 +320,12 @@ function Upload-ToFtp {
     }
 
     $curlArgs = $script:FtpCurlCommonArgs + @('--ftp-create-dirs', '--upload-file', $LocalPath, $url)
-    Invoke-FtpCurl -Arguments $curlArgs | Out-Null
+    try {
+        Invoke-FtpCurl -Arguments $curlArgs | Out-Null
+    } catch {
+        Write-CacheSkippedWarning "Failed to upload FTP object $script:FtpBaseDirNormalized/$key."
+        return
+    }
     Write-Host "  [ok] Uploaded $script:FtpBaseDirNormalized/$key."
 }
 

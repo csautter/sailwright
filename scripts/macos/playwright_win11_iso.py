@@ -41,7 +41,16 @@ USER_AGENTS = [
 DEFAULT_NAVIGATION_TIMEOUT_MS = 90000
 DEFAULT_PAGE_READY_TIMEOUT_MS = 60000
 DEFAULT_NAVIGATION_RETRIES = 3
+# Must stay below the 10 minute process timeout in pkg/build/dependencies.go so the
+# script fails on its own, with diagnostics, instead of being killed silently.
+DEFAULT_LINK_TIMEOUT_SECONDS = 480
 EXPECTED_PAGE_SELECTOR = "#product-edition"
+# Shown by Microsoft instead of the download links when it refuses a request
+# (e.g. from datacenter IP ranges). Retrying within the same session does not help.
+MICROSOFT_REFUSAL_MARKERS = (
+    "715-123130",
+    "unable to complete your request",
+)
 CHALLENGE_MARKERS = (
     "verify you are human",
     "unusual traffic",
@@ -215,6 +224,19 @@ async def dismiss_modal_if_present(page):
         pass
 
 
+async def raise_if_microsoft_refused(page):
+    try:
+        body_text = (await page.locator("body").inner_text(timeout=5000)).lower()
+    except Exception:
+        return
+    markers = [marker for marker in MICROSOFT_REFUSAL_MARKERS if marker in body_text]
+    if markers:
+        raise RuntimeError(
+            "Microsoft refused the Windows 11 download request "
+            f"(detected: {', '.join(markers)}). This usually means the client IP is blocked."
+        )
+
+
 async def click_button_with_retry(page, selector, selector_condition, retries=10):
     last_error = None
     for attempt in range(1, retries + 1):
@@ -241,6 +263,7 @@ async def click_button_with_retry(page, selector, selector_condition, retries=10
         if expected and await expected.is_visible(timeout=30000):
             return True
         else:
+            await raise_if_microsoft_refused(page)
             await dismiss_modal_if_present(page)
 
     raise RuntimeError(
@@ -320,11 +343,84 @@ async def navigate_to_download_page(
     ) from last_error
 
 
+async def resolve_download_link(page, url: str, arm: bool, diagnostics_dir: str) -> str:
+    await navigate_to_download_page(
+        page=page,
+        url=url,
+        diagnostics_dir=diagnostics_dir,
+        navigation_timeout_ms=DEFAULT_NAVIGATION_TIMEOUT_MS,
+        page_ready_timeout_ms=DEFAULT_PAGE_READY_TIMEOUT_MS,
+        retries=DEFAULT_NAVIGATION_RETRIES,
+    )
+
+    await random_mouse_movements(page)
+
+    # Accept cookies if prompted
+    try:
+        await page.click('button:has-text("Accept")', timeout=3000)
+    except Exception:
+        pass
+
+    await random_mouse_movements(page)
+
+    # Select 'Windows 11 (multi-edition ISO)' from the dropdown
+    selected_product = await select_option_by_text(
+        page, "#product-edition", "Windows 11"
+    )
+    if selected_product is None:
+        raise RuntimeError(
+            "Could not find a Windows 11 product option on the Microsoft download page."
+        )
+
+    expect_creation_of_selector = "#product-languages"
+    await click_button_with_retry(
+        page, "#submit-product-edition", expect_creation_of_selector
+    )
+
+    await random_mouse_movements(page)
+
+    # Select English (United States)
+    lang_value = await select_option_by_text(
+        page, "#product-languages", "English (United States)"
+    )
+    if lang_value is None:
+        raise RuntimeError("Could not find 'English (United States)' language option.")
+
+    await random_mouse_movements(page)
+
+    # expected selector
+    download_selector = "#download-links > div > div > a:first-child"
+    await click_button_with_retry(page, "#submit-sku", download_selector)
+
+    await random_mouse_movements(page)
+
+    await page.wait_for_selector(download_selector, timeout=60000)
+    download_button = page.locator(download_selector)
+    link = await download_button.get_attribute("href")
+    if not link:
+        raise RuntimeError("Could not retrieve the download link.")
+
+    print(f"Windows 11 ISO download link: {link}")
+
+    # Write link to file for use in packer build
+    output_dir = resolve_windows_cache_dir()
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(
+        output_dir,
+        "win11_arm64_iso_url.txt" if arm else "win11_amd64_iso_url.txt",
+    )
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(link)
+
+    return link
+
+
 async def fetch_win11_iso_link(
     arm: bool = False,
     headless: bool = False,
     download: bool = False,
     save_path: str = "",
+    link_timeout_seconds: int = DEFAULT_LINK_TIMEOUT_SECONDS,
 ):
     async with Stealth().use_async(async_playwright()) as p:
         browser = await p.chromium.launch(
@@ -373,75 +469,16 @@ async def fetch_win11_iso_link(
         )
 
         try:
-            await navigate_to_download_page(
-                page=page,
-                url=url,
-                diagnostics_dir=diagnostics_dir,
-                navigation_timeout_ms=DEFAULT_NAVIGATION_TIMEOUT_MS,
-                page_ready_timeout_ms=DEFAULT_PAGE_READY_TIMEOUT_MS,
-                retries=DEFAULT_NAVIGATION_RETRIES,
-            )
-
-            await random_mouse_movements(page)
-
-            # Accept cookies if prompted
             try:
-                await page.click('button:has-text("Accept")', timeout=3000)
-            except Exception:
-                pass
-
-            await random_mouse_movements(page)
-
-            # Select 'Windows 11 (multi-edition ISO)' from the dropdown
-            selected_product = await select_option_by_text(
-                page, "#product-edition", "Windows 11"
-            )
-            if selected_product is None:
-                raise RuntimeError(
-                    "Could not find a Windows 11 product option on the Microsoft download page."
+                link = await asyncio.wait_for(
+                    resolve_download_link(page, url, arm, diagnostics_dir),
+                    timeout=link_timeout_seconds,
                 )
-
-            expect_creation_of_selector = "#product-languages"
-            await click_button_with_retry(
-                page, "#submit-product-edition", expect_creation_of_selector
-            )
-
-            await random_mouse_movements(page)
-
-            # Select English (United States)
-            lang_value = await select_option_by_text(
-                page, "#product-languages", "English (United States)"
-            )
-            if lang_value is None:
+            except asyncio.TimeoutError:
                 raise RuntimeError(
-                    "Could not find 'English (United States)' language option."
-                )
-
-            await random_mouse_movements(page)
-
-            # expected selector
-            download_selector = "#download-links > div > div > a:first-child"
-            await click_button_with_retry(page, "#submit-sku", download_selector)
-
-            await random_mouse_movements(page)
-
-            await page.wait_for_selector(download_selector, timeout=60000)
-            download_button = page.locator(download_selector)
-            link = await download_button.get_attribute("href")
-            if not link:
-                raise RuntimeError("Could not retrieve the download link.")
-
-            print(f"Windows 11 ISO download link: {link}")
-
-            # Write link to file for use in packer build
-            output_dir = resolve_windows_cache_dir()
-            os.makedirs(output_dir, exist_ok=True)
-            output_path = os.path.join(
-                output_dir,
-                "win11_arm64_iso_url.txt" if arm else "win11_amd64_iso_url.txt",
-            )
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write(link)
+                    f"Timed out after {link_timeout_seconds}s while resolving the Windows 11 "
+                    f"download link. Diagnostics were written to {diagnostics_dir}."
+                ) from None
 
             if download:
                 print("Starting ISO download...")
@@ -464,6 +501,10 @@ async def fetch_win11_iso_link(
 
 
 if __name__ == "__main__":
+    # Stdout is a pipe when run from Go; flush per line so progress survives a kill.
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
     parser = argparse.ArgumentParser(
         description="Fetch latest Windows 11 ISO download link."
     )
@@ -487,6 +528,13 @@ if __name__ == "__main__":
         default="windows11.iso",
         help="Path to save the downloaded ISO (default: windows11.iso)",
     )
+    parser.add_argument(
+        "--link-timeout",
+        type=int,
+        default=DEFAULT_LINK_TIMEOUT_SECONDS,
+        help="Seconds allowed for resolving the download link "
+        f"(default: {DEFAULT_LINK_TIMEOUT_SECONDS})",
+    )
     args = parser.parse_args()
     asyncio.run(
         fetch_win11_iso_link(
@@ -494,5 +542,6 @@ if __name__ == "__main__":
             headless=args.headless,
             download=args.download,
             save_path=args.save_path,
+            link_timeout_seconds=args.link_timeout,
         )
     )

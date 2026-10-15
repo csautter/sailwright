@@ -36,6 +36,9 @@ on:
         required: false
         default: "cax21"
         type: string
+  schedule:
+    # Nightly cold-cache bootstrap check only; all build jobs skip scheduled runs.
+    - cron: "30 3 * * *"
   push:
     branches: [main]
     paths:
@@ -87,15 +90,71 @@ on:
       - ".github/actions/upload-build-cache/**"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  # Keep scheduled runs out of the main branch group so they never cancel a push build.
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'schedule' || github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 env:
   OCI_UBUNTU_IMAGE: ghcr.io/${{ github.repository_owner }}/ubuntu-24
 
 jobs:
+  # The cold-cache bootstrap talks to Microsoft's download page, which often rejects
+  # GitHub-hosted runner IPs. Run it nightly and on PRs that change the bootstrap code.
+  detect-cold-cache-changes:
+    if: github.event_name == 'pull_request'
+    name: detect cold-cache relevant changes
+    runs-on: ubuntu-24.04
+    outputs:
+      relevant: ${{ steps.diff.outputs.relevant }}
+    steps:
+      - name: Compare changed files
+        id: diff
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Renovate bumps ISO versions/checksums in dependencies.go; that does not
+          # touch the bootstrap logic, so bot PRs only count the always-relevant files.
+          # Renovate authenticates with a personal token, so match its branch prefix too.
+          PR_FROM_BOT: ${{ github.event.pull_request.user.type == 'Bot' || startsWith(github.head_ref, 'renovate/') }}
+        run: |
+          set -euo pipefail
+          patterns=(
+            "scripts/macos/playwright_win11_iso.py"
+            "scripts/macos/requirements.txt"
+            "pkg/build/dependencies_test.go"
+          )
+          if [ "$PR_FROM_BOT" != "true" ]; then
+            patterns+=("pkg/build/dependencies.go")
+          fi
+
+          relevant=true
+          if files="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE_SHA}...${HEAD_SHA}" --jq '.files[].filename')"; then
+            # The compare API lists at most 300 files; treat larger diffs as relevant.
+            if [ "$(printf '%s\n' "$files" | grep -c .)" -lt 300 ]; then
+              relevant=false
+              for pattern in "${patterns[@]}"; do
+                if printf '%s\n' "$files" | grep -Fqx -- "$pattern"; then
+                  relevant=true
+                  echo "Cold-cache relevant change: $pattern"
+                fi
+              done
+            fi
+          else
+            echo "Could not determine changed files; running cold-cache bootstrap."
+          fi
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+
   test-cold-cache-dependency-bootstrap:
-    if: github.event_name == 'push' || github.event_name == 'pull_request' || inputs.enable_linux_qemu
+    needs: [detect-cold-cache-changes]
+    if: >-
+      !cancelled() &&
+      (
+        github.event_name == 'schedule' ||
+        (github.event_name == 'workflow_dispatch' && inputs.enable_linux_qemu) ||
+        needs.detect-cold-cache-changes.outputs.relevant == 'true'
+      )
     name: cold-cache dependency bootstrap
     runs-on: ubuntu-24.04
     env:
@@ -135,6 +194,16 @@ jobs:
           RUN_INTEGRATION_TESTS: "1"
         run: |
           go test -timeout 45m -v ./pkg/build -run '^(TestGetWindows11DownloadAmd64|TestGetWindows11DownloadArm64|TestResolveDebianPackageURL|TestResolveAndDownloadQemuEfiAarch64)$'
+
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-diagnostics-cold-cache
+          path: ${{ env.DEV_ALCHEMY_CACHE_DIR }}/windows/playwright-diagnostics
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 7
 
   determine-runner-mode:
     if: github.event_name == 'push' || github.event_name == 'pull_request' || inputs.enable_linux_qemu

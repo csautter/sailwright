@@ -22,6 +22,11 @@ fail() {
   exit 1
 }
 
+# The remote cache is an optimization: report problems without failing the job.
+warn_cache_skipped() {
+  echo "::warning title=Build cache upload skipped::$*"
+}
+
 normalize_endpoint_url() {
   local endpoint="$1"
   case "$endpoint" in
@@ -249,7 +254,10 @@ ftp_object_exists() {
     return 1
   fi
 
-  fail "FTP object check failed with curl exit code $status."
+  # Anything else (e.g. exit 28, which curl also reports for an FTP 421 reply)
+  # means the server could not be queried.
+  echo "  ✗ FTP object check failed with curl exit code $status." >&2
+  return 2
 }
 
 upload_to_ftp() {
@@ -263,9 +271,17 @@ upload_to_ftp() {
   key="$(ftp_key_for_blob "$blob_name")"
   url="$(ftp_remote_url "$key")"
 
-  if [ "$overwrite" != "true" ] && ftp_object_exists "$url"; then
-    echo "  ✓ FTP object $FTP_BASE_DIR_NORMALIZED/$key already exists — skipping upload."
-    return
+  if [ "$overwrite" != "true" ]; then
+    local exists_status=0
+    ftp_object_exists "$url" || exists_status=$?
+    if [ "$exists_status" -eq 0 ]; then
+      echo "  ✓ FTP object $FTP_BASE_DIR_NORMALIZED/$key already exists — skipping upload."
+      return
+    fi
+    if [ "$exists_status" -eq 2 ]; then
+      warn_cache_skipped "Could not check FTP object $FTP_BASE_DIR_NORMALIZED/$key; not uploading it."
+      return
+    fi
   fi
 
   if [ "$overwrite" = "true" ]; then
@@ -273,7 +289,10 @@ upload_to_ftp() {
   else
     echo "  ↑ Uploading $FTP_BASE_DIR_NORMALIZED/$key via explicit FTPS..."
   fi
-  curl "${FTP_CURL_COMMON_ARGS[@]}" --ftp-create-dirs --upload-file "$real_path" "$url"
+  if ! curl "${FTP_CURL_COMMON_ARGS[@]}" --ftp-create-dirs --upload-file "$real_path" "$url"; then
+    warn_cache_skipped "Failed to upload FTP object $FTP_BASE_DIR_NORMALIZED/$key."
+    return
+  fi
   echo "  ✓ Uploaded $FTP_BASE_DIR_NORMALIZED/$key."
 }
 

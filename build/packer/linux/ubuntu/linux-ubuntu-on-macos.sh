@@ -373,13 +373,13 @@ if [[ -z "$artifact_output_path" ]]; then
 fi
 if [[ "$arch" == "arm64" ]]; then
 	iso_path="$cache_dir/linux/ubuntu-${UBUNTU_LIVE_SERVER_ARM64_VERSION}-live-server-arm64.iso"
-	iso_url="https://cdimage.ubuntu.com/releases/${UBUNTU_LIVE_SERVER_ARM64_VERSION}/release/ubuntu-${UBUNTU_LIVE_SERVER_ARM64_VERSION}-live-server-arm64.iso"
+	iso_url="https://cdimage.ubuntu.com/ubuntu/releases/${UBUNTU_LIVE_SERVER_ARM64_VERSION}/release/ubuntu-${UBUNTU_LIVE_SERVER_ARM64_VERSION}-live-server-arm64.iso"
 	iso_checksum="${UBUNTU_LIVE_SERVER_ARM64_SHA256}"
 	mkdir -p "$(dirname "$iso_path")"
 
 	if [[ ! -f "$iso_path" || "$(file_size_bytes "$iso_path")" -lt 2500000000 ]]; then
 		echo "Downloading Ubuntu ISO (supports resume)..."
-		if ! curl --no-buffer --retry 10 --continue-at - -L -# -o "$iso_path" "$iso_url"; then
+		if ! curl --fail --no-buffer --retry 10 --continue-at - -L -# -o "$iso_path" "$iso_url"; then
 			echo "Failed to download Ubuntu ISO." >&2
 			exit 1
 		fi
