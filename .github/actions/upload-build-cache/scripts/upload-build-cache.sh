@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
 # Expects the following environment variables (set by the composite action):
 #   CACHE_FILES       - JSON array of cache file descriptors
-#   CACHE_BACKEND     - Remote cache backend: ftp, hetzner-s3, or azure
+#   CACHE_BACKEND     - Remote cache backend: ftp or azure
 #   SUBSCRIPTION_ID   - Azure subscription ID (azure backend only)
-#   HETZNER_S3_*      - Hetzner S3 endpoint, bucket, access key, secret key, and optional prefix
 #   FTP_*             - FTP server, port, username, password, and base dir. Explicit TLS is enforced.
 #   LOCAL_CACHE_DIR   - Path to the local runner shared-volume cache (may be empty)
 set -euo pipefail
 
 CACHE_BACKEND=$(printf '%s' "${CACHE_BACKEND:-ftp}" | tr '[:upper:]' '[:lower:]')
-MC_ALIAS="dev-alchemy-build-cache"
-MC_BIN=""
-MC_READY=false
 FTP_READY=false
 FTP_BASE_URL=""
 FTP_BASE_DIR_NORMALIZED=""
@@ -25,18 +21,6 @@ fail() {
 # The remote cache is an optimization: report problems without failing the job.
 warn_cache_skipped() {
   echo "::warning title=Build cache upload skipped::$*"
-}
-
-normalize_endpoint_url() {
-  local endpoint="$1"
-  case "$endpoint" in
-    http://*|https://*)
-      printf '%s' "$endpoint"
-      ;;
-    *)
-      printf 'https://%s' "$endpoint"
-      ;;
-  esac
 }
 
 resolve_real_path() {
@@ -58,111 +42,6 @@ derive_azure_storage_account() {
     tr -cd '[:alnum:]' |
     tr '[:upper:]' '[:lower:]' |
     cut -c1-24
-}
-
-ensure_mc() {
-  if [ -n "$MC_BIN" ]; then
-    return
-  fi
-
-  if command -v mc >/dev/null 2>&1; then
-    MC_BIN="$(command -v mc)"
-    return
-  fi
-
-  local os
-  local arch
-  case "$(uname -s)" in
-    Linux)
-      os="linux"
-      ;;
-    Darwin)
-      os="darwin"
-      ;;
-    *)
-      fail "Hetzner S3 backend requires the MinIO client, and automatic install is only supported on Linux and macOS."
-      ;;
-  esac
-
-  case "$(uname -m)" in
-    x86_64|amd64)
-      arch="amd64"
-      ;;
-    arm64|aarch64)
-      arch="arm64"
-      ;;
-    *)
-      fail "Unsupported architecture for MinIO client: $(uname -m)."
-      ;;
-  esac
-
-  local install_dir="${RUNNER_TEMP:-/tmp}/dev-alchemy-build-cache"
-  mkdir -p "$install_dir"
-  MC_BIN="${install_dir}/mc"
-
-  if [ ! -x "$MC_BIN" ]; then
-    echo "  → Installing MinIO client for Hetzner S3 cache operations..."
-    curl -fsSL -o "$MC_BIN" "https://dl.min.io/client/mc/release/${os}-${arch}/mc"
-    chmod +x "$MC_BIN"
-  fi
-}
-
-initialize_hetzner_s3() {
-  if [ "$MC_READY" = "true" ]; then
-    return
-  fi
-
-  local missing=()
-  [ -n "${HETZNER_S3_ENDPOINT_URL:-}" ] || missing+=("HETZNER_S3_ENDPOINT_URL")
-  [ -n "${HETZNER_S3_ACCESS_KEY_ID:-}" ] || missing+=("HETZNER_S3_ACCESS_KEY_ID")
-  [ -n "${HETZNER_S3_SECRET_ACCESS_KEY:-}" ] || missing+=("HETZNER_S3_SECRET_ACCESS_KEY")
-  if [ "${#missing[@]}" -gt 0 ]; then
-    fail "Missing Hetzner S3 configuration: ${missing[*]}."
-  fi
-
-  ensure_mc
-
-  export MC_CONFIG_DIR="${MC_CONFIG_DIR:-${RUNNER_TEMP:-/tmp}/dev-alchemy-build-cache-mc}"
-  mkdir -p "$MC_CONFIG_DIR"
-
-  local endpoint
-  endpoint="$(normalize_endpoint_url "$HETZNER_S3_ENDPOINT_URL")"
-  "$MC_BIN" alias set "$MC_ALIAS" "$endpoint" "$HETZNER_S3_ACCESS_KEY_ID" "$HETZNER_S3_SECRET_ACCESS_KEY" --api S3v4 --path auto >/dev/null
-  MC_READY=true
-}
-
-s3_bucket_for_container() {
-  local container="$1"
-  if [ -n "${HETZNER_S3_BUCKET:-}" ]; then
-    printf '%s' "$HETZNER_S3_BUCKET"
-  else
-    printf '%s' "$container"
-  fi
-}
-
-s3_key_for_blob() {
-  local blob_name="${1#/}"
-  local prefix="${HETZNER_S3_PREFIX:-}"
-  prefix="${prefix#/}"
-  prefix="${prefix%/}"
-
-  if [ -n "$prefix" ]; then
-    printf '%s/%s' "$prefix" "$blob_name"
-  else
-    printf '%s' "$blob_name"
-  fi
-}
-
-s3_remote_path() {
-  local bucket="$1"
-  local key="$2"
-  printf '%s/%s/%s' "$MC_ALIAS" "$bucket" "$key"
-}
-
-s3_object_exists() {
-  local bucket="$1"
-  local key="$2"
-  "$MC_BIN" stat "$(s3_remote_path "$bucket" "$key")" >/dev/null 2>&1
 }
 
 normalize_ftp_server() {
@@ -296,32 +175,6 @@ upload_to_ftp() {
   echo "  ✓ Uploaded $FTP_BASE_DIR_NORMALIZED/$key."
 }
 
-upload_to_hetzner_s3() {
-  local real_path="$1"
-  local blob_name="$2"
-  local container="$3"
-  local overwrite="$4"
-  local bucket
-  local key
-
-  bucket="$(s3_bucket_for_container "$container")"
-  key="$(s3_key_for_blob "$blob_name")"
-  initialize_hetzner_s3
-
-  if [ "$overwrite" != "true" ] && s3_object_exists "$bucket" "$key"; then
-    echo "  ✓ Object $key already exists in bucket '$bucket' — skipping upload."
-    return
-  fi
-
-  if [ "$overwrite" = "true" ]; then
-    echo "  ↻ Uploading $key to bucket '$bucket' with overwrite enabled..."
-  else
-    echo "  ↑ Uploading $key to bucket '$bucket'..."
-  fi
-  "$MC_BIN" --quiet cp "$real_path" "$(s3_remote_path "$bucket" "$key")"
-  echo "  ✓ Uploaded $key."
-}
-
 upload_to_azure() {
   local real_path="$1"
   local blob_name="$2"
@@ -417,14 +270,11 @@ for f in data:
     ftp|ftps)
       upload_to_ftp "$real_path" "$blob_name" "$overwrite"
       ;;
-    hetzner-s3|s3)
-      upload_to_hetzner_s3 "$real_path" "$blob_name" "$container" "$overwrite"
-      ;;
     azure|azure-blob)
       upload_to_azure "$real_path" "$blob_name" "$container" "$overwrite"
       ;;
     *)
-      fail "Unsupported storage backend '$CACHE_BACKEND'. Use 'ftp', 'hetzner-s3', or 'azure'."
+      fail "Unsupported storage backend '$CACHE_BACKEND'. Use 'ftp' or 'azure'."
       ;;
   esac
 done

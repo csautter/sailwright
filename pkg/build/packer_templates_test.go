@@ -718,14 +718,14 @@ func TestLinuxWorkflowRunsWindowsQemuBuilds(t *testing.T) {
 			dependencyTestName: "TestIntegrationDependencyReconciliationQemuWindows11Amd64OnLinux",
 			runsOn:             "runs_on: ubuntu-24.04",
 			isoPath:            "./.dev-alchemy/cache/windows11/iso/win11_25h2_english_amd64.iso",
-			expectedEntries:    2,
+			expectedEntries:    1,
 		},
 		{
 			testName:           "TestBuildQemuWindows11Arm64OnLinux",
 			dependencyTestName: "TestIntegrationDependencyReconciliationQemuWindows11Arm64OnLinux",
 			runsOn:             "runs_on: ubuntu-24.04-arm",
 			isoPath:            "./.dev-alchemy/cache/windows11/iso/win11_25h2_english_arm64.iso",
-			expectedEntries:    2,
+			expectedEntries:    1,
 		},
 	} {
 		entries := workflowMatrixEntriesForTest(t, got, tc.testName)
@@ -780,8 +780,6 @@ func TestLinuxWorkflowRunsWindowsQemuBuilds(t *testing.T) {
 	for _, want := range []string{
 		`DEV_ALCHEMY_PACKER_START_ONLY: ${{ matrix.packer_start_only }}`,
 		`DEV_ALCHEMY_PACKER_START_TIMEOUT: ${{ matrix.packer_start_timeout }}`,
-		`TARGET_JOB_PATTERN: "^build TestBuildQemu(Ubuntu|Windows11).*Amd64OnLinux on Hetzner$"`,
-		`TARGET_JOB_PATTERN: "^build TestBuildQemu(Ubuntu|Windows11).*Arm64OnLinux on Hetzner$"`,
 		`name: packer-qemu-${{ matrix.go_test_name }}.vnc.mp4`,
 	} {
 		if !strings.Contains(got, want) {
@@ -836,8 +834,8 @@ func TestLinuxWorkflowPublishesUbuntuArtifactsToGHCR(t *testing.T) {
 		t.Fatal("expected Linux workflow not to grant packages: write at workflow scope")
 	}
 
-	if strings.Count(got, `name: Upload Ubuntu OCI build artifact`) != 3 {
-		t.Fatalf("expected each Linux build job to upload Ubuntu OCI artifacts for publishing")
+	if strings.Count(got, `name: Upload Ubuntu OCI build artifact`) != 1 {
+		t.Fatalf("expected the Linux build job to upload Ubuntu OCI artifacts for publishing")
 	}
 	if strings.Count(got, `name: Push Ubuntu OCI artifact to GHCR`) != 1 {
 		t.Fatalf("expected only the dedicated publish job to push Ubuntu OCI artifacts")
