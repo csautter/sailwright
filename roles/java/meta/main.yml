@@ -2,7 +2,7 @@ galaxy_info:
   role_name: openjdk_multi_install
   author: Carl-Christian Sautter
   description: Install multiple OpenJDK versions (8, 11, 17, 21, 23) on all platforms
-  license: MIT
+  license: AGPL-3.0-only
   min_ansible_version: 2.10
   platforms:
     - name: MacOSX

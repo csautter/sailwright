@@ -15,10 +15,10 @@ All rights reserved.
 
 This Commercial License (“License”) grants the Licensee the right to:
 
-1. Use, modify, and distribute **Sailwright** in commercial products or services.
+1. Embed, modify, and distribute **Sailwright** as part of closed-source commercial products or services.
 2. Integrate Sailwright into **closed-source** or proprietary software.
-3. Operate Sailwright in a **SaaS environment** without releasing source code under AGPLv3.
-4. Redistribute Sailwright as part of internal or external systems in accordance with this License.
+3. Operate a **modified version** of Sailwright as a network service (SaaS) without releasing the corresponding source code under AGPLv3.
+4. Redistribute Sailwright as part of products or systems provided to third parties in accordance with this License.
 
 > This license applies **only** upon acceptance and payment of the agreed commercial license fees.
 
@@ -65,7 +65,7 @@ It will terminate automatically without notice if the Licensee breaches any cond
 
 Upon termination, the Licensee must:
 
-- Cease all commercial use of Sailwright.
+- Cease all use of Sailwright under this License. Rights granted under the AGPLv3 remain unaffected.
 - Destroy all copies of Sailwright distributed under this License.
 
 ---
