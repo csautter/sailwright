@@ -17,7 +17,8 @@ export DEV_ALCHEMY_CACHE_DIR="$CACHE_DIR"
 # renovate: datasource=custom.virtio-win depName=virtio-win versioning=loose
 VIRTIO_WIN_VERSION="0.1.302-1"
 VIRTIO_WIN_FILE_VERSION="${VIRTIO_WIN_VERSION%-*}"
-VIRTIO_WIN_SHA256="e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976331"
+# Updated by scripts/update-virtio-win-checksum.sh (see the "Sync virtio-win checksum" workflow)
+VIRTIO_WIN_SHA256="303f7ae40dad495d6ae474fdc571df58958a4dbc5c37a522d80f9a203867949d"
 
 virtio_iso_path="$CACHE_DIR/windows/virtio-win.iso"
 virtio_iso_url="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-${VIRTIO_WIN_VERSION}/virtio-win-${VIRTIO_WIN_FILE_VERSION}.iso"

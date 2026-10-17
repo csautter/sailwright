@@ -150,7 +150,7 @@ func TestWindows11Amd64LinuxQemuDependencyReconciliationIncludesVirtioWinISO(t *
 
 	deps := webFileDependenciesForVMConfig(vmconfig)
 	wantPath := filepath.Join(dirs.CacheDir, "windows", "virtio-win.iso")
-	wantChecksum := "sha256:e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976331"
+	wantChecksum := "sha256:" + virtioWinSHA256
 	gotPaths := make([]string, 0, len(deps))
 	for _, dep := range deps {
 		gotPaths = append(gotPaths, dep.LocalPath)
