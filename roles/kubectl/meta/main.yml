@@ -2,7 +2,7 @@ galaxy_info:
   role_name: kubectl_install
   author: Carl-Christian Sautter
   description: Cross-platform kubectl installer for macOS, Linux, and Windows
-  license: MIT
+  license: AGPL-3.0-only
   platforms:
     - name: MacOSX
     - name: Windows

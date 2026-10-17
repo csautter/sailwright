@@ -17,11 +17,11 @@ purchase or registration is needed.
 
 ## What does the AGPLv3 require from me?
 
-If you simply use Sailwright, nothing beyond keeping the license notices
-intact. Playbooks and roles you write yourself are yours. Obligations only
-apply if you distribute Sailwright (modified or not) to others, or let others
-use a modified version of Sailwright over a network. In those cases, you must
-make the corresponding source code available under the AGPLv3.
+If you simply use Sailwright, nothing. Playbooks and roles you write yourself
+are yours. Obligations only apply if you distribute Sailwright (modified or
+not) to others, or let others use a modified version of Sailwright over a
+network. In those cases, you must make the corresponding source code available
+under the AGPLv3.
 
 ## Is there another license?
 
