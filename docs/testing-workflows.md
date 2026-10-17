@@ -114,8 +114,6 @@ with ORAS:
 oras manifest fetch --plain-http localhost:5000/sailwright/ubuntu-server-amd64:qemu
 ```
 
-## System-Agnostic Docker Workflow
-
 ## Local Host Provisioning
 
 Use the shared local wrapper when you want to apply the playbook to the current
@@ -130,6 +128,8 @@ sailwright provision local
 
 For platform defaults, configured playbook resolution, advanced flags, and
 Windows cleanup behavior, use [Local Provisioning](./local-provisioning.md).
+
+## System-Agnostic Docker Workflow
 
 ### Ubuntu role tests on Linux, WSL, Windows, or macOS
 
