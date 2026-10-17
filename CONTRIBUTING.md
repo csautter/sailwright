@@ -1,3 +1,10 @@
+# Contributing
+
+Thank you for contributing to Sailwright. Sailwright is free and open source
+under the AGPLv3 (see the [Licensing FAQ](./docs/licensing.md)). The CLA below
+also allows the maintainers to offer the optional commercial license described
+there.
+
 ## Contributor License Agreement (CLA)
 
 By submitting a pull request or other contribution to this project (a "Contribution"), you agree to the

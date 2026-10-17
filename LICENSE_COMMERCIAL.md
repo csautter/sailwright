@@ -3,6 +3,12 @@
 **Copyright (c) 2026 Carl-Christian Sautter**  
 All rights reserved.
 
+> **Note:** You do not need this license to use Sailwright. Sailwright is free
+> and open source under the AGPLv3, including for commercial purposes and
+> across your whole organization (see the [Licensing FAQ](./docs/licensing.md)).
+> This commercial license is only intended for embedding Sailwright in your own
+> closed-source products or services without AGPLv3 obligations.
+
 ---
 
 ## 1. Grant of License
