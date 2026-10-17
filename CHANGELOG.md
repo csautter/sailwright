@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0](https://github.com/csautter/sailwright/compare/v0.18.0...v0.19.0) (2026-10-17)
+
+
+### Added
+
+* **runners:** build Azure runner golden image in GitHub Actions ([958abfa](https://github.com/csautter/sailwright/commit/958abfa6c2965736341e60d55af4c46b3e04628f))
+* **terraform:** add build_cache_enabled switch for legacy Azure build cache ([837700a](https://github.com/csautter/sailwright/commit/837700ac818ccf2177772c4a88619912f07f82c0))
+* **terraform:** add image builder identity and resource groups for golden image CI ([cda9923](https://github.com/csautter/sailwright/commit/cda9923a6ac0150893c462f59a951c4ed442a8a6))
+
+
+### Fixed
+
+* **cache:** treat FTP build cache upload failures as warnings ([e7baba8](https://github.com/csautter/sailwright/commit/e7baba8793506f96b20355fe0b5b59cd4c2fa916))
+* **ci:** grant id-token permission to release-binaries caller ([856c107](https://github.com/csautter/sailwright/commit/856c1079c1f2fc82a3e8012d323b620c23680389))
+* **ci:** grant id-token permission to release-binaries caller ([4c2a89f](https://github.com/csautter/sailwright/commit/4c2a89f3e3fa3463967bbae037377777804a4f33))
+* **devcontainer:** auto-install declared VS Code extensions on start ([5b289ef](https://github.com/csautter/sailwright/commit/5b289ef059809406cd456cc99b109fcb52500f34))
+* **runners:** store Azure golden image on Standard HDD and skip unused VirtualBox image ([693671f](https://github.com/csautter/sailwright/commit/693671f256d9bd33b1d6d7f7b6efc0ad6a80a679))
+* **ubuntu:** use new cdimage path for arm64 live server ISO ([eb37d53](https://github.com/csautter/sailwright/commit/eb37d531bf2a8267b348f8546e22098d15eda5fe))
+* **ubuntu:** use new cdimage path for arm64 live server ISO ([747ecd2](https://github.com/csautter/sailwright/commit/747ecd2e2e63191bd3634243a9acf887aebad8c9))
+* **win11:** fail fast with diagnostics when resolving the ISO link ([31c13fc](https://github.com/csautter/sailwright/commit/31c13fc50a1c3c5d6060bbc72624235c8d54a8cb))
+
+
+### CI
+
+* **linux:** run cold-cache bootstrap nightly and on relevant PRs ([b0db6f5](https://github.com/csautter/sailwright/commit/b0db6f52300d1b4b1e3447da0e54af7505727d8b))
+
 ## [0.18.0](https://github.com/csautter/sailwright/compare/v0.17.0...v0.18.0) (2026-07-23)
 
 
