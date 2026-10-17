@@ -313,6 +313,8 @@ next level of detail:
   catalog and repository layout
 - [Troubleshooting Guide](./docs/troubleshooting.md) for rare host-specific
   issues
+- [Licensing FAQ](./docs/licensing.md) for free and commercial use under the
+  AGPLv3 and the optional commercial license
 
 ## 📦 Example Roles
 
@@ -337,32 +339,15 @@ Contributor License Agreement (CLA).
 
 ## 📜 License
 
-Sailwright uses a dual-licensing model.
-
 Copyright (c) 2026 Carl-Christian Sautter.
-Open source use is licensed under AGPLv3, and commercial licensing is offered separately.
 
-### Open Source
+Sailwright is free and open source under the **AGPLv3**: use it at no cost
+across your whole organization, including for commercial purposes. A separate
+[commercial license](./LICENSE_COMMERCIAL.md) is available only if you want to
+embed Sailwright in a closed-source product or service.
 
-The community edition is licensed under the **GNU Affero General Public License
-v3 (AGPLv3)**.
-
-See [LICENSE.md](./LICENSE.md).
-
-### Commercial Use
-
-If you need to use Sailwright in commercial products, SaaS platforms, or
-other closed-source environments without AGPL obligations, a separate
-commercial license is available.
-
-See [LICENSE_COMMERCIAL.md](./LICENSE_COMMERCIAL.md).
-
-For commercial inquiries, visit [www.c-sautter.de](https://www.c-sautter.de) for contact details.
-
-### Historical Note
-
-Early releases were published under the **MIT License**. If you use an older
-tag or release, refer to the license file included with that version.
+See [LICENSE.md](./LICENSE.md) and the [Licensing FAQ](./docs/licensing.md)
+for what the AGPLv3 requires.
 
 ## 💡 Inspiration
 
