@@ -52,6 +52,8 @@ type JobSpec struct {
 	RequiresFreeDisk bool
 	// Become lets the operator approve with a sudo password for Ansible become tasks.
 	Become bool
+	// Target is the VM of a safe-set operation; build jobs record console frames for it.
+	Target *JobTarget
 }
 
 // JobView is the agent-visible state of a job.
@@ -72,6 +74,16 @@ type JobView struct {
 	// SudoPassword reports that the operator supplied a sudo password for this run.
 	// The password itself is never exposed.
 	SudoPassword bool `json:"sudo_password,omitempty"`
+	// LastOutputAt is when the job last wrote output; builds can be silent for long.
+	LastOutputAt time.Time `json:"last_output_at,omitzero"`
+	// ScreenshotAvailable reports that job_screenshot has a console frame.
+	ScreenshotAvailable bool `json:"screenshot_available,omitempty"`
+	// ScreenChangedAt is when the VM console last changed visibly (cursor blinks and
+	// spinners do not count).
+	ScreenChangedAt time.Time `json:"screen_changed_at,omitzero"`
+	// StuckSuspected is a hint that neither the console nor the output changed for a
+	// long time. The gateway never cancels a job because of it.
+	StuckSuspected bool `json:"stuck_suspected,omitempty"`
 }
 
 // Done reports whether the job reached a final state.
@@ -89,6 +101,8 @@ type job struct {
 	output   *outputBuffer
 	cancel   context.CancelFunc
 	finished chan struct{}
+	// screens is set for build jobs.
+	screens *screenRecorder
 }
 
 func (j *job) snapshotView() JobView {
@@ -97,6 +111,13 @@ func (j *job) snapshotView() JobView {
 	view := j.view
 	view.Argv = append([]string(nil), view.Argv...)
 	view.OutputLen = j.output.Len()
+	view.LastOutputAt = j.output.LastWrite()
+	if j.screens != nil {
+		status := j.screens.Status()
+		view.ScreenshotAvailable = status.Frames > 0
+		view.ScreenChangedAt = status.ChangedAt
+		view.StuckSuspected = status.StuckSuspected
+	}
 	return view
 }
 
@@ -121,13 +142,17 @@ type JobManager struct {
 	onFinish    func()
 	console     io.Writer
 	follow      io.Writer
+	cacheDir    string
+	screensDir  string
+	stuckAfter  time.Duration
 
 	running sync.WaitGroup
 
-	mu     sync.Mutex
-	jobs   map[string]*job
-	order  []string
-	active string
+	mu      sync.Mutex
+	jobs    map[string]*job
+	order   []string
+	active  string
+	viewURL string
 }
 
 // JobManagerOptions configures a JobManager.
@@ -146,6 +171,12 @@ type JobManagerOptions struct {
 	Console     io.Writer
 	// Follow mirrors job output (redacted) to this writer, e.g. the gateway terminal.
 	Follow io.Writer
+	// CacheDir is the sailwright cache dir, where builds record console frames.
+	CacheDir string
+	// ScreensDir keeps the sampled frames per job; empty disables screenshots.
+	ScreensDir string
+	// StuckAfter is the idle time after which a build is suspected stuck; 0 disables.
+	StuckAfter time.Duration
 }
 
 // NewJobManager creates a job manager.
@@ -158,8 +189,22 @@ func NewJobManager(opts JobManagerOptions) *JobManager {
 		runner: opts.Runner, approver: opts.Approver, audit: opts.Audit, redactor: opts.Redactor,
 		logsDir: opts.LogsDir, stagingDir: opts.StagingDir, dataDir: opts.DataDir, minFreeGB: opts.MinFreeGB, outputLimit: opts.OutputLimit,
 		binarySHA: opts.BinarySHA, onFinish: opts.OnFinish, console: console, follow: opts.Follow,
+		cacheDir: opts.CacheDir, screensDir: opts.ScreensDir, stuckAfter: opts.StuckAfter,
 		jobs: map[string]*job{},
 	}
+}
+
+// SetViewURL sets the live view address printed when a build starts.
+func (m *JobManager) SetViewURL(url string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.viewURL = url
+}
+
+func (m *JobManager) liveViewURL() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.viewURL
 }
 
 // Submit starts a job unless another one is active.
@@ -193,6 +238,12 @@ func (m *JobManager) Submit(spec JobSpec) (JobView, error) {
 		output:   newOutputBuffer(m.outputLimit),
 		cancel:   cancel,
 		finished: make(chan struct{}),
+	}
+	if spec.Target != nil && spec.Target.Kind == OpBuild && m.screensDir != "" {
+		j.screens = newScreenRecorder(vncSnapshotDir(m.cacheDir, *spec.Target), filepath.Join(m.screensDir, id), m.stuckAfter, j.output.LastWrite, func(idle time.Duration) {
+			m.record(AuditEvent{Event: "job_stuck_suspected", Tool: spec.Tool, JobID: id, DurationMS: idle.Milliseconds()})
+			fmt.Fprintf(m.console, "job %s: no visible console change and no output for %s; the build may be stuck%s\n", id, idle, m.liveViewHint())
+		})
 	}
 	m.jobs[id] = j
 	m.order = append(m.order, id)
@@ -280,6 +331,14 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 		v.Started = started
 	})
 	fmt.Fprintf(m.console, "job %s started: sailwright %s\n", id, quoteArgv(redactor.Strings(argv)))
+	stopScreens := func() {}
+	if j.screens != nil {
+		stopScreens = j.screens.Start(screenSampleInterval)
+		defer stopScreens()
+		if url := m.liveViewURL(); url != "" {
+			fmt.Fprintf(m.console, "  live view:   %s\n", url)
+		}
+	}
 
 	var sinks []io.Writer
 	sinks = append(sinks, j.output)
@@ -304,6 +363,8 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 	defer cancelTimeout()
 	code, err := m.runner.Run(runCtx, argv, spec.Dir, writer)
 	_ = writer.Flush()
+	// Keep the final frame before the job is reported as finished.
+	stopScreens()
 
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
@@ -404,6 +465,79 @@ func (m *JobManager) Active() string {
 	return m.active
 }
 
+// ScreenshotResult is a console frame of a build job, or the reason there is none.
+type ScreenshotResult struct {
+	View   JobView
+	Status ScreenStatus
+	Frame  ScreenFrame
+	Data   []byte
+	Reason string
+}
+
+// Screenshot returns a kept console frame of a job; index 0 is the newest. A running
+// job is sampled first so the frame is current.
+func (m *JobManager) Screenshot(id string, index int) (ScreenshotResult, error) {
+	m.mu.Lock()
+	j, ok := m.jobs[id]
+	m.mu.Unlock()
+	if !ok {
+		return ScreenshotResult{}, fmt.Errorf("unknown job %q", id)
+	}
+	if index < 0 {
+		return ScreenshotResult{}, errors.New("index must not be negative")
+	}
+	if j.screens == nil {
+		return ScreenshotResult{View: j.snapshotView(), Reason: "not a build job; only builds record the VM console"}, nil
+	}
+	if view := j.snapshotView(); view.State == JobRunning && index == 0 {
+		j.screens.Sample()
+	}
+	frame, data, err := j.screens.Frame(index)
+	result := ScreenshotResult{View: j.snapshotView(), Status: j.screens.Status(), Frame: frame, Data: data}
+	switch {
+	case errors.Is(err, errNoScreenFrame):
+		result.Reason = noScreenFrameReason(result.View)
+	case err != nil:
+		return ScreenshotResult{}, err
+	}
+	return result, nil
+}
+
+func noScreenFrameReason(view JobView) string {
+	switch {
+	case runtime.GOOS == "windows":
+		return "this host does not record the VM console (Windows hosts have no VNC capture)"
+	case view.State == JobPendingApproval:
+		return "the job has not started yet"
+	case view.State == JobRunning:
+		return "no frame yet: console capture starts about a minute after the build starts, and only for QEMU builds"
+	default:
+		return "the build recorded no console frames (only QEMU builds on Linux and macOS hosts do)"
+	}
+}
+
+// LatestScreenJob returns the active build job, or else the most recent one.
+func (m *JobManager) LatestScreenJob() (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if active, ok := m.jobs[m.active]; ok && active.screens != nil {
+		return m.active, true
+	}
+	for i := len(m.order) - 1; i >= 0; i-- {
+		if m.jobs[m.order[i]].screens != nil {
+			return m.order[i], true
+		}
+	}
+	return "", false
+}
+
+func (m *JobManager) liveViewHint() string {
+	if url := m.liveViewURL(); url != "" {
+		return " (live view: " + url + ")"
+	}
+	return ""
+}
+
 // CancelAll cancels every unfinished job (shutdown).
 func (m *JobManager) CancelAll() {
 	m.mu.Lock()
@@ -423,6 +557,9 @@ func (m *JobManager) trimHistoryLocked() {
 		oldest := m.order[0]
 		if oldest == m.active {
 			return
+		}
+		if screens := m.jobs[oldest].screens; screens != nil {
+			screens.Remove()
 		}
 		delete(m.jobs, oldest)
 		m.order = m.order[1:]
@@ -454,10 +591,11 @@ type OutputChunk struct {
 
 // outputBuffer keeps the most recent output up to a limit, with absolute offsets.
 type outputBuffer struct {
-	mu    sync.Mutex
-	data  []byte
-	base  int64
-	limit int
+	mu        sync.Mutex
+	data      []byte
+	base      int64
+	limit     int
+	lastWrite time.Time
 }
 
 func newOutputBuffer(limit int) *outputBuffer {
@@ -467,12 +605,22 @@ func newOutputBuffer(limit int) *outputBuffer {
 func (b *outputBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if len(p) > 0 {
+		b.lastWrite = time.Now().UTC()
+	}
 	b.data = append(b.data, p...)
 	if over := len(b.data) - b.limit; over > 0 {
 		b.data = append([]byte(nil), b.data[over:]...)
 		b.base += int64(over)
 	}
 	return len(p), nil
+}
+
+// LastWrite returns when output was last written; zero before the first write.
+func (b *outputBuffer) LastWrite() time.Time {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lastWrite
 }
 
 // Len returns the total number of bytes ever written.

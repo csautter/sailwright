@@ -73,6 +73,7 @@ type Options struct {
 type Harness struct {
 	URL           string
 	SocketPath    string
+	ViewURL       string
 	AgentDir      string
 	Token         string
 	StateDir      string
@@ -181,6 +182,7 @@ func Start(t testing.TB, opts Options) *Harness {
 	}
 	h.URL = "http://" + listeners.TCP.Addr().String() + "/mcp"
 	h.SocketPath = listeners.SocketPath
+	h.ViewURL = listeners.ViewURL
 	done := make(chan struct{})
 	go func() {
 		_ = g.ServeListeners(ctx, listeners)

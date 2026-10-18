@@ -2,10 +2,12 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -22,7 +24,8 @@ const (
 - provision_local, install and run_cli calls outside the safe set wait for a human to approve them on the host terminal. You cannot approve them yourself. Explain why you need the call in the "reason" field.
 - Long operations are jobs: poll job_status and read job_output with the returned next_offset. Only one job runs at a time.
 - Use list_targets first to see which os/type/arch combinations exist on this host.
-- For run_cli with files from your workspace, set bundle_root to the directory that contains them and use absolute paths below it; the gateway runs a read-only snapshot of that directory.`
+- For run_cli with files from your workspace, set bundle_root to the directory that contains them and use absolute paths below it; the gateway runs a read-only snapshot of that directory.
+- Builds can print nothing for a long time while the installer runs in the VM. job_status shows last_output_at, screen_changed_at (visible console changes) and stuck_suspected (a hint only). Call job_screenshot only when the user asks to see the VM console; a human on the host can watch the live view shown in the gateway terminal.`
 )
 
 func (g *Gateway) newMCPServer() *mcp.Server {
@@ -51,6 +54,7 @@ func (g *Gateway) newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{Name: "job_output", Description: "Read job output from an offset; continue with next_offset.", Annotations: readOnly}, g.toolJobOutput)
 	mcp.AddTool(server, &mcp.Tool{Name: "job_cancel", Description: "Cancel a pending or running job."}, g.toolJobCancel)
 	mcp.AddTool(server, &mcp.Tool{Name: "job_list", Description: "List recent jobs.", Annotations: readOnly}, g.toolJobList)
+	mcp.AddTool(server, &mcp.Tool{Name: "job_screenshot", Description: "Show the VM console of a build job as an image (recorded during QEMU builds). Use it when the user asks to see the VM; job_status already reports whether the console still changes.", Annotations: readOnly}, g.toolJobScreenshot)
 	return server
 }
 
@@ -171,6 +175,27 @@ type JobListOutput struct {
 	Jobs []JobView `json:"jobs"`
 }
 
+type jobScreenshotInput struct {
+	JobID string `json:"job_id"`
+	Index int    `json:"index,omitempty" jsonschema:"0 is the newest frame, 1 the one before, up to frames_available-1"`
+}
+
+// ScreenshotInfo describes the frame returned by job_screenshot, or why there is none.
+type ScreenshotInfo struct {
+	JobID                  string    `json:"job_id"`
+	State                  JobState  `json:"state"`
+	Available              bool      `json:"available"`
+	Reason                 string    `json:"reason,omitempty"`
+	Index                  int       `json:"index"`
+	FramesAvailable        int       `json:"frames_available"`
+	CapturedAt             time.Time `json:"captured_at,omitzero"`
+	AgeSeconds             int64     `json:"age_seconds,omitempty"`
+	ScreenChangedAt        time.Time `json:"screen_changed_at,omitzero"`
+	ScreenUnchangedSeconds int64     `json:"screen_unchanged_seconds,omitempty"`
+	StuckSuspected         bool      `json:"stuck_suspected,omitempty"`
+	LiveView               string    `json:"live_view,omitempty"`
+}
+
 // ---- handlers ----
 
 func (g *Gateway) toolGatewayInfo(_ context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, GatewayInfo, error) {
@@ -187,7 +212,7 @@ func (g *Gateway) toolGatewayInfo(_ context.Context, _ *mcp.CallToolRequest, _ e
 		BinarySource:    g.pinned.Source,
 		DataDir:         g.cfg.DataDir,
 		ApprovalEnabled: g.approver.Enabled(),
-		SafeTools:       []string{"list_targets", "command_help", "vm_build", "vm_create", "vm_start", "vm_stop", "vm_destroy", "vm_provision", "artifact_pull", "run_cli (safe subset)"},
+		SafeTools:       []string{"list_targets", "command_help", "vm_build", "vm_create", "vm_start", "vm_stop", "vm_destroy", "vm_provision", "artifact_pull", "job_screenshot", "run_cli (safe subset)"},
 		ApprovalTools:   []string{"provision_local", "install", "run_cli (everything else)"},
 		Playbooks:       grammar.Playbooks,
 		PullAllowlist:   g.cfg.PullAllowlist,
@@ -362,6 +387,46 @@ func (g *Gateway) toolJobList(_ context.Context, _ *mcp.CallToolRequest, _ empty
 	return nil, JobListOutput{Jobs: g.jobs.List()}, nil
 }
 
+func (g *Gateway) toolJobScreenshot(_ context.Context, _ *mcp.CallToolRequest, in jobScreenshotInput) (*mcp.CallToolResult, ScreenshotInfo, error) {
+	shot, err := g.jobs.Screenshot(in.JobID, in.Index)
+	if err != nil {
+		return nil, ScreenshotInfo{}, err
+	}
+	now := time.Now().UTC()
+	info := ScreenshotInfo{
+		JobID:           in.JobID,
+		State:           shot.View.State,
+		Available:       shot.Data != nil,
+		Reason:          shot.Reason,
+		Index:           in.Index,
+		FramesAvailable: shot.Status.Frames,
+		CapturedAt:      shot.Frame.CapturedAt,
+		ScreenChangedAt: shot.Status.ChangedAt,
+		StuckSuspected:  shot.Status.StuckSuspected,
+	}
+	if !info.CapturedAt.IsZero() {
+		info.AgeSeconds = int64(now.Sub(info.CapturedAt).Seconds())
+	}
+	if !info.ScreenChangedAt.IsZero() {
+		info.ScreenUnchangedSeconds = int64(now.Sub(info.ScreenChangedAt).Seconds())
+	}
+	if g.cfg.ViewAddr.IsValid() {
+		info.LiveView = "a human on the host can watch the console live; the address is shown in the gateway terminal"
+	}
+	if shot.Data == nil {
+		return nil, info, nil
+	}
+	// With Content set the SDK adds no JSON text of its own, so describe the frame here.
+	summary, err := json.Marshal(info)
+	if err != nil {
+		return nil, ScreenshotInfo{}, err
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{
+		&mcp.ImageContent{Data: shot.Data, MIMEType: "image/jpeg"},
+		&mcp.TextContent{Text: string(summary)},
+	}}, info, nil
+}
+
 // ---- submission helpers ----
 
 func (g *Gateway) submitSafe(tool string, op Operation, req *mcp.CallToolRequest, params map[string]any) (*mcp.CallToolResult, JobView, error) {
@@ -378,6 +443,7 @@ func (g *Gateway) submitSafe(tool string, op Operation, req *mcp.CallToolRequest
 		Params:           params,
 		Peer:             peerOf(req),
 		RequiresFreeDisk: op.Kind == OpBuild || op.Kind == OpCreate || op.Kind == OpPull,
+		Target:           &JobTarget{Kind: op.Kind, OS: op.OS, Type: op.Type, Arch: op.Arch},
 	})
 	return nil, view, err
 }

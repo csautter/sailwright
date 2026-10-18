@@ -87,7 +87,7 @@ func TestGatewayExposesExpectedTools(t *testing.T) {
 	for _, tool := range tools.Tools {
 		names = append(names, tool.Name)
 	}
-	want := []string{"gateway_info", "list_targets", "command_help", "vm_build", "vm_create", "vm_start", "vm_stop", "vm_destroy", "vm_provision", "artifact_pull", "provision_local", "install", "run_cli", "job_status", "job_output", "job_cancel", "job_list"}
+	want := []string{"gateway_info", "list_targets", "command_help", "vm_build", "vm_create", "vm_start", "vm_stop", "vm_destroy", "vm_provision", "artifact_pull", "provision_local", "install", "run_cli", "job_status", "job_output", "job_cancel", "job_list", "job_screenshot"}
 	for _, name := range want {
 		if !strings.Contains(strings.Join(names, ","), name) {
 			t.Fatalf("tool %s missing from %v", name, names)

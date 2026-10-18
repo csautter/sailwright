@@ -54,6 +54,7 @@ type Gateway struct {
 	redactor   *Redactor
 	vmResolver ManagedVMResolver
 	token      string
+	viewToken  string
 	console    io.Writer
 	version    string
 	server     *mcp.Server
@@ -91,11 +92,23 @@ func New(opts Options) (*Gateway, error) {
 	if err := dirs.Ensure(); err != nil {
 		return nil, fmt.Errorf("create managed dirs: %w", err)
 	}
+	// Frames of a previous run belong to jobs that no longer exist.
+	if err := os.RemoveAll(dirs.Screens); err != nil {
+		return nil, fmt.Errorf("clear screens dir: %w", err)
+	}
+	if err := ensurePrivateDir(dirs.Screens); err != nil {
+		return nil, fmt.Errorf("create screens dir: %w", err)
+	}
 	if root := findGitRoot(cfg.StateDir); root != "" {
 		return nil, fmt.Errorf("the gateway state dir %s is inside the git checkout %s; sailwright would use that checkout's playbooks. Choose a state dir outside any repository", cfg.StateDir, root)
 	}
 
-	redactor := NewRedactor(append(PassthroughSecrets(cfg.EnvPassthrough, opts.Getenv), opts.Token)...)
+	// The live view has its own token, so neither token opens the other surface.
+	viewToken, err := newViewToken()
+	if err != nil {
+		return nil, err
+	}
+	redactor := NewRedactor(append(PassthroughSecrets(cfg.EnvPassthrough, opts.Getenv), opts.Token, viewToken)...)
 	audit, err := OpenAuditLog(filepath.Join(cfg.StateDir, auditFileName), redactor)
 	if err != nil {
 		return nil, err
@@ -112,6 +125,7 @@ func New(opts Options) (*Gateway, error) {
 		redactor:   redactor,
 		vmResolver: noVMResolver{},
 		token:      opts.Token,
+		viewToken:  viewToken,
 		console:    opts.Console,
 		version:    opts.Version,
 	}
@@ -130,6 +144,9 @@ func New(opts Options) (*Gateway, error) {
 		OnFinish:    g.refreshTargetsAsync,
 		Console:     opts.Console,
 		Follow:      followWriter(opts.FollowOutput, opts.Console),
+		CacheDir:    dirs.Cache,
+		ScreensDir:  dirs.Screens,
+		StuckAfter:  cfg.ScreenStuckAfterValue,
 	})
 	g.server = g.newMCPServer()
 	return g, nil

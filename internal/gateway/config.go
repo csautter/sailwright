@@ -25,6 +25,8 @@ import (
 
 const (
 	defaultListen         = "127.0.0.1:7391"
+	defaultViewListen     = "127.0.0.1:0"
+	disabledSetting       = "off"
 	defaultJobTimeout     = 6 * time.Hour
 	defaultInfoTimeout    = 2 * time.Minute
 	defaultApprovalTTL    = 10 * time.Minute
@@ -75,13 +77,21 @@ type Config struct {
 	SnapshotMaxBytes   int64              `yaml:"snapshot_max_bytes"`
 	SnapshotMaxFiles   int                `yaml:"snapshot_max_files"`
 	AgentDir           string             `yaml:"agent_dir"`
+	// ViewListen is the loopback address of the live view for build screenshots
+	// ("off" disables it); port 0 picks a free port.
+	ViewListen string `yaml:"view_listen"`
+	// ScreenStuckAfter is how long console and output must stay unchanged before a
+	// build is reported as possibly stuck ("off" disables the hint).
+	ScreenStuckAfter string `yaml:"screen_stuck_after"`
 
 	// Resolved values, filled by Resolve.
-	StateDir         string         `yaml:"-"`
-	ListenAddr       netip.AddrPort `yaml:"-"`
-	SourcePrefixes   []netip.Prefix `yaml:"-"`
-	JobTimeoutValue  time.Duration  `yaml:"-"`
-	ApprovalTTLValue time.Duration  `yaml:"-"`
+	StateDir              string         `yaml:"-"`
+	ListenAddr            netip.AddrPort `yaml:"-"`
+	ViewAddr              netip.AddrPort `yaml:"-"` // invalid when the live view is off
+	SourcePrefixes        []netip.Prefix `yaml:"-"`
+	JobTimeoutValue       time.Duration  `yaml:"-"`
+	ApprovalTTLValue      time.Duration  `yaml:"-"`
+	ScreenStuckAfterValue time.Duration  `yaml:"-"`
 }
 
 // DefaultStateDir returns the per-user gateway state directory.
@@ -190,6 +200,22 @@ func (c *Config) Resolve() error {
 	}
 	c.ListenAddr = addrPort
 
+	if c.ViewListen == "" {
+		c.ViewListen = defaultViewListen
+	}
+	c.ViewAddr = netip.AddrPort{}
+	if c.ViewListen != disabledSetting {
+		viewAddr, err := netip.ParseAddrPort(c.ViewListen)
+		if err != nil {
+			return fmt.Errorf("view_listen must be a loopback IP literal with port (e.g. %s) or %q: %w", defaultViewListen, disabledSetting, err)
+		}
+		// The live view is for the human on this host; it has no bearer token.
+		if !viewAddr.Addr().IsLoopback() {
+			return fmt.Errorf("view_listen %s must be a loopback address", c.ViewListen)
+		}
+		c.ViewAddr = viewAddr
+	}
+
 	if len(c.AllowedHosts) == 0 {
 		c.AllowedHosts = []string{"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 	}
@@ -237,6 +263,13 @@ func (c *Config) Resolve() error {
 	c.ApprovalTTLValue, err = parseDurationDefault(c.ApprovalTTL, defaultApprovalTTL)
 	if err != nil {
 		return fmt.Errorf("approval_ttl: %w", err)
+	}
+	c.ScreenStuckAfterValue = 0
+	if c.ScreenStuckAfter != disabledSetting {
+		c.ScreenStuckAfterValue, err = parseDurationDefault(c.ScreenStuckAfter, defaultScreenStuckAfter)
+		if err != nil {
+			return fmt.Errorf("screen_stuck_after: %w", err)
+		}
 	}
 	if c.MinFreeDiskGB == 0 {
 		c.MinFreeDiskGB = defaultMinFreeDiskGB

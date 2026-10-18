@@ -43,6 +43,8 @@ type ManagedDirs struct {
 	Work        string
 	Staging     string
 	Logs        string
+	// Screens keeps sampled build console frames per job; jobs do not survive a restart.
+	Screens string
 }
 
 // NewManagedDirs derives the managed directories from the config.
@@ -53,6 +55,7 @@ func NewManagedDirs(cfg Config) ManagedDirs {
 		Work:    filepath.Join(cfg.StateDir, "work"),
 		Staging: filepath.Join(cfg.StateDir, "staging"),
 		Logs:    filepath.Join(cfg.StateDir, "logs"),
+		Screens: filepath.Join(cfg.StateDir, "screens"),
 	}
 	dirs.Cache = filepath.Join(dirs.AppData, "cache")
 	if cfg.SharedCacheDir != "" {
@@ -65,7 +68,7 @@ func NewManagedDirs(cfg Config) ManagedDirs {
 
 // Ensure creates all managed directories with owner-only permissions.
 func (d ManagedDirs) Ensure() error {
-	for _, dir := range []string{d.AppData, d.Config, d.Cache, d.Vagrant, d.PackerCache, d.Work, d.Staging, d.Logs} {
+	for _, dir := range []string{d.AppData, d.Config, d.Cache, d.Vagrant, d.PackerCache, d.Work, d.Staging, d.Logs, d.Screens} {
 		if err := ensurePrivateDir(dir); err != nil {
 			return err
 		}

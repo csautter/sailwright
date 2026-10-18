@@ -128,8 +128,8 @@ func TestBridgeForwardsToolsAndCalls(t *testing.T) {
 		}
 
 		tools, err := downstream.ListTools(ctx, nil)
-		if err != nil || len(tools.Tools) != 17 {
-			t.Fatalf("expected the 17 gateway tools, got %d (%v)", len(tools.Tools), err)
+		if err != nil || len(tools.Tools) != 18 {
+			t.Fatalf("expected the 18 gateway tools, got %d (%v)", len(tools.Tools), err)
 		}
 
 		result, err := downstream.CallTool(ctx, &mcp.CallToolParams{Name: "vm_create", Arguments: map[string]any{"os": "ubuntu"}})
@@ -159,6 +159,27 @@ func TestBridgeForwardsToolsAndCalls(t *testing.T) {
 				t.Fatalf("job did not finish: %s", data)
 			}
 			time.Sleep(20 * time.Millisecond)
+		}
+
+		// Build console images reach the agent through the bridge unchanged.
+		build, err := downstream.CallTool(ctx, &mcp.CallToolParams{Name: "vm_build", Arguments: map[string]any{"os": "ubuntu"}})
+		if err != nil || build.IsError {
+			t.Fatalf("vm_build through the bridge failed: %v %+v", err, build)
+		}
+		data, _ = json.Marshal(build.StructuredContent)
+		var buildJob struct {
+			ID string `json:"job_id"`
+		}
+		_ = json.Unmarshal(data, &buildJob)
+		if _, err := h.Gateway.Jobs().Wait(ctx, buildJob.ID); err != nil {
+			t.Fatal(err)
+		}
+		shot, err := downstream.CallTool(ctx, &mcp.CallToolParams{Name: "job_screenshot", Arguments: map[string]any{"job_id": buildJob.ID}})
+		if err != nil || shot.IsError || len(shot.Content) == 0 {
+			t.Fatalf("job_screenshot through the bridge failed: %v %+v", err, shot)
+		}
+		if image, ok := shot.Content[0].(*mcp.ImageContent); !ok || image.MIMEType != "image/jpeg" || len(image.Data) == 0 {
+			t.Fatalf("expected a JPEG image through the bridge, got %#v", shot.Content[0])
 		}
 
 		bad, err := downstream.CallTool(ctx, &mcp.CallToolParams{Name: "vm_create", Arguments: map[string]any{"os": "local"}})

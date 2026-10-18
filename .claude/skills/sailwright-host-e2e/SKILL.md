@@ -20,6 +20,13 @@ Read `docs/agent-gateway.md` once if you have not seen it.
 - Only one job runs at a time. Poll `job_status` (every few seconds for
   short jobs, every 30–60 s for builds) and read `job_output` from
   `next_offset`.
+- Builds can be silent for a long time. When you report progress, use
+  `last_output_at`, `screen_changed_at` and `stuck_suspected` from
+  `job_status` ("no log for 12 min, console changed 40 s ago"). Call
+  `job_screenshot` only when the user asks to see the VM, then briefly
+  describe the screen (installer step, errors, login prompt). If
+  `stuck_suspected` is set, tell the user and suggest the live view in the
+  gateway terminal; do not cancel the build on your own.
 - Every VM you create must be destroyed again before you finish, even after
   failures.
 - The binary under test is pinned by the human. If you changed sailwright

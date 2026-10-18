@@ -203,6 +203,8 @@ clean_prompt_min_gb: 20            # offer to delete the cache on Ctrl+C from th
 output_limit_bytes: 8388608
 snapshot_max_bytes: 52428800
 snapshot_max_files: 5000
+view_listen: 127.0.0.1:0           # build live view, loopback only; port 0 picks one; "off" disables
+screen_stuck_after: 15m            # hint when console and output stay unchanged; "off" disables
 ```
 
 ## Tools
@@ -219,6 +221,7 @@ snapshot_max_files: 5000
 | `install` | approval | `install [--with-go] [--virtualbox]` |
 | `run_cli` | safe or approval | any command line; safe if it parses into the safe set |
 | `job_status`, `job_output`, `job_cancel`, `job_list` | control | job handling |
+| `job_screenshot` | control | VM console image of a build job (read-only) |
 
 Operations run as jobs. Poll `job_status` and read `job_output` from
 `next_offset`. Only one job runs at a time.
@@ -230,6 +233,34 @@ appear there.
 
 The safe set never includes `local` or `all` targets, custom paths,
 arguments after `--`, `push`, credentials or TLS options, or parallel builds.
+
+## Build console
+
+Builds can print nothing for a long time while the installer runs inside the
+VM. During QEMU builds on Linux and macOS hosts the sailwright CLI records the
+VM console over VNC (about a minute after the build starts). The gateway
+samples the newest frame every 10 seconds and keeps the last 20 frames per
+build job.
+
+- `job_status` reports `last_output_at`, `screenshot_available`,
+  `screen_changed_at` and `stuck_suspected`. Frames are compared on a coarse
+  grid, so a blinking cursor or a spinner is not a change, while new text, a
+  progress step or a dialog is. `stuck_suspected` is set when neither the
+  console nor the output changed for `screen_stuck_after` (default 15 minutes).
+  It is only a hint; the gateway never cancels a job because of it. The
+  gateway terminal shows one line when it happens.
+- `job_screenshot` returns the console as a JPEG image plus a short JSON
+  summary. `index` selects an older kept frame (0 is the newest). Agents
+  should call it when the user asks to see the VM, not on every poll.
+- The **live view** is a small page for the human on the host. The gateway
+  prints its address at startup and when a build starts, for example
+  `http://127.0.0.1:41234/view/<token>/`. Open it in a browser on the host;
+  it refreshes every 5 seconds and marks a possibly stuck build. It listens on
+  loopback only, uses its own random token (not the bearer token, new on every
+  start), accepts only `GET`, and is never sent to agents.
+
+Windows hosts (Hyper-V, VirtualBox) do not record the console, so
+`job_screenshot` explains that no frame is available.
 
 ## Approvals
 
@@ -347,6 +378,7 @@ cache folders; created VMs, `.vagrant`, `libvirt/images`, the config and a
 | `work/` | empty working directory for commands |
 | `staging/` | read-only bundle snapshots, removed after each job |
 | `logs/<job>.log` | full redacted output per job |
+| `screens/<job>/` | last sampled build console frames, cleared on restart |
 | `audit.jsonl` | audit log |
 
 The agent folder (`agent_dir`, default `~/.sailwright-gateway`) is separate
@@ -356,7 +388,8 @@ It must not overlap the state or data directory or an agent workspace.
 ## Limitations
 
 - No access into VMs yet (SSH, RDP, VNC). Agents can drive the VM lifecycle
-  and provisioning, but cannot open a shell inside a VM through the gateway.
+  and provisioning and see the console of a running build, but cannot open a
+  shell or type into a VM through the gateway.
 - One host per gateway; remote hosts over the network are not supported yet.
 - On Windows, cancellation terminates the process tree immediately; there is
   no graceful stop signal.

@@ -51,3 +51,33 @@ func TestLegacyDataDir(t *testing.T) {
 		t.Fatalf("legacy dir in use, got %q", got)
 	}
 }
+
+func TestResolveLiveViewAndStuckHint(t *testing.T) {
+	resolve := func(view string, stuck string) (Config, error) {
+		cfg := Config{StateDir: t.TempDir(), AgentDir: t.TempDir(), ViewListen: view, ScreenStuckAfter: stuck}
+		return cfg, cfg.Resolve()
+	}
+
+	cfg, err := resolve("", "")
+	if err != nil || cfg.ViewAddr.String() != defaultViewListen || cfg.ScreenStuckAfterValue != defaultScreenStuckAfter {
+		t.Fatalf("defaults: %v %s %s", err, cfg.ViewAddr, cfg.ScreenStuckAfterValue)
+	}
+	cfg, err = resolve("off", "off")
+	if err != nil || cfg.ViewAddr.IsValid() || cfg.ScreenStuckAfterValue != 0 {
+		t.Fatalf("off: %v %s %s", err, cfg.ViewAddr, cfg.ScreenStuckAfterValue)
+	}
+	cfg, err = resolve("[::1]:8080", "30m")
+	if err != nil || cfg.ViewAddr.String() != "[::1]:8080" || cfg.ScreenStuckAfterValue.Minutes() != 30 {
+		t.Fatalf("custom: %v %s %s", err, cfg.ViewAddr, cfg.ScreenStuckAfterValue)
+	}
+	for _, view := range []string{"0.0.0.0:8080", "192.168.1.10:8080", "localhost:8080", "127.0.0.1"} {
+		if _, err := resolve(view, ""); err == nil {
+			t.Errorf("view_listen %q should be rejected", view)
+		}
+	}
+	for _, stuck := range []string{"0", "-5m", "soon"} {
+		if _, err := resolve("", stuck); err == nil {
+			t.Errorf("screen_stuck_after %q should be rejected", stuck)
+		}
+	}
+}

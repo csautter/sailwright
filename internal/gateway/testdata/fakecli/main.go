@@ -3,11 +3,17 @@
 // keeps VM state in $FAKE_CLI_STATE so list output reflects create/start/stop/destroy.
 //
 // Special targets: os "failos" exits 3, os "slowos" sleeps for a minute.
+//
+// build writes console frames like the real VNC recording into
+// $DEV_ALCHEMY_CACHE_DIR/<os>/qemu-out-<slug>-vncsnapshot.
 package main
 
 import (
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"os"
 	"path/filepath"
 	"sort"
@@ -83,7 +89,10 @@ func main() {
 
 	id := targetID(args)
 	switch command {
-	case "build", "install", "pull":
+	case "build":
+		writeConsoleFrames(args)
+		fmt.Println("build ok")
+	case "install", "pull":
 		fmt.Printf("%s ok\n", command)
 	case "create":
 		writeState(id, "stopped")
@@ -175,6 +184,53 @@ func targetID(args []string) string {
 		}
 	}
 	return fmt.Sprintf("%s-%s-%s", osName, osType, arch)
+}
+
+// writeConsoleFrames writes two frames: a dark screen and one with a bright "dialog".
+func writeConsoleFrames(args []string) {
+	cache := os.Getenv("DEV_ALCHEMY_CACHE_DIR")
+	if cache == "" {
+		return
+	}
+	osName, osType, arch := args[1], "", "amd64"
+	for i := 2; i < len(args)-1; i++ {
+		switch args[i] {
+		case "--type":
+			osType = args[i+1]
+		case "--arch":
+			arch = args[i+1]
+		}
+	}
+	slug := osName
+	if osType != "" {
+		slug += "-" + osType
+	}
+	dir := filepath.Join(cache, osName, "qemu-out-"+slug+"-"+arch+"-vncsnapshot")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	for i, dialog := range []bool{false, true} {
+		img := image.NewGray(image.Rect(0, 0, 320, 240))
+		for y := 0; y < 240; y++ {
+			for x := 0; x < 320; x++ {
+				value := uint8(20)
+				if dialog && x > 80 && x < 240 && y > 60 && y < 180 {
+					value = 230
+				}
+				img.SetGray(x, y, color.Gray{Y: value})
+			}
+		}
+		path := filepath.Join(dir, fmt.Sprintf("qemu.vnc%05d.jpg", i+1))
+		f, err := os.Create(path) // #nosec G304 -- test fixture path below the managed cache dir.
+		if err != nil {
+			return
+		}
+		_ = jpeg.Encode(f, img, nil)
+		_ = f.Close()
+		// Distinct modification times order the frames.
+		later := time.Now().Add(time.Duration(i) * time.Second)
+		_ = os.Chtimes(path, later, later)
+	}
 }
 
 func record() {

@@ -32,15 +32,17 @@ type Listeners struct {
 	TCP        net.Listener
 	Socket     net.Listener
 	SocketPath string
+	// View serves the build live view on loopback for the human on the host.
+	View    net.Listener
+	ViewURL string
 }
 
 // Close closes all listeners.
 func (l *Listeners) Close() {
-	if l.TCP != nil {
-		_ = l.TCP.Close()
-	}
-	if l.Socket != nil {
-		_ = l.Socket.Close()
+	for _, listener := range []net.Listener{l.TCP, l.Socket, l.View} {
+		if listener != nil {
+			_ = listener.Close()
+		}
 	}
 }
 
@@ -68,6 +70,16 @@ func (g *Gateway) Listen() (*Listeners, error) {
 			return nil, err
 		}
 		listeners.Socket, listeners.SocketPath = socket, socketPath
+	}
+	if g.cfg.ViewAddr.IsValid() {
+		view, err := net.Listen("tcp", g.cfg.ViewAddr.String())
+		if err != nil {
+			listeners.Close()
+			return nil, fmt.Errorf("listen on %s for the live view: %w (set view_listen to another port or %q)", g.cfg.ViewAddr, err, disabledSetting)
+		}
+		listeners.View = view
+		listeners.ViewURL = "http://" + view.Addr().String() + g.viewPath()
+		g.jobs.SetViewURL(listeners.ViewURL)
 	}
 	return listeners, nil
 }
@@ -106,9 +118,9 @@ func ListenAgentSocket(dir string) (net.Listener, string, error) {
 func (g *Gateway) ServeListeners(ctx context.Context, listeners *Listeners) error {
 	handler := g.Handler()
 	var servers []*http.Server
-	errs := make(chan error, 2)
+	errs := make(chan error, 3)
 
-	serve := func(listener net.Listener, local bool) {
+	serve := func(listener net.Listener, handler http.Handler, local bool) {
 		server := &http.Server{
 			Handler:           handler,
 			ReadHeaderTimeout: readHeaderTimeout,
@@ -130,10 +142,13 @@ func (g *Gateway) ServeListeners(ctx context.Context, listeners *Listeners) erro
 		}()
 	}
 	if listeners.TCP != nil {
-		serve(listeners.TCP, false)
+		serve(listeners.TCP, handler, false)
 	}
 	if listeners.Socket != nil {
-		serve(listeners.Socket, true)
+		serve(listeners.Socket, handler, true)
+	}
+	if listeners.View != nil {
+		serve(listeners.View, g.ViewHandler(), false)
 	}
 	if len(servers) == 0 {
 		return errors.New("no listeners to serve")

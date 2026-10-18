@@ -266,7 +266,7 @@ func runServe(parent context.Context, flags serveFlags) error {
 		return err
 	}
 	defer listeners.Close()
-	printBanner(cfg, pinned, listeners.SocketPath, approver.Enabled())
+	printBanner(cfg, pinned, listeners.SocketPath, listeners.ViewURL, approver.Enabled())
 	serveErr := g.ServeListeners(ctx, listeners)
 	listeners.Close()
 	closed = true
@@ -396,7 +396,7 @@ The gateway must be stopped.`,
 	return command
 }
 
-func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, socketPath string, approvals bool) {
+func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, socketPath string, viewURL string, approvals bool) {
 	approvalState := "disabled (safe set only)"
 	if approvals {
 		approvalState = "enabled on this terminal"
@@ -404,6 +404,10 @@ func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, socketPath str
 	socket := "not available on this OS (use TCP)"
 	if socketPath != "" {
 		socket = socketPath
+	}
+	liveView := "off"
+	if viewURL != "" {
+		liveView = viewURL + "  (build console, open in a browser on this host)"
 	}
 	fmt.Printf(`
 sailwright-gateway %s
@@ -413,11 +417,12 @@ sailwright-gateway %s
   binary:     %s (sha256 %s)
   data dir:   %s
   approvals:  %s
+  live view:  %s
   token file: %s
   audit log:  %s
 
 In the devcontainer, agents connect with: sailwright-gateway connect
 Press Ctrl+C to stop.
-`, version, cfg.ListenAddr, socket, cfg.AgentDir, pinned.Source, pinned.SHA256, cfg.DataDir, approvalState,
+`, version, cfg.ListenAddr, socket, cfg.AgentDir, pinned.Source, pinned.SHA256, cfg.DataDir, approvalState, liveView,
 		gateway.TokenPath(cfg.StateDir), cfg.StateDir+string(os.PathSeparator)+"audit.jsonl")
 }
