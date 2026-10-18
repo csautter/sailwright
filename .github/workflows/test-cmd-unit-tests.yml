@@ -8,8 +8,16 @@ on:
       - "cmd/main.go"
       - "cmd/cmd/**"
       - ".github/workflows/test-cmd-unit-tests.yml"
+      # Static checks in pkg/build and test/workflowcheck read these files.
+      - ".github/workflows/test-build-linux.yml"
+      - ".github/workflows/test-build-macos.yml"
+      - "build/packer/**"
+      - "scripts/linux/**"
+      - "scripts/macos/**"
+      - "pkg/deploy/**"
       - "go.mod"
       - "go.sum"
+      - "test/workflowcheck/**"
       - "pkg/build/**"
       - "pkg/oci/**"
       - "roles_test_1/**"
@@ -20,8 +28,16 @@ on:
       - "cmd/main.go"
       - "cmd/cmd/**"
       - ".github/workflows/test-cmd-unit-tests.yml"
+      # Static checks in pkg/build and test/workflowcheck read these files.
+      - ".github/workflows/test-build-linux.yml"
+      - ".github/workflows/test-build-macos.yml"
+      - "build/packer/**"
+      - "scripts/linux/**"
+      - "scripts/macos/**"
+      - "pkg/deploy/**"
       - "go.mod"
       - "go.sum"
+      - "test/workflowcheck/**"
       - "pkg/build/**"
       - "pkg/oci/**"
       - "roles_test_1/**"
@@ -59,6 +75,23 @@ jobs:
 
       - name: Run OCI package tests
         run: go test ./pkg/oci/...
+
+  workflow-checks:
+    name: Run GitHub Actions workflow checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run workflow checks
+        run: go test ./test/workflowcheck/...
 
   oci-integration:
     name: Run OCI registry integration test
