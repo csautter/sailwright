@@ -295,14 +295,14 @@ func TestConsoleApprover(t *testing.T) {
 
 	decisions := make(chan Decision, 1)
 	go func() {
-		decisions <- approver.Request(context.Background(), ApprovalRequest{ID: "job1", Argv: []string{"install"}, AgentNote: "please\x1b[2J"})
+		decisions <- approver.Request(context.Background(), ApprovalRequest{ID: "job1", Argv: []string{"install"}, AgentNote: "please\x1b[2J"}).Decision
 	}()
 	waitFor(t, func() bool { return strings.Contains(out.String(), `approve job1`) })
 	if strings.Contains(out.String(), "\x1b") {
 		t.Fatal("agent note escape sequences must be removed")
 	}
 
-	if got := approver.Request(context.Background(), ApprovalRequest{ID: "job2"}); got != DecisionBusy {
+	if got := approver.Request(context.Background(), ApprovalRequest{ID: "job2"}).Decision; got != DecisionBusy {
 		t.Fatalf("a second pending request must be refused, got %s", got)
 	}
 	_, _ = io.WriteString(writer, "approve job2\n")
@@ -311,7 +311,7 @@ func TestConsoleApprover(t *testing.T) {
 		t.Fatalf("decision %s", got)
 	}
 
-	go func() { decisions <- approver.Request(context.Background(), ApprovalRequest{ID: "job3"}) }()
+	go func() { decisions <- approver.Request(context.Background(), ApprovalRequest{ID: "job3"}).Decision }()
 	waitFor(t, func() bool { return strings.Contains(out.String(), `approve job3`) })
 	_, _ = io.WriteString(writer, "deny job3\n")
 	if got := <-decisions; got != DecisionDenied {
@@ -319,7 +319,7 @@ func TestConsoleApprover(t *testing.T) {
 	}
 
 	// A decision for an old id must not approve a new request.
-	go func() { decisions <- approver.Request(context.Background(), ApprovalRequest{ID: "job4"}) }()
+	go func() { decisions <- approver.Request(context.Background(), ApprovalRequest{ID: "job4"}).Decision }()
 	waitFor(t, func() bool { return strings.Contains(out.String(), `approve job4`) })
 	_, _ = io.WriteString(writer, "approve job1\n")
 	_, _ = io.WriteString(writer, "deny job4\n")
@@ -329,12 +329,12 @@ func TestConsoleApprover(t *testing.T) {
 
 	short := NewConsoleApprover(bufio.NewReader(strings.NewReader("")), out, 50*time.Millisecond)
 	waitFor(t, func() bool { return !short.Enabled() })
-	if got := short.Request(context.Background(), ApprovalRequest{ID: "x"}); got != DecisionDenied {
+	if got := short.Request(context.Background(), ApprovalRequest{ID: "x"}).Decision; got != DecisionDenied {
 		t.Fatalf("a closed console must deny, got %s", got)
 	}
 
 	expiring := NewConsoleApprover(bufio.NewReader(&blockingReader{}), out, 50*time.Millisecond)
-	if got := expiring.Request(context.Background(), ApprovalRequest{ID: "y"}); got != DecisionExpired {
+	if got := expiring.Request(context.Background(), ApprovalRequest{ID: "y"}).Decision; got != DecisionExpired {
 		t.Fatalf("expected expiry, got %s", got)
 	}
 }

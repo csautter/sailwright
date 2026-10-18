@@ -274,7 +274,7 @@ func (g *Gateway) toolProvisionLocal(_ context.Context, req *mcp.CallToolRequest
 		}
 		argv = append(argv, "--playbook", embeddedPlaybookPath(grammar.PlaybookDir, in.Playbook))
 	}
-	return g.submitApproval("provision_local", argv, g.dirs.Work, nil, "local provisioning runs Ansible against this host", in.Reason, req, structParams(in))
+	return g.submitApproval("provision_local", argv, g.dirs.Work, nil, "local provisioning runs Ansible against this host", in.Reason, becomeSupported(argv), req, structParams(in))
 }
 
 func (g *Gateway) toolInstall(_ context.Context, req *mcp.CallToolRequest, in installInput) (*mcp.CallToolResult, JobView, error) {
@@ -285,7 +285,7 @@ func (g *Gateway) toolInstall(_ context.Context, req *mcp.CallToolRequest, in in
 	if in.VirtualBox {
 		argv = append(argv, "--virtualbox")
 	}
-	return g.submitApproval("install", argv, g.dirs.Work, nil, "install changes host packages", in.Reason, req, structParams(in))
+	return g.submitApproval("install", argv, g.dirs.Work, nil, "install changes host packages", in.Reason, false, req, structParams(in))
 }
 
 func (g *Gateway) toolRunCLI(_ context.Context, req *mcp.CallToolRequest, in runCLIInput) (*mcp.CallToolResult, JobView, error) {
@@ -319,7 +319,7 @@ func (g *Gateway) toolRunCLI(_ context.Context, req *mcp.CallToolRequest, in run
 		argv = RewriteBundlePaths(argv, created)
 		dir = created.Dir
 	}
-	view, err := g.submitApprovalWithRisk("run_cli", argv, dir, snapshot, notSafe.Error(), in.Reason, AssessRisk(in.Args, strings.TrimSuffix(in.BundleRoot, "/")), req, params)
+	view, err := g.submitApprovalWithRisk("run_cli", argv, dir, snapshot, notSafe.Error(), in.Reason, AssessRisk(in.Args, strings.TrimSuffix(in.BundleRoot, "/")), becomeSupported(in.Args), req, params)
 	if err != nil && snapshot != nil {
 		_ = RemoveSnapshot(snapshot.Dir)
 	}
@@ -382,12 +382,12 @@ func (g *Gateway) submitSafe(tool string, op Operation, req *mcp.CallToolRequest
 	return nil, view, err
 }
 
-func (g *Gateway) submitApproval(tool string, argv []string, dir string, snapshot *Snapshot, notSafe string, note string, req *mcp.CallToolRequest, params map[string]any) (*mcp.CallToolResult, JobView, error) {
-	view, err := g.submitApprovalWithRisk(tool, argv, dir, snapshot, notSafe, note, AssessRisk(argv, ""), req, params)
+func (g *Gateway) submitApproval(tool string, argv []string, dir string, snapshot *Snapshot, notSafe string, note string, become bool, req *mcp.CallToolRequest, params map[string]any) (*mcp.CallToolResult, JobView, error) {
+	view, err := g.submitApprovalWithRisk(tool, argv, dir, snapshot, notSafe, note, AssessRisk(argv, ""), become, req, params)
 	return nil, view, err
 }
 
-func (g *Gateway) submitApprovalWithRisk(tool string, argv []string, dir string, snapshot *Snapshot, notSafe string, note string, risk []string, req *mcp.CallToolRequest, params map[string]any) (JobView, error) {
+func (g *Gateway) submitApprovalWithRisk(tool string, argv []string, dir string, snapshot *Snapshot, notSafe string, note string, risk []string, become bool, req *mcp.CallToolRequest, params map[string]any) (JobView, error) {
 	return g.jobs.Submit(JobSpec{
 		Tool:          tool,
 		Tier:          tierApproval,
@@ -401,7 +401,26 @@ func (g *Gateway) submitApprovalWithRisk(tool string, argv []string, dir string,
 		NeedsApproval: true,
 		NotSafe:       notSafe,
 		AgentNote:     truncate(note, maxAgentNoteLength),
+		Become:        become,
 	})
+}
+
+// becomeSupported reports whether a command runs Ansible against this host with sudo
+// (local provisioning on Linux and macOS), so the operator may supply a sudo password.
+// Windows local provisioning uses a temporary administrator account instead.
+func becomeSupported(args []string) bool {
+	if runtime.GOOS == "windows" || len(args) < 2 || args[0] != "provision" {
+		return false
+	}
+	for _, arg := range args[1:] {
+		if arg == "--" {
+			return false
+		}
+		if !strings.HasPrefix(arg, "-") {
+			return arg == "local"
+		}
+	}
+	return false
 }
 
 func validateRawArgs(args []string) error {

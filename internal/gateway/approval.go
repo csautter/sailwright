@@ -34,13 +34,26 @@ type ApprovalRequest struct {
 	NotSafe   string
 	AgentNote string
 	BinarySHA string
+	// Become offers "approve-sudo": the operator also enters the sudo password that
+	// Ansible needs for become tasks on this host.
+	Become bool
+}
+
+// Approval is the operator's answer. BecomePassword is only set for approve-sudo and
+// must never be shown, logged or returned to the agent.
+type Approval struct {
+	Decision       Decision
+	BecomePassword string
 }
 
 // Approver decides approval requests through a channel the agent cannot reach.
 type Approver interface {
 	Enabled() bool
-	Request(ctx context.Context, req ApprovalRequest) Decision
+	Request(ctx context.Context, req ApprovalRequest) Approval
 }
+
+// InputHider turns off terminal echo and returns a function that restores it.
+type InputHider func() (restore func(), err error)
 
 // DisabledApprover rejects every request; used when the gateway has no terminal.
 type DisabledApprover struct{}
@@ -49,7 +62,9 @@ type DisabledApprover struct{}
 func (DisabledApprover) Enabled() bool { return false }
 
 // Request always denies.
-func (DisabledApprover) Request(context.Context, ApprovalRequest) Decision { return DecisionDenied }
+func (DisabledApprover) Request(context.Context, ApprovalRequest) Approval {
+	return Approval{Decision: DecisionDenied}
+}
 
 // ConsoleApprover asks the operator on the gateway's own foreground terminal. It has
 // no network surface, so an agent cannot approve its own requests. At most one request
@@ -59,14 +74,20 @@ type ConsoleApprover struct {
 	ttl time.Duration
 	now func() time.Time
 
+	hideInput InputHider
+
 	mu      sync.Mutex
 	pending *pendingApproval
 	closed  bool
+	// awaiting is the pending request whose sudo password is typed next.
+	awaiting    *pendingApproval
+	restoreEcho func()
 }
 
 type pendingApproval struct {
 	id       string
-	decision chan Decision
+	become   bool
+	decision chan Approval
 }
 
 // NewConsoleApprover starts reading operator commands from in.
@@ -74,6 +95,15 @@ func NewConsoleApprover(in *bufio.Reader, out io.Writer, ttl time.Duration) *Con
 	approver := &ConsoleApprover{out: out, ttl: ttl, now: time.Now}
 	go approver.readCommands(in)
 	return approver
+}
+
+// HideInputWith sets how terminal echo is turned off while a password is typed.
+// Without it, approve-sudo is refused so a password is never echoed.
+func (a *ConsoleApprover) HideInputWith(hide InputHider) *ConsoleApprover {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.hideInput = hide
+	return a
 }
 
 // Enabled reports whether the console is still readable.
@@ -85,17 +115,17 @@ func (a *ConsoleApprover) Enabled() bool {
 
 // Request prints the request and blocks until the operator decides, the request
 // expires or ctx is cancelled.
-func (a *ConsoleApprover) Request(ctx context.Context, req ApprovalRequest) Decision {
+func (a *ConsoleApprover) Request(ctx context.Context, req ApprovalRequest) Approval {
 	a.mu.Lock()
 	if a.closed {
 		a.mu.Unlock()
-		return DecisionDenied
+		return Approval{Decision: DecisionDenied}
 	}
 	if a.pending != nil {
 		a.mu.Unlock()
-		return DecisionBusy
+		return Approval{Decision: DecisionBusy}
 	}
-	pending := &pendingApproval{id: req.ID, decision: make(chan Decision, 1)}
+	pending := &pendingApproval{id: req.ID, become: req.Become, decision: make(chan Approval, 1)}
 	a.pending = pending
 	expires := a.now().Add(a.ttl)
 	a.printRequest(req, expires)
@@ -104,22 +134,29 @@ func (a *ConsoleApprover) Request(ctx context.Context, req ApprovalRequest) Deci
 	timer := time.NewTimer(a.ttl)
 	defer timer.Stop()
 
-	var decision Decision
+	var approval Approval
 	select {
-	case decision = <-pending.decision:
+	case approval = <-pending.decision:
 	case <-timer.C:
-		decision = DecisionExpired
+		approval = Approval{Decision: DecisionExpired}
 	case <-ctx.Done():
-		decision = DecisionCancelled
+		approval = Approval{Decision: DecisionCancelled}
 	}
 
 	a.mu.Lock()
 	if a.pending == pending {
 		a.pending = nil
 	}
-	fmt.Fprintf(a.out, "approval %s: %s\n", req.ID, decision)
+	if a.awaiting == pending {
+		a.stopAwaitingLocked()
+	}
+	note := ""
+	if approval.BecomePassword != "" {
+		note = " (with sudo password)"
+	}
+	fmt.Fprintf(a.out, "approval %s: %s%s\n", req.ID, approval.Decision, note)
 	a.mu.Unlock()
-	return decision
+	return approval
 }
 
 func (a *ConsoleApprover) printRequest(req ApprovalRequest, expires time.Time) {
@@ -147,7 +184,13 @@ func (a *ConsoleApprover) printRequest(req ApprovalRequest, expires time.Time) {
 		fmt.Fprintf(&b, "agent note (untrusted): %s\n", sanitizeForTerminal(truncate(req.AgentNote, 500)))
 	}
 	fmt.Fprintf(&b, "expires:   %s\n", expires.Format("15:04:05"))
-	fmt.Fprintf(&b, "Type \"approve %s\" or \"deny %s\" and press Enter.\n", req.ID, req.ID)
+	if req.Become {
+		fmt.Fprintf(&b, "sudo:      roles with become need your sudo password; \"approve-sudo %s\" asks for it\n", req.ID)
+		fmt.Fprintf(&b, "           (hidden input, used only for this run, never shown to the agent)\n")
+		fmt.Fprintf(&b, "Type \"approve-sudo %s\", \"approve %s\" or \"deny %s\" and press Enter.\n", req.ID, req.ID, req.ID)
+	} else {
+		fmt.Fprintf(&b, "Type \"approve %s\" or \"deny %s\" and press Enter.\n", req.ID, req.ID)
+	}
 	b.WriteString("===================================================\n")
 	_, _ = io.WriteString(a.out, b.String())
 }
@@ -155,11 +198,12 @@ func (a *ConsoleApprover) printRequest(req ApprovalRequest, expires time.Time) {
 func (a *ConsoleApprover) readCommands(in *bufio.Reader) {
 	for {
 		line, err := in.ReadString('\n')
-		if strings.TrimSpace(line) != "" {
+		if !a.consumePassword(line) && strings.TrimSpace(line) != "" {
 			a.handleCommand(strings.Fields(line))
 		}
 		if err != nil {
 			a.mu.Lock()
+			a.stopAwaitingLocked()
 			a.closed = true
 			if !errors.Is(err, io.EOF) {
 				fmt.Fprintf(a.out, "approval console closed: %v\n", err)
@@ -177,6 +221,30 @@ func (a *ConsoleApprover) handleCommand(fields []string) {
 		return
 	}
 	switch fields[0] {
+	case "approve-sudo":
+		if len(fields) != 2 {
+			fmt.Fprintln(a.out, "usage: approve-sudo <id>")
+			return
+		}
+		if a.pending == nil || a.pending.id != fields[1] {
+			fmt.Fprintf(a.out, "no pending approval with id %q\n", sanitizeForTerminal(fields[1]))
+			return
+		}
+		if !a.pending.become {
+			fmt.Fprintln(a.out, "this request does not run Ansible on this host; use approve")
+			return
+		}
+		if a.hideInput == nil {
+			fmt.Fprintln(a.out, "cannot hide input on this terminal; approve-sudo is not available")
+			return
+		}
+		restore, err := a.hideInput()
+		if err != nil {
+			fmt.Fprintf(a.out, "cannot hide input (%v); approve-sudo is not available\n", err)
+			return
+		}
+		a.awaiting, a.restoreEcho = a.pending, restore
+		fmt.Fprintf(a.out, "sudo password for job %s (hidden, press Enter): ", a.pending.id)
 	case "approve", "deny":
 		if len(fields) != 2 {
 			fmt.Fprintf(a.out, "usage: %s <id>\n", fields[0])
@@ -191,7 +259,7 @@ func (a *ConsoleApprover) handleCommand(fields []string) {
 			decision = DecisionApproved
 		}
 		select {
-		case a.pending.decision <- decision:
+		case a.pending.decision <- Approval{Decision: decision}:
 		default:
 		}
 	case "pending":
@@ -201,8 +269,41 @@ func (a *ConsoleApprover) handleCommand(fields []string) {
 		}
 		fmt.Fprintf(a.out, "pending approval: %s\n", a.pending.id)
 	default:
-		fmt.Fprintln(a.out, `commands: approve <id> | deny <id> | pending`)
+		fmt.Fprintln(a.out, `commands: approve <id> | approve-sudo <id> | deny <id> | pending`)
 	}
+}
+
+// consumePassword treats line as the sudo password if approve-sudo is waiting for one.
+func (a *ConsoleApprover) consumePassword(line string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.awaiting == nil {
+		return false
+	}
+	awaiting := a.awaiting
+	a.stopAwaitingLocked()
+	fmt.Fprintln(a.out)
+
+	password := strings.TrimRight(line, "\r\n")
+	switch {
+	case a.pending != awaiting:
+		fmt.Fprintln(a.out, "the approval request is no longer pending; the password was discarded")
+	case password == "":
+		fmt.Fprintf(a.out, "empty password; nothing approved. Type \"approve-sudo %s\" again.\n", awaiting.id)
+	default:
+		select {
+		case awaiting.decision <- Approval{Decision: DecisionApproved, BecomePassword: password}:
+		default:
+		}
+	}
+	return true
+}
+
+func (a *ConsoleApprover) stopAwaitingLocked() {
+	if a.restoreEcho != nil {
+		a.restoreEcho()
+	}
+	a.awaiting, a.restoreEcho = nil, nil
 }
 
 // quoteArgv renders argv unambiguously for review.

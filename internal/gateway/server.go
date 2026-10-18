@@ -122,6 +122,7 @@ func New(opts Options) (*Gateway, error) {
 		Audit:       audit,
 		Redactor:    redactor,
 		LogsDir:     dirs.Logs,
+		StagingDir:  dirs.Staging,
 		DataDir:     cfg.DataDir,
 		MinFreeGB:   cfg.MinFreeDiskGB,
 		OutputLimit: cfg.OutputLimitBytes,

@@ -26,6 +26,7 @@ type AuditEvent struct {
 	DurationMS   int64          `json:"duration_ms,omitempty"`
 	Error        string         `json:"error,omitempty"`
 	HTTPStatus   int            `json:"http_status,omitempty"`
+	SudoPassword bool           `json:"sudo_password,omitempty"`
 }
 
 // AuditLog appends events to a JSONL file.

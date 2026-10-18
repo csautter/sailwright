@@ -208,7 +208,8 @@ func runServe(parent context.Context, flags serveFlags) error {
 	case !interactive:
 		fmt.Println("stdin is not a terminal: the approval console is disabled, only the safe set is available")
 	default:
-		approver = gateway.NewConsoleApprover(stdin, os.Stdout, cfg.ApprovalTTLValue)
+		approver = gateway.NewConsoleApprover(stdin, os.Stdout, cfg.ApprovalTTLValue).
+			HideInputWith(gateway.TerminalInputHider(int(os.Stdin.Fd()))) // #nosec G115 -- file descriptors fit in int.
 	}
 
 	g, err := gateway.New(gateway.Options{

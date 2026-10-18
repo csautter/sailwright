@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -409,5 +410,50 @@ func TestGatewayShowsLiveOutputOnTheConsole(t *testing.T) {
 	waitJob(t, session, view.ID)
 	if !strings.Contains(h.Console.String(), "["+view.ID+"] created") {
 		t.Fatalf("expected mirrored job output on the console:\n%s", h.Console.String())
+	}
+}
+
+func TestGatewayPassesSudoPasswordOnlyToTheApprovedJob(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("local provisioning on Windows does not use sudo")
+	}
+	h := gatewaytest.Start(t, gatewaytest.Options{Approvals: true})
+	session := h.Connect(t)
+	const password = "host-sudo-pass"
+
+	var view gateway.JobView
+	mustCall(t, session, "provision_local", map[string]any{"check": true}, &view)
+	h.ApproveSudo(t, view.ID, password)
+	final := waitJob(t, session, view.ID)
+	if final.State != gateway.JobSucceeded || !final.SudoPassword {
+		t.Fatalf("unexpected job %+v", final)
+	}
+	if !strings.Contains(strings.Join(final.Argv, " "), "-- --become-password-file") {
+		t.Fatalf("argv must carry the password file: %q", final.Argv)
+	}
+
+	output := jobOutput(t, session, view.ID)
+	if !strings.Contains(output, "BECOME-PASSWORD: ***") || strings.Contains(output, password) {
+		t.Fatalf("the password must reach the CLI but be redacted in output:\n%s", output)
+	}
+	for _, file := range []string{"audit.jsonl", filepath.Join("logs", view.ID+".log")} {
+		data, err := os.ReadFile(filepath.Join(h.StateDir, file))
+		if err != nil || strings.Contains(string(data), password) {
+			t.Fatalf("%s must not contain the password (%v)", file, err)
+		}
+	}
+	if strings.Contains(h.Console.String(), password) {
+		t.Fatal("the console must not show the password")
+	}
+	staging, _ := os.ReadDir(filepath.Join(h.StateDir, "staging"))
+	if len(staging) != 0 {
+		t.Fatalf("the password file must be removed after the job, found %d entries", len(staging))
+	}
+
+	// A plain approve runs without a password file.
+	mustCall(t, session, "provision_local", map[string]any{"check": true}, &view)
+	h.Approve(t, view.ID)
+	if final := waitJob(t, session, view.ID); final.SudoPassword || strings.Contains(strings.Join(final.Argv, " "), "become-password-file") {
+		t.Fatalf("plain approve must not pass a password: %+v", final)
 	}
 }

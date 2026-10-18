@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -49,6 +50,8 @@ type JobSpec struct {
 	NotSafe          string
 	AgentNote        string
 	RequiresFreeDisk bool
+	// Become lets the operator approve with a sudo password for Ansible become tasks.
+	Become bool
 }
 
 // JobView is the agent-visible state of a job.
@@ -66,6 +69,9 @@ type JobView struct {
 	Finished  time.Time `json:"finished,omitzero"`
 	Snapshot  *Snapshot `json:"snapshot,omitempty"`
 	OutputLen int64     `json:"output_bytes"`
+	// SudoPassword reports that the operator supplied a sudo password for this run.
+	// The password itself is never exposed.
+	SudoPassword bool `json:"sudo_password,omitempty"`
 }
 
 // Done reports whether the job reached a final state.
@@ -107,6 +113,7 @@ type JobManager struct {
 	audit       *AuditLog
 	redactor    *Redactor
 	logsDir     string
+	stagingDir  string
 	dataDir     string
 	minFreeGB   int
 	outputLimit int
@@ -130,6 +137,7 @@ type JobManagerOptions struct {
 	Audit       *AuditLog
 	Redactor    *Redactor
 	LogsDir     string
+	StagingDir  string
 	DataDir     string
 	MinFreeGB   int
 	OutputLimit int
@@ -148,7 +156,7 @@ func NewJobManager(opts JobManagerOptions) *JobManager {
 	}
 	return &JobManager{
 		runner: opts.Runner, approver: opts.Approver, audit: opts.Audit, redactor: opts.Redactor,
-		logsDir: opts.LogsDir, dataDir: opts.DataDir, minFreeGB: opts.MinFreeGB, outputLimit: opts.OutputLimit,
+		logsDir: opts.LogsDir, stagingDir: opts.StagingDir, dataDir: opts.DataDir, minFreeGB: opts.MinFreeGB, outputLimit: opts.OutputLimit,
 		binarySHA: opts.BinarySHA, onFinish: opts.OnFinish, console: console, follow: opts.Follow,
 		jobs: map[string]*job{},
 	}
@@ -218,12 +226,34 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 		}
 	}()
 
+	argv := spec.Argv
+	redactor := m.redactor
 	if spec.NeedsApproval {
-		decision := m.approver.Request(ctx, ApprovalRequest{
+		approval := m.approver.Request(ctx, ApprovalRequest{
 			ID: id, Tool: spec.Tool, Argv: m.redactor.Strings(spec.Argv), Dir: spec.Dir, Risk: spec.Risk,
 			Snapshot: spec.Snapshot, NotSafe: spec.NotSafe, AgentNote: spec.AgentNote, BinarySHA: m.binarySHA,
+			Become: spec.Become,
 		})
-		m.record(AuditEvent{Event: "approval_decision", Tool: spec.Tool, JobID: id, Decision: string(decision), Argv: spec.Argv, Snapshot: spec.Snapshot})
+		decision := approval.Decision
+		m.record(AuditEvent{Event: "approval_decision", Tool: spec.Tool, JobID: id, Decision: string(decision), Argv: spec.Argv, Snapshot: spec.Snapshot, SudoPassword: approval.BecomePassword != ""})
+		if decision == DecisionApproved && approval.BecomePassword != "" {
+			if !spec.Become {
+				m.finish(j, JobFailed, nil, "a sudo password was supplied for a request that does not support it", time.Time{})
+				return
+			}
+			path, cleanup, err := writeBecomePasswordFile(m.stagingDir, approval.BecomePassword)
+			if err != nil {
+				m.finish(j, JobFailed, nil, "could not pass the sudo password: "+err.Error(), time.Time{})
+				return
+			}
+			defer cleanup()
+			argv = WithBecomePasswordFile(argv, path)
+			redactor = m.redactor.With(approval.BecomePassword)
+			j.update(func(v *JobView) {
+				v.SudoPassword = true
+				v.Argv = redactor.Strings(argv)
+			})
+		}
 		if decision != DecisionApproved {
 			final := JobDenied
 			switch decision {
@@ -249,7 +279,7 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 		v.State = JobRunning
 		v.Started = started
 	})
-	fmt.Fprintf(m.console, "job %s started: sailwright %s\n", id, quoteArgv(m.redactor.Strings(spec.Argv)))
+	fmt.Fprintf(m.console, "job %s started: sailwright %s\n", id, quoteArgv(redactor.Strings(argv)))
 
 	var sinks []io.Writer
 	sinks = append(sinks, j.output)
@@ -268,11 +298,11 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 		// Output is already redacted and stripped of escape sequences at this point.
 		sinks = append(sinks, &prefixWriter{prefix: "[" + id + "] ", next: m.follow})
 	}
-	writer := newLineRedactingWriter(m.redactor, io.MultiWriter(sinks...))
+	writer := newLineRedactingWriter(redactor, io.MultiWriter(sinks...))
 
 	runCtx, cancelTimeout := context.WithTimeout(ctx, spec.Timeout)
 	defer cancelTimeout()
-	code, err := m.runner.Run(runCtx, spec.Argv, spec.Dir, writer)
+	code, err := m.runner.Run(runCtx, argv, spec.Dir, writer)
 	_ = writer.Flush()
 
 	switch {
@@ -488,4 +518,43 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+// WithBecomePasswordFile passes an Ansible become password file to `sailwright
+// provision` as a passthrough argument.
+func WithBecomePasswordFile(argv []string, path string) []string {
+	out := append([]string(nil), argv...)
+	if !containsString(out, "--") {
+		out = append(out, "--")
+	}
+	return append(out, "--become-password-file", path)
+}
+
+// writeBecomePasswordFile stores the password in an owner-only file inside the
+// gateway staging dir; the returned cleanup removes it.
+func writeBecomePasswordFile(dir string, password string) (string, func(), error) {
+	if err := ensurePrivateDir(dir); err != nil {
+		return "", nil, err
+	}
+	file, err := os.CreateTemp(dir, "become-*")
+	if err != nil {
+		return "", nil, err
+	}
+	path := file.Name()
+	cleanup := func() { _ = os.Remove(path) }
+	if err := file.Chmod(privateFilePermission); err != nil && runtime.GOOS != "windows" {
+		_ = file.Close()
+		cleanup()
+		return "", nil, err
+	}
+	if _, err := file.WriteString(password); err != nil {
+		_ = file.Close()
+		cleanup()
+		return "", nil, err
+	}
+	if err := file.Close(); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return path, cleanup, nil
 }

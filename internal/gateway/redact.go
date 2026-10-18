@@ -44,6 +44,15 @@ func NewRedactor(secrets ...string) *Redactor {
 	return &Redactor{secrets: kept}
 }
 
+// With returns a redactor that also hides the given secrets.
+func (r *Redactor) With(secrets ...string) *Redactor {
+	var all []string
+	if r != nil {
+		all = append(all, r.secrets...)
+	}
+	return NewRedactor(append(all, secrets...)...)
+}
+
 // String redacts a string. A nil redactor returns the value unchanged.
 func (r *Redactor) String(value string) string {
 	if r == nil {

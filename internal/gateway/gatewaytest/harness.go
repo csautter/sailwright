@@ -139,7 +139,9 @@ func Start(t testing.TB, opts Options) *Harness {
 	if opts.Approvals {
 		reader, writer := io.Pipe()
 		h.approvals = writer
-		approver = gateway.NewConsoleApprover(bufio.NewReader(reader), h.Console, cfg.ApprovalTTLValue)
+		// A pipe has no echo to hide.
+		approver = gateway.NewConsoleApprover(bufio.NewReader(reader), h.Console, cfg.ApprovalTTLValue).
+			HideInputWith(func() (func(), error) { return func() {}, nil })
 		t.Cleanup(func() { _ = writer.Close() })
 	}
 
@@ -229,6 +231,22 @@ func (h *Harness) ConnectTo(t testing.TB, endpoint client.Endpoint) *mcp.ClientS
 
 // Approve answers the pending approval for jobID on the gateway console.
 func (h *Harness) Approve(t testing.TB, jobID string) { h.decide(t, "approve", jobID) }
+
+// ApproveSudo approves jobID with a sudo password, as the operator would type it.
+func (h *Harness) ApproveSudo(t testing.TB, jobID string, password string) {
+	t.Helper()
+	h.decide(t, "approve-sudo", jobID)
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(h.Console.String(), "sudo password for job "+jobID) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no password prompt for %s; console:\n%s", jobID, h.Console.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := fmt.Fprintf(h.approvals, "%s\n", password); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // Deny rejects the pending approval for jobID on the gateway console.
 func (h *Harness) Deny(t testing.TB, jobID string) { h.decide(t, "deny", jobID) }

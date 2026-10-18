@@ -113,6 +113,12 @@ func main() {
 // printPlaybook echoes the playbook content so tests can see what was executed.
 func printPlaybook(args []string) {
 	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--become-password-file" {
+			// Echo the password so tests can check that it is redacted.
+			if data, err := os.ReadFile(args[i+1]); err == nil { // #nosec G304 -- test fixture.
+				fmt.Printf("BECOME-PASSWORD: %s\n", data)
+			}
+		}
 		if args[i] == "--playbook" {
 			if data, err := os.ReadFile(args[i+1]); err == nil {
 				fmt.Printf("PLAYBOOK: %s\n", strings.TrimSpace(string(data)))
