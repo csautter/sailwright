@@ -14,12 +14,16 @@ import (
 )
 
 const (
-	ExecutablePrefix = "alchemy-"
+	ExecutablePrefix = "sailwright-"
 	ProtocolVersion  = "1"
 
-	ProtocolEnvVar = "DEV_ALCHEMY_EXTENSION_PROTOCOL"
-	NameEnvVar     = "DEV_ALCHEMY_EXTENSION_NAME"
+	ProtocolEnvVar = "SAILWRIGHT_EXTENSION_PROTOCOL"
+	NameEnvVar     = "SAILWRIGHT_EXTENSION_NAME"
 )
+
+// defaultWindowsExecutableSuffixes mirrors the default PATHEXT order. Lower
+// index wins when one directory holds several variants of the same extension.
+var defaultWindowsExecutableSuffixes = []string{".com", ".exe", ".bat", ".cmd"}
 
 type Executable struct {
 	Name string
@@ -51,7 +55,9 @@ func Discover(options DiscoverOptions) ([]Executable, error) {
 
 	seen := make(map[string]Executable)
 	for _, dir := range filepath.SplitList(pathEnv) {
-		if strings.TrimSpace(dir) == "" {
+		// Relative entries such as "." would resolve against the current
+		// working directory, so an untrusted checkout could inject extensions.
+		if strings.TrimSpace(dir) == "" || !filepath.IsAbs(dir) {
 			continue
 		}
 
@@ -59,6 +65,8 @@ func Discover(options DiscoverOptions) ([]Executable, error) {
 		if err != nil {
 			continue
 		}
+		dirMatches := make(map[string]Executable)
+		dirRanks := make(map[string]int)
 		for _, entry := range entries {
 			if entry.IsDir() {
 				continue
@@ -81,7 +89,15 @@ func Discover(options DiscoverOptions) ([]Executable, error) {
 				continue
 			}
 
-			seen[name] = Executable{Name: name, Path: path}
+			rank := executableSuffixRank(entry.Name())
+			if previousRank, exists := dirRanks[name]; exists && previousRank <= rank {
+				continue
+			}
+			dirMatches[name] = Executable{Name: name, Path: path}
+			dirRanks[name] = rank
+		}
+		for name, extension := range dirMatches {
+			seen[name] = extension
 		}
 	}
 
@@ -134,7 +150,7 @@ func Run(ctx context.Context, options RunOptions) error {
 		stderr = os.Stderr
 	}
 
-	// #nosec G204 -- extension resolution restricts execution to alchemy-* executables found on PATH; arguments are passed without shell parsing.
+	// #nosec G204 -- extension resolution restricts execution to sailwright-* executables found on PATH; arguments are passed without shell parsing.
 	cmd := exec.CommandContext(ctx, extension.Path, options.Args...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
@@ -204,12 +220,60 @@ func NameFromExecutable(filename string) (string, bool) {
 }
 
 func trimExecutableSuffix(name string) string {
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".exe", ".cmd", ".bat", ".com", ".ps1":
+	if isWindowsExecutableSuffix(filepath.Ext(name)) {
 		return strings.TrimSuffix(name, filepath.Ext(name))
-	default:
-		return name
 	}
+	return name
+}
+
+// windowsExecutableSuffixes returns the lower-cased PATHEXT entries on Windows
+// and the Windows defaults elsewhere, so names stay identical across platforms.
+// PowerShell scripts are deliberately not listed: they cannot be started
+// directly and need an explicit interpreter.
+func windowsExecutableSuffixes() []string {
+	if runtime.GOOS != "windows" {
+		return defaultWindowsExecutableSuffixes
+	}
+
+	var suffixes []string
+	for _, suffix := range strings.Split(os.Getenv("PATHEXT"), string(os.PathListSeparator)) {
+		suffix = strings.ToLower(strings.TrimSpace(suffix))
+		if suffix == "" || suffix == ".ps1" {
+			continue
+		}
+		if !strings.HasPrefix(suffix, ".") {
+			suffix = "." + suffix
+		}
+		suffixes = append(suffixes, suffix)
+	}
+	if len(suffixes) == 0 {
+		return defaultWindowsExecutableSuffixes
+	}
+	return suffixes
+}
+
+func isWindowsExecutableSuffix(suffix string) bool {
+	return executableSuffixRankOf(suffix) >= 0
+}
+
+func executableSuffixRank(filename string) int {
+	if rank := executableSuffixRankOf(filepath.Ext(filename)); rank >= 0 {
+		return rank
+	}
+	return 0
+}
+
+func executableSuffixRankOf(suffix string) int {
+	suffix = strings.ToLower(suffix)
+	if suffix == "" {
+		return -1
+	}
+	for index, candidate := range windowsExecutableSuffixes() {
+		if candidate == suffix {
+			return index
+		}
+	}
+	return -1
 }
 
 func isExecutableFile(path string) (bool, error) {
@@ -221,12 +285,7 @@ func isExecutableFile(path string) (bool, error) {
 		return false, nil
 	}
 	if runtime.GOOS == "windows" {
-		switch strings.ToLower(filepath.Ext(path)) {
-		case ".exe", ".cmd", ".bat", ".com", ".ps1":
-			return true, nil
-		default:
-			return false, nil
-		}
+		return isWindowsExecutableSuffix(filepath.Ext(path)), nil
 	}
 
 	return info.Mode().Perm()&0o111 != 0, nil

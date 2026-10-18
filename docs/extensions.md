@@ -1,57 +1,81 @@
-# Dev Alchemy Extensions
+# Sailwright Extensions
 
-Dev Alchemy extensions are external executables that integrate through files,
+Sailwright extensions are external executables that integrate through files,
 JSON documents, stdin/stdout, and process boundaries. They are not Go plugins
-and they are not linked into the `alchemy` binary.
+and they are not linked into the `sailwright` binary.
 
-This keeps the open Dev Alchemy core useful on its own while allowing separate
-open or proprietary tools to provide extra capabilities such as system analysis,
-inventory import, policy checks, or generated Ansible content.
+This keeps the Sailwright core small while allowing separate tools, written in
+any language and released on their own schedule, to provide extra capabilities
+such as system analysis, inventory import, policy checks, or generated Ansible
+content.
 
 ## Command Surface
 
 Install an extension as an executable on `PATH` named:
 
 ```text
-alchemy-<name>
+sailwright-<name>
 ```
 
 Examples:
 
 ```text
-alchemy-analyzer
-alchemy-inventory-import
-alchemy-policy-check
+sailwright-analyzer
+sailwright-inventory-import
+sailwright-policy-check
 ```
 
 List installed extensions:
 
 ```bash
-alchemy extension list
+sailwright extension list
 ```
 
 Run an extension:
 
 ```bash
-alchemy extension run analyzer -- scan --out snapshot.json
-alchemy extension run analyzer -- generate --from snapshot.json --out generated-ansible
+sailwright extension run analyzer -- scan --out snapshot.json
+sailwright extension run analyzer -- generate --from snapshot.json --out generated-ansible
 ```
 
-Arguments after `--` are passed to the extension unchanged. The open CLI does
-not interpret extension-specific flags.
+Arguments after `--` are passed to the extension unchanged. The Sailwright CLI
+does not interpret extension-specific flags.
 
 ## Execution Contract
 
-When Dev Alchemy runs an extension, it:
+When Sailwright runs an extension, it:
 
-- resolves `alchemy-<name>` from `PATH`
+- resolves `sailwright-<name>` from `PATH`, using the first directory that
+  contains a match
+- ignores relative `PATH` entries such as `.`, so a checked-out repository
+  cannot inject extensions through the current working directory
 - starts it as a separate process without shell parsing
 - connects stdin, stdout, and stderr to the current CLI process
-- sets `DEV_ALCHEMY_EXTENSION_PROTOCOL=1`
-- sets `DEV_ALCHEMY_EXTENSION_NAME=<name>`
+- sets `SAILWRIGHT_EXTENSION_PROTOCOL=1`
+- sets `SAILWRIGHT_EXTENSION_NAME=<name>`
+- exits with the extension's exit code and does not add its own error output
+  when the extension fails
 
 Extension names must use letters, digits, `.`, `_`, or `-`, and must not contain
 path separators.
+
+### Windows
+
+On Windows, an extension must have one of the file suffixes listed in
+`PATHEXT` (by default `.com`, `.exe`, `.bat`, `.cmd`). If one directory holds
+several variants of the same extension, the `PATHEXT` order decides.
+
+- Prefer `.exe` extensions. Arguments passed to `.bat` and `.cmd` files are
+  re-parsed by `cmd.exe`, which makes quoting of special characters fragile.
+- PowerShell scripts (`.ps1`) are not started directly. Wrap them in a small
+  `.cmd` or `.exe` launcher that calls `pwsh -NoProfile -File`.
+
+### Security
+
+Every executable on `PATH` that matches `sailwright-<name>` is trusted and runs
+with the permissions of the current user, the same model that `git` and
+`kubectl` use for their plugins. There is no sandbox. Only install extensions
+from sources you trust, especially when provisioning with elevated privileges.
 
 ## Recommended Extension Commands
 
@@ -59,31 +83,31 @@ Extensions can expose any command surface they need. For system-analysis
 extensions, use these command names unless there is a strong reason to differ:
 
 ```bash
-alchemy extension run analyzer -- manifest
-alchemy extension run analyzer -- scan --out snapshot.json
-alchemy extension run analyzer -- generate --from snapshot.json --out generated-ansible
-alchemy extension run analyzer -- validate --bundle generated-ansible
+sailwright extension run analyzer -- manifest
+sailwright extension run analyzer -- scan --out snapshot.json
+sailwright extension run analyzer -- generate --from snapshot.json --out generated-ansible
+sailwright extension run analyzer -- validate --bundle generated-ansible
 ```
 
 Recommended meanings:
 
 - `manifest` writes extension metadata matching
-  [`dev-alchemy.extension-manifest.v1.schema.json`](../schemas/dev-alchemy.extension-manifest.v1.schema.json)
-- `scan` writes a system snapshot matching
-  [`dev-alchemy.system-snapshot.v1.schema.json`](../schemas/dev-alchemy.system-snapshot.v1.schema.json)
-- `generate` writes an Ansible bundle and metadata matching
-  [`dev-alchemy.ansible-bundle.v1.schema.json`](../schemas/dev-alchemy.ansible-bundle.v1.schema.json)
+  [`sailwright.extension-manifest.v1.schema.json`](../schemas/sailwright.extension-manifest.v1.schema.json)
+- `scan` writes a system snapshot matching the draft schema
+  [`sailwright.system-snapshot.v1alpha1.schema.json`](../schemas/sailwright.system-snapshot.v1alpha1.schema.json)
+- `generate` writes an Ansible bundle and metadata matching the draft schema
+  [`sailwright.ansible-bundle.v1alpha1.schema.json`](../schemas/sailwright.ansible-bundle.v1alpha1.schema.json)
 - `validate` checks an existing generated bundle before provisioning
 
 ## System Analyzer Flow
 
-A closed or open analyzer should use Dev Alchemy as the provisioning and test
-surface, not as a linked library:
+An analyzer should use Sailwright as the provisioning and test surface, not as
+a linked library:
 
 ```bash
-alchemy extension run analyzer -- scan --out snapshot.json
-alchemy extension run analyzer -- generate --from snapshot.json --out generated-ansible
-alchemy provision local --playbook generated-ansible/playbooks/site.yml --check
+sailwright extension run analyzer -- scan --out snapshot.json
+sailwright extension run analyzer -- generate --from snapshot.json --out generated-ansible
+sailwright provision local --playbook generated-ansible/playbooks/site.yml --check
 ```
 
 Generated bundles should prefer normal Ansible layout:
@@ -99,20 +123,22 @@ generated-ansible/
 ```
 
 The generated `metadata.json` should describe the bundle with the Ansible bundle
-schema. Dev Alchemy can then run the generated playbooks with the normal
-`alchemy provision` wrapper.
+schema. Sailwright can then run the generated playbooks with the normal
+`sailwright provision` wrapper.
 
 ## Versioning
 
-The current process protocol is `DEV_ALCHEMY_EXTENSION_PROTOCOL=1`.
+The current process protocol is `SAILWRIGHT_EXTENSION_PROTOCOL=1`.
 
 JSON documents should include one of these schema version values:
 
 ```text
-dev-alchemy.extension-manifest.v1
-dev-alchemy.system-snapshot.v1
-dev-alchemy.ansible-bundle.v1
+sailwright.extension-manifest.v1
+sailwright.system-snapshot.v1alpha1
+sailwright.ansible-bundle.v1alpha1
 ```
 
-Future incompatible changes should add new schema versions instead of changing
-the meaning of existing fields.
+The `v1alpha1` schemas are drafts. They may still change incompatibly and are
+promoted to `v1` once Sailwright itself produces or consumes them. Stable
+schemas never change the meaning of existing fields; incompatible changes add a
+new schema version instead.
