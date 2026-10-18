@@ -58,7 +58,10 @@ func Markdown(report Report) string {
 			exit = fmt.Sprint(*step.ExitCode)
 		}
 		name := step.Name
-		if step.Always {
+		switch {
+		case step.Preflight:
+			name += " (preflight)"
+		case step.Always:
 			name += " (always)"
 		}
 		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s |\n", i+1, name, step.Op, step.Status, exit, step.Duration.Round(time.Second))

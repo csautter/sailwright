@@ -2,8 +2,17 @@ name: vm-lifecycle
 description: >-
   The common user cycle for the one VM target in SAILWRIGHT_E2E_TARGET: obtain the image, create, start,
   provision in check mode, provision, provision again without changes, stop and
-  destroy. The VM is always destroyed at the end.
+  destroy. The VM is always destroyed at the end; if it already exists before
+  the run, the scenario fails without touching it.
 requires: [target]
+preflight:
+  # Fail before building if the VM already exists, e.g. left over from an aborted
+  # run or created by hand. The always destroy below would otherwise delete it.
+  - name: target VM does not exist yet
+    op: list
+    with: {command: destroy}
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}
 steps:
   - name: pull prebuilt image
     op: pull

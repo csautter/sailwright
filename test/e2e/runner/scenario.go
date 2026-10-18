@@ -62,8 +62,12 @@ type Scenario struct {
 	// Covers names a list command whose targets must all appear in Targets, so new
 	// VM options cannot silently go untested.
 	Covers string `yaml:"covers"`
-	Steps  []Step `yaml:"steps"`
-	Always []Step `yaml:"always"`
+	// Preflight steps check that the host is fit for the scenario before it changes
+	// anything. If one fails, the steps and the always steps are skipped, so cleanup
+	// never touches state the scenario did not create, such as an existing VM.
+	Preflight []Step `yaml:"preflight"`
+	Steps     []Step `yaml:"steps"`
+	Always    []Step `yaml:"always"`
 
 	File    string   `yaml:"-"`
 	targets []Target `yaml:"-"`
@@ -166,6 +170,12 @@ func (s *Scenario) validate() error {
 		return errors.New("a scenario needs at least one step")
 	}
 	usesTarget := false
+	for i := range s.Preflight {
+		if err := s.Preflight[i].validate(); err != nil {
+			return fmt.Errorf("preflight step %d (%s): %w", i+1, s.Preflight[i].Name, err)
+		}
+		usesTarget = usesTarget || targetOps[s.Preflight[i].Op]
+	}
 	for i := range s.Steps {
 		if err := s.Steps[i].validate(); err != nil {
 			return fmt.Errorf("step %d (%s): %w", i+1, s.Steps[i].Name, err)
@@ -361,7 +371,7 @@ func (s Scenario) EnvReferences() []string {
 			names = append(names, match[1])
 		}
 	}
-	for _, step := range append(append([]Step{}, s.Steps...), s.Always...) {
+	for _, step := range append(append(append([]Step{}, s.Preflight...), s.Steps...), s.Always...) {
 		if step.WhenEnv != "" {
 			names = append(names, step.WhenEnv)
 		}

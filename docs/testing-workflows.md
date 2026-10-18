@@ -60,7 +60,7 @@ that runs as a subtest of `go test -tags e2e ./test/e2e`:
 | Scenario | Needs | Covers |
 | --- | --- | --- |
 | `smoke` | nothing | help output and `list --json` for commands that need no hypervisor |
-| `vm-lifecycle` | `SAILWRIGHT_E2E_TARGET` | pull or build, create, start, provision `--check`, provision, idempotent re-run, stop, destroy (always) |
+| `vm-lifecycle` | `SAILWRIGHT_E2E_TARGET` | target VM must not exist yet (preflight), pull or build, create, start, provision `--check`, provision, idempotent re-run, stop, destroy (always) |
 | `destroy-idempotent` | `SAILWRIGHT_E2E_TARGET` | destroying twice succeeds |
 | `local-check` | host changes allowed | `provision local --check` with the default playbook |
 | `vm-lifecycle-linux` | Linux host | the `vm-lifecycle` steps for every VM option of a Linux host |
@@ -126,6 +126,12 @@ requires: [target]           # target and/or host-changes
 # host_os: linux             # linux, darwin or windows
 # covers: create             # fail if `create list` offers a target missing below
 # targets: [ubuntu/server/amd64, windows11//amd64/hyperv]
+preflight:                   # checks before anything changes on the host
+  - name: target VM does not exist yet
+    op: list
+    with: {command: destroy}
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}
 steps:
   - name: provision in check mode
     op: provision            # build create start stop destroy provision pull provision_local list cli
@@ -150,6 +156,11 @@ always:
 ```
 
 After a failed step the remaining steps are skipped; `always` steps still run.
+If a `preflight` step fails, nothing else runs, not even `always`: the scenario
+has not changed the host, so its cleanup must not touch what was already there.
+The lifecycle scenarios use this to stop before building when the target VM
+already exists, instead of destroying it at the end. Remove a leftover VM with
+`sailwright destroy <os> [--type ...] --arch ...` and run the scenario again.
 Only `${SAILWRIGHT_E2E_*}` variables are expanded in `with` values. Unknown
 fields, operations and recap keys are rejected when the scenario loads.
 

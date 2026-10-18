@@ -39,6 +39,7 @@ type RunOptions struct {
 type StepReport struct {
 	Name       string        `json:"name"`
 	Op         string        `json:"op"`
+	Preflight  bool          `json:"preflight,omitempty"`
 	Always     bool          `json:"always,omitempty"`
 	Status     string        `json:"status"`
 	Argv       []string      `json:"argv,omitempty"`
@@ -74,7 +75,8 @@ func (r Report) Failures() []StepReport {
 }
 
 // Run executes a scenario. After the first failed step the remaining steps are
-// skipped, but `always` steps run in every case.
+// skipped, but `always` steps still run, unless a preflight step failed: then the
+// scenario has not changed anything and nothing runs after the preflight.
 func Run(ctx context.Context, scenario Scenario, executor Executor, opts RunOptions) Report {
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -94,10 +96,29 @@ func Run(ctx context.Context, scenario Scenario, executor Executor, opts RunOpti
 		opts.Logf("describe executor: %v", err)
 	}
 
-	failed := false
+	preflightFailed := false
+	for _, step := range scenario.Preflight {
+		if preflightFailed {
+			report.Steps = append(report.Steps, StepReport{Name: step.Name, Op: step.Op, Preflight: true, Status: StatusSkipped, Reason: "an earlier preflight step failed"})
+			continue
+		}
+		stepReport := runStep(ctx, step, executor, opts)
+		stepReport.Preflight = true
+		if stepReport.Status == StatusFailed {
+			preflightFailed = true
+			stepReport.Reason += "; the scenario did not start and left the host unchanged"
+		}
+		report.Steps = append(report.Steps, stepReport)
+	}
+
+	failed := preflightFailed
+	skipReason := "an earlier step failed"
+	if preflightFailed {
+		skipReason = "a preflight step failed"
+	}
 	for _, step := range scenario.Steps {
 		if failed {
-			report.Steps = append(report.Steps, StepReport{Name: step.Name, Op: step.Op, Status: StatusSkipped, Reason: "an earlier step failed"})
+			report.Steps = append(report.Steps, StepReport{Name: step.Name, Op: step.Op, Status: StatusSkipped, Reason: skipReason})
 			continue
 		}
 		stepReport := runStep(ctx, step, executor, opts)
@@ -105,6 +126,11 @@ func Run(ctx context.Context, scenario Scenario, executor Executor, opts RunOpti
 		failed = stepReport.Status == StatusFailed
 	}
 	for _, step := range scenario.Always {
+		if preflightFailed {
+			// Cleanup would act on state the scenario did not create.
+			report.Steps = append(report.Steps, StepReport{Name: step.Name, Op: step.Op, Always: true, Status: StatusSkipped, Reason: skipReason})
+			continue
+		}
 		stepReport := runStep(context.WithoutCancel(ctx), step, executor, opts)
 		stepReport.Always = true
 		report.Steps = append(report.Steps, stepReport)

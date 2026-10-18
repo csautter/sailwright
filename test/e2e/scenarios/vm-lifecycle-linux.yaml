@@ -13,6 +13,14 @@ targets:
   - ubuntu/desktop/arm64
   - windows11//amd64
   - windows11//arm64
+preflight:
+  # Fail before building if the VM already exists, e.g. left over from an aborted
+  # run or created by hand. The always destroy below would otherwise delete it.
+  - name: target VM does not exist yet
+    op: list
+    with: {command: destroy}
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}
 steps:
   - name: build image
     op: build

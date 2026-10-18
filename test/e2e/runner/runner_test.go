@@ -265,6 +265,42 @@ func TestScenariosWithDirectExecutorAndFakeCLI(t *testing.T) {
 	}
 }
 
+func TestPreflightFailureLeavesExistingVMUntouched(t *testing.T) {
+	binary := gatewaytest.BuildFakeCLI(t)
+	t.Setenv("FAKE_CLI_STATE", t.TempDir())
+	executor := &runner.DirectExecutor{Binary: binary}
+	target := runner.Target{OS: "windows11", Arch: "amd64"}
+	getenv := func(string) string { return "" }
+	ctx := context.Background()
+
+	// A VM someone created before the run, e.g. by hand or in an aborted run.
+	if _, err := executor.Run(ctx, runner.StepRequest{Step: runner.Step{Name: "existing VM", Op: runner.OpCreate}, Target: target, Getenv: getenv}); err != nil {
+		t.Fatal(err)
+	}
+
+	report := runner.Run(ctx, loadRepoScenario(t, "vm-lifecycle"), executor, runner.RunOptions{Target: target, Getenv: getenv})
+	if report.Passed {
+		t.Fatal("expected the preflight to fail for an existing VM")
+	}
+	for i, step := range report.Steps {
+		want := runner.StatusSkipped
+		if i == 0 {
+			want = runner.StatusFailed
+		}
+		if step.Status != want || step.Preflight != (i == 0) {
+			t.Fatalf("step %d %q: status %s (preflight %v), want %s:\n%s", i+1, step.Name, step.Status, step.Preflight, want, runner.Markdown(report))
+		}
+	}
+
+	targets, err := executor.List(ctx, "destroy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed, ok := runner.FindTarget(targets, target); !ok || listed.Fields["state"] == "missing" {
+		t.Fatalf("the existing VM must survive the failed scenario, got %+v", listed)
+	}
+}
+
 func TestConfigFromEnv(t *testing.T) {
 	env := map[string]string{}
 	getenv := func(name string) string { return env[name] }

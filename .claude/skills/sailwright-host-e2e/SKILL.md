@@ -68,6 +68,7 @@ Read `docs/agent-gateway.md` once if you have not seen it.
 When you found a check worth repeating, add a YAML scenario under
 `test/e2e/scenarios/` instead of only describing it (format in
 `docs/testing-workflows.md#writing-scenarios`). Keep it deterministic: fixed
-steps, explicit expectations, cleanup in `always`. Verify it with the fake
+steps, explicit expectations, cleanup in `always`, and a `preflight` check
+for any existing state that cleanup could otherwise destroy. Verify it with the fake
 CLI self-test (`go test ./test/e2e/...`) and then once against the gateway.
 A human reviews and merges it.
