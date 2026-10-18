@@ -7,8 +7,8 @@ description: >
 inputs:
   storage-backend:
     description: >
-      Remote cache backend. Use "ftp" for explicit FTPS, "hetzner-s3" for
-      Hetzner Object Storage, or "azure" for the legacy Azure Blob Storage backend.
+      Remote cache backend. Use "ftp" for explicit FTPS, or "azure" for the
+      legacy Azure Blob Storage backend.
     required: false
     default: 'ftp'
   files:
@@ -16,33 +16,13 @@ inputs:
       JSON array of cache file descriptors. Each object may contain:
         - local-path  (required) path where the file should live in the workspace
         - blob-name   (optional) object key; defaults to basename of local-path
-        - container   (optional) legacy Azure container name, or S3 bucket fallback; ignored by FTP; defaults to "build-cache"
+        - container   (optional) legacy Azure container name; ignored by FTP; defaults to "build-cache"
       Example:
         '[{"local-path":"./cache/windows11/iso/win11.iso","container":"build-cache"}]'
       Pass '[]' to skip all cache operations (e.g. for builds with no cached files).
     required: true
   subscription-id:
     description: 'Azure subscription ID used to derive the storage account name when storage-backend is "azure"'
-    required: false
-    default: ''
-  s3-endpoint-url:
-    description: 'Hetzner S3 endpoint URL, for example https://fsn1.your-objectstorage.com'
-    required: false
-    default: ''
-  s3-bucket:
-    description: 'Hetzner S3 bucket name. Defaults to each file descriptor container value when empty.'
-    required: false
-    default: ''
-  s3-access-key-id:
-    description: 'Hetzner S3 access key ID'
-    required: false
-    default: ''
-  s3-secret-access-key:
-    description: 'Hetzner S3 secret access key'
-    required: false
-    default: ''
-  s3-prefix:
-    description: 'Optional prefix prepended to all S3 object keys'
     required: false
     default: ''
   ftp-server:
@@ -85,11 +65,6 @@ runs:
         CACHE_FILES: ${{ inputs.files }}
         CACHE_BACKEND: ${{ inputs.storage-backend }}
         SUBSCRIPTION_ID: ${{ inputs.subscription-id }}
-        HETZNER_S3_ENDPOINT_URL: ${{ inputs.s3-endpoint-url || env.HETZNER_S3_ENDPOINT_URL || env.S3_ENDPOINT_URL }}
-        HETZNER_S3_BUCKET: ${{ inputs.s3-bucket || env.HETZNER_S3_BUCKET || env.S3_BUCKET }}
-        HETZNER_S3_ACCESS_KEY_ID: ${{ inputs.s3-access-key-id || env.HETZNER_S3_ACCESS_KEY_ID || env.AWS_ACCESS_KEY_ID }}
-        HETZNER_S3_SECRET_ACCESS_KEY: ${{ inputs.s3-secret-access-key || env.HETZNER_S3_SECRET_ACCESS_KEY || env.AWS_SECRET_ACCESS_KEY }}
-        HETZNER_S3_PREFIX: ${{ inputs.s3-prefix || env.HETZNER_S3_PREFIX || env.S3_PREFIX }}
         FTP_SERVER: ${{ inputs.ftp-server || env.BUILD_CACHE_FTP_SERVER || env.FTP_SERVER }}
         FTP_PORT: ${{ inputs.ftp-port || env.BUILD_CACHE_FTP_PORT || env.FTP_PORT }}
         FTP_USERNAME: ${{ inputs.ftp-username || env.BUILD_CACHE_FTP_USERNAME || env.FTP_USERNAME }}
@@ -106,11 +81,6 @@ runs:
         CACHE_FILES: ${{ inputs.files }}
         CACHE_BACKEND: ${{ inputs.storage-backend }}
         SUBSCRIPTION_ID: ${{ inputs.subscription-id }}
-        HETZNER_S3_ENDPOINT_URL: ${{ inputs.s3-endpoint-url || env.HETZNER_S3_ENDPOINT_URL || env.S3_ENDPOINT_URL }}
-        HETZNER_S3_BUCKET: ${{ inputs.s3-bucket || env.HETZNER_S3_BUCKET || env.S3_BUCKET }}
-        HETZNER_S3_ACCESS_KEY_ID: ${{ inputs.s3-access-key-id || env.HETZNER_S3_ACCESS_KEY_ID || env.AWS_ACCESS_KEY_ID }}
-        HETZNER_S3_SECRET_ACCESS_KEY: ${{ inputs.s3-secret-access-key || env.HETZNER_S3_SECRET_ACCESS_KEY || env.AWS_SECRET_ACCESS_KEY }}
-        HETZNER_S3_PREFIX: ${{ inputs.s3-prefix || env.HETZNER_S3_PREFIX || env.S3_PREFIX }}
         FTP_SERVER: ${{ inputs.ftp-server || env.BUILD_CACHE_FTP_SERVER || env.FTP_SERVER }}
         FTP_PORT: ${{ inputs.ftp-port || env.BUILD_CACHE_FTP_PORT || env.FTP_PORT }}
         FTP_USERNAME: ${{ inputs.ftp-username || env.BUILD_CACHE_FTP_USERNAME || env.FTP_USERNAME }}

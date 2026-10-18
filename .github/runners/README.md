@@ -36,8 +36,8 @@ machine**. The runner script mounts the directory into every VM at boot via Virt
 1. **Cache hit** — symlinks the file from `/Volumes/My Shared Files/build-cache/` into the
    workspace; the remote download is skipped entirely.
 2. **Cache miss** — downloads the file from the configured remote build-cache backend as normal.
-   CI uses FTP with explicit TLS enforced and `/private` as the remote base directory. Hetzner S3
-   and Azure Blob backends remain available through the cache actions' `storage-backend` option.
+   CI uses FTP with explicit TLS enforced and `/private` as the remote base directory. The Azure
+   Blob backend remains available through the cache actions' `storage-backend` option.
 
 After the build the `upload-build-cache` action **copies any freshly downloaded file into the
 cache** so every subsequent run on the same runner is a cache hit. No manual preparation of
@@ -115,7 +115,6 @@ Remote cache backend reference:
 | Backend | `storage-backend` | Required configuration |
 |---|---|---|
 | FTPS | `ftp` | `BUILD_CACHE_FTP_SERVER`, optional `BUILD_CACHE_FTP_PORT`, `BUILD_CACHE_FTP_USERNAME`, `BUILD_CACHE_FTP_PASSWORD`, optional `BUILD_CACHE_FTP_BASE_DIR` |
-| Hetzner Object Storage | `hetzner-s3` | `HETZNER_S3_ENDPOINT_URL`, `HETZNER_S3_BUCKET`, `HETZNER_S3_ACCESS_KEY_ID`, `HETZNER_S3_SECRET_ACCESS_KEY`, optional `HETZNER_S3_PREFIX` |
 | Azure Blob Storage | `azure` | `subscription-id` |
 
 Callers that relied on the old implicit Azure behavior must now set `storage-backend: azure`

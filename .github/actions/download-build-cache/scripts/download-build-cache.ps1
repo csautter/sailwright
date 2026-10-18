@@ -1,8 +1,7 @@
 # Expects the following environment variables (set by the composite action):
 #   CACHE_FILES       - JSON array of cache file descriptors
-#   CACHE_BACKEND     - Remote cache backend: ftp, hetzner-s3, or azure
+#   CACHE_BACKEND     - Remote cache backend: ftp or azure
 #   SUBSCRIPTION_ID   - Azure subscription ID (azure backend only)
-#   HETZNER_S3_*      - Hetzner S3 endpoint, bucket, access key, secret key, and optional prefix
 #   FTP_*             - FTP server, port, username, password, and base dir. Explicit TLS is enforced.
 #   LOCAL_CACHE_DIR   - Optional local runner cache directory
 [CmdletBinding()]
@@ -16,9 +15,6 @@ if ([string]::IsNullOrWhiteSpace($cacheBackend)) { $cacheBackend = 'ftp' }
 $cacheBackend   = $cacheBackend.ToLowerInvariant()
 $resourceGroup  = 'gh-runner-storage-rg'
 $localCacheDir  = $env:LOCAL_CACHE_DIR
-$script:McAlias = 'dev-alchemy-build-cache'
-$script:McBin   = $null
-$script:McReady = $false
 $script:CurlExe = $null
 $script:FtpBaseUrl = $null
 $script:FtpBaseDirNormalized = $null
@@ -32,16 +28,6 @@ function Write-Fail {
     throw $Message
 }
 
-function Normalize-EndpointUrl {
-    param([Parameter(Mandatory = $true)][string]$Endpoint)
-
-    if ($Endpoint.StartsWith('http://') -or $Endpoint.StartsWith('https://')) {
-        return $Endpoint
-    }
-
-    return "https://$Endpoint"
-}
-
 function Get-AzureStorageAccount {
     if ([string]::IsNullOrWhiteSpace($env:SUBSCRIPTION_ID)) {
         Write-Fail "subscription-id is required when storage-backend is 'azure'."
@@ -53,118 +39,6 @@ function Get-AzureStorageAccount {
     }
 
     return $name
-}
-
-function Ensure-MinioClient {
-    if ($script:McBin) {
-        return
-    }
-
-    $existing = Get-Command mc -ErrorAction SilentlyContinue
-    if ($existing) {
-        $script:McBin = $existing.Source
-        return
-    }
-
-    $installRoot = $env:RUNNER_TEMP
-    if ([string]::IsNullOrWhiteSpace($installRoot)) { $installRoot = $env:TEMP }
-    if ([string]::IsNullOrWhiteSpace($installRoot)) { $installRoot = [System.IO.Path]::GetTempPath() }
-
-    $installDir = Join-Path $installRoot 'dev-alchemy-build-cache'
-    if (-not (Test-Path $installDir -PathType Container)) {
-        New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-    }
-
-    $script:McBin = Join-Path $installDir 'mc.exe'
-    if (-not (Test-Path $script:McBin -PathType Leaf)) {
-        $arch = 'amd64'
-        if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') {
-            $arch = 'arm64'
-        }
-
-        Write-Host '  [setup] Installing MinIO client for Hetzner S3 cache operations...'
-        Invoke-WebRequest -Uri "https://dl.min.io/client/mc/release/windows-$arch/mc.exe" -OutFile $script:McBin -UseBasicParsing
-    }
-}
-
-function Initialize-HetznerS3 {
-    if ($script:McReady) {
-        return
-    }
-
-    $missing = @()
-    if ([string]::IsNullOrWhiteSpace($env:HETZNER_S3_ENDPOINT_URL)) { $missing += 'HETZNER_S3_ENDPOINT_URL' }
-    if ([string]::IsNullOrWhiteSpace($env:HETZNER_S3_ACCESS_KEY_ID)) { $missing += 'HETZNER_S3_ACCESS_KEY_ID' }
-    if ([string]::IsNullOrWhiteSpace($env:HETZNER_S3_SECRET_ACCESS_KEY)) { $missing += 'HETZNER_S3_SECRET_ACCESS_KEY' }
-    if ($missing.Count -gt 0) {
-        Write-Fail "Missing Hetzner S3 configuration: $($missing -join ', ')."
-    }
-
-    Ensure-MinioClient
-
-    $configRoot = $env:MC_CONFIG_DIR
-    if ([string]::IsNullOrWhiteSpace($configRoot)) {
-        $base = $env:RUNNER_TEMP
-        if ([string]::IsNullOrWhiteSpace($base)) { $base = $env:TEMP }
-        if ([string]::IsNullOrWhiteSpace($base)) { $base = [System.IO.Path]::GetTempPath() }
-        $configRoot = Join-Path $base 'dev-alchemy-build-cache-mc'
-        $env:MC_CONFIG_DIR = $configRoot
-    }
-    if (-not (Test-Path $configRoot -PathType Container)) {
-        New-Item -ItemType Directory -Path $configRoot -Force | Out-Null
-    }
-
-    $endpoint = Normalize-EndpointUrl $env:HETZNER_S3_ENDPOINT_URL
-    & $script:McBin alias set $script:McAlias $endpoint $env:HETZNER_S3_ACCESS_KEY_ID $env:HETZNER_S3_SECRET_ACCESS_KEY --api S3v4 --path auto *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Fail 'Failed to configure MinIO client alias for Hetzner S3.'
-    }
-
-    $script:McReady = $true
-}
-
-function Get-S3BucketForContainer {
-    param([Parameter(Mandatory = $true)][string]$Container)
-
-    if (-not [string]::IsNullOrWhiteSpace($env:HETZNER_S3_BUCKET)) {
-        return $env:HETZNER_S3_BUCKET
-    }
-
-    return $Container
-}
-
-function Get-S3KeyForBlob {
-    param([Parameter(Mandatory = $true)][string]$BlobName)
-
-    $key = $BlobName.TrimStart('/')
-    $prefix = $env:HETZNER_S3_PREFIX
-    if (-not [string]::IsNullOrWhiteSpace($prefix)) {
-        $prefix = $prefix.Trim('/').Trim()
-        if (-not [string]::IsNullOrWhiteSpace($prefix)) {
-            return "$prefix/$key"
-        }
-    }
-
-    return $key
-}
-
-function Get-S3RemotePath {
-    param(
-        [Parameter(Mandatory = $true)][string]$Bucket,
-        [Parameter(Mandatory = $true)][string]$Key
-    )
-
-    return "$script:McAlias/$Bucket/$Key"
-}
-
-function Test-S3Object {
-    param(
-        [Parameter(Mandatory = $true)][string]$Bucket,
-        [Parameter(Mandatory = $true)][string]$Key
-    )
-
-    & $script:McBin stat (Get-S3RemotePath -Bucket $Bucket -Key $Key) *> $null
-    return $LASTEXITCODE -eq 0
 }
 
 function Normalize-FtpServer {
@@ -347,36 +221,6 @@ function Download-FromFtp {
     }
 }
 
-function Download-FromHetznerS3 {
-    param(
-        [Parameter(Mandatory = $true)][string]$LocalPath,
-        [Parameter(Mandatory = $true)][string]$BlobName,
-        [Parameter(Mandatory = $true)][string]$Container
-    )
-
-    $bucket = Get-S3BucketForContainer $Container
-    $key = Get-S3KeyForBlob $BlobName
-
-    Write-Host "  [download] Not in local cache. Attempting Hetzner S3 download from bucket '$bucket' key '$key'..."
-    Initialize-HetznerS3
-
-    if (Test-S3Object -Bucket $bucket -Key $key) {
-        $dir = Split-Path -Path $LocalPath -Parent
-        if ($dir -and -not (Test-Path $dir -PathType Container)) {
-            New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        }
-
-        & $script:McBin --quiet cp (Get-S3RemotePath -Bucket $bucket -Key $key) $LocalPath
-        if ($LASTEXITCODE -ne 0) {
-            Write-Fail "Failed to download $key from bucket '$bucket'."
-        }
-        Write-Host "  [ok] Downloaded $key -> $LocalPath"
-        Save-ToLocalCache -LocalPath $LocalPath -BlobName $BlobName
-    } else {
-        Write-Host "  [miss] Object $key not found in bucket '$bucket'."
-    }
-}
-
 function Download-FromAzure {
     param(
         [Parameter(Mandatory = $true)][string]$LocalPath,
@@ -447,11 +291,9 @@ foreach ($f in $files) {
 
     if ($cacheBackend -eq 'ftp' -or $cacheBackend -eq 'ftps') {
         Download-FromFtp -LocalPath $localPath -BlobName $blobName
-    } elseif ($cacheBackend -eq 'hetzner-s3' -or $cacheBackend -eq 's3') {
-        Download-FromHetznerS3 -LocalPath $localPath -BlobName $blobName -Container $container
     } elseif ($cacheBackend -eq 'azure' -or $cacheBackend -eq 'azure-blob') {
         Download-FromAzure -LocalPath $localPath -BlobName $blobName -Container $container
     } else {
-        Write-Fail "Unsupported storage backend '$cacheBackend'. Use 'ftp', 'hetzner-s3', or 'azure'."
+        Write-Fail "Unsupported storage backend '$cacheBackend'. Use 'ftp' or 'azure'."
     }
 }
