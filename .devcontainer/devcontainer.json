@@ -6,6 +6,11 @@
   "containerEnv": {
     "GOTOOLCHAIN": "auto"
   },
+  "remoteEnv": {
+    "SAILWRIGHT_GATEWAY_TOKEN": "${localEnv:SAILWRIGHT_GATEWAY_TOKEN}",
+    "SAILWRIGHT_GATEWAY_URL": "${localEnv:SAILWRIGHT_GATEWAY_URL}"
+  },
+  "runArgs": ["--add-host=host.docker.internal:host-gateway"],
   "mounts": [
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents/skills,target=/root/.agents/skills,type=bind,consistency=cached",
     "source=skills-vscode-server-data,target=/root/.vscode-server/data,type=volume",

@@ -51,6 +51,82 @@ lifecycle (`install -> build -> create -> start -> provision --check ->
 provision -> (stop -> destroy)`), see
 [Automated Quick-Start](quickstart-automation.md).
 
+## Deterministic E2E Scenarios
+
+The repeated user cycles are covered by deterministic scenarios in
+[`test/e2e/scenarios`](../test/e2e/scenarios). Each scenario is a YAML file
+that runs as a subtest of `go test -tags e2e ./test/e2e`:
+
+| Scenario | Needs | Covers |
+| --- | --- | --- |
+| `smoke` | nothing | help output and `list --json` for commands that need no hypervisor |
+| `vm-lifecycle` | `SAILWRIGHT_E2E_TARGET` | pull or build, create, start, provision `--check`, provision, idempotent re-run, stop, destroy (always) |
+| `destroy-idempotent` | `SAILWRIGHT_E2E_TARGET` | destroying twice succeeds |
+| `local-check` | host changes allowed | `provision local --check` with the default playbook |
+
+Steps run through an executor:
+
+- **direct** runs the Sailwright binary itself. Use it on disposable CI runners
+  or as a human on the host.
+- **gateway** runs every step through [`sailwright-gateway`](./agent-gateway.md),
+  so agents in a devcontainer get the same tests and the gateway policy still
+  applies. Steps outside the safe set, such as `local-check`, wait for approval
+  on the gateway terminal.
+
+```bash
+# direct, on the host
+make test-e2e-smoke
+make test-e2e E2E_RUN='TestScenarios/vm-lifecycle' E2E_TARGET=ubuntu/server/amd64
+
+# gateway, from the devcontainer
+SAILWRIGHT_E2E_EXECUTOR=gateway SAILWRIGHT_E2E_TARGET=ubuntu/server/amd64 \
+  go test -tags e2e ./test/e2e -run 'TestScenarios/(smoke|vm-lifecycle)' -count=1 -timeout 6h -v
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `SAILWRIGHT_E2E_EXECUTOR` | `direct` (default) or `gateway` |
+| `SAILWRIGHT_E2E_BIN` | Sailwright binary for the direct executor |
+| `SAILWRIGHT_E2E_TARGET` | `os/type/arch`, e.g. `ubuntu/server/amd64` or `windows11//amd64` |
+| `SAILWRIGHT_E2E_PULL_REF` | pull this OCI artifact instead of building in `vm-lifecycle` |
+| `SAILWRIGHT_E2E_ALLOW_HOST_CHANGES` | `1` lets the direct executor run host-changing steps |
+| `SAILWRIGHT_E2E_OUT` | report directory (default `test/e2e/out`) |
+| `SAILWRIGHT_GATEWAY_URL`, `SAILWRIGHT_GATEWAY_TOKEN` | gateway endpoint and token |
+
+Each run writes `<scenario>.json` and `<scenario>.md` reports with the host,
+binary hash and per-step results. For JUnit output, run the same command with
+`gotestsum --junitfile`.
+
+### Writing scenarios
+
+```yaml
+name: my-scenario            # must match the file name
+description: What this checks.
+requires: [target]           # target and/or host-changes
+steps:
+  - name: provision in check mode
+    op: provision            # build create start stop destroy provision pull provision_local list cli
+    with: {check: true}
+    expect:
+      exit_code: 0           # default 0
+      output_regex: "PLAY RECAP"
+      recap: {failed: 0, changed: 0}
+      state: {command: start, field: state, regex: "^running$"}
+      max_duration: 30m
+  - name: direct-only call
+    op: cli
+    only: direct             # or gateway
+    when_env: SAILWRIGHT_E2E_SOMETHING
+    with: {args: ["build", "list", "--json"]}
+always:
+  - name: cleanup
+    op: destroy
+```
+
+After a failed step the remaining steps are skipped; `always` steps still run.
+Only `${SAILWRIGHT_E2E_*}` variables are expanded in `with` values. Unknown
+fields, operations and recap keys are rejected when the scenario loads.
+
 ## OCI Build Artifact Registry Workflow
 
 Final build artifacts can be pushed to, and pulled from, an OCI registry. The
