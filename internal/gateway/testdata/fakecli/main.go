@@ -69,6 +69,11 @@ func main() {
 		return
 	}
 
+	if command != "install" && command != "pull" && !knownOS(osName) {
+		fmt.Fprintf(os.Stderr, "Error: ❌ invalid combination: OS=%s\n", osName)
+		os.Exit(1)
+	}
+
 	id := targetID(args)
 	switch command {
 	case "build", "install", "pull":
@@ -195,6 +200,18 @@ func removeState(id string) {
 		_ = os.Remove(path)
 		_ = os.Remove(path + ".provisioned")
 	}
+}
+
+func knownOS(osName string) bool {
+	if osName == "local" {
+		return true
+	}
+	for _, t := range baseTargets {
+		if t.OS == osName {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(values []string, value string) bool {

@@ -1,0 +1,12 @@
+name: local-check
+description: >-
+  Ansible check run of the default playbook against this host. Through the
+  gateway this needs approval on the host terminal; with the direct executor it
+  needs SAILWRIGHT_E2E_ALLOW_HOST_CHANGES=1.
+requires: [host-changes]
+steps:
+  - name: provision local in check mode
+    op: provision_local
+    with: {check: true}
+    expect:
+      recap: {failed: 0, unreachable: 0}

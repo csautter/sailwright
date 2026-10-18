@@ -1,0 +1,12 @@
+name: destroy-idempotent
+description: >-
+  Destroying an absent VM succeeds, and destroying twice succeeds both times
+  (docs/adr/0001-destroy-implementation-contract.md).
+requires: [target]
+steps:
+  - name: destroy once
+    op: destroy
+  - name: destroy again
+    op: destroy
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}

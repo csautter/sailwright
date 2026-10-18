@@ -1,0 +1,45 @@
+name: vm-lifecycle
+description: >-
+  The common user cycle for one VM target: obtain the image, create, start,
+  provision in check mode, provision, provision again without changes, stop and
+  destroy. The VM is always destroyed at the end.
+requires: [target]
+steps:
+  - name: pull prebuilt image
+    op: pull
+    when_env: SAILWRIGHT_E2E_PULL_REF
+    with: {ref: "${SAILWRIGHT_E2E_PULL_REF}"}
+  - name: build image
+    op: build
+    unless_env: SAILWRIGHT_E2E_PULL_REF
+    with: {headless: true}
+  - name: create VM
+    op: create
+    expect:
+      state: {command: start, field: state, regex: "^(stopped|shut off|running)$"}
+  - name: start VM
+    op: start
+    expect:
+      state: {command: start, field: state, regex: "^running$"}
+  - name: provision in check mode
+    op: provision
+    with: {check: true}
+    expect:
+      recap: {failed: 0, unreachable: 0}
+  - name: provision
+    op: provision
+    expect:
+      recap: {failed: 0, unreachable: 0}
+  - name: provision again is idempotent
+    op: provision
+    expect:
+      recap: {failed: 0, unreachable: 0, changed: 0}
+  - name: stop VM
+    op: stop
+    expect:
+      state: {command: start, field: state, regex: "^(stopped|shut off)$"}
+always:
+  - name: destroy VM
+    op: destroy
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}

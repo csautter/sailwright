@@ -75,3 +75,6 @@ plans/
 # Website terminal demo: ignore vendored player assets (demo/quickstart.cast is
 # tracked on purpose, alongside demo/quickstart.gif)
 demo/vendor/
+
+# E2E scenario reports
+test/e2e/out/
