@@ -1,0 +1,43 @@
+name: Sync virtio-win checksum
+
+# Renovate bumps the virtio-win version but cannot compute the ISO SHA256.
+# This workflow completes Renovate's PR by syncing the Go pin and both checksums.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - "scripts/macos/download-virtio-win-iso.sh"
+      - "pkg/build/dependencies.go"
+      - "scripts/update-virtio-win-checksum.sh"
+      - ".github/workflows/sync-virtio-win-checksum.yml"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    name: Sync virtio-win pins
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'renovate/virtio-win')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          # RENOVATE_TOKEN (not GITHUB_TOKEN) so the pushed commit triggers the other workflows.
+          token: ${{ secrets.RENOVATE_TOKEN }}
+
+      - name: Update version and checksum pins
+        run: scripts/update-virtio-win-checksum.sh
+
+      - name: Commit changes
+        run: |
+          if git diff --quiet; then
+            echo "virtio-win pins already in sync"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(deps): sync virtio-win version and checksum"
+          git push

@@ -99,8 +99,11 @@ const (
 	ubuntuLiveServerArm64SHA256  = "f12484464c7d4d73e2167e0a7dbda1e669f8fae9bcf778dc0944937034b320cb"
 
 	// renovate: datasource=custom.virtio-win depName=virtio-win versioning=loose
-	virtioWinVersion = "0.1.285-1"
-	virtioWinSHA256  = "e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976331"
+	virtioWinVersion = "0.1.302-1"
+
+	// virtioWinSHA256 is not managed by Renovate: no datasource publishes ISO digests.
+	// The "Sync virtio-win checksum" workflow updates it via scripts/update-virtio-win-checksum.sh.
+	virtioWinSHA256 = "303f7ae40dad495d6ae474fdc571df58958a4dbc5c37a522d80f9a203867949d"
 
 	virtioWinFedoraArchiveURL = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio"
 	virtioWinMirrorArchiveURL = "https://fedora-virt.repo.nfrance.com/virtio-win/direct-downloads/archive-virtio"
