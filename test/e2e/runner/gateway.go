@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -22,6 +23,8 @@ const (
 type GatewayExecutor struct {
 	Endpoint     client.Endpoint
 	PollInterval time.Duration
+	// Stream receives live job output (optional).
+	Stream io.Writer
 
 	session *mcp.ClientSession
 }
@@ -119,23 +122,26 @@ func (g *GatewayExecutor) Run(ctx context.Context, req StepRequest) (Result, err
 	if interval == 0 {
 		interval = defaultPollInterval
 	}
+	follower := &outputFollower{executor: g, jobID: job.ID, stream: g.Stream}
 	for !job.done() {
 		select {
 		case <-ctx.Done():
 			_ = g.call(context.Background(), "job_cancel", map[string]any{"job_id": job.ID}, nil)
-			return Result{Argv: job.Argv}, ctx.Err()
+			return Result{Argv: job.Argv, Output: follower.output.String()}, ctx.Err()
 		case <-time.After(interval):
 		}
 		if err := g.call(ctx, "job_status", map[string]any{"job_id": job.ID}, &job); err != nil {
-			return Result{Argv: job.Argv}, err
+			return Result{Argv: job.Argv, Output: follower.output.String()}, err
+		}
+		if err := follower.fetch(ctx); err != nil {
+			return Result{Argv: job.Argv, Output: follower.output.String()}, err
 		}
 	}
 
-	output, err := g.output(ctx, job.ID)
-	if err != nil {
-		return Result{Argv: job.Argv}, err
+	if err := follower.fetch(ctx); err != nil {
+		return Result{Argv: job.Argv, Output: follower.output.String()}, err
 	}
-	result := Result{Argv: job.Argv, Output: output, ExitCode: -1, Note: job.Tier}
+	result := Result{Argv: job.Argv, Output: follower.output.String(), ExitCode: -1, Note: job.Tier}
 	if job.ExitCode != nil {
 		result.ExitCode = *job.ExitCode
 	}
@@ -145,22 +151,32 @@ func (g *GatewayExecutor) Run(ctx context.Context, req StepRequest) (Result, err
 	return result, nil
 }
 
-func (g *GatewayExecutor) output(ctx context.Context, jobID string) (string, error) {
-	var b strings.Builder
-	var offset int64
+// outputFollower reads new job output while the job runs and mirrors it to stream.
+type outputFollower struct {
+	executor *GatewayExecutor
+	jobID    string
+	stream   io.Writer
+	offset   int64
+	output   strings.Builder
+}
+
+func (f *outputFollower) fetch(ctx context.Context) error {
 	for {
 		var chunk struct {
 			Data       string `json:"data"`
 			NextOffset int64  `json:"next_offset"`
 		}
-		if err := g.call(ctx, "job_output", map[string]any{"job_id": jobID, "offset": offset, "max_bytes": outputChunkBytes}, &chunk); err != nil {
-			return b.String(), err
+		if err := f.executor.call(ctx, "job_output", map[string]any{"job_id": f.jobID, "offset": f.offset, "max_bytes": outputChunkBytes}, &chunk); err != nil {
+			return err
 		}
-		b.WriteString(chunk.Data)
-		if chunk.NextOffset <= offset || chunk.Data == "" {
-			return b.String(), nil
+		if chunk.Data == "" || chunk.NextOffset <= f.offset {
+			return nil
 		}
-		offset = chunk.NextOffset
+		f.output.WriteString(chunk.Data)
+		if f.stream != nil {
+			_, _ = io.WriteString(f.stream, chunk.Data)
+		}
+		f.offset = chunk.NextOffset
 	}
 }
 

@@ -79,7 +79,7 @@ func NewExecutor(ctx context.Context, cfg Config, stream io.Writer) (Executor, f
 	case ExecutorDirect:
 		return &DirectExecutor{Binary: cfg.Binary, AllowHostChanges: cfg.AllowHostChanges, Stream: stream}, func() error { return nil }, nil
 	case ExecutorGateway:
-		executor := &GatewayExecutor{Endpoint: cfg.Gateway}
+		executor := &GatewayExecutor{Endpoint: cfg.Gateway, Stream: stream}
 		if err := executor.Connect(ctx); err != nil {
 			return nil, nil, err
 		}

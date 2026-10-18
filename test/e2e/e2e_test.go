@@ -25,7 +25,8 @@ func TestScenarios(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	executor, closeExecutor, err := runner.NewExecutor(ctx, cfg, nil)
+	// Live command output; go test prints it immediately with -v.
+	executor, closeExecutor, err := runner.NewExecutor(ctx, cfg, runner.NewPrefixWriter(os.Stdout, "    | "))
 	if err != nil {
 		t.Fatal(err)
 	}

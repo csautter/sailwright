@@ -198,7 +198,8 @@ func TestScenariosAgainstGatewayWithFakeCLI(t *testing.T) {
 	if h.SocketPath != "" {
 		endpoint = h.SocketEndpoint()
 	}
-	executor := &runner.GatewayExecutor{Endpoint: endpoint, PollInterval: 20 * time.Millisecond}
+	live := &gatewaytest.SyncBuffer{}
+	executor := &runner.GatewayExecutor{Endpoint: endpoint, PollInterval: 20 * time.Millisecond, Stream: runner.NewPrefixWriter(live, "| ")}
 	if err := executor.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -218,6 +219,10 @@ func TestScenariosAgainstGatewayWithFakeCLI(t *testing.T) {
 		if report.Environment.Executor != runner.ExecutorGateway || report.Environment.BinarySHA256 == "" {
 			t.Fatalf("unexpected environment %+v", report.Environment)
 		}
+	}
+
+	if !strings.Contains(live.String(), "| PLAY RECAP") || !strings.Contains(live.String(), "| created") {
+		t.Fatalf("expected live output to be streamed:\n%s", live.String())
 	}
 
 	// The host-changing step must have gone through an approval.
