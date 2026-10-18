@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"os/signal"
 	"syscall"
 	"time"
 
@@ -53,6 +54,11 @@ func restoreInteractiveTerminal() {
 		return
 	}
 	defer tty.Close()
+	// Changing terminal settings from the background stops the process (SIGTTOU),
+	// e.g. under `sailwright build ... &` or when started by another program.
+	if !isForegroundProcessGroup(tty) {
+		return
+	}
 
 	cmd := exec.Command("stty", "sane", "echo")
 	cmd.Stdin = tty
@@ -74,8 +80,25 @@ func attachCommandToInteractiveTerminal(cmd *exec.Cmd) func() {
 	if err != nil {
 		return func() {}
 	}
+	// Only hand the terminal to the child when this process owns it; a background
+	// process would be stopped by SIGTTOU when it takes the terminal back.
+	if !isForegroundProcessGroup(tty) {
+		_ = tty.Close()
+		return func() {}
+	}
 
 	return configureCommandForInteractiveTerminal(cmd, tty, syscall.Getpgrp())
+}
+
+// isForegroundProcessGroup reports whether this process group is the foreground
+// process group of tty.
+var isForegroundProcessGroup = func(tty *os.File) bool {
+	ttyFD, ok := fileDescriptorAsInt(tty)
+	if !ok {
+		return false
+	}
+	foreground, err := unix.IoctlGetInt(ttyFD, unix.TIOCGPGRP)
+	return err == nil && foreground == syscall.Getpgrp()
 }
 
 func configureCommandForInteractiveTerminal(cmd *exec.Cmd, tty *os.File, parentProcessGroupID int) func() {
@@ -100,7 +123,12 @@ func configureCommandForInteractiveTerminal(cmd *exec.Cmd, tty *os.File, parentP
 
 	return func() {
 		if parentProcessGroupID > 0 {
+			// After the child's group took the terminal, this process is in the
+			// background; like a shell, ignore SIGTTOU while taking the terminal back,
+			// otherwise the kernel stops this process.
+			signal.Ignore(syscall.SIGTTOU)
 			_ = setTerminalForegroundProcessGroup(tty, parentProcessGroupID)
+			signal.Reset(syscall.SIGTTOU)
 		}
 		_ = tty.Close()
 	}
