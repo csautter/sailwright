@@ -243,6 +243,7 @@ run_packer_build() {
 		-var "use_hardware_acceleration=${use_hardware_acceleration}" \
 		-var "cache_dir=${effective_cache_dir}" \
 		-var "build_output_dir=${build_output_dir}" \
+		-var "qmp_socket_path=${qmp_socket_path}" \
 		-var "artifact_output_path=${artifact_output_path}" \
 		-var "iso_url=${win11_iso_path}" \
 		-var "headless=${headless}" \
@@ -457,13 +458,13 @@ if [[ "$host_os" == "linux" ]]; then
 	fi
 fi
 
-if [[ -z "$build_output_dir" ]]; then
-	build_output_dir="/tmp/dev-alchemy/qemu-out-windows11-${arch}"
-fi
-
 app_data_dir="${DEV_ALCHEMY_APP_DATA_DIR:-$(default_app_data_dir)}"
 cache_dir="${DEV_ALCHEMY_CACHE_DIR:-$app_data_dir/cache}"
 packer_cache_dir="${DEV_ALCHEMY_PACKER_CACHE_DIR:-$app_data_dir/packer_cache}"
+
+if [[ -z "$build_output_dir" ]]; then
+	build_output_dir="$cache_dir/windows11/qemu-out-windows11-${arch}"
+fi
 
 echo "Using host OS: $host_os"
 echo "Using host architecture: $host_arch"
@@ -484,12 +485,29 @@ cleanup_start_only_cache() {
 		rm -rf "$start_only_cache_dir"
 	fi
 }
+# Packer puts the QMP socket into the output directory by default. UNIX socket paths are
+# limited to 104 bytes on macOS and 108 on Linux, too short for an output directory in
+# the cache, so the socket gets its own short directory.
+qmp_socket_dir=""
+create_qmp_socket_dir() {
+	qmp_socket_dir="$(mktemp -d "/tmp/sw-qmp.XXXXXX")" || return 1
+	qmp_socket_path="$qmp_socket_dir/qmp.sock"
+}
+cleanup_qmp_socket_dir() {
+	if [[ -n "$qmp_socket_dir" && -d "$qmp_socket_dir" ]]; then
+		rm -rf "$qmp_socket_dir"
+	fi
+}
+cleanup_temp_dirs() {
+	cleanup_start_only_cache
+	cleanup_qmp_socket_dir
+}
+trap cleanup_temp_dirs EXIT
 
 if is_truthy "$packer_start_only"; then
 	start_only_cache_dir="$(mktemp -d "/tmp/da-pc.XXXXXX")" || exit 1
 	effective_cache_dir="$start_only_cache_dir"
 	build_output_dir="$effective_cache_dir/o"
-	trap cleanup_start_only_cache EXIT
 	echo "Using isolated cache directory for start-only Packer probe: $effective_cache_dir"
 fi
 
@@ -549,6 +567,7 @@ if [[ -d "$output_dir" ]]; then
 	rm -rf "$output_dir"
 fi
 mkdir -p "$(dirname "$output_dir")"
+create_qmp_socket_dir || exit 1
 
 if [[ "$verbose" == "true" ]]; then
 	export PACKER_LOG=1
@@ -557,5 +576,8 @@ fi
 if is_truthy "$packer_start_only"; then
 	run_packer_build_start_only
 else
-	run_packer_build
+	run_packer_build || exit $?
+	# The artifact is in the cache now; the output directory only holds Packer's
+	# scratch files.
+	rm -rf "$output_dir"
 fi

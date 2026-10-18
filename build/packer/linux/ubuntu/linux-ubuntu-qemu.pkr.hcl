@@ -103,6 +103,12 @@ variable "build_output_dir" {
   description = "Optional short-lived Packer output directory."
 }
 
+variable "qmp_socket_path" {
+  type        = string
+  default     = ""
+  description = "Optional QMP socket path. UNIX socket paths are limited to 104 bytes on macOS and 108 on Linux, so the build scripts keep it short instead of using the output directory."
+}
+
 variable "artifact_output_path" {
   type        = string
   default     = ""
@@ -206,6 +212,7 @@ source "qemu" "ubuntu" {
   vm_name           = "linux-ubuntu-${var.ubuntu_type}-packer-${var.arch}"
   headless          = var.headless
   output_directory  = local.output_directory
+  qmp_socket_path   = var.qmp_socket_path
   iso_url           = local.iso_url
   iso_checksum      = local.ubuntu_iso_checksum
   memory            = var.memory

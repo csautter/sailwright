@@ -13,7 +13,7 @@ func TestGetQemuBuildOutputDir(t *testing.T) {
 	}
 
 	got := getQemuBuildOutputDir(config)
-	want := filepath.Join("/tmp", "dev-alchemy", "qemu-out-ubuntu-server-amd64")
+	want := filepath.Join(GetDirectoriesInstance().CacheDir, "ubuntu", "qemu-out-ubuntu-server-amd64")
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}
