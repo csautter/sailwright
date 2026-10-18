@@ -9,14 +9,16 @@ import (
 	"time"
 )
 
-// processTree puts the child into its own process group so cancellation reaches every
-// descendant (Packer, Ansible, SSH, ...).
+// processTree starts the child in a new session. That gives it its own process group,
+// so cancellation reaches every descendant (Packer, Ansible, SSH, ...), and no
+// controlling terminal: jobs can neither read the operator's approval console (where
+// approvals and sudo passwords are typed) nor take over or reconfigure that terminal.
 type processTree struct {
 	cmd *exec.Cmd
 }
 
 func newProcessTree(cmd *exec.Cmd) *processTree {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return &processTree{cmd: cmd}
 }
 

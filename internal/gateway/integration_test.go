@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -455,5 +456,30 @@ func TestGatewayPassesSudoPasswordOnlyToTheApprovedJob(t *testing.T) {
 	h.Approve(t, view.ID)
 	if final := waitJob(t, session, view.ID); final.SudoPassword || strings.Contains(strings.Join(final.Argv, " "), "become-password-file") {
 		t.Fatalf("plain approve must not pass a password: %+v", final)
+	}
+}
+
+// TestJobsRunWithoutTheGatewayTerminal makes sure a job cannot reach the terminal the
+// operator types approvals and sudo passwords into.
+func TestJobsRunWithoutTheGatewayTerminal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sessions and controlling terminals are Unix concepts")
+	}
+	pinned, err := gateway.PinBinary(gatewaytest.BuildFakeCLI(t), t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	runner := &gateway.Runner{Binary: pinned, Env: os.Environ()}
+	if code, err := runner.Run(context.Background(), []string{"__session"}, t.TempDir(), &out); err != nil || code != 0 {
+		t.Fatalf("run: %d %v", code, err)
+	}
+	var pid, sid, pgid int
+	var tty string
+	if _, err := fmt.Sscanf(strings.TrimSpace(out.String()), "pid=%d sid=%d pgid=%d %s", &pid, &sid, &pgid, &tty); err != nil {
+		t.Fatalf("parse %q: %v", out.String(), err)
+	}
+	if sid != pid || pgid != pid || tty != "no-tty" {
+		t.Fatalf("job must lead its own session without a terminal: %q", out.String())
 	}
 }

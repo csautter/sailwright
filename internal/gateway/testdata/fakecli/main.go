@@ -47,6 +47,11 @@ func main() {
 		fmt.Println("Usage: sailwright [command]")
 		return
 	}
+	if args[0] == "__session" {
+		// Reports how the gateway started this process.
+		fmt.Println(sessionInfo())
+		return
+	}
 	if args[len(args)-1] == "--help" {
 		fmt.Printf("Usage: sailwright %s [flags]\n", strings.Join(args[:len(args)-1], " "))
 		return
