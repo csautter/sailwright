@@ -113,6 +113,7 @@ type JobManager struct {
 	binarySHA   string
 	onFinish    func()
 	console     io.Writer
+	follow      io.Writer
 
 	mu     sync.Mutex
 	jobs   map[string]*job
@@ -133,6 +134,8 @@ type JobManagerOptions struct {
 	BinarySHA   string
 	OnFinish    func()
 	Console     io.Writer
+	// Follow mirrors job output (redacted) to this writer, e.g. the gateway terminal.
+	Follow io.Writer
 }
 
 // NewJobManager creates a job manager.
@@ -144,7 +147,7 @@ func NewJobManager(opts JobManagerOptions) *JobManager {
 	return &JobManager{
 		runner: opts.Runner, approver: opts.Approver, audit: opts.Audit, redactor: opts.Redactor,
 		logsDir: opts.LogsDir, dataDir: opts.DataDir, minFreeGB: opts.MinFreeGB, outputLimit: opts.OutputLimit,
-		binarySHA: opts.BinarySHA, onFinish: opts.OnFinish, console: console,
+		binarySHA: opts.BinarySHA, onFinish: opts.OnFinish, console: console, follow: opts.Follow,
 		jobs: map[string]*job{},
 	}
 }
@@ -245,11 +248,19 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 	var sinks []io.Writer
 	sinks = append(sinks, j.output)
 	if m.logsDir != "" {
+		logPath := filepath.Join(m.logsDir, id+".log")
 		// #nosec G304 -- fixed file name inside the gateway log directory.
-		if logFile, err := os.OpenFile(filepath.Join(m.logsDir, id+".log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, privateFilePermission); err == nil {
+		if logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, privateFilePermission); err == nil {
 			defer logFile.Close()
 			sinks = append(sinks, logFile)
+			if m.follow == nil {
+				fmt.Fprintf(m.console, "  live output: tail -f %s\n", logPath)
+			}
 		}
+	}
+	if m.follow != nil {
+		// Output is already redacted and stripped of escape sequences at this point.
+		sinks = append(sinks, &prefixWriter{prefix: "[" + id + "] ", next: m.follow})
 	}
 	writer := newLineRedactingWriter(m.redactor, io.MultiWriter(sinks...))
 
@@ -453,4 +464,17 @@ func (b *outputBuffer) Read(offset int64, maxBytes int) OutputChunk {
 		NextOffset:      b.base + end,
 		TruncatedBefore: truncated,
 	}
+}
+
+// prefixWriter prefixes each write; it receives whole lines from lineRedactingWriter.
+type prefixWriter struct {
+	prefix string
+	next   io.Writer
+}
+
+func (w *prefixWriter) Write(p []byte) (int, error) {
+	if _, err := io.WriteString(w.next, w.prefix+string(p)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }

@@ -221,6 +221,11 @@ snapshot_max_files: 5000
 Operations run as jobs. Poll `job_status` and read `job_output` from
 `next_offset`. Only one job runs at a time.
 
+To watch a job on the host, follow the log file the gateway prints when the job
+starts (`tail -f <state-dir>/logs/<job>.log`), or start the gateway with
+`--follow` to mirror all job output to its terminal. Approval prompts still
+appear there.
+
 The safe set never includes `local` or `all` targets, custom paths,
 arguments after `--`, `push`, credentials or TLS options, or parallel builds.
 

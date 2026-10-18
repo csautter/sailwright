@@ -35,8 +35,10 @@ type Options struct {
 	Token    string
 	Approver Approver
 	Console  io.Writer
-	Version  string
-	Getenv   func(string) string
+	// FollowOutput mirrors job output to Console.
+	FollowOutput bool
+	Version      string
+	Getenv       func(string) string
 }
 
 // Gateway wires policy, execution, jobs and the MCP server together.
@@ -119,6 +121,7 @@ func New(opts Options) (*Gateway, error) {
 		BinarySHA:   opts.Pinned.SHA256,
 		OnFinish:    g.refreshTargetsAsync,
 		Console:     opts.Console,
+		Follow:      followWriter(opts.FollowOutput, opts.Console),
 	})
 	g.server = g.newMCPServer()
 	return g, nil
@@ -265,4 +268,11 @@ func errorSummary(output string) string {
 		lines = lines[len(lines)-3:]
 	}
 	return strings.Join(lines, " | ")
+}
+
+func followWriter(enabled bool, console io.Writer) io.Writer {
+	if !enabled {
+		return nil
+	}
+	return console
 }

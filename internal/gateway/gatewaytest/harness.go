@@ -66,6 +66,7 @@ type Options struct {
 	ApprovalTTL   time.Duration
 	PullAllowlist []string
 	JobTimeout    string
+	FollowOutput  bool
 }
 
 // Harness is a running gateway with a fake CLI behind it.
@@ -151,12 +152,13 @@ func Start(t testing.TB, opts Options) *Harness {
 		"GITHUB_TOKEN":     "host-github-token",
 	}
 	g, err := gateway.New(gateway.Options{
-		Config:   cfg,
-		Pinned:   pinned,
-		Token:    token,
-		Approver: approver,
-		Console:  h.Console,
-		Version:  "test",
+		Config:       cfg,
+		Pinned:       pinned,
+		Token:        token,
+		Approver:     approver,
+		Console:      h.Console,
+		Version:      "test",
+		FollowOutput: opts.FollowOutput,
 		Getenv: func(name string) string {
 			if value, ok := env[name]; ok {
 				return value

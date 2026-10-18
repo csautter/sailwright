@@ -400,3 +400,14 @@ func TestGatewayServesTheAgentSocket(t *testing.T) {
 		t.Fatalf("audit log must record socket requests: %v\n%s", err, audit)
 	}
 }
+
+func TestGatewayShowsLiveOutputOnTheConsole(t *testing.T) {
+	h := gatewaytest.Start(t, gatewaytest.Options{FollowOutput: true})
+	session := h.Connect(t)
+	var view gateway.JobView
+	mustCall(t, session, "vm_create", map[string]any{"os": "ubuntu"}, &view)
+	waitJob(t, session, view.ID)
+	if !strings.Contains(h.Console.String(), "["+view.ID+"] created") {
+		t.Fatalf("expected mirrored job output on the console:\n%s", h.Console.String())
+	}
+}

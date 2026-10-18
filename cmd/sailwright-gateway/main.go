@@ -38,6 +38,7 @@ type serveFlags struct {
 	binarySHA256 string
 	listen       string
 	noApprovals  bool
+	follow       bool
 }
 
 func newRootCommand() *cobra.Command {
@@ -81,6 +82,7 @@ need "approve <id>" from you. Agents cannot approve their own requests.`,
 	command.Flags().StringVar(&flags.binarySHA256, "binary-sha256", "", "Expected SHA-256 of the binary; skips the interactive confirmation")
 	command.Flags().StringVar(&flags.listen, "listen", "", "Listen address, an IP literal with port (default 127.0.0.1:7391)")
 	command.Flags().BoolVar(&flags.noApprovals, "no-approvals", false, "Disable the approval console; only the safe set is available")
+	command.Flags().BoolVar(&flags.follow, "follow", false, "Mirror job output to this terminal (approval prompts still appear)")
 	return command
 }
 
@@ -210,12 +212,13 @@ func runServe(parent context.Context, flags serveFlags) error {
 	}
 
 	g, err := gateway.New(gateway.Options{
-		Config:   cfg,
-		Pinned:   pinned,
-		Token:    token,
-		Approver: approver,
-		Console:  os.Stdout,
-		Version:  version,
+		Config:       cfg,
+		Pinned:       pinned,
+		Token:        token,
+		Approver:     approver,
+		Console:      os.Stdout,
+		Version:      version,
+		FollowOutput: flags.follow,
 	})
 	if err != nil {
 		return err
