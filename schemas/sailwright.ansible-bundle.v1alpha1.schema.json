@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/csautter/dev-alchemy/schemas/dev-alchemy.ansible-bundle.v1.schema.json",
-  "title": "Dev Alchemy Ansible Bundle v1",
+  "$id": "https://raw.githubusercontent.com/csautter/sailwright/main/schemas/sailwright.ansible-bundle.v1alpha1.schema.json",
+  "title": "Sailwright Ansible Bundle v1alpha1",
+  "description": "Draft schema. It may change incompatibly until a producer and a consumer exist and it is promoted to v1.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,7 +13,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "dev-alchemy.ansible-bundle.v1"
+      "const": "sailwright.ansible-bundle.v1alpha1"
     },
     "generated_at": {
       "type": "string",

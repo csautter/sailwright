@@ -3,7 +3,11 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -15,14 +19,14 @@ func TestPrintAvailableExtensions(t *testing.T) {
 	var output bytes.Buffer
 
 	err := printAvailableExtensions(&output, []alchemy_extension.Executable{
-		{Name: "analyzer", Path: "/usr/local/bin/alchemy-analyzer"},
+		{Name: "analyzer", Path: "/usr/local/bin/sailwright-analyzer"},
 	})
 	if err != nil {
 		t.Fatalf("expected extension listing to succeed, got %v", err)
 	}
 
 	got := output.String()
-	for _, want := range []string{"NAME", "EXECUTABLE", "analyzer", "/usr/local/bin/alchemy-analyzer"} {
+	for _, want := range []string{"NAME", "EXECUTABLE", "analyzer", "/usr/local/bin/sailwright-analyzer"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected output to contain %q, got:\n%s", want, got)
 		}
@@ -35,7 +39,7 @@ func TestPrintAvailableExtensionsHandlesEmptyPath(t *testing.T) {
 	if err := printAvailableExtensions(&output, nil); err != nil {
 		t.Fatalf("expected empty extension listing to succeed, got %v", err)
 	}
-	if !strings.Contains(output.String(), "No Dev Alchemy extensions found") {
+	if !strings.Contains(output.String(), "No Sailwright extensions found") {
 		t.Fatalf("expected empty extension message, got %q", output.String())
 	}
 }
@@ -87,5 +91,44 @@ func TestExtensionRunCommandPassesPositionalArgumentsWithoutDash(t *testing.T) {
 	}
 	if got := strings.Join(args, " "); got != "manifest" {
 		t.Fatalf("expected positional extension args to pass through, got %q", got)
+	}
+}
+
+func TestExtensionRunCommandForwardsExtensionExitCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell to produce a process exit code")
+	}
+
+	previousRunFunc := extensionRunFunc
+	previousRootOut := rootCmd.OutOrStdout()
+	previousRootErr := rootCmd.ErrOrStderr()
+	t.Cleanup(func() {
+		extensionRunFunc = previousRunFunc
+		extensionRunCmd.SilenceUsage = false
+		extensionRunCmd.SilenceErrors = false
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(previousRootOut)
+		rootCmd.SetErr(previousRootErr)
+	})
+
+	extensionRunFunc = func(ctx context.Context, options alchemy_extension.RunOptions) error {
+		return fmt.Errorf("run extension %q: %w", options.Name, exec.Command("sh", "-c", "exit 4").Run())
+	}
+
+	var output bytes.Buffer
+	rootCmd.SetArgs([]string{"extension", "run", "analyzer"})
+	rootCmd.SetOut(&output)
+	rootCmd.SetErr(&output)
+
+	err := rootCmd.Execute()
+	var exitErr *exitCodeError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected exitCodeError, got %v", err)
+	}
+	if exitErr.code != 4 {
+		t.Fatalf("expected exit code 4, got %d", exitErr.code)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected no usage or error output for extension failures, got:\n%s", output.String())
 	}
 }

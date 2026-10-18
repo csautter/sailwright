@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/csautter/dev-alchemy/schemas/dev-alchemy.extension-manifest.v1.schema.json",
-  "title": "Dev Alchemy Extension Manifest v1",
+  "$id": "https://raw.githubusercontent.com/csautter/sailwright/main/schemas/sailwright.extension-manifest.v1.schema.json",
+  "title": "Sailwright Extension Manifest v1",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,7 +12,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "dev-alchemy.extension-manifest.v1"
+      "const": "sailwright.extension-manifest.v1"
     },
     "name": {
       "type": "string",

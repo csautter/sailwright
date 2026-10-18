@@ -1,7 +1,11 @@
 package extension
 
 import (
+	"context"
+	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -10,9 +14,9 @@ import (
 
 func TestDiscoverFindsExecutableExtensionsOnPath(t *testing.T) {
 	dir := t.TempDir()
-	createTestExecutable(t, filepath.Join(dir, "alchemy-analyzer"))
-	createTestExecutable(t, filepath.Join(dir, "alchemy-generate"))
-	createTestFile(t, filepath.Join(dir, "alchemy-not-executable"), 0o600)
+	createTestExecutable(t, filepath.Join(dir, "sailwright-analyzer"))
+	createTestExecutable(t, filepath.Join(dir, "sailwright-generate"))
+	createTestFile(t, filepath.Join(dir, "sailwright-not-executable"), 0o600)
 	createTestExecutable(t, filepath.Join(dir, "other-tool"))
 
 	extensions, err := Discover(DiscoverOptions{PathEnv: dir})
@@ -34,8 +38,8 @@ func TestDiscoverFindsExecutableExtensionsOnPath(t *testing.T) {
 func TestDiscoverKeepsFirstPathMatch(t *testing.T) {
 	firstDir := t.TempDir()
 	secondDir := t.TempDir()
-	firstPath := createTestExecutable(t, filepath.Join(firstDir, "alchemy-analyzer"))
-	createTestExecutable(t, filepath.Join(secondDir, "alchemy-analyzer"))
+	firstPath := createTestExecutable(t, filepath.Join(firstDir, "sailwright-analyzer"))
+	createTestExecutable(t, filepath.Join(secondDir, "sailwright-analyzer"))
 
 	extensions, err := Discover(DiscoverOptions{PathEnv: strings.Join([]string{firstDir, secondDir}, string(os.PathListSeparator))})
 	if err != nil {
@@ -49,11 +53,76 @@ func TestDiscoverKeepsFirstPathMatch(t *testing.T) {
 	}
 }
 
+func TestDiscoverSkipsRelativePathEntries(t *testing.T) {
+	workDir := t.TempDir()
+	createTestExecutable(t, filepath.Join(workDir, "sailwright-injected"))
+	t.Chdir(workDir)
+
+	extensions, err := Discover(DiscoverOptions{PathEnv: strings.Join([]string{".", "rel"}, string(os.PathListSeparator))})
+	if err != nil {
+		t.Fatalf("expected discovery to succeed, got %v", err)
+	}
+	if len(extensions) != 0 {
+		t.Fatalf("expected relative PATH entries to be ignored, got %v", extensions)
+	}
+}
+
+func TestDiscoverPrefersPathextOrderWithinDirectory(t *testing.T) {
+	dir := t.TempDir()
+	createTestFile(t, filepath.Join(dir, "sailwright-analyzer.cmd"), 0o755)
+	exePath := filepath.Join(dir, "sailwright-analyzer.exe")
+	createTestFile(t, exePath, 0o755)
+
+	extensions, err := Discover(DiscoverOptions{PathEnv: dir})
+	if err != nil {
+		t.Fatalf("expected discovery to succeed, got %v", err)
+	}
+	if len(extensions) != 1 {
+		t.Fatalf("expected 1 extension, got %d: %v", len(extensions), extensions)
+	}
+	if extensions[0].Path != exePath {
+		t.Fatalf("expected .exe to win over .cmd, got %q", extensions[0].Path)
+	}
+}
+
+func TestRunPassesArgumentsEnvironmentAndExitCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell script as extension")
+	}
+
+	dir := t.TempDir()
+	script := "#!/bin/sh\necho \"$" + ProtocolEnvVar + " $" + NameEnvVar + " $*\"\nexit 3\n"
+	if err := os.WriteFile(filepath.Join(dir, "sailwright-demo"), []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to create extension script: %v", err)
+	}
+
+	var stdout strings.Builder
+	err := Run(context.Background(), RunOptions{
+		Name:    "demo",
+		Args:    []string{"scan", "--out", "snapshot.json"},
+		PathEnv: dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		Stdin:   strings.NewReader(""),
+		Stdout:  &stdout,
+		Stderr:  io.Discard,
+	})
+
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected wrapped exec.ExitError, got %v", err)
+	}
+	if exitErr.ExitCode() != 3 {
+		t.Fatalf("expected exit code 3, got %d", exitErr.ExitCode())
+	}
+	if got, want := strings.TrimSpace(stdout.String()), ProtocolVersion+" demo scan --out snapshot.json"; got != want {
+		t.Fatalf("expected output %q, got %q", want, got)
+	}
+}
+
 func TestResolveAcceptsNameWithExecutablePrefix(t *testing.T) {
 	dir := t.TempDir()
-	executablePath := createTestExecutable(t, filepath.Join(dir, "alchemy-analyzer"))
+	executablePath := createTestExecutable(t, filepath.Join(dir, "sailwright-analyzer"))
 
-	resolved, err := Resolve("alchemy-analyzer", DiscoverOptions{PathEnv: dir})
+	resolved, err := Resolve("sailwright-analyzer", DiscoverOptions{PathEnv: dir})
 	if err != nil {
 		t.Fatalf("expected prefixed extension name to resolve, got %v", err)
 	}
@@ -76,12 +145,22 @@ func TestResolveRejectsPathLikeNames(t *testing.T) {
 }
 
 func TestNameFromExecutableTrimsKnownExecutableSuffixes(t *testing.T) {
-	name, ok := NameFromExecutable("alchemy-analyzer.exe")
+	name, ok := NameFromExecutable("sailwright-analyzer.exe")
 	if !ok {
 		t.Fatal("expected executable name to be recognized")
 	}
 	if name != "analyzer" {
 		t.Fatalf("expected analyzer name, got %q", name)
+	}
+}
+
+func TestNameFromExecutableKeepsPowerShellSuffix(t *testing.T) {
+	name, ok := NameFromExecutable("sailwright-analyzer.ps1")
+	if !ok {
+		t.Fatal("expected prefixed file name to be recognized")
+	}
+	if name != "analyzer.ps1" {
+		t.Fatalf("expected .ps1 not to be treated as executable suffix, got %q", name)
 	}
 }
 
