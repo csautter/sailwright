@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -188,8 +189,13 @@ func runServe(parent context.Context, flags serveFlags) error {
 	g.RefreshTargets(refreshCtx)
 	cancelRefresh()
 
+	// Bind before printing the banner so a failed bind is not reported as listening.
+	listener, err := net.Listen("tcp", cfg.ListenAddr.String())
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w (the address must belong to a network interface of this host)", cfg.ListenAddr, err)
+	}
 	printBanner(cfg, pinned, approver.Enabled())
-	return g.Serve(ctx)
+	return g.ServeListener(ctx, listener)
 }
 
 func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, approvals bool) {
