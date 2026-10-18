@@ -173,8 +173,17 @@ func runServe(parent context.Context, flags serveFlags) error {
 	if flags.listen != "" {
 		cfg.Listen = flags.listen
 	}
+	// An explicit --state-dir keeps everything below it, so instances do not share data.
+	if flags.stateDir == "" && cfg.DataDir == "" {
+		if cfg.DataDir, err = gateway.DefaultDataDir(); err != nil {
+			return err
+		}
+	}
 	if err := cfg.Resolve(); err != nil {
 		return err
+	}
+	if legacy := cfg.LegacyDataDir(); legacy != "" {
+		fmt.Printf("note: %s is no longer used (data dir is now %s); remove it to free disk space\n", legacy, cfg.DataDir)
 	}
 
 	token, err := gateway.LoadOrCreateToken(cfg.StateDir)

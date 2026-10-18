@@ -16,6 +16,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -88,6 +89,50 @@ func DefaultStateDir() (string, error) {
 		return "", fmt.Errorf("resolve user config dir: %w", err)
 	}
 	return filepath.Join(base, defaultStateDirName), nil
+}
+
+// DefaultDataDir returns the data dir used with the default state dir. The data dir
+// holds ISOs, images and build caches, so like the sailwright CLI it follows the
+// platform's data location instead of the config location. An empty result means
+// <state dir>/data.
+func DefaultDataDir() (string, error) {
+	return defaultDataDirForOS(runtime.GOOS, os.Getenv, os.UserHomeDir)
+}
+
+func defaultDataDirForOS(goos string, getenv func(string) string, userHomeDir func() (string, error)) (string, error) {
+	switch goos {
+	case "darwin":
+		// The state dir already is in ~/Library/Application Support.
+		return "", nil
+	case "windows":
+		// The state dir is in the roaming profile, which must not hold large files.
+		if localAppData := getenv("LOCALAPPDATA"); localAppData != "" {
+			return filepath.Join(localAppData, defaultStateDirName), nil
+		}
+		return "", nil
+	default:
+		if xdgDataHome := getenv("XDG_DATA_HOME"); xdgDataHome != "" {
+			return filepath.Join(xdgDataHome, defaultStateDirName), nil
+		}
+		home, err := userHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home dir for data dir: %w", err)
+		}
+		return filepath.Join(home, ".local", "share", defaultStateDirName), nil
+	}
+}
+
+// LegacyDataDir returns <state dir>/data when it exists but is no longer the data dir,
+// so the operator can remove data the gateway does not use anymore.
+func (c Config) LegacyDataDir() string {
+	legacy := filepath.Join(c.StateDir, "data")
+	if filepath.Clean(c.DataDir) == legacy {
+		return ""
+	}
+	if info, err := os.Stat(legacy); err == nil && info.IsDir() {
+		return legacy
+	}
+	return ""
 }
 
 // LoadConfig reads <stateDir>/gateway.yaml (or configPath when set). A missing default

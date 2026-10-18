@@ -63,7 +63,8 @@ The agent, and everything it reads, is treated as untrusted.
   hanging.
 - **Isolated state.** Sailwright runs with its own app-data, config and cache
   directories below the gateway data dir, so your regular Sailwright data and
-  role-source configuration are not used.
+  role-source configuration are not used. This costs disk space; see
+  [Disk usage](#disk-usage).
 - **Transport.** Agents reach the gateway through a Unix socket in a
   dedicated agent folder (`~/.sailwright-gateway`) that you mount read-only
   into the devcontainer. Access is limited by file permissions (`0600`) and by
@@ -185,9 +186,9 @@ allowed_hosts: [localhost, 127.0.0.1, "::1", host.docker.internal]
 allowed_source_cidrs: [127.0.0.0/8, "::1/128"]
 binary: /home/me/sailwright/dist/linux-amd64/sailwright
 # binary_sha256: <hex>            # skip the interactive confirmation
-data_dir: /home/me/.config/sailwright-gateway/data
+data_dir: /home/me/.local/share/sailwright-gateway   # ISOs, images, build caches
 agent_dir: /home/me/.sailwright-gateway     # socket + token copy, mounted into containers
-# shared_cache_dir: /home/me/.local/share/dev-alchemy/cache   # reuse ISO/build cache
+# shared_cache_dir: /home/me/.local/share/dev-alchemy/cache   # reuse your CLI cache, see Disk usage
 env_passthrough:                   # values are redacted from output and logs
   - LIBVIRT_UBUNTU_ANSIBLE_PASSWORD
 pull_allowlist:                    # registry/namespace prefixes for artifact_pull
@@ -274,6 +275,47 @@ Type "approve 3f2a9c1d" or "deny 3f2a9c1d" and press Enter.
 - Without an interactive terminal (or with `--no-approvals`) the approval
   tools are disabled and only the safe set is available.
 
+## Disk usage
+
+Builds download ISOs and produce VM images of many gigabytes. Because the
+gateway runs Sailwright with its own directories, these files are **not**
+shared with the Sailwright CLI you use yourself: an image you built with the
+CLI is downloaded or built again for the gateway.
+
+The data dir holds everything large. Without `data_dir` it follows the
+platform's data location, like the CLI:
+
+| OS | Gateway data dir | Sailwright CLI app data |
+| --- | --- | --- |
+| Linux | `$XDG_DATA_HOME/sailwright-gateway` (`~/.local/share/sailwright-gateway`) | `~/.local/share/dev-alchemy` |
+| macOS | `~/Library/Application Support/sailwright-gateway/data` | `~/Library/Application Support/dev-alchemy` |
+| Windows | `%LOCALAPPDATA%\sailwright-gateway` | `%LOCALAPPDATA%\dev-alchemy` |
+
+With `--state-dir`, the data dir is `<state-dir>/data` instead, so separate
+gateway instances never share data. Older versions always used
+`<state-dir>/data`; the gateway prints a note on startup if that directory is
+still there, and you can delete it.
+
+Inside the data dir:
+
+| Path | Content | Safe to delete when the gateway is stopped |
+| --- | --- | --- |
+| `app/cache/` | ISOs, firmware, build output (`qemu-out-*`, `*.qcow2`) | yes; the next build downloads and builds again |
+| `app/packer_cache/` | Packer downloads | yes |
+| `app/libvirt/images/` | disks of created libvirt VMs (Linux, session connection) | no, only after destroying those VMs |
+| `app/.vagrant/` | Vagrant state of created VMs | no, only after destroying those VMs |
+| `config/` | isolated Sailwright config | no |
+
+**Sharing the cache with the CLI.** Set `shared_cache_dir` to your CLI cache
+dir (for example `~/.local/share/dev-alchemy/cache`) to use one copy of ISOs
+and build output. This gives up part of the isolation on purpose: jobs
+started by an agent can then write to, rebuild (`no_cache`) or overwrite the
+cache your own CLI uses, and a build you start yourself can run at the same
+time as a gateway job on the same files. Only the cache is shared;
+`packer_cache`, `.vagrant` and the config stay below the data dir.
+
+The free disk check (`min_free_disk_gb`) looks at the volume of the data dir.
+
 ## Files in the state directory
 
 | Path | Content |
@@ -281,7 +323,7 @@ Type "approve 3f2a9c1d" or "deny 3f2a9c1d" and press Enter.
 | `token` | bearer token (owner-only permissions) |
 | `gateway.yaml` | optional configuration |
 | `bin/sailwright` | pinned binary copy |
-| `data/` | isolated Sailwright app-data, config and cache |
+| `data/` | only with `--state-dir` or on macOS: the data dir, see [Disk usage](#disk-usage) |
 | `work/` | empty working directory for commands |
 | `staging/` | read-only bundle snapshots, removed after each job |
 | `logs/<job>.log` | full redacted output per job |
