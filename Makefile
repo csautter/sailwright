@@ -187,4 +187,13 @@ gosec:
 		echo "gosec not found at $(GOSEC). Rebuild the dev container or run: go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1"; \
 		exit 1; \
 	fi
-	$(GOSEC) -no-fail -fmt sarif -out gosec-results.sarif -exclude-generated ./...
+	@# -no-fail exits 0 even when gosec cannot type-check packages (e.g. a gosec built against an
+	@# x/tools too old for the Go toolchain), which would report "no issues" without analyzing anything.
+	@$(GOSEC) -no-fail -fmt sarif -out gosec-results.sarif -exclude-generated ./... 2>gosec-stderr.log; status=$$?; \
+	if [ $$status -ne 0 ] || grep -q 'type errors' gosec-stderr.log; then \
+		grep -E 'type errors|[Ee]rror' gosec-stderr.log | head -5; \
+		rm -f gosec-stderr.log; \
+		echo "gosec did not analyze all packages; the results above are incomplete. Update gosec for this Go toolchain."; \
+		exit 1; \
+	fi; \
+	rm -f gosec-stderr.log
