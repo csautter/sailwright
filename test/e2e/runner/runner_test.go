@@ -24,7 +24,7 @@ func TestRepositoryScenariosAreValid(t *testing.T) {
 	for _, scenario := range scenarios {
 		names[scenario.Name] = true
 	}
-	for _, want := range []string{"smoke", "vm-lifecycle", "destroy-idempotent", "local-check"} {
+	for _, want := range []string{"smoke", "vm-lifecycle", "destroy-idempotent", "local-check", "vm-lifecycle-linux", "vm-lifecycle-macos", "vm-lifecycle-windows"} {
 		if !names[want] {
 			t.Fatalf("scenario %s missing", want)
 		}
@@ -84,7 +84,11 @@ func TestParseTarget(t *testing.T) {
 	if err != nil || target.Type != "" || target.Arch != "arm64" {
 		t.Fatalf("got %+v, %v", target, err)
 	}
-	for _, bad := range []string{"", "/server", "a/b/c/d"} {
+	target, err = runner.ParseTarget("windows11//amd64/hyperv")
+	if err != nil || target.Engine != "hyperv" || target.Slug() != "windows11-amd64-hyperv" || target.String() != "windows11//amd64/hyperv" {
+		t.Fatalf("got %+v, %v", target, err)
+	}
+	for _, bad := range []string{"", "/server", "a/b/c/d/e"} {
 		if _, err := runner.ParseTarget(bad); err == nil {
 			t.Fatalf("expected %q to be rejected", bad)
 		}
@@ -299,5 +303,96 @@ func TestUnknownEnvCatchesTypos(t *testing.T) {
 	}
 	if got := runner.UnknownEnv(environ, scenarios); len(got) != 1 || got[0] != "SAILWRIGHT_E2E_TARGETS" {
 		t.Fatalf("expected only the typo to be reported, got %v", got)
+	}
+}
+
+func TestLoadScenarioRejectsInvalidMatrix(t *testing.T) {
+	cases := map[string]string{
+		"bad-host":     "name: bad-host\nhost_os: beos\ntargets: [ubuntu/server/amd64]\nsteps: [{name: a, op: create}]\n",
+		"dup-target":   "name: dup-target\ntargets: [ubuntu/server/amd64, ubuntu/server/amd64]\nsteps: [{name: a, op: create}]\n",
+		"bad-target":   "name: bad-target\ntargets: [a/b/c/d/e]\nsteps: [{name: a, op: create}]\n",
+		"covers-alone": "name: covers-alone\nrequires: [target]\ncovers: create\nsteps: [{name: a, op: create}]\n",
+		"bad-covers":   "name: bad-covers\ncovers: install\ntargets: [ubuntu/server/amd64]\nsteps: [{name: a, op: create}]\n",
+		"bad-listed":   "name: bad-listed\ntargets: [ubuntu/server/amd64]\nsteps: [{name: a, op: create, when_listed: install}]\n",
+	}
+	for name, body := range cases {
+		if _, err := runner.LoadScenario(writeScenario(t, name, body)); err == nil {
+			t.Fatalf("%s: expected an error", name)
+		}
+	}
+}
+
+func TestPlanMatrixSkipsUnavailableAndUnstableTargetsAndReportsGaps(t *testing.T) {
+	binary := gatewaytest.BuildFakeCLI(t)
+	t.Setenv("FAKE_CLI_STATE", t.TempDir())
+	executor := &runner.DirectExecutor{Binary: binary}
+	scenario, err := runner.LoadScenario(writeScenario(t, "matrix", `name: matrix
+covers: create
+targets: [ubuntu/server/amd64, ubuntu/server/arm64, windows11//amd64, macos//arm64]
+steps: [{name: create, op: create}]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plans, uncovered, err := runner.PlanMatrix(context.Background(), scenario, executor, runner.MatrixOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skips := map[string]string{}
+	for _, plan := range plans {
+		skips[plan.Target.Slug()] = plan.Skip
+	}
+	if skips["ubuntu-server-amd64"] != "" || skips["windows11-amd64"] != "" {
+		t.Fatalf("available stable targets must run: %v", skips)
+	}
+	if !strings.Contains(skips["ubuntu-server-arm64"], "unstable") || !strings.Contains(skips["macos-arm64"], "not offered") {
+		t.Fatalf("unexpected skip reasons: %v", skips)
+	}
+	var gaps []string
+	for _, entry := range uncovered {
+		gaps = append(gaps, runner.Target{OS: entry.OS, Type: entry.Type, Arch: entry.Arch}.String())
+	}
+	if strings.Join(gaps, ",") != "ubuntu/desktop/amd64,failos//amd64,slowos//amd64" {
+		t.Fatalf("unexpected coverage gaps %v", gaps)
+	}
+
+	plans, _, _ = runner.PlanMatrix(context.Background(), scenario, executor, runner.MatrixOptions{IncludeUnstable: true, Filter: &runner.Target{OS: "ubuntu", Type: "server", Arch: "arm64"}})
+	if len(plans) != 1 || plans[0].Skip != "" {
+		t.Fatalf("filter plus include-unstable must select exactly the arm64 target: %+v", plans)
+	}
+}
+
+// TestHostMatrixScenarioAgainstGatewayWithFakeCLI runs the Linux matrix scenario
+// through the gateway for every target the fake CLI offers.
+func TestHostMatrixScenarioAgainstGatewayWithFakeCLI(t *testing.T) {
+	h := gatewaytest.Start(t, gatewaytest.Options{})
+	executor := &runner.GatewayExecutor{Endpoint: h.TCPEndpoint(), PollInterval: 20 * time.Millisecond}
+	if err := executor.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = executor.Close() })
+
+	scenario := loadRepoScenario(t, "vm-lifecycle-linux")
+	plans, _, err := runner.PlanMatrix(context.Background(), scenario, executor, runner.MatrixOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := 0
+	for _, plan := range plans {
+		if plan.Skip != "" {
+			continue
+		}
+		report := runner.Run(context.Background(), scenario, executor, runner.RunOptions{Target: plan.Target, Matrix: true, Getenv: func(string) string { return "" }})
+		if !report.Passed {
+			t.Fatalf("target %s failed:\n%s", plan.Target, runner.Markdown(report))
+		}
+		if report.ID != "vm-lifecycle-linux-"+plan.Target.Slug() {
+			t.Fatalf("unexpected report id %q", report.ID)
+		}
+		ran++
+	}
+	if ran != 3 {
+		t.Fatalf("expected ubuntu server/desktop amd64 and windows11 amd64 to run, ran %d", ran)
 	}
 }

@@ -1,0 +1,50 @@
+name: vm-lifecycle-windows
+description: >-
+  Full VM lifecycle for every VM option of a Windows host (Hyper-V; VirtualBox targets can be built but not created).
+  Each target runs build, create, start, provision (check, real, idempotent),
+  stop and destroy. Targets the CLI marks unstable on this host (emulated
+  architectures) run only with SAILWRIGHT_E2E_INCLUDE_UNSTABLE=1.
+host_os: windows
+covers: create                # fails if `create list` offers a target missing below
+targets:
+  - windows11//amd64/hyperv
+  - ubuntu/server/amd64/hyperv
+  - ubuntu/desktop/amd64/hyperv
+steps:
+  - name: build image
+    op: build
+    when_listed: build        # skipped for targets that start from a public image (Tart)
+    with: {headless: true}
+  - name: create VM
+    op: create
+    expect:
+      state: {command: start, field: start, regex: "^(ready to start|already running)$"}
+  - name: start VM
+    op: start
+    expect:
+      state: {command: start, field: start, regex: "^already running$"}
+  - name: provision in check mode
+    op: provision
+    when_listed: provision
+    with: {check: true}
+    expect:
+      recap: {failed: 0, unreachable: 0}
+  - name: provision
+    op: provision
+    when_listed: provision
+    expect:
+      recap: {failed: 0, unreachable: 0}
+  - name: provision again is idempotent
+    op: provision
+    when_listed: provision
+    expect:
+      recap: {failed: 0, unreachable: 0, changed: 0}
+  - name: stop VM
+    op: stop
+    expect:
+      state: {command: start, field: start, regex: "^ready to start$"}
+always:
+  - name: destroy VM
+    op: destroy
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}

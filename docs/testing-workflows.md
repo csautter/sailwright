@@ -63,6 +63,17 @@ that runs as a subtest of `go test -tags e2e ./test/e2e`:
 | `vm-lifecycle` | `SAILWRIGHT_E2E_TARGET` | pull or build, create, start, provision `--check`, provision, idempotent re-run, stop, destroy (always) |
 | `destroy-idempotent` | `SAILWRIGHT_E2E_TARGET` | destroying twice succeeds |
 | `local-check` | host changes allowed | `provision local --check` with the default playbook |
+| `vm-lifecycle-linux` | Linux host | the `vm-lifecycle` steps for every VM option of a Linux host |
+| `vm-lifecycle-macos` | macOS host | the same for every VM option of a macOS host (Tart, UTM) |
+| `vm-lifecycle-windows` | Windows host | the same for every VM option of a Windows host (Hyper-V) |
+
+The per-host scenarios run once per target, each as its own subtest, e.g.
+`TestScenarios/vm-lifecycle-linux/ubuntu-server-amd64`. On other hosts they are
+skipped. Targets that the CLI marks unstable on this host (emulated
+architectures) are skipped unless `SAILWRIGHT_E2E_INCLUDE_UNSTABLE=1`.
+`SAILWRIGHT_E2E_TARGET` narrows a matrix to one target. The run fails when
+`create list` offers a target that the scenario does not test, so new VM
+options get added to the matrix.
 
 Steps run through an executor:
 
@@ -78,6 +89,10 @@ Steps run through an executor:
 make test-e2e-smoke
 make test-e2e E2E_RUN='TestScenarios/vm-lifecycle' E2E_TARGET=ubuntu/server/amd64
 
+# every VM option of this host (one subtest per target)
+SAILWRIGHT_E2E_EXECUTOR=gateway go test -tags e2e ./test/e2e \
+  -run 'TestScenarios/vm-lifecycle-(linux|macos|windows)' -count=1 -timeout 24h -v
+
 # gateway, from the devcontainer
 SAILWRIGHT_E2E_EXECUTOR=gateway SAILWRIGHT_E2E_TARGET=ubuntu/server/amd64 \
   go test -tags e2e ./test/e2e -run 'TestScenarios/(smoke|vm-lifecycle)' -count=1 -timeout 6h -v
@@ -87,7 +102,8 @@ SAILWRIGHT_E2E_EXECUTOR=gateway SAILWRIGHT_E2E_TARGET=ubuntu/server/amd64 \
 | --- | --- |
 | `SAILWRIGHT_E2E_EXECUTOR` | `direct` (default) or `gateway` |
 | `SAILWRIGHT_E2E_BIN` | Sailwright binary for the direct executor |
-| `SAILWRIGHT_E2E_TARGET` | `os/type/arch`, e.g. `ubuntu/server/amd64` or `windows11//amd64` |
+| `SAILWRIGHT_E2E_TARGET` | `os/type/arch[/engine]`, e.g. `ubuntu/server/amd64` or `windows11//amd64/hyperv`; selects the target of `vm-lifecycle` and narrows the per-host matrices |
+| `SAILWRIGHT_E2E_INCLUDE_UNSTABLE` | `1` also runs matrix targets the CLI marks unstable |
 | `SAILWRIGHT_E2E_PULL_REF` | pull this OCI artifact instead of building in `vm-lifecycle` |
 | `SAILWRIGHT_E2E_ALLOW_HOST_CHANGES` | `1` lets the direct executor run host-changing steps |
 | `SAILWRIGHT_E2E_OUT` | report directory (default `test/e2e/out`) |
@@ -106,6 +122,10 @@ binary hash and per-step results. For JUnit output, run the same command with
 name: my-scenario            # must match the file name
 description: What this checks.
 requires: [target]           # target and/or host-changes
+# For a matrix instead of SAILWRIGHT_E2E_TARGET:
+# host_os: linux             # linux, darwin or windows
+# covers: create             # fail if `create list` offers a target missing below
+# targets: [ubuntu/server/amd64, windows11//amd64/hyperv]
 steps:
   - name: provision in check mode
     op: provision            # build create start stop destroy provision pull provision_local list cli
@@ -121,6 +141,9 @@ steps:
     only: direct             # or gateway
     when_env: SAILWRIGHT_E2E_SOMETHING
     with: {args: ["build", "list", "--json"]}
+  - name: only where the target can be built
+    op: build
+    when_listed: build       # skip if the target is not in `build list`
 always:
   - name: cleanup
     op: destroy

@@ -27,6 +27,9 @@ var (
 // RunOptions configure a scenario run.
 type RunOptions struct {
 	Target Target
+	// Matrix marks a run of one target of a matrix scenario; reports get the
+	// target in their name.
+	Matrix bool
 	Getenv func(string) string
 	Logf   func(format string, args ...any)
 	Now    func() time.Time
@@ -47,6 +50,8 @@ type StepReport struct {
 
 // Report is the outcome of one scenario.
 type Report struct {
+	// ID names the report files: the scenario, plus the target for matrix runs.
+	ID          string        `json:"id"`
 	Scenario    string        `json:"scenario"`
 	Description string        `json:"description,omitempty"`
 	Target      Target        `json:"target"`
@@ -78,7 +83,10 @@ func Run(ctx context.Context, scenario Scenario, executor Executor, opts RunOpti
 		opts.Logf = func(string, ...any) {}
 	}
 	started := opts.Now()
-	report := Report{Scenario: scenario.Name, Description: scenario.Description, Target: opts.Target, Started: started.UTC(), Passed: true}
+	report := Report{ID: scenario.Name, Scenario: scenario.Name, Description: scenario.Description, Target: opts.Target, Started: started.UTC(), Passed: true}
+	if opts.Matrix {
+		report.ID = scenario.Name + "-" + opts.Target.Slug()
+	}
 	if env, err := executor.Describe(ctx); err == nil {
 		report.Environment = env
 	} else {
@@ -113,6 +121,19 @@ func runStep(ctx context.Context, step Step, executor Executor, opts RunOptions)
 		report.Status = StatusSkipped
 		report.Reason = reason
 		return report
+	}
+	if step.WhenListed != "" {
+		targets, err := executor.List(ctx, step.WhenListed)
+		if err != nil {
+			report.Status = StatusFailed
+			report.Reason = fmt.Sprintf("list %s: %v", step.WhenListed, err)
+			return report
+		}
+		if _, ok := FindTarget(targets, opts.Target); !ok {
+			report.Status = StatusSkipped
+			report.Reason = fmt.Sprintf("target is not offered by `%s list` on this host", step.WhenListed)
+			return report
+		}
 	}
 
 	opts.Logf("step %q (%s)", step.Name, step.Op)

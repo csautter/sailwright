@@ -204,7 +204,7 @@ func gatewayCall(req StepRequest) (string, map[string]any, error) {
 
 	switch step.Op {
 	case OpBuild:
-		return "vm_build", with(map[string]any{"engine": step.String("engine", getenv), "headless": step.Bool("headless")}), nil
+		return "vm_build", with(map[string]any{"engine": stepEngine(req), "headless": step.Bool("headless")}), nil
 	case OpCreate, OpStart, OpStop, OpDestroy:
 		return "vm_" + step.Op, with(nil), nil
 	case OpProvision:
@@ -221,7 +221,7 @@ func gatewayCall(req StepRequest) (string, map[string]any, error) {
 		if ref == "" {
 			return "", nil, errors.New("pull needs with.ref")
 		}
-		return "artifact_pull", with(map[string]any{"ref": ref, "engine": step.String("engine", getenv)}), nil
+		return "artifact_pull", with(map[string]any{"ref": ref, "engine": stepEngine(req)}), nil
 	case OpProvisionLocal:
 		args := map[string]any{"check": step.Bool("check"), "reason": "E2E scenario step: " + step.Name}
 		if playbook := step.String("playbook", getenv); playbook != "" {

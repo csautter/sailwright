@@ -31,9 +31,26 @@ func TestScenarios(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = closeExecutor() })
+	host, err := executor.Describe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, scenario := range scenarios {
 		t.Run(scenario.Name, func(t *testing.T) {
+			if scenario.HostOS != "" && scenario.HostOS != host.HostOS {
+				t.Skipf("only for %s hosts; this host is %s", scenario.HostOS, host.HostOS)
+			}
+			if scenario.Needs(runner.RequireHostChanges) {
+				if ok, reason := executor.HostChangesAllowed(ctx); !ok {
+					t.Skip(reason)
+				}
+			}
+			if len(scenario.Matrix()) > 0 {
+				runMatrix(ctx, t, cfg, scenario, executor)
+				return
+			}
+
 			var target runner.Target
 			if scenario.Needs(runner.RequireTarget) {
 				if cfg.Target == nil {
@@ -41,19 +58,45 @@ func TestScenarios(t *testing.T) {
 				}
 				target = *cfg.Target
 			}
-			if scenario.Needs(runner.RequireHostChanges) {
-				if ok, reason := executor.HostChangesAllowed(ctx); !ok {
-					t.Skip(reason)
-				}
-			}
-
-			report := runner.Run(ctx, scenario, executor, runner.RunOptions{Target: target, Getenv: os.Getenv, Logf: t.Logf})
-			if err := runner.WriteReports(cfg.OutDir, report); err != nil {
-				t.Errorf("write report: %v", err)
-			}
-			for _, step := range report.Failures() {
-				t.Errorf("step %q failed: %s", step.Name, step.Reason)
-			}
+			runAndReport(ctx, t, cfg, scenario, executor, runner.RunOptions{Target: target})
 		})
+	}
+}
+
+// runMatrix runs a scenario once per matrix target, each as its own subtest.
+func runMatrix(ctx context.Context, t *testing.T, cfg runner.Config, scenario runner.Scenario, executor runner.Executor) {
+	plans, uncovered, err := runner.PlanMatrix(ctx, scenario, executor, runner.MatrixOptions{Filter: cfg.Target, IncludeUnstable: cfg.IncludeUnstable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(uncovered) > 0 && cfg.Target == nil {
+		var names []string
+		for _, entry := range uncovered {
+			names = append(names, runner.Target{OS: entry.OS, Type: entry.Type, Arch: entry.Arch, Engine: entry.Engine}.String())
+		}
+		t.Errorf("this host offers targets that %s does not test; add them to its targets: %s", scenario.File, strings.Join(names, ", "))
+	}
+	if len(plans) == 0 {
+		t.Skipf("no target of this scenario matches %s=%s", runner.EnvTarget, cfg.Target)
+	}
+	for _, plan := range plans {
+		t.Run(plan.Target.Slug(), func(t *testing.T) {
+			if plan.Skip != "" {
+				t.Skip(plan.Skip)
+			}
+			runAndReport(ctx, t, cfg, scenario, executor, runner.RunOptions{Target: plan.Target, Matrix: true})
+		})
+	}
+}
+
+func runAndReport(ctx context.Context, t *testing.T, cfg runner.Config, scenario runner.Scenario, executor runner.Executor, opts runner.RunOptions) {
+	opts.Getenv = os.Getenv
+	opts.Logf = t.Logf
+	report := runner.Run(ctx, scenario, executor, opts)
+	if err := runner.WriteReports(cfg.OutDir, report); err != nil {
+		t.Errorf("write report: %v", err)
+	}
+	for _, step := range report.Failures() {
+		t.Errorf("step %q failed: %s", step.Name, step.Reason)
 	}
 }

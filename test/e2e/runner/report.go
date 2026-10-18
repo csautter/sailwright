@@ -18,7 +18,11 @@ func WriteReports(dir string, report Report) error {
 	if err != nil {
 		return err
 	}
-	base := filepath.Join(dir, report.Scenario)
+	name := report.ID
+	if name == "" {
+		name = report.Scenario
+	}
+	base := filepath.Join(dir, name)
 	if err := os.WriteFile(base+".json", append(data, '\n'), 0o600); err != nil {
 		return err
 	}

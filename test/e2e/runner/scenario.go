@@ -44,6 +44,8 @@ var (
 	knownOps          = map[string]bool{OpBuild: true, OpCreate: true, OpStart: true, OpStop: true, OpDestroy: true, OpProvision: true, OpPull: true, OpProvisionLocal: true, OpList: true, OpCLI: true}
 	targetOps         = map[string]bool{OpBuild: true, OpCreate: true, OpStart: true, OpStop: true, OpDestroy: true, OpProvision: true, OpPull: true}
 	knownRequirements = map[string]bool{RequireTarget: true, RequireHostChanges: true}
+	knownHostOS       = map[string]bool{"linux": true, "darwin": true, "windows": true}
+	knownListCommands = map[string]bool{"build": true, "create": true, "start": true, "stop": true, "destroy": true, "provision": true, "pull": true, "push": true}
 	scenarioName      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 	envReference      = regexp.MustCompile(`\$\{([A-Z0-9_]+)\}`)
 )
@@ -53,10 +55,18 @@ type Scenario struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
 	Requires    []string `yaml:"requires"`
-	Steps       []Step   `yaml:"steps"`
-	Always      []Step   `yaml:"always"`
+	// HostOS limits the scenario to one host OS: linux, darwin or windows.
+	HostOS string `yaml:"host_os"`
+	// Targets turns the scenario into a matrix: the steps run once per target.
+	Targets []string `yaml:"targets"`
+	// Covers names a list command whose targets must all appear in Targets, so new
+	// VM options cannot silently go untested.
+	Covers string `yaml:"covers"`
+	Steps  []Step `yaml:"steps"`
+	Always []Step `yaml:"always"`
 
-	File string `yaml:"-"`
+	File    string   `yaml:"-"`
+	targets []Target `yaml:"-"`
 }
 
 // Step is one operation plus its expectations.
@@ -68,6 +78,9 @@ type Step struct {
 	WhenEnv   string         `yaml:"when_env"`
 	UnlessEnv string         `yaml:"unless_env"`
 	Only      string         `yaml:"only"`
+	// WhenListed runs the step only if the target appears in `<command> list`,
+	// e.g. build is skipped for targets that use a public image.
+	WhenListed string `yaml:"when_listed"`
 }
 
 // Expect describes what a step must produce. Without exit_code, 0 is expected.
@@ -165,7 +178,28 @@ func (s *Scenario) validate() error {
 		}
 		usesTarget = usesTarget || targetOps[s.Always[i].Op]
 	}
-	if usesTarget && !s.Needs(RequireTarget) {
+	if s.HostOS != "" && !knownHostOS[s.HostOS] {
+		return fmt.Errorf("host_os must be linux, darwin or windows, not %q", s.HostOS)
+	}
+	if s.Covers != "" && !knownListCommands[s.Covers] {
+		return fmt.Errorf("covers must name a list command, not %q", s.Covers)
+	}
+	if s.Covers != "" && len(s.Targets) == 0 {
+		return errors.New("covers needs a targets matrix")
+	}
+	seenTargets := map[string]bool{}
+	for _, value := range s.Targets {
+		target, err := ParseTarget(value)
+		if err != nil {
+			return err
+		}
+		if seenTargets[target.String()] {
+			return fmt.Errorf("target %s is listed twice", target)
+		}
+		seenTargets[target.String()] = true
+		s.targets = append(s.targets, target)
+	}
+	if usesTarget && !s.Needs(RequireTarget) && len(s.Targets) == 0 {
 		return errors.New(`scenarios with VM steps must declare "requires: [target]"`)
 	}
 	return nil
@@ -195,6 +229,9 @@ func (st *Step) validate() error {
 		if _, err := st.stringList("args"); err != nil {
 			return err
 		}
+	}
+	if st.WhenListed != "" && !knownListCommands[st.WhenListed] {
+		return fmt.Errorf("when_listed must name a list command, not %q", st.WhenListed)
 	}
 	if st.Op == OpList {
 		if command, _ := st.With["command"].(string); command == "" {
@@ -345,4 +382,9 @@ func (s Scenario) EnvReferences() []string {
 		}
 	}
 	return names
+}
+
+// Matrix returns the parsed targets matrix (empty for single-target scenarios).
+func (s Scenario) Matrix() []Target {
+	return append([]Target(nil), s.targets...)
 }

@@ -36,6 +36,8 @@ var baseTargets = []target{
 	{OS: "windows11", Arch: "amd64", Engine: "qemu"},
 	{OS: "failos", Arch: "amd64", Engine: "qemu"},
 	{OS: "slowos", Arch: "amd64", Engine: "qemu"},
+	// Listed as unstable, like an emulated architecture.
+	{OS: "ubuntu", Type: "server", Arch: "arm64", Engine: "qemu"},
 }
 
 func main() {
@@ -129,7 +131,19 @@ func printListing(command string) {
 		if state == "" {
 			state = "missing"
 		}
-		targets[i].Fields = map[string]string{"state": state}
+		start := "ready to start"
+		switch state {
+		case "missing":
+			start = "create required"
+		case "running":
+			start = "already running"
+		}
+		status := "stable"
+		if targets[i].Arch == "arm64" {
+			status = "unstable"
+		}
+		// Mirrors the columns of the real `start list` and `create list`.
+		targets[i].Fields = map[string]string{"state": state, "start": start, "status": status}
 	}
 	out, _ := json.Marshal(map[string]any{"schema_version": 1, "targets": targets})
 	fmt.Println("diagnostic line before the document")

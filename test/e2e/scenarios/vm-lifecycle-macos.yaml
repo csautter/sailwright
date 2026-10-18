@@ -1,0 +1,54 @@
+name: vm-lifecycle-macos
+description: >-
+  Full VM lifecycle for every VM option of a macOS host (Tart and UTM).
+  Each target runs build, create, start, provision (check, real, idempotent),
+  stop and destroy. Targets the CLI marks unstable on this host (emulated
+  architectures) run only with SAILWRIGHT_E2E_INCLUDE_UNSTABLE=1.
+host_os: darwin
+covers: create                # fails if `create list` offers a target missing below
+targets:
+  - macos//arm64
+  - ubuntu/server/arm64
+  - ubuntu/server/amd64
+  - ubuntu/desktop/arm64
+  - ubuntu/desktop/amd64
+  - windows11//arm64
+  - windows11//amd64
+steps:
+  - name: build image
+    op: build
+    when_listed: build        # skipped for targets that start from a public image (Tart)
+    with: {headless: true}
+  - name: create VM
+    op: create
+    expect:
+      state: {command: start, field: start, regex: "^(ready to start|already running)$"}
+  - name: start VM
+    op: start
+    expect:
+      state: {command: start, field: start, regex: "^already running$"}
+  - name: provision in check mode
+    op: provision
+    when_listed: provision
+    with: {check: true}
+    expect:
+      recap: {failed: 0, unreachable: 0}
+  - name: provision
+    op: provision
+    when_listed: provision
+    expect:
+      recap: {failed: 0, unreachable: 0}
+  - name: provision again is idempotent
+    op: provision
+    when_listed: provision
+    expect:
+      recap: {failed: 0, unreachable: 0, changed: 0}
+  - name: stop VM
+    op: stop
+    expect:
+      state: {command: start, field: start, regex: "^ready to start$"}
+always:
+  - name: destroy VM
+    op: destroy
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}

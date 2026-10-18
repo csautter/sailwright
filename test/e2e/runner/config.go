@@ -18,6 +18,7 @@ const (
 	EnvTarget           = "SAILWRIGHT_E2E_TARGET"
 	EnvAllowHostChanges = "SAILWRIGHT_E2E_ALLOW_HOST_CHANGES"
 	EnvOutDir           = "SAILWRIGHT_E2E_OUT"
+	EnvIncludeUnstable  = "SAILWRIGHT_E2E_INCLUDE_UNSTABLE"
 
 	defaultOutDir = "out"
 )
@@ -29,6 +30,7 @@ type Config struct {
 	Target           *Target
 	AllowHostChanges bool
 	OutDir           string
+	IncludeUnstable  bool
 	// Gateway is the discovered gateway endpoint (gateway executor only), see
 	// internal/gateway/client for the discovery rules.
 	Gateway client.Endpoint
@@ -40,6 +42,7 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		Executor:         strings.TrimSpace(getenv(EnvExecutor)),
 		Binary:           strings.TrimSpace(getenv(EnvBinary)),
 		AllowHostChanges: getenv(EnvAllowHostChanges) == "1",
+		IncludeUnstable:  getenv(EnvIncludeUnstable) == "1",
 		OutDir:           strings.TrimSpace(getenv(EnvOutDir)),
 	}
 	if cfg.Executor == "" {
@@ -91,7 +94,7 @@ func NewExecutor(ctx context.Context, cfg Config, stream io.Writer) (Executor, f
 // UnknownEnv returns SAILWRIGHT_E2E_* variables from environ that neither the runner
 // nor any scenario uses, which usually means a typo such as SAILWRIGHT_E2E_TARGETS.
 func UnknownEnv(environ []string, scenarios []Scenario) []string {
-	known := map[string]bool{EnvExecutor: true, EnvBinary: true, EnvTarget: true, EnvAllowHostChanges: true, EnvOutDir: true}
+	known := map[string]bool{EnvExecutor: true, EnvBinary: true, EnvTarget: true, EnvAllowHostChanges: true, EnvOutDir: true, EnvIncludeUnstable: true}
 	for _, scenario := range scenarios {
 		for _, name := range scenario.EnvReferences() {
 			known[name] = true

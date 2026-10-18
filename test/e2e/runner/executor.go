@@ -19,13 +19,17 @@ type Target struct {
 	OS   string `json:"os"`
 	Type string `json:"type,omitempty"`
 	Arch string `json:"arch,omitempty"`
+	// Engine selects the virtualization engine for build and pull when a host offers
+	// several for the same OS/type/arch (e.g. Hyper-V and VirtualBox on Windows).
+	Engine string `json:"engine,omitempty"`
 }
 
-// ParseTarget parses "os[/type][/arch]", e.g. "ubuntu/server/amd64" or "windows11//arm64".
+// ParseTarget parses "os[/type][/arch][/engine]", e.g. "ubuntu/server/amd64",
+// "windows11//arm64" or "windows11//amd64/hyperv".
 func ParseTarget(value string) (Target, error) {
 	parts := strings.Split(value, "/")
-	if len(parts) == 0 || parts[0] == "" || len(parts) > 3 {
-		return Target{}, fmt.Errorf("target %q must look like os/type/arch", value)
+	if len(parts) == 0 || parts[0] == "" || len(parts) > 4 {
+		return Target{}, fmt.Errorf("target %q must look like os/type/arch[/engine]", value)
 	}
 	target := Target{OS: parts[0]}
 	if len(parts) > 1 {
@@ -34,12 +38,30 @@ func ParseTarget(value string) (Target, error) {
 	if len(parts) > 2 {
 		target.Arch = parts[2]
 	}
+	if len(parts) > 3 {
+		target.Engine = parts[3]
+	}
 	return target, nil
 }
 
-// String renders the target as os/type/arch.
+// String renders the target as os/type/arch[/engine].
 func (t Target) String() string {
-	return strings.Join([]string{t.OS, t.Type, t.Arch}, "/")
+	value := strings.Join([]string{t.OS, t.Type, t.Arch}, "/")
+	if t.Engine != "" {
+		value += "/" + t.Engine
+	}
+	return value
+}
+
+// Slug renders the target for file and subtest names, e.g. ubuntu-server-amd64.
+func (t Target) Slug() string {
+	var parts []string
+	for _, part := range []string{t.OS, t.Type, t.Arch, t.Engine} {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, "-")
 }
 
 // StepRequest is one operation for an executor.
@@ -86,6 +108,15 @@ type Executor interface {
 	HostChangesAllowed(ctx context.Context) (bool, string)
 }
 
+// stepEngine returns the engine for build and pull: the step's own engine wins over
+// the target's.
+func stepEngine(req StepRequest) string {
+	if engine := req.Step.String("engine", req.Getenv); engine != "" {
+		return engine
+	}
+	return req.Target.Engine
+}
+
 // ErrStepNotSupported is returned when an executor cannot run an operation.
 var ErrStepNotSupported = errors.New("step not supported by this executor")
 
@@ -103,6 +134,9 @@ func FindTarget(targets []ListedTarget, target Target) (ListedTarget, bool) {
 			continue
 		}
 		if listed.Type != "" && target.Type == "" && listed.Type != "server" {
+			continue
+		}
+		if target.Engine != "" && listed.Engine != "" && listed.Engine != target.Engine {
 			continue
 		}
 		return listed, true

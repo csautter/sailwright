@@ -110,7 +110,7 @@ func DirectArgv(req StepRequest) ([]string, error) {
 	switch step.Op {
 	case OpBuild:
 		argv := targetArgs("build")
-		if engine := step.String("engine", getenv); engine != "" {
+		if engine := stepEngine(req); engine != "" {
 			argv = append(argv, "--engine", engine)
 		}
 		if step.Bool("headless") {
@@ -140,7 +140,7 @@ func DirectArgv(req StepRequest) ([]string, error) {
 		if req.Target.Type != "" {
 			argv = append(argv, "--type", req.Target.Type)
 		}
-		if engine := step.String("engine", getenv); engine != "" {
+		if engine := stepEngine(req); engine != "" {
 			argv = append(argv, "--engine", engine)
 		}
 		return argv, nil
