@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/csautter/dev-alchemy/internal/gateway"
+	"github.com/csautter/dev-alchemy/internal/gateway/client"
 	"github.com/csautter/dev-alchemy/internal/gateway/gatewaytest"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -354,7 +355,48 @@ func TestGatewayRedactsSecretsInOutputAndAudit(t *testing.T) {
 
 func TestGatewayRejectsClientsWithoutToken(t *testing.T) {
 	h := gatewaytest.Start(t, gatewaytest.Options{})
-	if _, err := gatewaytest.Connect(context.Background(), h.URL, strings.Repeat("0", 64)); err == nil {
+	wrong := h.TCPEndpoint()
+	wrong.Token = strings.Repeat("0", 64)
+	if _, err := client.Connect(context.Background(), wrong, &mcp.Implementation{Name: "test"}); err == nil {
 		t.Fatal("connecting with a wrong token must fail")
+	}
+	if h.SocketPath != "" {
+		wrongSocket := h.SocketEndpoint()
+		wrongSocket.Token = strings.Repeat("0", 64)
+		if _, err := client.Connect(context.Background(), wrongSocket, &mcp.Implementation{Name: "test"}); err == nil {
+			t.Fatal("the socket must still require the token")
+		}
+	}
+}
+
+func TestGatewayServesTheAgentSocket(t *testing.T) {
+	h := gatewaytest.Start(t, gatewaytest.Options{})
+	if h.SocketPath == "" {
+		t.Skip("no agent socket on this OS")
+	}
+
+	info, err := os.Stat(h.SocketPath)
+	if err != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0o600 {
+		t.Fatalf("socket must exist with mode 0600: %v %v", info.Mode(), err)
+	}
+	token, err := os.ReadFile(filepath.Join(h.AgentDir, "token"))
+	if err != nil || strings.TrimSpace(string(token)) != h.Token {
+		t.Fatalf("agent dir must hold the token copy: %v", err)
+	}
+	entries, _ := os.ReadDir(h.AgentDir)
+	if len(entries) != 2 {
+		t.Fatalf("agent dir must only hold the socket and the token, got %d entries", len(entries))
+	}
+
+	session := h.ConnectTo(t, h.SocketEndpoint())
+	var view gateway.JobView
+	mustCall(t, session, "vm_create", map[string]any{"os": "ubuntu"}, &view)
+	if final := waitJob(t, session, view.ID); final.State != gateway.JobSucceeded {
+		t.Fatalf("unexpected state %+v", final)
+	}
+
+	audit, err := os.ReadFile(filepath.Join(h.StateDir, "audit.jsonl"))
+	if err != nil || !strings.Contains(string(audit), `"peer":"unix-socket"`) {
+		t.Fatalf("audit log must record socket requests: %v\n%s", err, audit)
 	}
 }

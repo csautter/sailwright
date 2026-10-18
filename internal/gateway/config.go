@@ -23,19 +23,24 @@ import (
 )
 
 const (
-	defaultListen          = "127.0.0.1:7391"
-	defaultJobTimeout      = 6 * time.Hour
-	defaultInfoTimeout     = 2 * time.Minute
-	defaultApprovalTTL     = 10 * time.Minute
-	defaultMinFreeDiskGB   = 20
-	defaultOutputLimit     = 8 << 20
-	defaultSnapshotBytes   = 50 << 20
-	defaultSnapshotFiles   = 5000
-	configFileName         = "gateway.yaml"
-	tokenFileName          = "token"
-	stateDirPermission     = 0o700
-	privateFilePermission  = 0o600
-	defaultStateDirName    = "sailwright-gateway"
+	defaultListen         = "127.0.0.1:7391"
+	defaultJobTimeout     = 6 * time.Hour
+	defaultInfoTimeout    = 2 * time.Minute
+	defaultApprovalTTL    = 10 * time.Minute
+	defaultMinFreeDiskGB  = 20
+	defaultOutputLimit    = 8 << 20
+	defaultSnapshotBytes  = 50 << 20
+	defaultSnapshotFiles  = 5000
+	configFileName        = "gateway.yaml"
+	tokenFileName         = "token"
+	stateDirPermission    = 0o700
+	privateFilePermission = 0o600
+	defaultStateDirName   = "sailwright-gateway"
+	defaultAgentDirName   = ".sailwright-gateway"
+	// AgentSocketName and AgentTokenName are the files in the agent dir. The agent dir
+	// is meant to be bind-mounted read-only into devcontainers.
+	AgentSocketName        = "gateway.sock"
+	AgentTokenName         = "token"
 	maxConfigFileSizeBytes = 1 << 20
 )
 
@@ -66,6 +71,7 @@ type Config struct {
 	OutputLimitBytes   int                `yaml:"output_limit_bytes"`
 	SnapshotMaxBytes   int64              `yaml:"snapshot_max_bytes"`
 	SnapshotMaxFiles   int                `yaml:"snapshot_max_files"`
+	AgentDir           string             `yaml:"agent_dir"`
 
 	// Resolved values, filled by Resolve.
 	StateDir         string         `yaml:"-"`
@@ -158,6 +164,16 @@ func (c *Config) Resolve() error {
 	if c.DataDir == "" {
 		c.DataDir = filepath.Join(c.StateDir, "data")
 	}
+	if c.AgentDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("resolve home dir for agent_dir: %w", err)
+		}
+		c.AgentDir = filepath.Join(home, defaultAgentDirName)
+	}
+	if c.AgentDir, err = filepath.Abs(c.AgentDir); err != nil {
+		return fmt.Errorf("resolve agent dir: %w", err)
+	}
 	if c.DataDir, err = filepath.Abs(c.DataDir); err != nil {
 		return fmt.Errorf("resolve data dir: %w", err)
 	}
@@ -220,9 +236,15 @@ func (c *Config) Resolve() error {
 		return errors.New("binary_sha256 must be 64 lowercase hex characters")
 	}
 
-	for _, dir := range []string{c.StateDir, c.DataDir} {
+	for _, dir := range []string{c.StateDir, c.DataDir, c.AgentDir} {
 		if mapping, ok := c.hostPathInAgentWorkspace(dir); ok {
-			return fmt.Errorf("%s is inside the agent-writable workspace %s; move the gateway state and data outside of it", dir, mapping.Host)
+			return fmt.Errorf("%s is inside the agent-writable workspace %s; move the gateway directories outside of it", dir, mapping.Host)
+		}
+	}
+	// The agent dir is mounted into containers, so it must not expose gateway state.
+	for _, dir := range []string{c.StateDir, c.DataDir} {
+		if isWithin(c.AgentDir, dir) || isWithin(dir, c.AgentDir) {
+			return fmt.Errorf("agent_dir %s must not overlap the gateway directory %s", c.AgentDir, dir)
 		}
 	}
 	return nil

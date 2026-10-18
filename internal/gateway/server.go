@@ -152,33 +152,19 @@ func (g *Gateway) Handler() http.Handler {
 	}, mcpHandler)
 }
 
-// Serve listens on the configured address until ctx is cancelled.
+// Serve opens all listeners and serves until ctx is cancelled.
 func (g *Gateway) Serve(ctx context.Context) error {
-	listener, err := net.Listen("tcp", g.cfg.ListenAddr.String())
+	listeners, err := g.Listen()
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", g.cfg.ListenAddr, err)
-	}
-	return g.ServeListener(ctx, listener)
-}
-
-// ServeListener serves on an existing listener (tests).
-func (g *Gateway) ServeListener(ctx context.Context, listener net.Listener) error {
-	server := &http.Server{
-		Handler:           g.Handler(),
-		ReadHeaderTimeout: readHeaderTimeout,
-		IdleTimeout:       idleTimeout,
-		MaxHeaderBytes:    maxHeaderBytes,
-	}
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-	}()
-	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	return nil
+	defer listeners.Close()
+	return g.ServeListeners(ctx, listeners)
+}
+
+// ServeListener serves on a single TCP listener (tests).
+func (g *Gateway) ServeListener(ctx context.Context, listener net.Listener) error {
+	return g.ServeListeners(ctx, &Listeners{TCP: listener})
 }
 
 // RefreshTargets asks the pinned binary for every `<command> list --json`.

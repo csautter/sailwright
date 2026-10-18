@@ -34,18 +34,26 @@ func NewHTTPHandler(policy SecurityPolicy, mcpHandler http.Handler) http.Handler
 }
 
 // Middleware enforces source address, Host, Origin and bearer token checks in that
-// order and fails closed.
+// order and fails closed. Requests over the agent Unix socket skip the network checks.
 func (p SecurityPolicy) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Header.Del(peerHeader)
+		peer := r.RemoteAddr
 
-		if !p.sourceAllowed(r.RemoteAddr) {
-			p.deny(w, r, http.StatusForbidden, "source address not allowed")
-			return
-		}
-		if !p.hostAllowed(r.Host) {
-			p.deny(w, r, http.StatusForbidden, "host header not allowed")
-			return
+		// Access to the agent socket is controlled by file permissions and by which
+		// container gets the mount; network source and DNS rebinding checks do not
+		// apply to it. Origin and token are checked for every transport.
+		if fromLocalSocket(r.Context()) {
+			peer = "unix-socket"
+		} else {
+			if !p.sourceAllowed(r.RemoteAddr) {
+				p.deny(w, r, http.StatusForbidden, "source address not allowed")
+				return
+			}
+			if !p.hostAllowed(r.Host) {
+				p.deny(w, r, http.StatusForbidden, "host header not allowed")
+				return
+			}
 		}
 		if origin := r.Header.Get("Origin"); origin != "" && !containsFold(p.AllowedOrigins, origin) {
 			p.deny(w, r, http.StatusForbidden, "origin not allowed")
@@ -58,7 +66,7 @@ func (p SecurityPolicy) Middleware(next http.Handler) http.Handler {
 		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-		r.Header.Set(peerHeader, r.RemoteAddr)
+		r.Header.Set(peerHeader, peer)
 		next.ServeHTTP(w, r)
 	})
 }

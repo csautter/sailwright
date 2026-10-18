@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/csautter/dev-alchemy/internal/gateway/client"
 	"github.com/csautter/dev-alchemy/internal/gateway/gatewaytest"
 	"github.com/csautter/dev-alchemy/test/e2e/runner"
 )
@@ -193,7 +194,11 @@ func autoApprove(t *testing.T, h *gatewaytest.Harness, stop <-chan struct{}) {
 // gateway (MCP, policy, approval) with a fake sailwright binary behind it.
 func TestScenariosAgainstGatewayWithFakeCLI(t *testing.T) {
 	h := gatewaytest.Start(t, gatewaytest.Options{Approvals: true})
-	executor := &runner.GatewayExecutor{URL: h.URL, Token: h.Token, PollInterval: 20 * time.Millisecond}
+	endpoint := h.TCPEndpoint()
+	if h.SocketPath != "" {
+		endpoint = h.SocketEndpoint()
+	}
+	executor := &runner.GatewayExecutor{Endpoint: endpoint, PollInterval: 20 * time.Millisecond}
 	if err := executor.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -264,12 +269,13 @@ func TestConfigFromEnv(t *testing.T) {
 		t.Fatalf("unexpected config %+v, %v", cfg, err)
 	}
 	env[runner.EnvExecutor] = runner.ExecutorGateway
+	env[client.EnvDir] = t.TempDir()
 	if _, err := runner.ConfigFromEnv(getenv); err == nil {
-		t.Fatal("gateway executor without token must fail")
+		t.Fatal("gateway executor without a token must fail")
 	}
-	env[runner.EnvGatewayToken] = "token"
+	env[client.EnvToken] = "token"
 	cfg, err = runner.ConfigFromEnv(getenv)
-	if err != nil || cfg.GatewayURL != "http://host.docker.internal:7391/mcp" {
+	if err != nil || cfg.Gateway.URL != client.DefaultTCPURL || cfg.Gateway.Token != "token" {
 		t.Fatalf("unexpected config %+v, %v", cfg, err)
 	}
 }

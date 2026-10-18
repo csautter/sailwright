@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
+	"github.com/csautter/dev-alchemy/internal/gateway/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -20,8 +20,7 @@ const (
 // GatewayExecutor runs steps through sailwright-gateway over MCP. Every step passes the
 // gateway policy: safe steps run directly, everything else waits for host approval.
 type GatewayExecutor struct {
-	URL          string
-	Token        string
+	Endpoint     client.Endpoint
 	PollInterval time.Duration
 
 	session *mcp.ClientSession
@@ -43,16 +42,9 @@ func (j gatewayJob) done() bool {
 
 // Connect opens the MCP session.
 func (g *GatewayExecutor) Connect(ctx context.Context) error {
-	client := mcp.NewClient(&mcp.Implementation{Name: "sailwright-e2e", Version: "1"}, nil)
-	transport := &mcp.StreamableClientTransport{
-		Endpoint:             g.URL,
-		HTTPClient:           &http.Client{Transport: bearerTransport{token: g.Token}},
-		DisableStandaloneSSE: true,
-		MaxRetries:           -1,
-	}
-	session, err := client.Connect(ctx, transport, nil)
+	session, err := client.Connect(ctx, g.Endpoint, &mcp.Implementation{Name: "sailwright-e2e", Version: "1"})
 	if err != nil {
-		return fmt.Errorf("connect to gateway %s: %w", g.URL, err)
+		return err
 	}
 	g.session = session
 	return nil
@@ -80,7 +72,7 @@ func (g *GatewayExecutor) Describe(ctx context.Context) (Environment, error) {
 	if err := g.call(ctx, "gateway_info", map[string]any{}, &info); err != nil {
 		return Environment{}, err
 	}
-	return Environment{Executor: ExecutorGateway, HostOS: info.HostOS, HostArch: info.HostArch, BinarySHA256: info.BinarySHA256, Gateway: info.Version}, nil
+	return Environment{Executor: ExecutorGateway, HostOS: info.HostOS, HostArch: info.HostArch, BinarySHA256: info.BinarySHA256, Gateway: info.Version + " via " + g.Endpoint.String()}, nil
 }
 
 // HostChangesAllowed implements Executor.
@@ -253,14 +245,4 @@ func (g *GatewayExecutor) call(ctx context.Context, tool string, args map[string
 		return err
 	}
 	return json.Unmarshal(data, out)
-}
-
-type bearerTransport struct {
-	token string
-}
-
-func (b bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	clone := req.Clone(req.Context())
-	clone.Header.Set("Authorization", "Bearer "+b.token)
-	return http.DefaultTransport.RoundTrip(clone)
 }

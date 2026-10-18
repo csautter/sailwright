@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +18,7 @@ import (
 	"time"
 
 	"github.com/csautter/dev-alchemy/internal/gateway"
+	"github.com/csautter/dev-alchemy/internal/gateway/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -72,6 +71,8 @@ type Options struct {
 // Harness is a running gateway with a fake CLI behind it.
 type Harness struct {
 	URL           string
+	SocketPath    string
+	AgentDir      string
 	Token         string
 	StateDir      string
 	RecordFile    string
@@ -95,6 +96,14 @@ func Start(t testing.TB, opts Options) *Harness {
 	}
 	h.RecordFile = filepath.Join(t.TempDir(), "invocations.jsonl")
 
+	// Unix socket paths are limited to ~104 bytes, so keep the agent dir short.
+	agentDir, err := os.MkdirTemp("", "swgw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(agentDir) })
+	h.AgentDir = agentDir
+
 	jobTimeout := opts.JobTimeout
 	if jobTimeout == "" {
 		jobTimeout = "2m"
@@ -108,6 +117,7 @@ func Start(t testing.TB, opts Options) *Harness {
 		JobTimeout:      jobTimeout,
 		ApprovalTTL:     durationString(opts.ApprovalTTL),
 		MinFreeDiskGB:   -1,
+		AgentDir:        agentDir,
 	}
 	if err := cfg.Resolve(); err != nil {
 		t.Fatal(err)
@@ -161,14 +171,16 @@ func Start(t testing.TB, opts Options) *Harness {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	g.RefreshTargets(ctx)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listeners, err := g.Listen()
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.URL = "http://" + listener.Addr().String() + "/mcp"
+	h.URL = "http://" + listeners.TCP.Addr().String() + "/mcp"
+	h.SocketPath = listeners.SocketPath
 	done := make(chan struct{})
 	go func() {
-		_ = g.ServeListener(ctx, listener)
+		_ = g.ServeListeners(ctx, listeners)
+		listeners.Close()
 		close(done)
 	}()
 	t.Cleanup(func() {
@@ -186,44 +198,31 @@ func durationString(d time.Duration) string {
 	return d.String()
 }
 
-// Connect opens an MCP client session with the harness token.
+// TCPEndpoint returns the TCP endpoint with the harness token.
+func (h *Harness) TCPEndpoint() client.Endpoint {
+	return client.Endpoint{URL: h.URL, Token: h.Token, Source: "test"}
+}
+
+// SocketEndpoint returns the Unix socket endpoint (empty Socket on Windows).
+func (h *Harness) SocketEndpoint() client.Endpoint {
+	return client.Endpoint{URL: "http://localhost/mcp", Socket: h.SocketPath, Token: h.Token, Source: "test"}
+}
+
+// Connect opens an MCP client session over TCP with the harness token.
 func (h *Harness) Connect(t testing.TB) *mcp.ClientSession {
 	t.Helper()
-	session, err := Connect(context.Background(), h.URL, h.Token)
+	return h.ConnectTo(t, h.TCPEndpoint())
+}
+
+// ConnectTo opens an MCP client session to the given endpoint.
+func (h *Harness) ConnectTo(t testing.TB, endpoint client.Endpoint) *mcp.ClientSession {
+	t.Helper()
+	session, err := client.Connect(context.Background(), endpoint, &mcp.Implementation{Name: "gatewaytest", Version: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = session.Close() })
 	return session
-}
-
-// Connect opens an MCP client session against a gateway URL with a bearer token.
-func Connect(ctx context.Context, url string, token string) (*mcp.ClientSession, error) {
-	client := mcp.NewClient(&mcp.Implementation{Name: "gatewaytest", Version: "test"}, nil)
-	transport := &mcp.StreamableClientTransport{
-		Endpoint:             url,
-		HTTPClient:           &http.Client{Transport: BearerTransport{Token: token}},
-		DisableStandaloneSSE: true,
-		MaxRetries:           -1,
-	}
-	return client.Connect(ctx, transport, nil)
-}
-
-// BearerTransport adds the gateway token to every request.
-type BearerTransport struct {
-	Token string
-	Base  http.RoundTripper
-}
-
-// RoundTrip implements http.RoundTripper.
-func (b BearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	clone := req.Clone(req.Context())
-	clone.Header.Set("Authorization", "Bearer "+b.Token)
-	base := b.Base
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	return base.RoundTrip(clone)
 }
 
 // Approve answers the pending approval for jobID on the gateway console.

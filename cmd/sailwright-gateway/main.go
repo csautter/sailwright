@@ -10,13 +10,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/csautter/dev-alchemy/internal/gateway"
+	"github.com/csautter/dev-alchemy/internal/gateway/client"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -50,7 +51,7 @@ func newRootCommand() *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&stateDir, "state-dir", "", "Gateway state directory (default: <user config dir>/sailwright-gateway)")
 
-	root.AddCommand(newServeCommand(&stateDir), newTokenCommand(&stateDir))
+	root.AddCommand(newServeCommand(&stateDir), newTokenCommand(&stateDir), newConnectCommand())
 	return root
 }
 
@@ -107,6 +108,45 @@ func newTokenCommand(stateDir *string) *cobra.Command {
 		},
 	}
 	command.Flags().BoolVar(&rotate, "rotate", false, "Replace the token with a new random one")
+	return command
+}
+
+func newConnectCommand() *cobra.Command {
+	var check bool
+	command := &cobra.Command{
+		Use:   "connect",
+		Short: "Bridge MCP over stdio to a running gateway (run inside the devcontainer)",
+		Long: `Serves the gateway's tools over stdio so any agent harness can start it as an
+MCP server. The gateway is found automatically:
+
+  1. SAILWRIGHT_GATEWAY_URL (http://... or unix:///path/to/gateway.sock)
+  2. the socket in SAILWRIGHT_GATEWAY_DIR (default /run/sailwright-gateway)
+  3. http://host.docker.internal:7391/mcp
+
+The token is read from SAILWRIGHT_GATEWAY_TOKEN or the token file in that directory.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			endpoint, err := client.Discover(os.Getenv)
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			if check {
+				session, err := client.Connect(ctx, endpoint, &mcp.Implementation{Name: "sailwright-gateway-connect", Version: version})
+				if err != nil {
+					return err
+				}
+				defer session.Close()
+				fmt.Fprintf(cmd.OutOrStdout(), "connected to %s (%s)\n", endpoint, endpoint.Source)
+				return nil
+			}
+			bridge := &client.Bridge{Endpoint: endpoint, Version: version}
+			return bridge.Run(ctx, &mcp.StdioTransport{})
+		},
+	}
+	command.Flags().BoolVar(&check, "check", false, "Only test the connection and print where the gateway was found")
 	return command
 }
 
@@ -190,30 +230,37 @@ func runServe(parent context.Context, flags serveFlags) error {
 	cancelRefresh()
 
 	// Bind before printing the banner so a failed bind is not reported as listening.
-	listener, err := net.Listen("tcp", cfg.ListenAddr.String())
+	listeners, err := g.Listen()
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w (the address must belong to a network interface of this host)", cfg.ListenAddr, err)
+		return err
 	}
-	printBanner(cfg, pinned, approver.Enabled())
-	return g.ServeListener(ctx, listener)
+	defer listeners.Close()
+	printBanner(cfg, pinned, listeners.SocketPath, approver.Enabled())
+	return g.ServeListeners(ctx, listeners)
 }
 
-func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, approvals bool) {
+func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, socketPath string, approvals bool) {
 	approvalState := "disabled (safe set only)"
 	if approvals {
 		approvalState = "enabled on this terminal"
 	}
+	socket := "not available on this OS (use TCP)"
+	if socketPath != "" {
+		socket = socketPath
+	}
 	fmt.Printf(`
 sailwright-gateway %s
   listening:  http://%s/mcp
+  socket:     %s
+  agent dir:  %s  (mount read-only into the devcontainer at /run/sailwright-gateway)
   binary:     %s (sha256 %s)
   data dir:   %s
   approvals:  %s
   token file: %s
   audit log:  %s
 
-Agents need SAILWRIGHT_GATEWAY_TOKEN set to the content of the token file.
+In the devcontainer, agents connect with: sailwright-gateway connect
 Press Ctrl+C to stop.
-`, version, cfg.ListenAddr, pinned.Source, pinned.SHA256, cfg.DataDir, approvalState,
+`, version, cfg.ListenAddr, socket, cfg.AgentDir, pinned.Source, pinned.SHA256, cfg.DataDir, approvalState,
 		gateway.TokenPath(cfg.StateDir), cfg.StateDir+string(os.PathSeparator)+"audit.jsonl")
 }
