@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"sort"
 
 	"errors"
 	"fmt"
@@ -58,7 +59,7 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	switch cfg.Executor {
 	case ExecutorDirect:
 		if cfg.Binary == "" {
-			return Config{}, fmt.Errorf("%s is required for the direct executor", EnvBinary)
+			return Config{}, fmt.Errorf("%s is required for the direct executor; set %s=%s to run through sailwright-gateway instead", EnvBinary, EnvExecutor, ExecutorGateway)
 		}
 	case ExecutorGateway:
 		endpoint, err := client.Discover(getenv)
@@ -85,4 +86,24 @@ func NewExecutor(ctx context.Context, cfg Config, stream io.Writer) (Executor, f
 		return executor, executor.Close, nil
 	}
 	return nil, nil, errors.New("unknown executor")
+}
+
+// UnknownEnv returns SAILWRIGHT_E2E_* variables from environ that neither the runner
+// nor any scenario uses, which usually means a typo such as SAILWRIGHT_E2E_TARGETS.
+func UnknownEnv(environ []string, scenarios []Scenario) []string {
+	known := map[string]bool{EnvExecutor: true, EnvBinary: true, EnvTarget: true, EnvAllowHostChanges: true, EnvOutDir: true}
+	for _, scenario := range scenarios {
+		for _, name := range scenario.EnvReferences() {
+			known[name] = true
+		}
+	}
+	var unknown []string
+	for _, entry := range environ {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(name, "SAILWRIGHT_E2E_") && !known[name] {
+			unknown = append(unknown, name)
+		}
+	}
+	sort.Strings(unknown)
+	return unknown
 }

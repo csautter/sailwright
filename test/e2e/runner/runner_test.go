@@ -279,3 +279,20 @@ func TestConfigFromEnv(t *testing.T) {
 		t.Fatalf("unexpected config %+v, %v", cfg, err)
 	}
 }
+
+func TestUnknownEnvCatchesTypos(t *testing.T) {
+	scenarios, err := runner.LoadScenarios("../scenarios")
+	if err != nil {
+		t.Fatal(err)
+	}
+	environ := []string{
+		"SAILWRIGHT_E2E_TARGETS=ubuntu/server/amd64",
+		"SAILWRIGHT_E2E_TARGET=ubuntu/server/amd64",
+		"SAILWRIGHT_E2E_PULL_REF=ghcr.io/x/y:z",
+		"SAILWRIGHT_GATEWAY_DIR=/run/sailwright-gateway",
+		"HOME=/root",
+	}
+	if got := runner.UnknownEnv(environ, scenarios); len(got) != 1 || got[0] != "SAILWRIGHT_E2E_TARGETS" {
+		t.Fatalf("expected only the typo to be reported, got %v", got)
+	}
+}

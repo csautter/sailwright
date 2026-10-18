@@ -314,3 +314,35 @@ func expandEnv(value string, getenv func(string) string) string {
 		return getenv(name)
 	})
 }
+
+// EnvReferences returns the environment variables a scenario reads through when_env,
+// unless_env or ${SAILWRIGHT_E2E_*} references in step parameters.
+func (s Scenario) EnvReferences() []string {
+	var names []string
+	collect := func(value string) {
+		for _, match := range envReference.FindAllStringSubmatch(value, -1) {
+			names = append(names, match[1])
+		}
+	}
+	for _, step := range append(append([]Step{}, s.Steps...), s.Always...) {
+		if step.WhenEnv != "" {
+			names = append(names, step.WhenEnv)
+		}
+		if step.UnlessEnv != "" {
+			names = append(names, step.UnlessEnv)
+		}
+		for _, value := range step.With {
+			switch typed := value.(type) {
+			case string:
+				collect(typed)
+			case []any:
+				for _, item := range typed {
+					if text, ok := item.(string); ok {
+						collect(text)
+					}
+				}
+			}
+		}
+	}
+	return names
+}

@@ -5,17 +5,21 @@ package e2e
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/csautter/dev-alchemy/test/e2e/runner"
 )
 
 func TestScenarios(t *testing.T) {
-	cfg, err := runner.ConfigFromEnv(os.Getenv)
+	scenarios, err := runner.LoadScenarios("scenarios")
 	if err != nil {
 		t.Fatal(err)
 	}
-	scenarios, err := runner.LoadScenarios("scenarios")
+	if unknown := runner.UnknownEnv(os.Environ(), scenarios); len(unknown) > 0 {
+		t.Fatalf("unknown variables %s; check for typos (e.g. %s, not %sS)", strings.Join(unknown, ", "), runner.EnvTarget, runner.EnvTarget)
+	}
+	cfg, err := runner.ConfigFromEnv(os.Getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
