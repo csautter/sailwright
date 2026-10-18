@@ -115,6 +115,8 @@ type JobManager struct {
 	console     io.Writer
 	follow      io.Writer
 
+	running sync.WaitGroup
+
 	mu     sync.Mutex
 	jobs   map[string]*job
 	order  []string
@@ -191,7 +193,11 @@ func (m *JobManager) Submit(spec JobSpec) (JobView, error) {
 	m.mu.Unlock()
 
 	m.record(AuditEvent{Event: "job_submitted", Peer: spec.Peer, Tool: spec.Tool, JobID: id, Tier: spec.Tier, Argv: spec.Argv, Params: spec.Params, Risk: spec.Risk, Snapshot: spec.Snapshot})
-	go m.execute(ctx, j, spec)
+	m.running.Add(1)
+	go func() {
+		defer m.running.Done()
+		m.execute(ctx, j, spec)
+	}()
 	return j.snapshotView(), nil
 }
 
@@ -375,6 +381,11 @@ func (m *JobManager) CancelAll() {
 	for _, j := range m.jobs {
 		j.cancel()
 	}
+}
+
+// WaitAll blocks until every job goroutine has finished (shutdown).
+func (m *JobManager) WaitAll() {
+	m.running.Wait()
 }
 
 func (m *JobManager) trimHistoryLocked() {

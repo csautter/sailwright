@@ -58,6 +58,12 @@ type Gateway struct {
 	version    string
 	server     *mcp.Server
 
+	backgroundMu     sync.Mutex
+	background       sync.WaitGroup
+	backgroundCtx    context.Context
+	backgroundCancel context.CancelFunc
+	closed           bool
+
 	playbooksMu sync.RWMutex
 	playbooks   []string
 }
@@ -109,6 +115,7 @@ func New(opts Options) (*Gateway, error) {
 		console:    opts.Console,
 		version:    opts.Version,
 	}
+	g.backgroundCtx, g.backgroundCancel = context.WithCancel(context.Background())
 	g.jobs = NewJobManager(JobManagerOptions{
 		Runner:      g.runner,
 		Approver:    g.approver,
@@ -128,8 +135,16 @@ func New(opts Options) (*Gateway, error) {
 }
 
 // Close releases resources.
+// Close cancels running jobs and background refreshes and waits for them, so no
+// child process outlives the gateway.
 func (g *Gateway) Close() error {
+	g.backgroundMu.Lock()
+	g.closed = true
+	g.backgroundMu.Unlock()
+	g.backgroundCancel()
 	g.jobs.CancelAll()
+	g.jobs.WaitAll()
+	g.background.Wait()
 	return g.audit.Close()
 }
 
@@ -180,8 +195,15 @@ func (g *Gateway) RefreshTargets(ctx context.Context) {
 }
 
 func (g *Gateway) refreshTargetsAsync() {
+	g.backgroundMu.Lock()
+	defer g.backgroundMu.Unlock()
+	if g.closed {
+		return
+	}
+	g.background.Add(1)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), infoTimeout)
+		defer g.background.Done()
+		ctx, cancel := context.WithTimeout(g.backgroundCtx, infoTimeout)
 		defer cancel()
 		g.RefreshTargets(ctx)
 	}()
