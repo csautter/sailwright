@@ -43,11 +43,9 @@ func (r *Runner) Run(ctx context.Context, argv []string, dir string, out io.Writ
 	if err := cmd.Start(); err != nil {
 		return -1, err
 	}
-	if err := tree.attach(); err != nil {
-		tree.kill()
-		_ = cmd.Wait()
-		return -1, err
-	}
+	// A child that exits immediately may not be attachable (Windows job objects); the
+	// tree then falls back to killing the direct child on cancellation.
+	_ = tree.attach()
 
 	var waitErr error
 	exited := make(chan struct{})
