@@ -16,7 +16,8 @@ The main use today is automated testing of Sailwright on real hosts; see
 
 ```text
 devcontainer (agent, E2E tests)
-   │  HTTP + bearer token  (/mcp)
+   │  sailwright-gateway connect (stdio MCP bridge)
+   │  Unix socket (Linux) or TCP (Docker Desktop) + bearer token
    ▼
 sailwright-gateway  (host, your user account, foreground terminal)
    auth · source/Host/Origin checks · safe set or approval · snapshots
@@ -63,10 +64,14 @@ The agent, and everything it reads, is treated as untrusted.
 - **Isolated state.** Sailwright runs with its own app-data, config and cache
   directories below the gateway data dir, so your regular Sailwright data and
   role-source configuration are not used.
-- **Network.** The gateway listens on `127.0.0.1` by default and refuses
-  wildcard addresses. Every request needs the bearer token and must come from
-  an allowed source address with an allowed `Host` header; browser `Origin`
-  headers are rejected.
+- **Transport.** Agents reach the gateway through a Unix socket in a
+  dedicated agent folder (`~/.sailwright-gateway`) that you mount read-only
+  into the devcontainer. Access is limited by file permissions (`0600`) and by
+  which container gets the mount; nothing is exposed on the network. For
+  Docker Desktop on macOS and Windows the gateway also listens on
+  `127.0.0.1:7391`; wildcard addresses are refused. Every request needs the
+  bearer token. TCP requests must also come from an allowed source address
+  with an allowed `Host` header, and browser `Origin` headers are rejected.
 - **Limits.** One job at a time, a job timeout, a minimum free disk check for
   build/create/pull, output limits, process tree termination on cancel, and
   secret redaction in output and logs.
@@ -80,62 +85,92 @@ The agent, and everything it reads, is treated as untrusted.
 
 ## Quick start
 
-1. **Build on the host** from a checkout you trust:
+Three steps, the same on every host.
+
+1. **On the host:** build from a checkout you trust and start the gateway in a
+   terminal you keep open:
 
    ```bash
-   make build-cli-local
-   make build-gateway-local
-   ```
-
-2. **Start the gateway** in a terminal you keep open:
-
-   ```bash
+   make build-cli-local build-gateway-local
    ./dist/<os>-<arch>/sailwright-gateway serve --binary ./dist/<os>-<arch>/sailwright
    ```
 
-   Confirm the SHA-256. The banner shows the URL, the token file and the audit
-   log. For unattended use pass `--binary-sha256 <hash>` instead; approvals
-   then still need an interactive terminal.
+   Confirm the SHA-256. The gateway creates `~/.sailwright-gateway/` with only
+   `gateway.sock` and a copy of the token. For unattended use pass
+   `--binary-sha256 <hash>` instead; approvals still need an interactive
+   terminal.
 
-3. **Hand the token to the devcontainer.** Print it with
-   `sailwright-gateway token` and export it on the host before you open the
-   devcontainer:
+2. **In `devcontainer.json`:** mount that folder read-only and make sure it
+   exists before the container starts:
 
-   ```bash
-   export SAILWRIGHT_GATEWAY_TOKEN="$(sailwright-gateway token)"
+   ```json
+   "initializeCommand": "mkdir -p \"${localEnv:HOME}/.sailwright-gateway\"",
+   "mounts": [
+     "source=${localEnv:HOME}/.sailwright-gateway,target=/run/sailwright-gateway,type=bind,readonly"
+   ]
    ```
 
-   This repository's `.devcontainer/devcontainer.json` forwards
-   `SAILWRIGHT_GATEWAY_TOKEN` and `SAILWRIGHT_GATEWAY_URL` into the container.
+   The container also needs the `sailwright-gateway` binary for the `connect`
+   bridge. This repository's `.devcontainer/devcontainer.json` already
+   contains the lines above and installs it from the checkout with
+   `"postCreateCommand": "go install ./cmd/sailwright-gateway"`.
 
-4. **Register the MCP server** for your agent, for example in a local
-   `.mcp.json` for Claude Code:
+3. **For the agent:** register `sailwright-gateway connect` as a stdio MCP
+   server. This repository ships it as `.mcp.json`:
 
    ```json
    {
      "mcpServers": {
-       "sailwright-host": {
-         "type": "http",
-         "url": "${SAILWRIGHT_GATEWAY_URL:-http://host.docker.internal:7391/mcp}",
-         "headers": { "Authorization": "Bearer ${SAILWRIGHT_GATEWAY_TOKEN}" }
-       }
+       "sailwright-host": { "type": "stdio", "command": "sailwright-gateway", "args": ["connect"] }
      }
    }
    ```
 
-5. **Check the connection**: the agent should list the `sailwright-host`
-   tools, and `gateway_info` should report your host and the binary hash.
+Check the connection inside the container with
+`sailwright-gateway connect --check`. It prints where it found the gateway.
 
-## Host networking
+`connect` finds the gateway by itself:
 
-| Host | Default works? | Notes |
+1. `SAILWRIGHT_GATEWAY_URL`, if set (`http://host:port/mcp` or `unix:///path/gateway.sock`)
+2. the socket in `SAILWRIGHT_GATEWAY_DIR` (default `/run/sailwright-gateway`), if it accepts connections
+3. `http://host.docker.internal:7391/mcp`
+
+The token comes from `SAILWRIGHT_GATEWAY_TOKEN` or the `token` file in the
+mounted folder, so you don't have to copy it around. The E2E test module uses
+the same discovery.
+
+## Host and container setups
+
+| Setup | How the agent connects | Extra configuration |
 | --- | --- | --- |
-| macOS / Windows with Docker Desktop | yes | `host.docker.internal` reaches services on the host's `127.0.0.1`. |
-| Linux with Docker Engine | needs config | Bind to the Docker bridge gateway, e.g. `listen: 172.17.0.1:7391`, and allow the container network in `allowed_source_cidrs` (e.g. `172.17.0.0/16`). The devcontainer maps `host.docker.internal` to the host gateway. |
+| Linux, Docker Engine (rootful or rootless), Podman | Unix socket | none |
+| macOS / Windows, Docker Desktop | TCP via `host.docker.internal` (sockets don't cross the Docker Desktop VM) | none; the token still comes from the mounted folder |
+| Agent on another machine | not supported yet | |
 
-Never bind to `0.0.0.0`; the gateway refuses it. Keep the source allowlist to
-loopback and the container network, so VMs on hypervisor networks can't reach
-the gateway.
+Notes:
+
+- **Container user.** The socket is `0600` and owned by the user running the
+  gateway. With rootless Docker or Podman, root in the container is that user
+  on the host. With rootful Docker, root in the container can access it too.
+  A non-root container user under rootless Docker maps to a different host
+  user and can't open the socket.
+- **Gateway restarts** recreate the socket. Running containers keep working
+  because the folder, not the socket file, is mounted.
+- **Windows hosts** have no agent socket; the gateway uses TCP only.
+
+### Advanced: TCP on Linux
+
+You normally don't need this on Linux. If you want TCP anyway, the listen
+address must belong to the host, and the container must be able to reach it:
+
+- **Rootful Docker:** bind to the bridge gateway, e.g. `listen: 172.17.0.1:7391`,
+  add `allowed_source_cidrs: [172.17.0.0/16]` and `allowed_hosts: [172.17.0.1]`,
+  and set `SAILWRIGHT_GATEWAY_URL=http://172.17.0.1:7391/mcp` in the container.
+- **Rootless Docker:** `172.17.0.1` only exists inside Docker's own network
+  namespace and can't be bound on the host. Use the socket.
+
+Never bind to `0.0.0.0`; the gateway refuses it. Never bind to a hypervisor
+network such as libvirt's `virbr0`, where your VMs live.
 
 ## Configuration
 
@@ -151,6 +186,7 @@ allowed_source_cidrs: [127.0.0.0/8, "::1/128"]
 binary: /home/me/sailwright/dist/linux-amd64/sailwright
 # binary_sha256: <hex>            # skip the interactive confirmation
 data_dir: /home/me/.config/sailwright-gateway/data
+agent_dir: /home/me/.sailwright-gateway     # socket + token copy, mounted into containers
 # shared_cache_dir: /home/me/.local/share/dev-alchemy/cache   # reuse ISO/build cache
 env_passthrough:                   # values are redacted from output and logs
   - LIBVIRT_UBUNTU_ANSIBLE_PASSWORD
@@ -230,6 +266,10 @@ Type "approve 3f2a9c1d" or "deny 3f2a9c1d" and press Enter.
 | `staging/` | read-only bundle snapshots, removed after each job |
 | `logs/<job>.log` | full redacted output per job |
 | `audit.jsonl` | audit log |
+
+The agent folder (`agent_dir`, default `~/.sailwright-gateway`) is separate
+from the state directory and only holds `gateway.sock` and a copy of `token`.
+It must not overlap the state or data directory or an agent workspace.
 
 ## Limitations
 

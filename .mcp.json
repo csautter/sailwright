@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "sailwright-host": {
+      "type": "stdio",
+      "command": "sailwright-gateway",
+      "args": [
+        "connect"
+      ]
+    }
+  }
+}

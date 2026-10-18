@@ -91,7 +91,7 @@ SAILWRIGHT_E2E_EXECUTOR=gateway SAILWRIGHT_E2E_TARGET=ubuntu/server/amd64 \
 | `SAILWRIGHT_E2E_PULL_REF` | pull this OCI artifact instead of building in `vm-lifecycle` |
 | `SAILWRIGHT_E2E_ALLOW_HOST_CHANGES` | `1` lets the direct executor run host-changing steps |
 | `SAILWRIGHT_E2E_OUT` | report directory (default `test/e2e/out`) |
-| `SAILWRIGHT_GATEWAY_URL`, `SAILWRIGHT_GATEWAY_TOKEN` | gateway endpoint and token |
+| `SAILWRIGHT_GATEWAY_URL`, `SAILWRIGHT_GATEWAY_TOKEN`, `SAILWRIGHT_GATEWAY_DIR` | optional overrides; by default the gateway executor finds the gateway like `sailwright-gateway connect` (see [Agent Gateway](./agent-gateway.md#quick-start)) |
 
 Each run writes `<scenario>.json` and `<scenario>.md` reports with the host,
 binary hash and per-step results. For JUnit output, run the same command with

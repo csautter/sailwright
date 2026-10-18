@@ -6,11 +6,7 @@
   "containerEnv": {
     "GOTOOLCHAIN": "auto"
   },
-  "remoteEnv": {
-    "SAILWRIGHT_GATEWAY_TOKEN": "${localEnv:SAILWRIGHT_GATEWAY_TOKEN}",
-    "SAILWRIGHT_GATEWAY_URL": "${localEnv:SAILWRIGHT_GATEWAY_URL}"
-  },
-  "runArgs": ["--add-host=host.docker.internal:host-gateway"],
+  "initializeCommand": "mkdir -p \"${localEnv:HOME}${localEnv:USERPROFILE}/.sailwright-gateway\"",
   "mounts": [
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents/skills,target=/root/.agents/skills,type=bind,consistency=cached",
     "source=skills-vscode-server-data,target=/root/.vscode-server/data,type=volume",
@@ -21,7 +17,8 @@
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.codex/auth.json,target=/root/.codex-auth.json,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude-devcontainer,target=/root/.claude,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.local/share/opencode,target=/root/.local/share/opencode,type=bind,consistency=cached",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/Projects/sailwright-plans,target=/workspaces/sailwright-plans,type=bind,consistency=cached"
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/Projects/sailwright-plans,target=/workspaces/sailwright-plans,type=bind,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.sailwright-gateway,target=/run/sailwright-gateway,type=bind,readonly"
   ],
   "features": {
     "ghcr.io/devcontainers/features/python:1": {}
@@ -41,5 +38,6 @@
   "remoteUser": "root",
   "containerUser": "root",
   "updateRemoteUserUID": true,
+  "postCreateCommand": "go install ./cmd/sailwright-gateway",
   "postStartCommand": "mkdir -p /root/.codex && ln -sfn /root/.codex-auth.json /root/.codex/auth.json ; nohup bash .devcontainer/install-extensions.sh >/tmp/install-extensions.log 2>&1 &"
 }

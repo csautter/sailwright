@@ -28,7 +28,10 @@ Read `docs/agent-gateway.md` once if you have not seen it.
 
 ## Workflow
 
-1. **Preflight.** Call `gateway_info`. Note host OS/arch, `binary_sha256`,
+1. **Preflight.** If the `sailwright-host` tools are missing, run
+   `sailwright-gateway connect --check` and report its output; usually the
+   gateway is not running on the host or `/run/sailwright-gateway` is not
+   mounted. Then call `gateway_info`. Note host OS/arch, `binary_sha256`,
    `approval_enabled`, available targets and `target_errors` (missing
    hypervisor tools show up there).
 2. **Pick targets.** Use `list_targets` (`create` or `start`) and choose
