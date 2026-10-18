@@ -251,11 +251,26 @@ Type "approve 3f2a9c1d" or "deny 3f2a9c1d" and press Enter.
 ```
 
 - Review the snapshot directory before approving; it is exactly what runs.
+- **sudo for local provisioning (Linux and macOS):** roles with `become: true`
+  need your sudo password. For `provision local` requests the prompt also
+  offers `approve-sudo <id>`. The gateway then asks for the password on its
+  terminal with hidden input, passes it to that one run only through a
+  temporary owner-only file (`ansible-playbook --become-password-file`, needs
+  ansible-core 2.12 or newer), and deletes the file when the job ends. The
+  password is redacted from output, logs and the audit log; the agent only
+  sees `"sudo_password": true` on the job. Plain `approve` runs without a
+  password, which works if no role needs `become`. On Windows, local
+  provisioning uses a temporary administrator account instead of sudo.
+- Building, creating, starting and provisioning VMs never needs sudo on the
+  host. On Linux, do the one-time setup yourself in a normal terminal
+  (`sailwright install`, membership in the `libvirt` and `kvm` groups, the
+  ACL and `virsh net-start` hints the CLI prints), then start the gateway in a
+  session where the new group membership is active.
 - Each approval is single-use and expires (`approval_ttl`). Only one request
   can be pending.
 - Risk flags are hints: `HOST-MODIFYING`, `HOST-CODE`, `PASSTHROUGH-ARGS`,
   `EXTERNAL-PATHS`, `NETWORK-WRITE`, `CREDENTIALS`, `ALL-TARGETS`.
-- Other console commands: `pending`.
+- Other console commands: `approve-sudo <id>`, `pending`.
 - Without an interactive terminal (or with `--no-approvals`) the approval
   tools are disabled and only the safe set is available.
 

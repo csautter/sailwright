@@ -48,7 +48,9 @@ Read `docs/agent-gateway.md` once if you have not seen it.
 
    `local-check` needs an approval on the host; run it only when asked to
    validate local provisioning, and tell the user to watch the gateway
-   terminal. Builds can take hours; run long scenarios in the background
+   terminal. If roles need sudo, the user answers with
+   `approve-sudo <id>` and types the password there; never ask the user for
+   a password yourself. Builds can take hours; run long scenarios in the background
    and keep the user informed.
 4. **Explore only when needed.** Use the typed tools (`vm_*`,
    `vm_provision`, `artifact_pull`) for anything the scenarios did not
