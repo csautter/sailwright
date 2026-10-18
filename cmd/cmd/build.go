@@ -281,7 +281,7 @@ func printAvailableBuildCombinations() error {
 		return err
 	}
 
-	if len(engines) > 1 {
+	if len(engines) > 1 && !listOutputJSON {
 		fmt.Printf("\nCurrent host supports multiple virtualization engines: %s\n", displayBuildEngines(vms))
 	}
 
@@ -399,6 +399,7 @@ var buildListCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(buildCmd)
 	buildCmd.AddCommand(buildListCmd)
+	addListJSONFlag(buildListCmd)
 
 	buildCmd.Flags().StringVarP(&arch, "arch", "a", "amd64", "Target architecture (e.g., amd64, arm64)")
 	buildCmd.Flags().StringVarP(&osType, "type", "t", "server", "Type of OS (e.g., server, desktop)")

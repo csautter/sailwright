@@ -446,6 +446,7 @@ func addOCIFlags(command *cobra.Command) {
 }
 
 func addOCIListFlags(command *cobra.Command) {
+	addListJSONFlag(command)
 	command.Flags().StringVar(&ociHostOS, "host-os", string(alchemy_build.GetCurrentHostOs()), "Host OS that owns the build artifact shape (linux/debian, windows, darwin/macos)")
 }
 
