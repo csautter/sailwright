@@ -52,6 +52,12 @@ type Approver interface {
 	Request(ctx context.Context, req ApprovalRequest) Approval
 }
 
+// Confirmer asks the operator a yes/no question on the gateway terminal. It returns
+// false unless the operator answers yes; cancelling ctx counts as no.
+type Confirmer interface {
+	Confirm(ctx context.Context, question string) bool
+}
+
 // InputHider turns off terminal echo and returns a function that restores it.
 type InputHider func() (restore func(), err error)
 
@@ -82,6 +88,8 @@ type ConsoleApprover struct {
 	// awaiting is the pending request whose sudo password is typed next.
 	awaiting    *pendingApproval
 	restoreEcho func()
+	// answer receives the reply to the open Confirm question.
+	answer chan bool
 }
 
 type pendingApproval struct {
@@ -198,12 +206,13 @@ func (a *ConsoleApprover) printRequest(req ApprovalRequest, expires time.Time) {
 func (a *ConsoleApprover) readCommands(in *bufio.Reader) {
 	for {
 		line, err := in.ReadString('\n')
-		if !a.consumePassword(line) && strings.TrimSpace(line) != "" {
+		if !a.consumeAnswer(line) && !a.consumePassword(line) && strings.TrimSpace(line) != "" {
 			a.handleCommand(strings.Fields(line))
 		}
 		if err != nil {
 			a.mu.Lock()
 			a.stopAwaitingLocked()
+			a.answerLocked(false)
 			a.closed = true
 			if !errors.Is(err, io.EOF) {
 				fmt.Fprintf(a.out, "approval console closed: %v\n", err)
@@ -271,6 +280,87 @@ func (a *ConsoleApprover) handleCommand(fields []string) {
 	default:
 		fmt.Fprintln(a.out, `commands: approve <id> | approve-sudo <id> | deny <id> | pending`)
 	}
+}
+
+// Confirm prints question and waits for the next line typed on the console. It
+// returns false while an approval request is pending or the console is closed.
+func (a *ConsoleApprover) Confirm(ctx context.Context, question string) bool {
+	a.mu.Lock()
+	if a.closed || a.pending != nil || a.answer != nil {
+		a.mu.Unlock()
+		return false
+	}
+	answer := make(chan bool, 1)
+	a.answer = answer
+	fmt.Fprintf(a.out, "%s [y/N] ", question)
+	a.mu.Unlock()
+
+	var yes bool
+	select {
+	case yes = <-answer:
+	case <-ctx.Done():
+		fmt.Fprintln(a.out)
+	}
+	a.mu.Lock()
+	if a.answer == answer {
+		a.answer = nil
+	}
+	a.mu.Unlock()
+	return yes
+}
+
+// consumeAnswer treats line as the reply if a Confirm question is open.
+func (a *ConsoleApprover) consumeAnswer(line string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.answer == nil {
+		return false
+	}
+	a.answerLocked(isYes(line))
+	return true
+}
+
+func (a *ConsoleApprover) answerLocked(yes bool) {
+	if a.answer == nil {
+		return
+	}
+	select {
+	case a.answer <- yes:
+	default:
+	}
+	a.answer = nil
+}
+
+// LineConfirmer asks on a reader nobody else reads; used when the approval console is
+// disabled but the gateway still runs on a terminal.
+type LineConfirmer struct {
+	In  *bufio.Reader
+	Out io.Writer
+}
+
+// Confirm prints question and waits for one line from In.
+func (c LineConfirmer) Confirm(ctx context.Context, question string) bool {
+	fmt.Fprintf(c.Out, "%s [y/N] ", question)
+	answer := make(chan bool, 1)
+	go func() {
+		line, _ := c.In.ReadString('\n')
+		answer <- isYes(line)
+	}()
+	select {
+	case yes := <-answer:
+		return yes
+	case <-ctx.Done():
+		fmt.Fprintln(c.Out)
+		return false
+	}
+}
+
+func isYes(line string) bool {
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	}
+	return false
 }
 
 // consumePassword treats line as the sudo password if approve-sudo is waiting for one.

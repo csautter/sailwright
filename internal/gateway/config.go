@@ -29,6 +29,7 @@ const (
 	defaultInfoTimeout    = 2 * time.Minute
 	defaultApprovalTTL    = 10 * time.Minute
 	defaultMinFreeDiskGB  = 20
+	defaultCleanPromptGB  = 20
 	defaultOutputLimit    = 8 << 20
 	defaultSnapshotBytes  = 50 << 20
 	defaultSnapshotFiles  = 5000
@@ -69,6 +70,7 @@ type Config struct {
 	JobTimeout         string             `yaml:"job_timeout"`
 	ApprovalTTL        string             `yaml:"approval_ttl"`
 	MinFreeDiskGB      int                `yaml:"min_free_disk_gb"`
+	CleanPromptMinGB   int                `yaml:"clean_prompt_min_gb"`
 	OutputLimitBytes   int                `yaml:"output_limit_bytes"`
 	SnapshotMaxBytes   int64              `yaml:"snapshot_max_bytes"`
 	SnapshotMaxFiles   int                `yaml:"snapshot_max_files"`
@@ -238,6 +240,9 @@ func (c *Config) Resolve() error {
 	}
 	if c.MinFreeDiskGB == 0 {
 		c.MinFreeDiskGB = defaultMinFreeDiskGB
+	}
+	if c.CleanPromptMinGB == 0 {
+		c.CleanPromptMinGB = defaultCleanPromptGB
 	}
 	if c.OutputLimitBytes <= 0 {
 		c.OutputLimitBytes = defaultOutputLimit

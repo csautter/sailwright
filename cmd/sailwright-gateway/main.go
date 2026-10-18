@@ -10,8 +10,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -52,7 +54,7 @@ func newRootCommand() *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&stateDir, "state-dir", "", "Gateway state directory (default: <user config dir>/sailwright-gateway)")
 
-	root.AddCommand(newServeCommand(&stateDir), newTokenCommand(&stateDir), newConnectCommand())
+	root.AddCommand(newServeCommand(&stateDir), newTokenCommand(&stateDir), newCleanCommand(&stateDir), newConnectCommand())
 	return root
 }
 
@@ -156,30 +158,18 @@ func runServe(parent context.Context, flags serveFlags) error {
 	if parent == nil {
 		parent = context.Background()
 	}
-	stateDir, err := resolveStateDir(flags.stateDir)
-	if err != nil {
-		return err
-	}
-	cfg, err := gateway.LoadConfig(stateDir, flags.configPath)
-	if err != nil {
-		return err
-	}
-	if flags.binary != "" {
-		cfg.Binary = flags.binary
-	}
-	if flags.binarySHA256 != "" {
-		cfg.BinarySHA256 = flags.binarySHA256
-	}
-	if flags.listen != "" {
-		cfg.Listen = flags.listen
-	}
-	// An explicit --state-dir keeps everything below it, so instances do not share data.
-	if flags.stateDir == "" && cfg.DataDir == "" {
-		if cfg.DataDir, err = gateway.DefaultDataDir(); err != nil {
-			return err
+	cfg, err := loadConfig(flags.stateDir, flags.configPath, func(cfg *gateway.Config) {
+		if flags.binary != "" {
+			cfg.Binary = flags.binary
 		}
-	}
-	if err := cfg.Resolve(); err != nil {
+		if flags.binarySHA256 != "" {
+			cfg.BinarySHA256 = flags.binarySHA256
+		}
+		if flags.listen != "" {
+			cfg.Listen = flags.listen
+		}
+	})
+	if err != nil {
 		return err
 	}
 	if legacy := cfg.LegacyDataDir(); legacy != "" {
@@ -221,6 +211,15 @@ func runServe(parent context.Context, flags serveFlags) error {
 			HideInputWith(gateway.TerminalInputHider(int(os.Stdin.Fd()))) // #nosec G115 -- file descriptors fit in int.
 	}
 
+	// The shutdown question is read by the approval console when it runs, so the two
+	// never compete for stdin.
+	var confirmer gateway.Confirmer
+	if console, ok := approver.(*gateway.ConsoleApprover); ok {
+		confirmer = console
+	} else if interactive {
+		confirmer = gateway.LineConfirmer{In: stdin, Out: os.Stdout}
+	}
+
 	g, err := gateway.New(gateway.Options{
 		Config:       cfg,
 		Pinned:       pinned,
@@ -233,10 +232,29 @@ func runServe(parent context.Context, flags serveFlags) error {
 	if err != nil {
 		return err
 	}
-	defer g.Close()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = g.Close()
+		}
+	}()
 
-	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// Signals stay captured until runServe returns, so a second Ctrl+C while jobs are
+	// cancelled does not leave their process trees behind.
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	var interrupted atomic.Bool
+	go func() {
+		select {
+		case sig := <-signals:
+			interrupted.Store(sig == os.Interrupt)
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	refreshCtx, cancelRefresh := context.WithTimeout(ctx, 2*time.Minute)
 	g.RefreshTargets(refreshCtx)
@@ -249,7 +267,133 @@ func runServe(parent context.Context, flags serveFlags) error {
 	}
 	defer listeners.Close()
 	printBanner(cfg, pinned, listeners.SocketPath, approver.Enabled())
-	return g.ServeListeners(ctx, listeners)
+	serveErr := g.ServeListeners(ctx, listeners)
+	listeners.Close()
+	closed = true
+	_ = g.Close()
+	if serveErr == nil && interrupted.Load() && confirmer != nil {
+		offerClean(cfg, confirmer, signals)
+	}
+	return serveErr
+}
+
+// loadConfig loads and resolves the gateway config; override runs before Resolve.
+func loadConfig(stateDirFlag string, configPath string, override func(*gateway.Config)) (gateway.Config, error) {
+	stateDir, err := resolveStateDir(stateDirFlag)
+	if err != nil {
+		return gateway.Config{}, err
+	}
+	cfg, err := gateway.LoadConfig(stateDir, configPath)
+	if err != nil {
+		return gateway.Config{}, err
+	}
+	if override != nil {
+		override(&cfg)
+	}
+	// An explicit --state-dir keeps everything below it, so instances do not share data.
+	if stateDirFlag == "" && cfg.DataDir == "" {
+		if cfg.DataDir, err = gateway.DefaultDataDir(); err != nil {
+			return gateway.Config{}, err
+		}
+	}
+	if err := cfg.Resolve(); err != nil {
+		return gateway.Config{}, err
+	}
+	return cfg, nil
+}
+
+// offerClean asks after a Ctrl+C shutdown whether to delete a large gateway cache.
+// Another Ctrl+C, before or during the question, exits and keeps the cache.
+func offerClean(cfg gateway.Config, confirmer gateway.Confirmer, signals <-chan os.Signal) {
+	threshold := cfg.CleanPromptThreshold()
+	if threshold == 0 {
+		return
+	}
+	select {
+	case <-signals:
+		return
+	default:
+	}
+	usage, err := gateway.MeasureCache(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cannot measure the gateway cache: %v\n", err)
+		return
+	}
+	if usage.Total < threshold {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-signals:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	fmt.Println()
+	if !confirmer.Confirm(ctx, usage.CleanQuestion()) {
+		fmt.Println("cache kept (\"sailwright-gateway clean\" deletes it later)")
+		return
+	}
+	if err := clearCache(cfg, usage); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+}
+
+func clearCache(cfg gateway.Config, usage gateway.CacheUsage) error {
+	if err := gateway.ClearCache(cfg); err != nil {
+		return fmt.Errorf("the cache was only partly deleted: %w", err)
+	}
+	fmt.Printf("deleted %s of cache\n", gateway.FormatGB(usage.Total))
+	return nil
+}
+
+func newCleanCommand(stateDir *string) *cobra.Command {
+	var configPath string
+	var yes bool
+	command := &cobra.Command{
+		Use:   "clean",
+		Short: "Delete the gateway's download and build cache",
+		Long: `Deletes the contents of the gateway's cache and Packer cache below its data dir.
+Created VMs, their Vagrant and libvirt state and a shared_cache_dir are not touched.
+The gateway must be stopped.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig(*stateDir, configPath, nil)
+			if err != nil {
+				return err
+			}
+			if conn, err := net.DialTimeout("tcp", cfg.ListenAddr.String(), time.Second); err == nil {
+				_ = conn.Close()
+				return fmt.Errorf("a gateway is listening on %s; stop it before cleaning", cfg.ListenAddr)
+			}
+			usage, err := gateway.MeasureCache(cfg)
+			if err != nil {
+				return err
+			}
+			if usage.Total == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "the gateway cache is empty")
+				return nil
+			}
+			if !yes {
+				if !term.IsTerminal(int(os.Stdin.Fd())) { // #nosec G115 -- file descriptors fit in int.
+					return errors.New("cannot ask without a terminal; pass --yes")
+				}
+				ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+				defer stop()
+				confirmer := gateway.LineConfirmer{In: bufio.NewReader(os.Stdin), Out: cmd.OutOrStdout()}
+				if !confirmer.Confirm(ctx, usage.CleanQuestion()) {
+					fmt.Fprintln(cmd.OutOrStdout(), "cache kept")
+					return nil
+				}
+			}
+			return clearCache(cfg, usage)
+		},
+	}
+	command.Flags().StringVar(&configPath, "config", "", "Config file (default: <state-dir>/gateway.yaml if present)")
+	command.Flags().BoolVar(&yes, "yes", false, "Delete without asking")
+	return command
 }
 
 func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, socketPath string, approvals bool) {

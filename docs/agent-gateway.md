@@ -199,6 +199,7 @@ agent_workspaces:                  # container path -> host path of the bind mou
 job_timeout: 6h
 approval_ttl: 10m
 min_free_disk_gb: 20               # -1 disables the check
+clean_prompt_min_gb: 20            # offer to delete the cache on Ctrl+C from this size; -1 disables
 output_limit_bytes: 8388608
 snapshot_max_bytes: 52428800
 snapshot_max_files: 5000
@@ -315,6 +316,25 @@ time as a gateway job on the same files. Only the cache is shared;
 `packer_cache`, `.vagrant` and the config stay below the data dir.
 
 The free disk check (`min_free_disk_gb`) looks at the volume of the data dir.
+
+**Deleting the cache.** When you stop the gateway with Ctrl+C and
+`app/cache` and `app/packer_cache` together use at least
+`clean_prompt_min_gb` (default 20 GB), the gateway first cancels running jobs
+and then asks:
+
+```text
+The gateway cache uses 87.4 GB:
+  80.1 GB    /home/me/.local/share/sailwright-gateway/app/cache
+  7.3 GB     /home/me/.local/share/sailwright-gateway/app/packer_cache
+Delete it? Created VMs are not affected; the next build downloads and builds again. [y/N]
+```
+
+Enter or a second Ctrl+C keeps the cache. There is no question when the
+gateway is stopped with SIGTERM or runs without a terminal. To delete the
+cache later, or from a script, run `sailwright-gateway clean` (add `--yes` to
+skip the question) while the gateway is stopped. Both only empty the two
+cache folders; created VMs, `.vagrant`, `libvirt/images`, the config and a
+`shared_cache_dir` are never touched.
 
 ## Files in the state directory
 
