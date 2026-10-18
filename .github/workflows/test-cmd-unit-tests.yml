@@ -7,6 +7,9 @@ on:
     paths:
       - "cmd/main.go"
       - "cmd/cmd/**"
+      - "cmd/sailwright-gateway/**"
+      - "internal/gateway/**"
+      - "test/e2e/**"
       - ".github/workflows/test-cmd-unit-tests.yml"
       # Static checks in pkg/build and test/workflowcheck read these files.
       - ".github/workflows/test-build-linux.yml"
@@ -27,6 +30,9 @@ on:
     paths:
       - "cmd/main.go"
       - "cmd/cmd/**"
+      - "cmd/sailwright-gateway/**"
+      - "internal/gateway/**"
+      - "test/e2e/**"
       - ".github/workflows/test-cmd-unit-tests.yml"
       # Static checks in pkg/build and test/workflowcheck read these files.
       - ".github/workflows/test-build-linux.yml"
@@ -75,6 +81,25 @@ jobs:
 
       - name: Run OCI package tests
         run: go test ./pkg/oci/...
+
+      - name: Run gateway and E2E runner tests
+        run: go test ./internal/gateway/... ./test/e2e/...
+
+      - name: Run E2E smoke scenario against the CLI
+        shell: bash
+        run: |
+          bin="$RUNNER_TEMP/sailwright$(go env GOEXE)"
+          go build -o "$bin" ./cmd/main.go
+          SAILWRIGHT_E2E_BIN="$bin" SAILWRIGHT_E2E_OUT="$RUNNER_TEMP/e2e-out" \
+            go test -tags e2e ./test/e2e -run 'TestScenarios/smoke' -count=1 -v
+
+      - name: Upload E2E report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-smoke-${{ matrix.os }}
+          path: ${{ runner.temp }}/e2e-out
+          if-no-files-found: ignore
 
   workflow-checks:
     name: Run GitHub Actions workflow checks

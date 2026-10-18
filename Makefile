@@ -12,7 +12,7 @@ TARGET_BINARY_NAME = $(BINARY_NAME)$(if $(filter windows,$(GOOS)),.exe,)
 TARGET_DIST_DIR = $(DIST_DIR)/$(GOOS)-$(GOARCH)
 RELEASE_ASSET_BASENAME = sailwright_$(PACKAGE_VERSION)_$(GOOS)_$(GOARCH)
 
-.PHONY: build build-cli-local build-cli-target build-cli-release package-cli-target package-cli-release clean-dist \
+.PHONY: build build-cli-local build-gateway-local test-e2e-smoke test-e2e build-cli-target build-cli-release package-cli-target package-cli-release clean-dist \
 	test-build-runner test-build test-deploy test-provision test-deploy-windows-hyperv test-clean-testcache \
 	test-build-integration test-build-specific test-macos-tart-runner test-gh-runner-func-request test-gh-runner-func-delete \
 	deploy-plan-terraform-azure-gh-runner deploy-apply-terraform-azure-gh-runner deploy-az-func-app gosec quickstart demo demo-gif demo-build-video
@@ -31,6 +31,12 @@ build:
 
 build-cli-local:
 	$(MAKE) build-cli-target GOOS=$(shell go env GOOS) GOARCH=$(shell go env GOARCH)
+
+# Host-side MCP gateway for agents in devcontainers (see docs/agent-gateway.md).
+build-gateway-local:
+	mkdir -p "$(DIST_DIR)/$(shell go env GOOS)-$(shell go env GOARCH)"
+	CGO_ENABLED=0 go build -trimpath -ldflags '$(GO_LDFLAGS) -X main.version=$(VERSION)' \
+		-o "$(DIST_DIR)/$(shell go env GOOS)-$(shell go env GOARCH)/sailwright-gateway$(shell go env GOEXE)" ./cmd/sailwright-gateway
 
 build-cli-target:
 	@test -n "$(GOOS)" || (echo "GOOS is required" && exit 1)
@@ -84,6 +90,18 @@ test-provision:
 
 test-deploy-windows-hyperv:
 	RUN_INTEGRATION_TESTS=1 RUN_WINDOWS_HYPERV_DEPLOY_SMOKE=1 go test -timeout 60m -v ./pkg/deploy -run "TestGetHypervWindowsBoxPath_UsesExpectedBuildArtifact|TestGetHypervWindowsBoxPath_FallsBackToCachePath|TestRunHypervVagrantDeployOnWindows_Smoke"
+
+# Deterministic E2E scenarios (test/e2e). test-e2e-smoke needs no hypervisor.
+# Run other scenarios with E2E_RUN='TestScenarios/vm-lifecycle' E2E_TARGET=ubuntu/server/amd64.
+E2E_RUN ?= TestScenarios/smoke
+E2E_TARGET ?=
+test-e2e-smoke: build-cli-local
+	SAILWRIGHT_E2E_BIN="$(abspath $(DIST_DIR))/$(shell go env GOOS)-$(shell go env GOARCH)/$(BINARY_NAME)$(shell go env GOEXE)" \
+		go test -tags e2e ./test/e2e -run 'TestScenarios/smoke' -count=1 -v
+
+test-e2e: build-cli-local
+	SAILWRIGHT_E2E_BIN="$(abspath $(DIST_DIR))/$(shell go env GOOS)-$(shell go env GOARCH)/$(BINARY_NAME)$(shell go env GOEXE)" \
+		SAILWRIGHT_E2E_TARGET="$(E2E_TARGET)" go test -tags e2e ./test/e2e -run '$(E2E_RUN)' -count=1 -timeout 6h -v
 
 test-clean-testcache:
 	go clean -testcache
