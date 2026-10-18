@@ -1,0 +1,207 @@
+// Command fakecli imitates the sailwright CLI for gateway and E2E tests. It records
+// every invocation (argv, cwd, environment) as a JSON line in $FAKE_CLI_RECORD and
+// keeps VM state in $FAKE_CLI_STATE so list output reflects create/start/stop/destroy.
+//
+// Special targets: os "failos" exits 3, os "slowos" sleeps for a minute.
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+type invocation struct {
+	Argv []string `json:"argv"`
+	Cwd  string   `json:"cwd"`
+	Env  []string `json:"env"`
+}
+
+type target struct {
+	OS     string            `json:"os"`
+	Type   string            `json:"type"`
+	Arch   string            `json:"arch"`
+	Engine string            `json:"engine"`
+	Fields map[string]string `json:"fields"`
+	Addr   *string           `json:"address"`
+}
+
+var baseTargets = []target{
+	{OS: "ubuntu", Type: "server", Arch: "amd64", Engine: "qemu"},
+	{OS: "ubuntu", Type: "desktop", Arch: "amd64", Engine: "qemu"},
+	{OS: "windows11", Arch: "amd64", Engine: "qemu"},
+	{OS: "failos", Arch: "amd64", Engine: "qemu"},
+	{OS: "slowos", Arch: "amd64", Engine: "qemu"},
+}
+
+func main() {
+	record()
+	args := os.Args[1:]
+	if len(args) == 0 {
+		fmt.Println("Usage: sailwright [command]")
+		return
+	}
+	if args[len(args)-1] == "--help" {
+		fmt.Printf("Usage: sailwright %s [flags]\n", strings.Join(args[:len(args)-1], " "))
+		return
+	}
+	if len(args) >= 2 && args[1] == "list" {
+		printListing(args[0])
+		return
+	}
+
+	command := args[0]
+	osName := ""
+	if len(args) > 1 {
+		osName = args[1]
+	}
+	switch osName {
+	case "failos":
+		fmt.Println("simulated failure")
+		os.Exit(3)
+	case "slowos":
+		fmt.Println("sleeping")
+		time.Sleep(time.Minute)
+		return
+	}
+
+	id := targetID(args)
+	switch command {
+	case "build", "install", "pull":
+		fmt.Printf("%s ok\n", command)
+	case "create":
+		writeState(id, "stopped")
+		fmt.Println("created")
+	case "start":
+		writeState(id, "running")
+		fmt.Println("started")
+	case "stop":
+		if readState(id) != "" {
+			writeState(id, "stopped")
+		}
+		fmt.Println("stopped")
+	case "destroy":
+		removeState(id)
+		fmt.Println("destroyed")
+	case "provision":
+		printPlaybook(args)
+		changed := 2
+		if readState(id+".provisioned") != "" && !contains(args, "--check") {
+			changed = 0
+		}
+		if !contains(args, "--check") {
+			writeState(id+".provisioned", "yes")
+		}
+		fmt.Printf("PLAY RECAP *********\n%s : ok=5 changed=%d unreachable=0 failed=0 skipped=1\n", osName, changed)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command %q\n", command)
+		os.Exit(1)
+	}
+}
+
+// printPlaybook echoes the playbook content so tests can see what was executed.
+func printPlaybook(args []string) {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--playbook" {
+			if data, err := os.ReadFile(args[i+1]); err == nil {
+				fmt.Printf("PLAYBOOK: %s\n", strings.TrimSpace(string(data)))
+			}
+		}
+	}
+}
+
+func printListing(command string) {
+	targets := append([]target(nil), baseTargets...)
+	if command == "provision" {
+		targets = append(targets, target{OS: "local", Engine: "local"})
+	}
+	for i := range targets {
+		state := readState(fmt.Sprintf("%s-%s-%s", targets[i].OS, targets[i].Type, targets[i].Arch))
+		if state == "" {
+			state = "missing"
+		}
+		targets[i].Fields = map[string]string{"state": state}
+	}
+	out, _ := json.Marshal(map[string]any{"schema_version": 1, "targets": targets})
+	fmt.Println("diagnostic line before the document")
+	fmt.Println(string(out))
+}
+
+func targetID(args []string) string {
+	osName, osType, arch := "", "", "amd64"
+	if len(args) > 1 {
+		osName = args[1]
+	}
+	for i := 2; i < len(args)-1; i++ {
+		switch args[i] {
+		case "--type":
+			osType = args[i+1]
+		case "--arch":
+			arch = args[i+1]
+		}
+	}
+	return fmt.Sprintf("%s-%s-%s", osName, osType, arch)
+}
+
+func record() {
+	path := os.Getenv("FAKE_CLI_RECORD")
+	if path == "" {
+		return
+	}
+	cwd, _ := os.Getwd()
+	env := os.Environ()
+	sort.Strings(env)
+	line, _ := json.Marshal(invocation{Argv: os.Args[1:], Cwd: cwd, Env: env})
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(line, '\n'))
+}
+
+func stateFile(id string) string {
+	dir := os.Getenv("FAKE_CLI_STATE")
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, id)
+}
+
+func readState(id string) string {
+	path := stateFile(id)
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func writeState(id, state string) {
+	if path := stateFile(id); path != "" {
+		_ = os.WriteFile(path, []byte(state), 0o600)
+	}
+}
+
+func removeState(id string) {
+	if path := stateFile(id); path != "" {
+		_ = os.Remove(path)
+		_ = os.Remove(path + ".provisioned")
+	}
+}
+
+func contains(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}

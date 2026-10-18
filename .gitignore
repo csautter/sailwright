@@ -1,6 +1,7 @@
 .idea/*
 vendor/*
 internal/*
+!internal/gateway/
 *.zip
 .DS_Store
 *packer_cache*

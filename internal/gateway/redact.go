@@ -1,0 +1,141 @@
+package gateway
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+)
+
+const (
+	redactedMarker     = "***"
+	minRedactedSecret  = 4
+	maxPendingLineSize = 64 << 10
+)
+
+// ansiPattern matches terminal escape sequences (CSI, OSC and single-character escapes).
+var ansiPattern = regexp.MustCompile(`\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-Z\\-_])`)
+
+// Redactor replaces known secret values with a marker.
+type Redactor struct {
+	secrets []string
+}
+
+// NewRedactor builds a redactor; very short values are ignored to avoid mangling output.
+func NewRedactor(secrets ...string) *Redactor {
+	var kept []string
+	for _, secret := range secrets {
+		if len(secret) < minRedactedSecret {
+			continue
+		}
+		kept = append(kept, secret)
+		// Also catch the JSON-escaped form used in structured logs and tool results.
+		if escaped, err := json.Marshal(secret); err == nil {
+			if inner := string(escaped[1 : len(escaped)-1]); inner != secret {
+				kept = append(kept, inner)
+			}
+		}
+	}
+	// Longest first so a secret that contains another one is fully replaced.
+	sort.Slice(kept, func(i, j int) bool { return len(kept[i]) > len(kept[j]) })
+	return &Redactor{secrets: kept}
+}
+
+// String redacts a string. A nil redactor returns the value unchanged.
+func (r *Redactor) String(value string) string {
+	if r == nil {
+		return value
+	}
+	for _, secret := range r.secrets {
+		value = strings.ReplaceAll(value, secret, redactedMarker)
+	}
+	return value
+}
+
+// Strings redacts every element.
+func (r *Redactor) Strings(values []string) []string {
+	out := make([]string, len(values))
+	for i, value := range values {
+		out[i] = r.String(value)
+	}
+	return out
+}
+
+// lineRedactingWriter redacts complete lines so secrets split across writes are caught.
+// It also strips terminal escape sequences, which only add noise for agents.
+type lineRedactingWriter struct {
+	mu       sync.Mutex
+	redactor *Redactor
+	next     io.Writer
+	pending  []byte
+}
+
+func newLineRedactingWriter(redactor *Redactor, next io.Writer) *lineRedactingWriter {
+	return &lineRedactingWriter{redactor: redactor, next: next}
+}
+
+func (w *lineRedactingWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending = append(w.pending, p...)
+	for {
+		idx := bytes.IndexByte(w.pending, '\n')
+		if idx < 0 {
+			break
+		}
+		if err := w.emit(w.pending[:idx+1]); err != nil {
+			return 0, err
+		}
+		w.pending = w.pending[idx+1:]
+	}
+	if len(w.pending) > maxPendingLineSize {
+		if err := w.emit(w.pending); err != nil {
+			return 0, err
+		}
+		w.pending = nil
+	}
+	return len(p), nil
+}
+
+// Flush writes any partial last line.
+func (w *lineRedactingWriter) Flush() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.pending) == 0 {
+		return nil
+	}
+	err := w.emit(w.pending)
+	w.pending = nil
+	return err
+}
+
+func (w *lineRedactingWriter) emit(line []byte) error {
+	clean := ansiPattern.ReplaceAllString(string(line), "")
+	_, err := io.WriteString(w.next, w.redactor.String(clean))
+	return err
+}
+
+// sanitizeForTerminal removes escape sequences and control characters from text that
+// is shown on the operator's terminal, so agent-controlled strings cannot rewrite the
+// approval prompt.
+func sanitizeForTerminal(value string) string {
+	value = ansiPattern.ReplaceAllString(value, "")
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r == '\t':
+			b.WriteRune(' ')
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0):
+			b.WriteRune('?')
+		case r == '‮' || r == '‭' || r == '⁦' || r == '⁧' || r == '⁨' || r == '⁩':
+			// Bidirectional overrides can visually reorder the command.
+			b.WriteRune('?')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
