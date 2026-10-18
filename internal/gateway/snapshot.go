@@ -207,22 +207,28 @@ func copyRootFile(root *os.Root, rel string, target string, budget int64) (strin
 }
 
 func makeTreeReadOnly(dir string) error {
+	// The root-scoped walk keeps a symlink swapped in during the walk from redirecting a chmod.
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
 	// Walk bottom-up order is not needed: directories stay traversable (0500).
-	return filepath.WalkDir(dir, func(p string, entry fs.DirEntry, err error) error {
+	return fs.WalkDir(root.FS(), ".", func(p string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if entry.IsDir() {
-			return os.Chmod(p, 0o500) // #nosec G302 -- owner-only, read-only directory.
+			return root.Chmod(p, 0o500)
 		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
 		if info.Mode().Perm()&0o100 != 0 {
-			return os.Chmod(p, 0o500) // #nosec G302 -- owner-only, read-only executable.
+			return root.Chmod(p, 0o500)
 		}
-		return os.Chmod(p, 0o400)
+		return root.Chmod(p, 0o400)
 	})
 }
 
@@ -231,17 +237,20 @@ func RemoveSnapshot(dir string) error {
 	if dir == "" {
 		return nil
 	}
-	_ = filepath.WalkDir(dir, func(p string, entry fs.DirEntry, err error) error {
-		if err != nil {
+	if root, err := os.OpenRoot(dir); err == nil {
+		_ = fs.WalkDir(root.FS(), ".", func(p string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if entry.IsDir() {
+				_ = root.Chmod(p, 0o700)
+			} else {
+				_ = root.Chmod(p, 0o600)
+			}
 			return nil
-		}
-		if entry.IsDir() {
-			_ = os.Chmod(p, 0o700) // #nosec G302 -- owner-only, restored before removal.
-		} else {
-			_ = os.Chmod(p, 0o600)
-		}
-		return nil
-	})
+		})
+		_ = root.Close()
+	}
 	return os.RemoveAll(dir)
 }
 

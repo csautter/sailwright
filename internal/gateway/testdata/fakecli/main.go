@@ -129,12 +129,12 @@ func printPlaybook(args []string) {
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "--become-password-file" {
 			// Echo the password so tests can check that it is redacted.
-			if data, err := os.ReadFile(args[i+1]); err == nil { // #nosec G304 -- test fixture.
+			if data, err := os.ReadFile(args[i+1]); err == nil { // #nosec G304 G703 -- test fixture.
 				fmt.Printf("BECOME-PASSWORD: %s\n", data)
 			}
 		}
 		if args[i] == "--playbook" {
-			if data, err := os.ReadFile(args[i+1]); err == nil {
+			if data, err := os.ReadFile(args[i+1]); err == nil { // #nosec G304 G703 -- test fixture.
 				fmt.Printf("PLAYBOOK: %s\n", strings.TrimSpace(string(data)))
 			}
 		}
@@ -206,7 +206,7 @@ func writeConsoleFrames(args []string) {
 		slug += "-" + osType
 	}
 	dir := filepath.Join(cache, osName, "qemu-out-"+slug+"-"+arch+"-vncsnapshot")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil { // #nosec G703 -- test fixture path below the managed cache dir.
 		return
 	}
 	for i, dialog := range []bool{false, true} {
@@ -221,7 +221,7 @@ func writeConsoleFrames(args []string) {
 			}
 		}
 		path := filepath.Join(dir, fmt.Sprintf("qemu.vnc%05d.jpg", i+1))
-		f, err := os.Create(path) // #nosec G304 -- test fixture path below the managed cache dir.
+		f, err := os.Create(path) // #nosec G304 G703 -- test fixture path below the managed cache dir.
 		if err != nil {
 			return
 		}
@@ -242,7 +242,7 @@ func record() {
 	env := os.Environ()
 	sort.Strings(env)
 	line, _ := json.Marshal(invocation{Argv: os.Args[1:], Cwd: cwd, Env: env})
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 -- test fixture path from the harness.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 G703 -- test fixture path from the harness.
 	if err != nil {
 		return
 	}
@@ -263,7 +263,7 @@ func readState(id string) string {
 	if path == "" {
 		return ""
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- test fixture path from the harness.
+	data, err := os.ReadFile(path) // #nosec G304 G703 -- test fixture path from the harness.
 	if err != nil {
 		return ""
 	}

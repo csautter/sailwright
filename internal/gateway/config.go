@@ -372,7 +372,7 @@ func ensurePrivateDir(dir string) error {
 	if err := os.MkdirAll(dir, stateDirPermission); err != nil {
 		return err
 	}
-	return os.Chmod(dir, stateDirPermission)
+	return os.Chmod(dir, stateDirPermission) // #nosec G302 -- owner-only state directory.
 }
 
 // hostOnly strips an optional port from a Host header value.

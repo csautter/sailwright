@@ -96,6 +96,7 @@ func PinBinary(source string, stateDir string, expectedSHA256 string) (PinnedBin
 		return PinnedBinary{}, fmt.Errorf("binary %s has SHA-256 %s, expected %s", absSource, sum, expectedSHA256)
 	}
 
+	// #nosec G302 -- owner-only, read-and-execute pinned binary.
 	if err := os.Chmod(tmpName, pinnedBinaryPermission); err != nil && runtime.GOOS != "windows" {
 		return PinnedBinary{}, err
 	}
