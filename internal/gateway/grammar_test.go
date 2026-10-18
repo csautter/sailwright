@@ -110,8 +110,8 @@ func TestParseSafeRejectsEverythingOutsideTheSafeSet(t *testing.T) {
 		{"create", "ubuntu", "extra"},
 		{"create"},
 		{"create", "Ubuntu"},
-		{"create", "ubuntuа"}, // Cyrillic "a"
-		{"create", "ubuntu", "--type", "server​"},
+		{"create", "ubuntu\u0430"}, // Cyrillic "a"
+		{"create", "ubuntu", "--type", "server\u200b"},
 		{"create", long},
 		{"create", "macos"},
 		{"create", "ubuntu", "--arch", "riscv64"},

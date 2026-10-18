@@ -160,7 +160,7 @@ func copyBundle(hostRoot string, dir string, limits SnapshotLimits) (Snapshot, e
 			}
 			entries = append(entries, snapshotEntry{rel: rel, mode: fileMode, hash: hash})
 			if fileMode == "exec" && runtime.GOOS != "windows" {
-				return os.Chmod(target, 0o700)
+				return os.Chmod(target, 0o700) // #nosec G302 -- owner-only executable inside private staging.
 			}
 			return nil
 		default:
@@ -213,14 +213,14 @@ func makeTreeReadOnly(dir string) error {
 			return err
 		}
 		if entry.IsDir() {
-			return os.Chmod(p, 0o500)
+			return os.Chmod(p, 0o500) // #nosec G302 -- owner-only, read-only directory.
 		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
 		if info.Mode().Perm()&0o100 != 0 {
-			return os.Chmod(p, 0o500)
+			return os.Chmod(p, 0o500) // #nosec G302 -- owner-only, read-only executable.
 		}
 		return os.Chmod(p, 0o400)
 	})
@@ -236,7 +236,7 @@ func RemoveSnapshot(dir string) error {
 			return nil
 		}
 		if entry.IsDir() {
-			_ = os.Chmod(p, 0o700)
+			_ = os.Chmod(p, 0o700) // #nosec G302 -- owner-only, restored before removal.
 		} else {
 			_ = os.Chmod(p, 0o600)
 		}

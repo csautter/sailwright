@@ -132,6 +132,7 @@ func Start(t testing.TB, opts Options) *Harness {
 		t.Cleanup(func() { _ = writer.Close() })
 	}
 
+	// #nosec G101 -- fake values that prove secrets are redacted and host variables dropped.
 	env := map[string]string{
 		"FAKE_CLI_RECORD":  h.RecordFile,
 		"FAKE_CLI_STATE":   h.FakeStateDir,

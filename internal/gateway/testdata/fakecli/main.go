@@ -161,7 +161,7 @@ func record() {
 	env := os.Environ()
 	sort.Strings(env)
 	line, _ := json.Marshal(invocation{Argv: os.Args[1:], Cwd: cwd, Env: env})
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 -- test fixture path from the harness.
 	if err != nil {
 		return
 	}
@@ -182,7 +182,7 @@ func readState(id string) string {
 	if path == "" {
 		return ""
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- test fixture path from the harness.
 	if err != nil {
 		return ""
 	}

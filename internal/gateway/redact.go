@@ -130,8 +130,8 @@ func sanitizeForTerminal(value string) string {
 			b.WriteRune(' ')
 		case r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0):
 			b.WriteRune('?')
-		case r == '‮' || r == '‭' || r == '⁦' || r == '⁧' || r == '⁨' || r == '⁩':
-			// Bidirectional overrides can visually reorder the command.
+		case r >= '\u202a' && r <= '\u202e', r >= '\u2066' && r <= '\u2069', r == '\u200b', r == '\u200e', r == '\u200f':
+			// Bidirectional controls and invisible marks can visually disguise the command.
 			b.WriteRune('?')
 		default:
 			b.WriteRune(r)
