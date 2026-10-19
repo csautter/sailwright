@@ -3,7 +3,7 @@ FROM mcr.microsoft.com/devcontainers/go:2.3-1.27-trixie
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_VERSION=24.18.0
 # renovate: datasource=npm depName=renovate versioning=npm
-ENV RENOVATE_VERSION="43.288.0"
+ENV RENOVATE_VERSION="44.168.3"
 # renovate: datasource=custom.powershell-linux-x64 depName=PowerShell/PowerShell versioning=semver
 ENV POWERSHELL_VERSION="7.6.6"
 ENV POWERSHELL_SHA256_X64="ddbc4a2d113bbd46d283cfedcbcd117a70caefd7673f41f2b4e0000badf103bc"
