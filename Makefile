@@ -166,7 +166,7 @@ demo-build-video:
 
 gosec:
 	@if [ ! -x "$(GOSEC)" ]; then \
-		echo "gosec not found at $(GOSEC). Rebuild the dev container or run: go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1"; \
+		echo "gosec not found at $(GOSEC). Rebuild the dev container or run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0"; \
 		exit 1; \
 	fi
 	$(GOSEC) -no-fail -fmt sarif -out gosec-results.sarif -exclude-generated ./...
