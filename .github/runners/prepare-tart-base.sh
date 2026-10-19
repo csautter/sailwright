@@ -35,7 +35,7 @@ AZURE_CLI_VERSION="2.88.0"
 # renovate: datasource=custom.homebrew-formula depName=gh packageName=gh versioning=loose
 GH_CLI_VERSION="2.96.0"
 # renovate: datasource=custom.hashicorp depName=packer packageName=packer versioning=semver
-PACKER_VERSION="1.15.4"
+PACKER_VERSION="1.16.1"
 # renovate: datasource=custom.homebrew-formula depName=go packageName=go versioning=loose
 GO_VERSION="1.27.2"
 # renovate: datasource=custom.homebrew-cask depName=utm packageName=utm versioning=loose
