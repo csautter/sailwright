@@ -129,4 +129,4 @@ RUN curl -fsSL https://aquasecurity.github.io/trivy-repo/deb/public.key | \
     && rm -rf /var/lib/apt/lists/* \
     && trivy --version
 
-RUN go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
+RUN go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
