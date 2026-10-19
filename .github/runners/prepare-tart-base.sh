@@ -33,7 +33,7 @@ DEFAULT_RUNNER_VERSION="2.338.0"
 # renovate: datasource=custom.homebrew-formula depName=azure-cli packageName=azure-cli versioning=loose
 AZURE_CLI_VERSION="2.88.0"
 # renovate: datasource=custom.homebrew-formula depName=gh packageName=gh versioning=loose
-GH_CLI_VERSION="2.96.0"
+GH_CLI_VERSION="2.102.0"
 # renovate: datasource=custom.hashicorp depName=packer packageName=packer versioning=semver
 PACKER_VERSION="1.15.4"
 # renovate: datasource=custom.homebrew-formula depName=go packageName=go versioning=loose
