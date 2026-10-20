@@ -6,17 +6,19 @@
   "containerEnv": {
     "GOTOOLCHAIN": "auto"
   },
-  "initializeCommand": "mkdir -p \"${localEnv:HOME}${localEnv:USERPROFILE}/.sailwright-gateway\"",
+  "initializeCommand": "bash .devcontainer/initialize-host.sh",
   "mounts": [
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents/skills,target=/root/.agents/skills,type=bind,consistency=cached",
     "source=skills-vscode-server-data,target=/root/.vscode-server/data,type=volume",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents/skills,target=/root/.claude/skills,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.codex/skills,target=/root/.codex/skills,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents/agents,target=/root/.copilot/agents,type=bind,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.agents/skills,target=/root/.gemini/config/skills,type=bind,consistency=cached",
     "source=skills-vscode-server-extensions,target=/root/.vscode-server/extensions,type=volume",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.codex/auth.json,target=/root/.codex-auth.json,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude-devcontainer,target=/root/.claude,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.local/share/opencode,target=/root/.local/share/opencode,type=bind,consistency=cached",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.gemini,target=/root/.gemini,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/Projects/sailwright-plans,target=/workspaces/sailwright-plans,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.sailwright-gateway,target=/run/sailwright-gateway,type=bind,readonly",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/Projects/sailwright-roles-private,target=/workspaces/sailwright-roles-private,type=bind,consistency=cached"
