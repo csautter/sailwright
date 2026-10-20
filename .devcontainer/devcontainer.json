@@ -18,7 +18,8 @@
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude-devcontainer,target=/root/.claude,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.local/share/opencode,target=/root/.local/share/opencode,type=bind,consistency=cached",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/Projects/sailwright-plans,target=/workspaces/sailwright-plans,type=bind,consistency=cached",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.sailwright-gateway,target=/run/sailwright-gateway,type=bind,readonly"
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.sailwright-gateway,target=/run/sailwright-gateway,type=bind,readonly",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/Projects/sailwright-roles-private,target=/workspaces/sailwright-roles-private,type=bind,consistency=cached"
   ],
   "features": {
     "ghcr.io/devcontainers/features/python:1": {}
