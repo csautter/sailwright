@@ -182,6 +182,10 @@ DEMO_BUILD_ARGS ?=
 demo-build-video:
 	bash demo/process-build-video.sh $(DEMO_BUILD_ARGS)
 
+# Run Go security scanning via gosec.
+# If gosec reports type errors due to Go toolchain export data version mismatches
+# (e.g. devcontainer toolchain newer than go.mod), match the go.mod toolchain:
+#   GOTOOLCHAIN=go1.26.0 make gosec
 gosec:
 	@if [ ! -x "$(GOSEC)" ]; then \
 		echo "gosec not found at $(GOSEC). Rebuild the dev container or run: go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1"; \
@@ -193,7 +197,9 @@ gosec:
 	if [ $$status -ne 0 ] || grep -q 'type errors' gosec-stderr.log; then \
 		grep -E 'type errors|[Ee]rror' gosec-stderr.log | head -5; \
 		rm -f gosec-stderr.log; \
-		echo "gosec did not analyze all packages; the results above are incomplete. Update gosec for this Go toolchain."; \
+		echo "gosec did not analyze all packages; the results above are incomplete."; \
+		echo "Note: If the container Go version is newer than go.mod, run with the go.mod toolchain:"; \
+		echo "      GOTOOLCHAIN=go1.26.0 make gosec"; \
 		exit 1; \
 	fi; \
 	rm -f gosec-stderr.log
