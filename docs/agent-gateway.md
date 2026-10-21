@@ -380,7 +380,7 @@ cache folders; created VMs, `.vagrant`, `libvirt/images`, the config and a
 | `data/` | only with `--state-dir` or on macOS: the data dir, see [Disk usage](#disk-usage) |
 | `work/` | empty working directory for commands |
 | `staging/` | read-only bundle snapshots, removed after each job |
-| `logs/<job>.log` | full redacted output per job |
+| `logs/<job>.log` | redacted output per job, capped at 64 MiB; removed with the job history and after 30 days |
 | `screens/<job>/` | last sampled build console frames, cleared on restart |
 | `audit.jsonl` | audit log |
 

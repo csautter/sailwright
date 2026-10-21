@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -185,6 +186,9 @@ func NewJobManager(opts JobManagerOptions) *JobManager {
 	if console == nil {
 		console = io.Discard
 	}
+	if opts.LogsDir != "" {
+		pruneOldLogs(opts.LogsDir, maxJobLogAge)
+	}
 	return &JobManager{
 		runner: opts.Runner, approver: opts.Approver, audit: opts.Audit, redactor: opts.Redactor,
 		logsDir: opts.LogsDir, stagingDir: opts.StagingDir, dataDir: opts.DataDir, minFreeGB: opts.MinFreeGB, outputLimit: opts.OutputLimit,
@@ -347,7 +351,7 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 		// #nosec G304 -- fixed file name inside the gateway log directory.
 		if logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, privateFilePermission); err == nil {
 			defer logFile.Close()
-			sinks = append(sinks, logFile)
+			sinks = append(sinks, &cappedWriter{w: logFile, limit: maxJobLogBytes})
 			if m.follow == nil {
 				fmt.Fprintf(m.console, "  live output: tail -f %s\n", logPath)
 			}
@@ -561,6 +565,9 @@ func (m *JobManager) trimHistoryLocked() {
 		if screens := m.jobs[oldest].screens; screens != nil {
 			screens.Remove()
 		}
+		if m.logsDir != "" {
+			_ = os.Remove(filepath.Join(m.logsDir, oldest+".log"))
+		}
 		delete(m.jobs, oldest)
 		m.order = m.order[1:]
 	}
@@ -659,6 +666,55 @@ func (b *outputBuffer) Read(offset int64, maxBytes int) OutputChunk {
 		Offset:          base + start,
 		NextOffset:      base + end,
 		TruncatedBefore: truncated,
+	}
+}
+
+const (
+	// maxJobLogBytes caps one job's log file; the in-memory buffer has its own limit.
+	maxJobLogBytes = 64 << 20
+	maxJobLogAge   = 30 * 24 * time.Hour
+)
+
+// cappedWriter forwards at most limit bytes, then writes a marker once and drops the
+// rest. It always reports success so the job's other sinks keep working.
+type cappedWriter struct {
+	w       io.Writer
+	limit   int64
+	written int64
+	capped  bool
+}
+
+func (c *cappedWriter) Write(p []byte) (int, error) {
+	if c.capped {
+		return len(p), nil
+	}
+	if remaining := c.limit - c.written; int64(len(p)) > remaining {
+		if remaining > 0 {
+			_, _ = c.w.Write(p[:remaining])
+		}
+		_, _ = io.WriteString(c.w, "\n[log truncated: size limit reached]\n")
+		c.capped = true
+		return len(p), nil
+	}
+	n, err := c.w.Write(p)
+	c.written += int64(n)
+	return n, err
+}
+
+// pruneOldLogs deletes job logs that were last written before maxAge ago.
+func pruneOldLogs(dir string, maxAge time.Duration) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		if info, err := entry.Info(); err == nil && info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
 	}
 }
 

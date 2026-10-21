@@ -204,13 +204,27 @@ func (g *Gateway) ServeListener(ctx context.Context, listener net.Listener) erro
 }
 
 // RefreshTargets asks the pinned binary for every `<command> list --json`.
+// The individual commands are not audited; one event records the refresh.
 func (g *Gateway) RefreshTargets(ctx context.Context) {
+	ctx = context.WithValue(ctx, quietInfoKey{}, true)
+	failed := 0
 	for _, command := range listCommands {
 		targets, err := g.listTargets(ctx, command)
+		if err != nil {
+			failed++
+		}
 		g.catalog.Set(command, targets, err)
 	}
 	g.refreshPlaybooks()
+	event := AuditEvent{Event: "targets_refreshed", BinarySHA256: g.pinned.SHA256}
+	if failed > 0 {
+		event.Error = fmt.Sprintf("%d of %d listings failed", failed, len(listCommands))
+	}
+	_ = g.audit.Record(event)
 }
+
+// quietInfoKey marks info commands whose audit line is replaced by a summary event.
+type quietInfoKey struct{}
 
 func (g *Gateway) refreshTargetsAsync() {
 	g.backgroundMu.Lock()
@@ -247,7 +261,9 @@ func (g *Gateway) runInfo(ctx context.Context, argv []string) (string, int, erro
 	writer := newLineRedactingWriter(g.redactor, &buf)
 	code, err := g.runner.Run(ctx, argv, g.dirs.Work, writer)
 	_ = writer.Flush()
-	_ = g.audit.Record(AuditEvent{Event: "info_command", Argv: argv, ExitCode: &code, BinarySHA256: g.pinned.SHA256})
+	if quiet, _ := ctx.Value(quietInfoKey{}).(bool); !quiet {
+		_ = g.audit.Record(AuditEvent{Event: "info_command", Argv: argv, ExitCode: &code, BinarySHA256: g.pinned.SHA256})
+	}
 	return buf.String(), code, err
 }
 
