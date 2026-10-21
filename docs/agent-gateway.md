@@ -224,7 +224,7 @@ screen_stuck_after: 15m            # hint when console and output stay unchanged
 | `install` | approval | `install [--with-go] [--virtualbox]` |
 | `run_cli` | safe or approval | any command line; safe if it parses into the safe set |
 | `job_status`, `job_output`, `job_cancel`, `job_list` | control | job handling |
-| `job_screenshot` | control | VM console image of a build job (read-only) |
+| `job_screenshot` | safe | VM console image of a build job (read-only) |
 
 Operations run as jobs. Poll `job_status` and read `job_output` from
 `next_offset`. Only one job runs at a time.
