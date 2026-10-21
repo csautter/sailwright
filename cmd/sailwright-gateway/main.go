@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -82,7 +83,7 @@ need "approve <id>" from you. Agents cannot approve their own requests.`,
 	command.Flags().StringVar(&flags.configPath, "config", "", "Config file (default: <state-dir>/gateway.yaml if present)")
 	command.Flags().StringVar(&flags.binary, "binary", "", "sailwright binary to pin (overrides the config)")
 	command.Flags().StringVar(&flags.binarySHA256, "binary-sha256", "", "Expected SHA-256 of the binary; skips the interactive confirmation")
-	command.Flags().StringVar(&flags.listen, "listen", "", "Listen address, an IP literal with port (default 127.0.0.1:7391)")
+	command.Flags().StringVar(&flags.listen, "listen", "", "Listen address, an IP literal with port, or \"off\" (default 127.0.0.1:7391; off on Linux)")
 	command.Flags().BoolVar(&flags.noApprovals, "no-approvals", false, "Disable the approval console; only the safe set is available")
 	command.Flags().BoolVar(&flags.follow, "follow", false, "Mirror job output to this terminal (approval prompts still appear)")
 	return command
@@ -364,9 +365,17 @@ The gateway must be stopped.`,
 			if err != nil {
 				return err
 			}
-			if conn, err := net.DialTimeout("tcp", cfg.ListenAddr.String(), time.Second); err == nil {
-				_ = conn.Close()
-				return fmt.Errorf("a gateway is listening on %s; stop it before cleaning", cfg.ListenAddr)
+			if cfg.ListenAddr.IsValid() {
+				if conn, err := net.DialTimeout("tcp", cfg.ListenAddr.String(), time.Second); err == nil {
+					_ = conn.Close()
+					return fmt.Errorf("a gateway is listening on %s; stop it before cleaning", cfg.ListenAddr)
+				}
+			}
+			if socket := filepath.Join(cfg.AgentDir, gateway.AgentSocketName); cfg.AgentDir != "" {
+				if conn, err := net.DialTimeout("unix", socket, time.Second); err == nil {
+					_ = conn.Close()
+					return fmt.Errorf("a gateway is listening on %s; stop it before cleaning", socket)
+				}
 			}
 			usage, err := gateway.MeasureCache(cfg)
 			if err != nil {
@@ -405,13 +414,17 @@ func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, socketPath str
 	if socketPath != "" {
 		socket = socketPath
 	}
+	tcpURL := "TCP off (agent socket only)"
+	if cfg.ListenAddr.IsValid() {
+		tcpURL = fmt.Sprintf("http://%s/mcp", cfg.ListenAddr)
+	}
 	liveView := "off"
 	if viewURL != "" {
 		liveView = viewURL + "  (build console, open in a browser on this host)"
 	}
 	fmt.Printf(`
 sailwright-gateway %s
-  listening:  http://%s/mcp
+  listening:  %s
   socket:     %s
   agent dir:  %s  (mount read-only into the devcontainer at /run/sailwright-gateway)
   binary:     %s (sha256 %s)
@@ -423,6 +436,6 @@ sailwright-gateway %s
 
 In the devcontainer, agents connect with: sailwright-gateway connect
 Press Ctrl+C to stop.
-`, version, cfg.ListenAddr, socket, cfg.AgentDir, pinned.Source, pinned.SHA256, cfg.DataDir, approvalState, liveView,
+`, version, tcpURL, socket, cfg.AgentDir, pinned.Source, pinned.SHA256, cfg.DataDir, approvalState, liveView,
 		gateway.TokenPath(cfg.StateDir), cfg.StateDir+string(os.PathSeparator)+"audit.jsonl")
 }

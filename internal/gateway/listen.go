@@ -46,14 +46,17 @@ func (l *Listeners) Close() {
 	}
 }
 
-// Listen opens the TCP listener and, except on Windows, the agent Unix socket, and
+// Listen opens the TCP listener (unless listen is off) and, except on Windows, the agent Unix socket, and
 // writes a copy of the token next to the socket.
 func (g *Gateway) Listen() (*Listeners, error) {
-	tcp, err := net.Listen("tcp", g.cfg.ListenAddr.String())
-	if err != nil {
-		return nil, fmt.Errorf("listen on %s: %w (the address must belong to a network interface of this host)", g.cfg.ListenAddr, err)
+	listeners := &Listeners{}
+	if g.cfg.ListenAddr.IsValid() {
+		tcp, err := net.Listen("tcp", g.cfg.ListenAddr.String())
+		if err != nil {
+			return nil, fmt.Errorf("listen on %s: %w (the address must belong to a network interface of this host)", g.cfg.ListenAddr, err)
+		}
+		listeners.TCP = tcp
 	}
-	listeners := &Listeners{TCP: tcp}
 
 	if err := ensurePrivateDir(g.cfg.AgentDir); err != nil {
 		listeners.Close()

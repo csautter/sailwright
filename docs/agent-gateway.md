@@ -68,9 +68,10 @@ The agent, and everything it reads, is treated as untrusted.
 - **Transport.** Agents reach the gateway through a Unix socket in a
   dedicated agent folder (`~/.sailwright-gateway`) that you mount read-only
   into the devcontainer. Access is limited by file permissions (`0600`) and by
-  which container gets the mount; nothing is exposed on the network. For
-  Docker Desktop on macOS and Windows the gateway also listens on
-  `127.0.0.1:7391`; wildcard addresses are refused. Every request needs the
+  which container gets the mount; nothing is exposed on the network. On
+  macOS and Windows (Docker Desktop) the gateway also listens on
+  `127.0.0.1:7391`; on Linux that TCP listener is off by default
+  (`listen: off`). Wildcard addresses are refused. Every request needs the
   bearer token. TCP requests must also come from an allowed source address
   with an allowed `Host` header, and browser `Origin` headers are rejected.
 - **Limits.** One job at a time, a job timeout, a minimum free disk check for
@@ -163,8 +164,8 @@ Notes:
 
 ### Advanced: TCP on Linux
 
-You normally don't need this on Linux. If you want TCP anyway, the listen
-address must belong to the host, and the container must be able to reach it:
+You normally don't need this on Linux, where the TCP listener is off by
+default. If you want TCP anyway, set `listen` explicitly; the address must belong to the host, and the container must be able to reach it:
 
 - **Rootful Docker:** bind to the bridge gateway, e.g. `listen: 172.17.0.1:7391`,
   add `allowed_source_cidrs: [172.17.0.0/16]` and `allowed_hosts: [172.17.0.1]`,
@@ -183,7 +184,7 @@ fields are optional; unknown fields are an error. The state directory must
 not be inside an agent workspace or a git checkout.
 
 ```yaml
-listen: 127.0.0.1:7391
+listen: 127.0.0.1:7391            # "off" disables TCP (the Linux default); not allowed on Windows
 allowed_hosts: [localhost, 127.0.0.1, "::1", host.docker.internal]
 allowed_source_cidrs: [127.0.0.0/8, "::1/128"]
 binary: /home/me/sailwright/dist/linux-amd64/sailwright

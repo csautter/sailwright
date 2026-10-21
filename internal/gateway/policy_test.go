@@ -111,7 +111,7 @@ func TestConfigResolveRejectsUnsafeSettings(t *testing.T) {
 	if err := ok.Resolve(); err != nil {
 		t.Fatalf("defaults must resolve: %v", err)
 	}
-	if ok.ListenAddr.String() != defaultListen || ok.JobTimeoutValue != defaultJobTimeout {
+	if ok.Listen != defaultListenFor(runtime.GOOS) || ok.JobTimeoutValue != defaultJobTimeout {
 		t.Fatalf("unexpected defaults %+v", ok)
 	}
 }

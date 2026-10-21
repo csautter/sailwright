@@ -86,7 +86,7 @@ type Config struct {
 
 	// Resolved values, filled by Resolve.
 	StateDir              string         `yaml:"-"`
-	ListenAddr            netip.AddrPort `yaml:"-"`
+	ListenAddr            netip.AddrPort `yaml:"-"` // invalid when the TCP listener is off
 	ViewAddr              netip.AddrPort `yaml:"-"` // invalid when the live view is off
 	SourcePrefixes        []netip.Prefix `yaml:"-"`
 	JobTimeoutValue       time.Duration  `yaml:"-"`
@@ -189,16 +189,21 @@ func (c *Config) Resolve() error {
 	c.StateDir = absState
 
 	if c.Listen == "" {
-		c.Listen = defaultListen
+		c.Listen = defaultListenFor(runtime.GOOS)
 	}
-	addrPort, err := netip.ParseAddrPort(c.Listen)
-	if err != nil {
-		return fmt.Errorf("listen must be an IP literal with port (e.g. %s): %w", defaultListen, err)
+	c.ListenAddr = netip.AddrPort{}
+	if c.Listen != disabledSetting {
+		addrPort, err := netip.ParseAddrPort(c.Listen)
+		if err != nil {
+			return fmt.Errorf("listen must be an IP literal with port (e.g. %s) or %q: %w", defaultListen, disabledSetting, err)
+		}
+		if addrPort.Addr().IsUnspecified() {
+			return fmt.Errorf("refusing wildcard listen address %s; bind to loopback or a specific bridge IP", c.Listen)
+		}
+		c.ListenAddr = addrPort
+	} else if runtime.GOOS == "windows" {
+		return fmt.Errorf("listen: %q is not supported on Windows because there is no agent socket", disabledSetting)
 	}
-	if addrPort.Addr().IsUnspecified() {
-		return fmt.Errorf("refusing wildcard listen address %s; bind to loopback or a specific bridge IP", c.Listen)
-	}
-	c.ListenAddr = addrPort
 
 	if c.ViewListen == "" {
 		c.ViewListen = defaultViewListen
@@ -359,6 +364,15 @@ func parseDurationDefault(value string, fallback time.Duration) (time.Duration, 
 		return 0, errors.New("must be positive")
 	}
 	return parsed, nil
+}
+
+// defaultListenFor returns the default TCP listen setting. Linux containers reach the
+// gateway through the agent Unix socket, so TCP is off there unless configured.
+func defaultListenFor(goos string) string {
+	if goos == "linux" {
+		return disabledSetting
+	}
+	return defaultListen
 }
 
 // isWithin reports whether target equals base or lies below it (host paths).

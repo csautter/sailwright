@@ -3,6 +3,7 @@ package gateway
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -79,5 +80,22 @@ func TestResolveLiveViewAndStuckHint(t *testing.T) {
 		if _, err := resolve("", stuck); err == nil {
 			t.Errorf("screen_stuck_after %q should be rejected", stuck)
 		}
+	}
+}
+
+func TestResolveListenOff(t *testing.T) {
+	cfg := Config{StateDir: t.TempDir(), AgentDir: t.TempDir(), Listen: disabledSetting}
+	err := cfg.Resolve()
+	if runtime.GOOS == "windows" {
+		if err == nil {
+			t.Fatal("listen: off must be rejected without an agent socket")
+		}
+		return
+	}
+	if err != nil || cfg.ListenAddr.IsValid() {
+		t.Fatalf("listen off: %v %s", err, cfg.ListenAddr)
+	}
+	if defaultListenFor("linux") != disabledSetting || defaultListenFor("darwin") != defaultListen || defaultListenFor("windows") != defaultListen {
+		t.Fatal("unexpected per-OS listen defaults")
 	}
 }
