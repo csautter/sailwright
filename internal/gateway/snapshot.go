@@ -13,7 +13,23 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 )
+
+// RemoveStaleStaging deletes snapshots and become-password files that a crashed
+// gateway left in stagingRoot. Call it only once this gateway owns the listeners, so
+// no other instance is using the directory.
+func RemoveStaleStaging(stagingRoot string) {
+	entries, err := os.ReadDir(stagingRoot)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "bundle-") || strings.HasPrefix(entry.Name(), "become-") {
+			_ = RemoveSnapshot(filepath.Join(stagingRoot, entry.Name()))
+		}
+	}
+}
 
 // SnapshotLimits bound what a bundle snapshot may copy.
 type SnapshotLimits struct {
@@ -194,11 +210,18 @@ func copyBundle(hostRoot string, dir string, limits SnapshotLimits) (Snapshot, e
 }
 
 func copyRootFile(root *os.Root, rel string, target string, budget int64) (string, int64, error) {
-	src, err := root.Open(rel)
+	// O_NONBLOCK keeps a file swapped for a FIFO after the Lstat from blocking the open;
+	// the regular-file check on the opened handle then rejects it.
+	src, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", 0, err
 	}
 	defer src.Close()
+	if info, err := src.Stat(); err != nil {
+		return "", 0, err
+	} else if !info.Mode().IsRegular() {
+		return "", 0, fmt.Errorf("%s is not a regular file", rel)
+	}
 	// #nosec G304 -- target is inside the gateway-owned staging directory.
 	dst, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {

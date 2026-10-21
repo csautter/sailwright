@@ -129,7 +129,8 @@ func (a *ConsoleApprover) Request(ctx context.Context, req ApprovalRequest) Appr
 		a.mu.Unlock()
 		return Approval{Decision: DecisionDenied}
 	}
-	if a.pending != nil {
+	if a.pending != nil || a.answer != nil {
+		// An open Confirm question would swallow the operator's "approve <id>" as its answer.
 		a.mu.Unlock()
 		return Approval{Decision: DecisionBusy}
 	}

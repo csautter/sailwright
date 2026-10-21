@@ -84,6 +84,7 @@ func (g *Gateway) Listen() (*Listeners, error) {
 		listeners.ViewURL = "http://" + view.Addr().String() + g.viewPath()
 		g.jobs.SetViewURL(listeners.ViewURL)
 	}
+	RemoveStaleStaging(g.dirs.Staging)
 	return listeners, nil
 }
 

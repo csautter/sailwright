@@ -189,3 +189,25 @@ func TestRewriteBundlePaths(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoveStaleStagingRemovesOnlyGatewayLeftovers(t *testing.T) {
+	staging := t.TempDir()
+	bundle := filepath.Join(staging, "bundle-123")
+	writeFile(t, filepath.Join(bundle, "site.yml"), "x")
+	if err := makeTreeReadOnly(bundle); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(staging, "become-456"), "pw")
+	writeFile(t, filepath.Join(staging, "unrelated"), "keep")
+
+	RemoveStaleStaging(staging)
+
+	for _, name := range []string{"bundle-123", "become-456"} {
+		if _, err := os.Stat(filepath.Join(staging, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s must be removed: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(staging, "unrelated")); err != nil {
+		t.Fatalf("unrelated entries must stay: %v", err)
+	}
+}

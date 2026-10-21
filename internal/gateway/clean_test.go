@@ -129,6 +129,15 @@ func TestConsoleApproverConfirm(t *testing.T) {
 		t.Fatal("a cancelled question must decline")
 	}
 
+	// An approval request must not start while a question is open.
+	go func() { answers <- approver.Confirm(context.Background(), "Open?") }()
+	waitFor(t, func() bool { return strings.Contains(out.String(), "Open? [y/N] ") })
+	if got := approver.Request(context.Background(), ApprovalRequest{ID: "job2"}); got.Decision != DecisionBusy {
+		t.Fatalf("request during a question: got %v, want busy", got.Decision)
+	}
+	_, _ = io.WriteString(writer, "n\n")
+	<-answers
+
 	closed := NewConsoleApprover(bufio.NewReader(strings.NewReader("")), out, time.Minute)
 	waitFor(t, func() bool { return !closed.Enabled() })
 	if closed.Confirm(context.Background(), "Closed?") {
