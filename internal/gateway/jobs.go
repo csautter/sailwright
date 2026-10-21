@@ -609,9 +609,12 @@ func (b *outputBuffer) Write(p []byte) (int, error) {
 		b.lastWrite = time.Now().UTC()
 	}
 	b.data = append(b.data, p...)
-	if over := len(b.data) - b.limit; over > 0 {
-		b.data = append([]byte(nil), b.data[over:]...)
-		b.base += int64(over)
+	// Compact only once a quarter of the limit is surplus, so a full buffer is not
+	// copied on every write. Read clamps to the newest limit bytes in between.
+	if len(b.data)-b.limit > b.limit/4 {
+		drop := len(b.data) - b.limit
+		b.data = append(b.data[:0], b.data[drop:]...)
+		b.base += int64(drop)
 	}
 	return len(p), nil
 }
@@ -634,23 +637,27 @@ func (b *outputBuffer) Len() int64 {
 func (b *outputBuffer) Read(offset int64, maxBytes int) OutputChunk {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	data, base := b.data, b.base
+	if surplus := len(data) - b.limit; surplus > 0 {
+		data, base = data[surplus:], base+int64(surplus)
+	}
 	truncated := false
-	if offset < b.base {
-		offset = b.base
+	if offset < base {
+		offset = base
 		truncated = true
 	}
-	start := offset - b.base
-	if start > int64(len(b.data)) {
-		start = int64(len(b.data))
+	start := offset - base
+	if start > int64(len(data)) {
+		start = int64(len(data))
 	}
 	end := start + int64(maxBytes)
-	if end > int64(len(b.data)) {
-		end = int64(len(b.data))
+	if end > int64(len(data)) {
+		end = int64(len(data))
 	}
 	return OutputChunk{
-		Data:            string(b.data[start:end]),
-		Offset:          b.base + start,
-		NextOffset:      b.base + end,
+		Data:            string(data[start:end]),
+		Offset:          base + start,
+		NextOffset:      base + end,
 		TruncatedBefore: truncated,
 	}
 }
