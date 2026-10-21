@@ -24,7 +24,7 @@ $cygGetVersion = "1.2.2"
 # renovate: datasource=nuget depName=virtualbox versioning=nuget registryUrl=https://community.chocolatey.org/api/v2/
 $virtualBoxVersion = "7.2.8"
 # renovate: datasource=pypi depName=ansible versioning=pep440
-$ansibleVersion = "14.1.0"
+$ansibleVersion = "14.5.0"
 # renovate: datasource=pypi depName=pywinrm versioning=pep440
 $pywinrmVersion = "0.5.0"
 
