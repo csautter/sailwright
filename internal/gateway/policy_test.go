@@ -86,7 +86,9 @@ func TestSecurityMiddleware(t *testing.T) {
 
 func TestConfigResolveRejectsUnsafeSettings(t *testing.T) {
 	state := t.TempDir()
+	workspace := t.TempDir()
 	cases := []Config{
+		{AgentWorkspaces: []WorkspaceMapping{{Agent: "/workspaces/x", Host: workspace}}, SharedCacheDir: filepath.Join(workspace, "cache")},
 		{Listen: "0.0.0.0:7391"},
 		{Listen: "[::]:7391"},
 		{Listen: "localhost:7391"},
@@ -344,4 +346,29 @@ type blockingReader struct{}
 
 func (blockingReader) Read([]byte) (int, error) {
 	select {}
+}
+
+func TestLineRedactingWriterCatchesSecretAcrossForcedFlush(t *testing.T) {
+	const secret = "s3cr3t-value-123"
+	for split := 1; split < len(secret); split++ {
+		var out strings.Builder
+		writer := newLineRedactingWriter(NewRedactor(secret), &out)
+		// The first write ends inside the secret and exceeds the pending limit.
+		first := strings.Repeat("a", maxPendingLineSize+1-split) + secret[:split]
+		second := secret[split:] + strings.Repeat("b", 100)
+		for _, chunk := range []string{first, second} {
+			if _, err := writer.Write([]byte(chunk)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := writer.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(out.String(), secret[:6]) || strings.Contains(out.String(), secret[len(secret)-6:]) {
+			t.Fatalf("split %d: secret leaked", split)
+		}
+		if want := len(first) + len(second) - len(secret) + len(redactedMarker); out.Len() != want {
+			t.Fatalf("split %d: output length %d, want %d", split, out.Len(), want)
+		}
+	}
 }

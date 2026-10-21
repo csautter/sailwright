@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 const (
@@ -42,6 +43,14 @@ func NewRedactor(secrets ...string) *Redactor {
 	// Longest first so a secret that contains another one is fully replaced.
 	sort.Slice(kept, func(i, j int) bool { return len(kept[i]) > len(kept[j]) })
 	return &Redactor{secrets: kept}
+}
+
+// maxSecretLen is the length of the longest secret that is redacted.
+func (r *Redactor) maxSecretLen() int {
+	if r == nil || len(r.secrets) == 0 {
+		return 0
+	}
+	return len(r.secrets[0]) // sorted longest first
 }
 
 // With returns a redactor that also hides the given secrets.
@@ -101,10 +110,21 @@ func (w *lineRedactingWriter) Write(p []byte) (int, error) {
 		w.pending = w.pending[idx+1:]
 	}
 	if len(w.pending) > maxPendingLineSize {
-		if err := w.emit(w.pending); err != nil {
-			return 0, err
+		// Hold back the tail so a secret straddling the cut is still matched once the
+		// rest of it arrives, and never split a multi-byte rune.
+		cut := len(w.pending)
+		if keep := w.redactor.maxSecretLen() - 1; keep > 0 {
+			cut -= keep
+			for cut > 0 && !utf8.RuneStart(w.pending[cut]) {
+				cut--
+			}
 		}
-		w.pending = nil
+		if cut > 0 {
+			if err := w.emit(w.pending[:cut]); err != nil {
+				return 0, err
+			}
+			w.pending = append([]byte(nil), w.pending[cut:]...)
+		}
 	}
 	return len(p), nil
 }

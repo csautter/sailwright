@@ -482,11 +482,14 @@ func becomeSupported(args []string) bool {
 	if runtime.GOOS == "windows" || len(args) < 2 || args[0] != "provision" {
 		return false
 	}
-	for _, arg := range args[1:] {
+	for i, arg := range args {
+		if i == 0 {
+			continue
+		}
 		if arg == "--" {
 			return false
 		}
-		if !strings.HasPrefix(arg, "-") {
+		if !strings.HasPrefix(arg, "-") && !isFlagValue(args, i) {
 			return arg == "local"
 		}
 	}

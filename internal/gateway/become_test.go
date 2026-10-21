@@ -84,13 +84,16 @@ func TestWithBecomePasswordFile(t *testing.T) {
 func TestBecomeSupported(t *testing.T) {
 	want := runtime.GOOS != "windows"
 	cases := map[string]bool{
-		"provision local --check":  want,
-		"provision --yes local":    want,
-		"provision ubuntu --check": false,
-		"install":                  false,
-		"provision -- local":       false,
-		"build local":              false,
-		"provision":                false,
+		"provision local --check":                 want,
+		"provision --yes local":                   want,
+		"provision ubuntu --check":                false,
+		"install":                                 false,
+		"provision -- local":                      false,
+		"provision --playbook /x/site.yml local":  want,
+		"provision --inventory-path=/x/inv local": want,
+		"provision --playbook /x/local ubuntu":    false,
+		"build local":                             false,
+		"provision":                               false,
 	}
 	for args, expected := range cases {
 		if got := becomeSupported(strings.Fields(args)); got != expected {

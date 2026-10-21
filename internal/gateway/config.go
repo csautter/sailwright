@@ -319,7 +319,10 @@ func (c *Config) Resolve() error {
 		return errors.New("binary_sha256 must be 64 lowercase hex characters")
 	}
 
-	for _, dir := range []string{c.StateDir, c.DataDir, c.AgentDir} {
+	for _, dir := range []string{c.StateDir, c.DataDir, c.AgentDir, c.SharedCacheDir} {
+		if dir == "" {
+			continue
+		}
 		if mapping, ok := c.hostPathInAgentWorkspace(dir); ok {
 			return fmt.Errorf("%s is inside the agent-writable workspace %s; move the gateway directories outside of it", dir, mapping.Host)
 		}
