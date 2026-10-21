@@ -392,10 +392,9 @@ packer build \
 	-var "memory=$memory" \
 	"$packer_file"
 packer_rc=$?
+# On success the artifact is in the cache and the output directory only holds Packer's
+# scratch files (for amd64 a full copy of the disk); on failure they are of no use either.
+rm -rf "$output_dir"
 if [[ "$packer_rc" -ne 0 ]]; then
 	exit "$packer_rc"
 fi
-
-# The artifact is in the cache now; the output directory only holds Packer's scratch
-# files (for amd64 a full copy of the disk).
-rm -rf "$output_dir"

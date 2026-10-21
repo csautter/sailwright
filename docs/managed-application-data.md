@@ -18,6 +18,11 @@ pre-rename `dev-alchemy` / `DEV_ALCHEMY_*` compatibility contract.
 Under that root, Sailwright manages:
 
 - `cache/` for downloaded files and build artifacts
+  - `cache/<os>/qemu-out-<slug>/` holds Packer scratch output of QEMU builds
+    (for amd64 a full copy of the disk). It is removed when a build finishes,
+    successfully or not, and at the start of the next build for the same target,
+    so it is safe to delete after an interrupted build. Older versions wrote it to
+    `/tmp/dev-alchemy/qemu-out-*`; those leftovers can be deleted.
 - `.vagrant/` for isolated Vagrant state
 - `packer_cache/` for Packer plugin and download cache
 - `project/` for the embedded runtime project used by standalone binaries
