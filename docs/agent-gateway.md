@@ -7,7 +7,7 @@ Sailwright operations over [MCP](https://modelcontextprotocol.io) (Streamable
 HTTP), and asks you on its own terminal before it runs anything outside a
 predefined safe set.
 
-The main use today is automated testing of Sailwright on real hosts; see
+The design rationale is recorded in [ADR 0005](./adr/0005-agent-gateway.md). The main use today is automated testing of Sailwright on real hosts; see
 [Deterministic E2E scenarios](./testing-workflows.md#deterministic-e2e-scenarios).
 
 > **Status:** experimental. Interfaces, tool names and configuration may change.
