@@ -112,9 +112,11 @@ Three steps, the same on every host.
    ```
 
    The container also needs the `sailwright-gateway` binary for the `connect`
-   bridge. This repository's `.devcontainer/devcontainer.json` already
-   contains the lines above and installs it from the checkout with
-   `"postCreateCommand": "go install ./cmd/sailwright-gateway"`.
+   bridge. This repository needs no edits: `.devcontainer/initialize-host.sh`
+   creates the folder and mounts it through a generated compose override (see
+   [.devcontainer/README.md](../.devcontainer/README.md)), and
+   `"postCreateCommand": "go install ./cmd/sailwright-gateway"` installs the
+   binary from the checkout.
 
 3. **For the agent:** register `sailwright-gateway connect` as a stdio MCP
    server. This repository ships it as `.mcp.json`:

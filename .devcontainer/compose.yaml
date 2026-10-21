@@ -1,0 +1,19 @@
+# Base service for the devcontainer. Host-specific bind mounts live in
+# .generated/compose.local.yaml, which initialize-host.sh writes before every
+# container start, so nothing here depends on the contributor's home directory.
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: sleep infinity
+    init: true
+    volumes:
+      - vscode-server-data:/root/.vscode-server/data
+      - vscode-server-extensions:/root/.vscode-server/extensions
+
+volumes:
+  vscode-server-data:
+    name: skills-vscode-server-data
+  vscode-server-extensions:
+    name: skills-vscode-server-extensions

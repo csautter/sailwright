@@ -1,0 +1,7 @@
+# Copy to mounts.local (gitignored) to add personal bind mounts.
+# One "source:target[:ro]" per line. "~" is your home directory, relative
+# sources are relative to the repository root. Missing sources are skipped
+# with a warning. Rebuild the container to apply changes.
+#
+# ~/Projects/some-other-repo:/workspaces/some-other-repo
+# ~/datasets:/data:ro
