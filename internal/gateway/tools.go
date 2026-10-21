@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"runtime"
 	"strings"
 	"time"
@@ -331,12 +332,15 @@ func (g *Gateway) toolRunCLI(_ context.Context, req *mcp.CallToolRequest, in run
 	argv := append([]string(nil), in.Args...)
 	dir := g.dirs.Work
 	var snapshot *Snapshot
+	bundleRoot := ""
 	if in.BundleRoot != "" {
 		hostRoot, _, err := TranslateAgentPath(in.BundleRoot, g.cfg.AgentWorkspaces)
 		if err != nil {
 			return nil, JobView{}, err
 		}
-		created, err := CreateSnapshot(strings.TrimSuffix(in.BundleRoot, "/"), hostRoot, g.dirs.Staging, SnapshotLimits{MaxBytes: g.cfg.SnapshotMaxBytes, MaxFiles: g.cfg.SnapshotMaxFiles})
+		// Canonicalize once so snapshot, path rewrite and risk assessment agree.
+		bundleRoot = path.Clean(in.BundleRoot)
+		created, err := CreateSnapshot(bundleRoot, hostRoot, g.dirs.Staging, SnapshotLimits{MaxBytes: g.cfg.SnapshotMaxBytes, MaxFiles: g.cfg.SnapshotMaxFiles})
 		if err != nil {
 			return nil, JobView{}, fmt.Errorf("snapshot bundle_root: %w", err)
 		}
@@ -344,7 +348,7 @@ func (g *Gateway) toolRunCLI(_ context.Context, req *mcp.CallToolRequest, in run
 		argv = RewriteBundlePaths(argv, created)
 		dir = created.Dir
 	}
-	view, err := g.submitApprovalWithRisk("run_cli", argv, dir, snapshot, notSafe.Error(), in.Reason, AssessRisk(in.Args, strings.TrimSuffix(in.BundleRoot, "/")), becomeSupported(in.Args), req, params)
+	view, err := g.submitApprovalWithRisk("run_cli", argv, dir, snapshot, notSafe.Error(), in.Reason, AssessRisk(in.Args, bundleRoot), becomeSupported(in.Args), req, params)
 	if err != nil && snapshot != nil {
 		_ = RemoveSnapshot(snapshot.Dir)
 	}

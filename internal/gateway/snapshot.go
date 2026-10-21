@@ -56,7 +56,21 @@ func TranslateAgentPath(agentPath string, workspaces []WorkspaceMapping) (string
 	if rel == ".." || strings.HasPrefix(rel, "../") {
 		return "", WorkspaceMapping{}, fmt.Errorf("bundle_root %q escapes the agent workspace", agentPath)
 	}
-	return filepath.Join(best.Host, filepath.FromSlash(rel)), best, nil
+	hostRoot := filepath.Join(best.Host, filepath.FromSlash(rel))
+	// The agent controls symlinks below the workspace, and os.Root only confines paths
+	// below its root, so resolve the root itself and require it to stay in the workspace.
+	base, err := filepath.EvalSymlinks(best.Host)
+	if err != nil {
+		return "", WorkspaceMapping{}, fmt.Errorf("resolve agent workspace %q: %w", best.Agent, err)
+	}
+	resolved, err := filepath.EvalSymlinks(hostRoot)
+	if err != nil {
+		return "", WorkspaceMapping{}, fmt.Errorf("resolve bundle_root %q: %w", agentPath, err)
+	}
+	if !isWithin(base, resolved) {
+		return "", WorkspaceMapping{}, fmt.Errorf("bundle_root %q resolves outside the agent workspace", agentPath)
+	}
+	return resolved, best, nil
 }
 
 // CreateSnapshot copies hostRoot into a new directory below stagingRoot. Files are

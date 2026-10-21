@@ -329,6 +329,32 @@ func TestGatewayRunsApprovedBundleFromSnapshot(t *testing.T) {
 	}
 }
 
+func TestGatewayRewritesPathsForUncleanBundleRoot(t *testing.T) {
+	h := gatewaytest.Start(t, gatewaytest.Options{Approvals: true})
+	session := h.Connect(t)
+
+	if err := os.MkdirAll(filepath.Join(h.WorkspaceHost, "ansible"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.WorkspaceHost, "ansible", "site.yml"), []byte("original playbook"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanRoot := gatewaytest.AgentWorkspace + "/ansible"
+	for _, root := range []string{gatewaytest.AgentWorkspace + "/./ansible", gatewaytest.AgentWorkspace + "//ansible/", cleanRoot + "/"} {
+		var view gateway.JobView
+		mustCall(t, session, "run_cli", map[string]any{
+			"args":        []string{"provision", "ubuntu", "--playbook", cleanRoot + "/site.yml"},
+			"bundle_root": root,
+		}, &view)
+		if view.Snapshot == nil || strings.Contains(strings.Join(view.Argv, " "), cleanRoot) {
+			t.Fatalf("bundle_root %q: path was not rewritten to the snapshot: %+v", root, view)
+		}
+		h.Deny(t, view.ID)
+		waitJob(t, session, view.ID)
+	}
+}
+
 func TestGatewayRedactsSecretsInOutputAndAudit(t *testing.T) {
 	h := gatewaytest.Start(t, gatewaytest.Options{Approvals: true})
 	session := h.Connect(t)

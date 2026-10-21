@@ -23,7 +23,15 @@ func defaultLimits() SnapshotLimits {
 }
 
 func TestTranslateAgentPath(t *testing.T) {
-	host := t.TempDir()
+	host, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"ansible", filepath.Join("other", "x")} {
+		if err := os.MkdirAll(filepath.Join(host, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	workspaces := []WorkspaceMapping{{Agent: "/workspaces/repo", Host: host}, {Agent: "/workspaces/repo/nested", Host: filepath.Join(host, "other")}}
 
 	got, _, err := TranslateAgentPath("/workspaces/repo/ansible/", workspaces)
@@ -38,6 +46,19 @@ func TestTranslateAgentPath(t *testing.T) {
 		if got, _, err := TranslateAgentPath(bad, workspaces); err == nil {
 			t.Fatalf("expected %q to be rejected, got %q", bad, got)
 		}
+	}
+}
+
+func TestTranslateAgentPathRejectsSymlinkedRoot(t *testing.T) {
+	host := t.TempDir()
+	outside := t.TempDir()
+	writeFile(t, filepath.Join(outside, "secret"), "x")
+	if err := os.Symlink(outside, filepath.Join(host, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	workspaces := []WorkspaceMapping{{Agent: "/workspaces/repo", Host: host}}
+	if got, _, err := TranslateAgentPath("/workspaces/repo/link", workspaces); err == nil {
+		t.Fatalf("expected symlinked bundle_root to be rejected, got %q", got)
 	}
 }
 
