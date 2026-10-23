@@ -27,6 +27,7 @@ iso_dir="$cache_dir/windows11/iso"
 autounattend_xml_path="$SCRIPT_DIR/../../build/packer/windows/qemu-arm64/autounattend.xml"
 windows_source_iso_path="$iso_dir/win11_english_arm64.iso"
 windows_target_iso_path="$iso_dir/Win11_ARM64_Unattended.iso"
+# One-time rename of the pre-versioning file name; mirrors migrateLegacyWindows11ISO in pkg/build/win11iso.go.
 legacy_windows_source_iso_path="$iso_dir/win11_25h2_english_arm64.iso"
 if [[ ! -f "$windows_source_iso_path" && -f "$legacy_windows_source_iso_path" ]]; then
   echo "Renaming legacy Windows 11 ISO $legacy_windows_source_iso_path to $windows_source_iso_path"

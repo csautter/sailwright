@@ -163,6 +163,7 @@ func (e matrixEntry) arch() string {
 type cacheEntry struct {
 	LocalPath string `json:"local-path"`
 	Manifest  string `json:"manifest"`
+	BlobName  string `json:"blob-name"`
 }
 
 // cacheEntries returns the descriptors from the entry's cache_files JSON list.

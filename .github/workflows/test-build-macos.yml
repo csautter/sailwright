@@ -38,7 +38,7 @@ jobs:
     runs-on: ${{ vars.USE_TART_MACOS_RUNNERS == 'true' && matrix.tart_runs_on || matrix.runs_on }}
     env:
       # Build jobs resolve the Windows 11 ISO through the cache manifest and never contact Microsoft.
-      DEV_ALCHEMY_WIN11_ISO_OFFLINE: "1"
+      SAILWRIGHT_WIN11_ISO_OFFLINE: "1"
       DEV_ALCHEMY_APP_DATA_DIR: ${{ github.workspace }}/.dev-alchemy
       DEV_ALCHEMY_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/cache
       DEV_ALCHEMY_VAGRANT_DIR: ${{ github.workspace }}/.dev-alchemy/.vagrant
@@ -58,7 +58,7 @@ jobs:
             packer_start_only: "false"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_arm64.iso","manifest":"windows11/iso/win11-arm64.json"},
+              [{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_arm64.iso","manifest":"windows11/iso/win11-arm64.json","blob-name":"win11_25h2_english_arm64.iso"},
                {"local-path":"./.dev-alchemy/cache/utm/utm-guest-tools-latest.iso"},
                {"local-path":"./.dev-alchemy/cache/windows/virtio-win.iso"},
                {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_all.deb"}]
@@ -70,7 +70,7 @@ jobs:
             packer_start_only: "false"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_amd64.iso","manifest":"windows11/iso/win11-amd64.json"},
+              [{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_amd64.iso","manifest":"windows11/iso/win11-amd64.json","blob-name":"win11_25h2_english_amd64.iso"},
                {"local-path":"./.dev-alchemy/cache/utm/utm-guest-tools-latest.iso"}]
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuServerArm64OnMacos

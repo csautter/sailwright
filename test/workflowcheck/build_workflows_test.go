@@ -153,6 +153,9 @@ func assertWindowsISOResolvedViaManifest(t *testing.T, jobID string, entry matri
 	testName, arch := entry["go_test_name"], entry.arch()
 	isoPath := "./.dev-alchemy/cache/windows11/iso/win11_english_" + arch + ".iso"
 	wantManifest := "windows11/iso/win11-" + arch + ".json"
+	// Fallback while the manifests are being adopted; remove with the legacy objects
+	// (docs/windows-iso-cache.md, "Migration from the flat cache").
+	wantLegacyBlob := "win11_25h2_english_" + arch + ".iso"
 
 	found := false
 	for _, cached := range entry.cacheEntries(t) {
@@ -163,13 +166,16 @@ func assertWindowsISOResolvedViaManifest(t *testing.T, jobID string, entry matri
 		if cached.Manifest != wantManifest {
 			t.Errorf("job %q matrix entry %s must resolve %s via manifest %q, got %q", jobID, testName, isoPath, wantManifest, cached.Manifest)
 		}
+		if cached.BlobName != wantLegacyBlob {
+			t.Errorf("job %q matrix entry %s must fall back to the legacy object %q, got %q", jobID, testName, wantLegacyBlob, cached.BlobName)
+		}
 	}
 	if !found {
 		t.Errorf("job %q matrix entry %s does not cache %s", jobID, testName, isoPath)
 	}
 
-	if j.Env["DEV_ALCHEMY_WIN11_ISO_OFFLINE"] != "1" {
-		t.Errorf("job %q must set DEV_ALCHEMY_WIN11_ISO_OFFLINE=1 so Windows 11 builds never contact Microsoft", jobID)
+	if j.Env["SAILWRIGHT_WIN11_ISO_OFFLINE"] != "1" {
+		t.Errorf("job %q must set SAILWRIGHT_WIN11_ISO_OFFLINE=1 so Windows 11 builds never contact Microsoft", jobID)
 	}
 }
 
