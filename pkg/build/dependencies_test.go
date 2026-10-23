@@ -351,6 +351,38 @@ func TestSelectFastestDownloadURL(t *testing.T) {
 	}
 }
 
+func TestSelectFastestDownloadURLAcceptsPartialProbeAtDeadline(t *testing.T) {
+	trickle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("partial"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer trickle.Close()
+
+	trickleURL := trickle.URL + "/artifact.iso"
+	selected, err := selectFastestDownloadURL([]string{trickleURL}, 1024, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected a probe that read bytes before the deadline to count: %v", err)
+	}
+	if selected != trickleURL {
+		t.Fatalf("selected URL mismatch: got %s want %s", selected, trickleURL)
+	}
+}
+
+func TestSelectFastestDownloadURLOrDefaultFallsBackWhenAllProbesFail(t *testing.T) {
+	hanging := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer hanging.Close()
+
+	primary := hanging.URL + "/primary.iso"
+	mirror := hanging.URL + "/mirror.iso"
+	selected := selectFastestDownloadURLOrDefault([]string{primary, mirror}, 1024, 100*time.Millisecond)
+	if selected != primary {
+		t.Fatalf("expected the first URL when every probe fails: got %s want %s", selected, primary)
+	}
+}
+
 func TestDownloadWebFileDependencySelectsFastestURL(t *testing.T) {
 	expected := bytes.Repeat([]byte("fast virtio payload"), 128)
 
