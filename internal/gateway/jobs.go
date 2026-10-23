@@ -52,6 +52,8 @@ type JobSpec struct {
 	RequiresFreeDisk bool
 	// Become lets the operator approve with a sudo password for Ansible become tasks.
 	Become bool
+	// BecomeWarning is shown with approve-sudo when the args can redirect the play.
+	BecomeWarning string
 	// Target is the VM of a safe-set operation; build jobs record console frames for it.
 	Target *JobTarget
 }
@@ -289,7 +291,7 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 		approval := m.approver.Request(ctx, ApprovalRequest{
 			ID: id, Tool: spec.Tool, Argv: m.redactor.Strings(spec.Argv), Dir: spec.Dir, Risk: spec.Risk,
 			Snapshot: spec.Snapshot, NotSafe: spec.NotSafe, AgentNote: spec.AgentNote, BinarySHA: m.binarySHA,
-			Become: spec.Become,
+			Become: spec.Become, BecomeWarning: spec.BecomeWarning,
 		})
 		decision := approval.Decision
 		m.record(AuditEvent{Event: "approval_decision", Tool: spec.Tool, JobID: id, Decision: string(decision), Argv: spec.Argv, Snapshot: spec.Snapshot, SudoPassword: approval.BecomePassword != ""})

@@ -295,8 +295,12 @@ Type "approve 3f2a9c1d" or "deny 3f2a9c1d" and press Enter.
   ansible-core 2.12 or newer), and deletes the file when the job ends. The
   password is redacted from output, logs and the audit log; the agent only
   sees `"sudo_password": true` on the job. Plain `approve` runs without a
-  password, which works if no role needs `become`. On Windows, local
-  provisioning uses a temporary administrator account instead of sudo.
+  password, which works if no role needs `become`. When the request sets
+  `--inventory-path` or passes Ansible arguments after `--`, the prompt shows a
+  `WARNING:` line: both can point the `local` play at another host (for example
+  `-i`, `--inventory-file` or `-e ansible_host=...`), which would then receive
+  your password. Check the command before using `approve-sudo`. On Windows,
+  local provisioning uses a temporary administrator account instead of sudo.
 - Building, creating, starting and provisioning VMs never needs sudo on the
   host. On Linux, do the one-time setup yourself in a normal terminal
   (`sailwright install`, membership in the `libvirt` and `kvm` groups, the

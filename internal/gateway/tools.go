@@ -485,6 +485,10 @@ func (g *Gateway) submitApproval(tool string, argv []string, dir string, snapsho
 }
 
 func (g *Gateway) submitApprovalWithRisk(tool string, argv []string, dir string, snapshot *Snapshot, notSafe string, note string, risk []string, become bool, req *mcp.CallToolRequest, params map[string]any) (JobView, error) {
+	becomeWarning := ""
+	if become {
+		becomeWarning = becomeRedirectWarning(argv)
+	}
 	return g.jobs.Submit(JobSpec{
 		Tool:          tool,
 		Tier:          tierApproval,
@@ -499,6 +503,7 @@ func (g *Gateway) submitApprovalWithRisk(tool string, argv []string, dir string,
 		NotSafe:       notSafe,
 		AgentNote:     truncate(note, maxAgentNoteLength),
 		Become:        become,
+		BecomeWarning: becomeWarning,
 	})
 }
 
@@ -508,13 +513,6 @@ func (g *Gateway) submitApprovalWithRisk(tool string, argv []string, dir string,
 func becomeSupported(args []string) bool {
 	if runtime.GOOS == "windows" || len(args) < 2 || args[0] != "provision" {
 		return false
-	}
-	for _, arg := range args[1:] {
-		if arg == "-i" || arg == "--inventory" || arg == "--inventory-path" || strings.HasPrefix(arg, "--inventory-path=") || strings.HasPrefix(arg, "--inventory=") {
-			// A custom inventory can point "local" at a remote host, so the sudo
-			// password must not be offered.
-			return false
-		}
 	}
 	for i, arg := range args {
 		if i == 0 {
@@ -528,6 +526,31 @@ func becomeSupported(args []string) bool {
 		}
 	}
 	return false
+}
+
+// becomeRedirectWarning explains why the sudo password of a become request may leave
+// this host, or returns "". A custom inventory can point "local" at another host, and
+// passthrough args reach ansible-playbook, where -i, --inventory-file or
+// -e ansible_host=... do the same. Ansible accepts too many spellings to filter
+// reliably, so the operator decides with this warning in the prompt.
+func becomeRedirectWarning(args []string) string {
+	var reasons []string
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if arg == "--inventory-path" || strings.HasPrefix(arg, "--inventory-path=") {
+			reasons = append(reasons, "--inventory-path")
+			break
+		}
+	}
+	if containsString(args, "--") {
+		reasons = append(reasons, "Ansible args after --")
+	}
+	if len(reasons) == 0 {
+		return ""
+	}
+	return strings.Join(reasons, " and ") + " can point the play at another host, which would then receive the sudo password"
 }
 
 func validateRawArgs(args []string) error {

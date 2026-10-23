@@ -90,9 +90,10 @@ func TestBecomeSupported(t *testing.T) {
 		"install":                                 false,
 		"provision -- local":                      false,
 		"provision --playbook /x/site.yml local":  want,
-		"provision --inventory-path=/x/inv local": false,
-		"provision --inventory-path /x/inv local": false,
-		"provision local -- -i /x/inv":            false,
+		"provision --inventory-path=/x/inv local": want,
+		"provision --inventory-path /x/inv local": want,
+		"provision local -- -i/x/inv":             want,
+		"provision local -- --tags base":          want,
 		"provision --playbook /x/local ubuntu":    false,
 		"build local":                             false,
 		"provision":                               false,
@@ -101,6 +102,34 @@ func TestBecomeSupported(t *testing.T) {
 		if got := becomeSupported(strings.Fields(args)); got != expected {
 			t.Fatalf("becomeSupported(%q) = %v, want %v", args, got, expected)
 		}
+	}
+}
+
+func TestBecomeRedirectWarning(t *testing.T) {
+	cases := map[string]string{
+		"provision local --check":                                                "",
+		"provision --playbook /x/site.yml local":                                 "",
+		"provision --inventory-path=/x/inv local":                                "--inventory-path can",
+		"provision --inventory-path /x/inv local":                                "--inventory-path can",
+		"provision local -- -i/x/inv":                                            "Ansible args after -- can",
+		"provision local -- --inventory-file /x/inv":                             "Ansible args after -- can",
+		"provision local -- -e ansible_host=evil.example ansible_connection=ssh": "Ansible args after -- can",
+		"provision local --inventory-path /x/inv -- --tags base":                 "--inventory-path and Ansible args after -- can",
+	}
+	for args, want := range cases {
+		got := becomeRedirectWarning(strings.Fields(args))
+		if (want == "") != (got == "") || !strings.HasPrefix(got, want) {
+			t.Fatalf("becomeRedirectWarning(%q) = %q, want prefix %q", args, got, want)
+		}
+	}
+}
+
+func TestApprovalPromptShowsBecomeWarning(t *testing.T) {
+	out := &syncBuffer{}
+	approver := NewConsoleApprover(bufio.NewReader(strings.NewReader("deny job1\n")), out, time.Minute)
+	approver.Request(context.Background(), ApprovalRequest{ID: "job1", Become: true, BecomeWarning: "Ansible args after -- can point the play at another host"})
+	if !strings.Contains(out.String(), "WARNING:   Ansible args after -- can point the play at another host") || !strings.Contains(out.String(), `"approve-sudo job1"`) {
+		t.Fatalf("the prompt must offer approve-sudo with the warning:\n%s", out.String())
 	}
 }
 

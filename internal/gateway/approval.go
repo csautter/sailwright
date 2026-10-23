@@ -37,6 +37,8 @@ type ApprovalRequest struct {
 	// Become offers "approve-sudo": the operator also enters the sudo password that
 	// Ansible needs for become tasks on this host.
 	Become bool
+	// BecomeWarning, if set, says why the sudo password may reach another host.
+	BecomeWarning string
 }
 
 // Approval is the operator's answer. BecomePassword is only set for approve-sudo and
@@ -196,6 +198,9 @@ func (a *ConsoleApprover) printRequest(req ApprovalRequest, expires time.Time) {
 	if req.Become {
 		fmt.Fprintf(&b, "sudo:      roles with become need your sudo password; \"approve-sudo %s\" asks for it\n", req.ID)
 		fmt.Fprintf(&b, "           (hidden input, used only for this run, never shown to the agent)\n")
+		if req.BecomeWarning != "" {
+			fmt.Fprintf(&b, "WARNING:   %s; check the command before approve-sudo\n", sanitizeForTerminal(req.BecomeWarning))
+		}
 		fmt.Fprintf(&b, "Type \"approve-sudo %s\", \"approve %s\" or \"deny %s\" and press Enter.\n", req.ID, req.ID, req.ID)
 	} else {
 		fmt.Fprintf(&b, "Type \"approve %s\" or \"deny %s\" and press Enter.\n", req.ID, req.ID)
