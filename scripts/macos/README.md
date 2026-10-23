@@ -49,6 +49,8 @@ Set `DEV_ALCHEMY_APP_DATA_DIR` to move the managed cache elsewhere.
 If Microsoft serves a slow, blocked, or challenge page, the script now retries the initial navigation and writes a screenshot, HTML snapshot, and JSON metadata bundle under `playwright-diagnostics/` before failing.
 
 ### Download the ISO
+CI does not use this path; it resolves ISOs through the versioned cache described in [docs/windows-iso-cache.md](../../docs/windows-iso-cache.md).
+
 You can use `curl` or `wget` to download the ISO using the link saved in the file:
 ```bash
 APP_DATA_DIR="${DEV_ALCHEMY_APP_DATA_DIR:-$HOME/Library/Application Support/dev-alchemy}"
