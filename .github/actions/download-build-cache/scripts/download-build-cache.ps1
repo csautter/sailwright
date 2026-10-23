@@ -364,6 +364,7 @@ function Download-ManifestEntry {
     Write-Host "  [download] Downloading $script:FtpBaseDirNormalized/$objectKey..."
     if (-not (Test-FtpObject -Url $url)) {
         Write-Host "  [miss] Manifest $ManifestKey references missing FTP object $script:FtpBaseDirNormalized/$objectKey; legacy fallback is disabled."
+        Write-Host "::error title=Build cache::Manifest $ManifestKey references missing FTP object $script:FtpBaseDirNormalized/$objectKey; run 'Refresh Windows 11 ISO' to repair missing objects."
         return 'object-missing'
     }
 

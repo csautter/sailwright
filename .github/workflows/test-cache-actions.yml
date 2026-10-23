@@ -306,7 +306,8 @@ jobs:
             if [ "$legacy_cache" = present ]; then printf 'legacy-iso' > "$local_cache/legacy.iso"; fi
             printf 'stale-iso' > "$broken_target"
             run_download "$broken_entry" > "$root/broken.out"
-            grep -F "references missing FTP object" "$root/broken.out" >/dev/null
+            grep -F "::error title=Build cache::Manifest windows11/iso/broken.json references missing FTP object" "$root/broken.out" >/dev/null
+            grep -F "run 'Refresh Windows 11 ISO' to repair missing objects" "$root/broken.out" >/dev/null
             test ! -e "$broken_target"
             test ! -e "$broken_target.json"
             if grep -F "Falling back" "$root/broken.out"; then exit 1; fi
@@ -580,7 +581,7 @@ jobs:
                   if ($legacyCache) { Set-Content -Path (Join-Path $localCache 'legacy.iso') -Value 'legacy-iso' -NoNewline }
                   Set-Content -Path $brokenTarget -Value 'stale-iso' -NoNewline
                   $brokenOutput = Invoke-CacheScript -Script $downloadScript -Files $brokenEntry 6>&1 | Out-String
-                  if ($brokenOutput -notmatch 'references missing FTP object' -or $brokenOutput -match 'Falling back') { throw "Unexpected resolution: $brokenOutput" }
+                  if ($brokenOutput -notmatch '::error title=Build cache::Manifest windows11/iso/broken.json references missing FTP object' -or $brokenOutput -notmatch "run 'Refresh Windows 11 ISO' to repair missing objects" -or $brokenOutput -match 'Falling back') { throw "Unexpected resolution: $brokenOutput" }
                   if ((Test-Path $brokenTarget) -or (Test-Path "$brokenTarget.json")) { throw 'Broken manifest must leave no usable ISO.' }
               }
 

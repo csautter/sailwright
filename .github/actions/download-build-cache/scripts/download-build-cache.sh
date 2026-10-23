@@ -323,6 +323,7 @@ print(m["sha256"])
   if ! ftp_object_exists "$object_url"; then
     rm -f "$manifest_tmp"
     echo "  ✗ Manifest $manifest_key references missing FTP object $FTP_BASE_DIR_NORMALIZED/$object_key; legacy fallback is disabled."
+    echo "::error title=Build cache::Manifest $manifest_key references missing FTP object $FTP_BASE_DIR_NORMALIZED/$object_key; run 'Refresh Windows 11 ISO' to repair missing objects."
     MANIFEST_RESULT='object-missing'
     return 0
   fi
