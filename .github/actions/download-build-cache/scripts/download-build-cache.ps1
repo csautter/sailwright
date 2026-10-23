@@ -260,6 +260,107 @@ function Download-FromAzure {
     }
 }
 
+function Get-ManifestObject {
+    # Returns the parsed manifest, $null when it does not exist on the remote.
+    param([Parameter(Mandatory = $true)][string]$ManifestKey)
+
+    Initialize-Ftp
+    $url = Get-FtpRemoteUrl $ManifestKey
+    if (-not (Test-FtpObject -Url $url)) {
+        return $null
+    }
+
+    $tmp = [System.IO.Path]::GetTempFileName()
+    try {
+        $curlArgs = $script:FtpCurlCommonArgs + @('--output', $tmp, $url)
+        Invoke-FtpCurl -Arguments $curlArgs | Out-Null
+        $raw = Get-Content -Path $tmp -Raw
+        $manifest = $raw | ConvertFrom-Json
+        if (-not $manifest.object -or -not $manifest.sha256) {
+            Write-Fail "Manifest $ManifestKey is not valid."
+        }
+        return [pscustomobject]@{ Manifest = $manifest; Raw = $raw }
+    } finally {
+        Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Download-ManifestEntry {
+    # Resolves a "manifest" descriptor to a versioned object, verifies its sha256 and writes a sidecar JSON.
+    param(
+        [Parameter(Mandatory = $true)][string]$LocalPath,
+        [Parameter(Mandatory = $true)][string]$ManifestKey
+    )
+
+    if ($cacheBackend -ne 'ftp' -and $cacheBackend -ne 'ftps') {
+        Write-Fail "Manifest cache entries are only supported with the ftp backend (got '$cacheBackend')."
+    }
+
+    $sidecar = "$LocalPath.json"
+    $resolved = Get-ManifestObject -ManifestKey $ManifestKey
+    if (-not $resolved) {
+        Write-Host "  [miss] Manifest $script:FtpBaseDirNormalized/$ManifestKey not found."
+        return
+    }
+    $object = $resolved.Manifest.object
+    $sha256 = $resolved.Manifest.sha256
+    Write-Host "  [ok] Manifest points to $object."
+
+    # Skip when the workspace already holds this exact object.
+    if ((Test-Path $LocalPath) -and (Test-Path $sidecar -PathType Leaf)) {
+        $current = (Get-Content -Path $sidecar -Raw | ConvertFrom-Json).object
+        if ($current -eq $object) {
+            Write-Host "  [ok] Already present at $LocalPath and matches the manifest - skipping."
+            return
+        }
+    }
+    if (Test-Path $LocalPath) {
+        Write-Host "  [cache] Existing $LocalPath is stale or unverified; replacing it."
+        Remove-Item -Path $LocalPath, $sidecar -Force -ErrorAction SilentlyContinue
+    }
+
+    $dir = Split-Path -Path $LocalPath -Parent
+    if ($dir -and -not (Test-Path $dir -PathType Container)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+
+    # Local runner cache is keyed by the versioned object name.
+    if ($localCacheDir -and (Test-Path $localCacheDir -PathType Container)) {
+        $cached = Join-Path $localCacheDir $object
+        if (Test-Path $cached -PathType Leaf) {
+            Write-Host "  [ok] Found $object in local runner cache - copying."
+            Copy-Item -Path $cached -Destination $LocalPath -Force
+            Set-Content -Path $sidecar -Value $resolved.Raw -NoNewline
+            return
+        }
+    }
+
+    $objectKey = '{0}/{1}' -f (($ManifestKey -replace '/[^/]*$', '')), $object
+    $url = Get-FtpRemoteUrl $objectKey
+    Write-Host "  [download] Downloading $script:FtpBaseDirNormalized/$objectKey..."
+    if (-not (Test-FtpObject -Url $url)) {
+        Write-Host "  [miss] FTP object $script:FtpBaseDirNormalized/$objectKey not found."
+        return
+    }
+
+    $tmpPath = "$LocalPath.part"
+    if (Test-Path $tmpPath -PathType Leaf) {
+        Remove-Item -Path $tmpPath -Force
+    }
+    $curlArgs = $script:FtpCurlTransferArgs + @('--location', '--output', $tmpPath, $url)
+    Invoke-FtpCurl -Arguments $curlArgs | Out-Null
+
+    $actual = (Get-FileHash -Path $tmpPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $sha256.ToLowerInvariant()) {
+        Remove-Item -Path $tmpPath -Force
+        Write-Fail "sha256 mismatch for ${object}: expected $sha256, got $actual. Deleted download."
+    }
+    Move-Item -Path $tmpPath -Destination $LocalPath -Force
+    Set-Content -Path $sidecar -Value $resolved.Raw -NoNewline
+    Write-Host "  [ok] Downloaded $object -> $LocalPath (sha256 verified)."
+    Save-ToLocalCache -LocalPath $LocalPath -BlobName $object
+}
+
 foreach ($f in $files) {
     $localPath = $f.'local-path'
     $blobName  = $f.'blob-name'
@@ -268,6 +369,12 @@ foreach ($f in $files) {
     if (-not $container) { $container = "build-cache" }
 
     Write-Host "=== Build cache: $localPath [object=$blobName container=$container backend=$cacheBackend] ==="
+
+    # 0. Manifest-resolved entries (versioned objects behind a pointer file)
+    if ($null -ne $f.PSObject.Properties['manifest'] -and $f.'manifest') {
+        Download-ManifestEntry -LocalPath $localPath -ManifestKey $f.'manifest'
+        continue
+    }
 
     # 1. Already present in workspace -> nothing to do
     if (Test-Path $localPath) {

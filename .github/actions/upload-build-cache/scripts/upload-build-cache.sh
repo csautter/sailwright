@@ -228,13 +228,19 @@ for f in data:
     print(f.get('blob-name', ''))
     print(f.get('container', 'build-cache'))
     print(str(f.get('overwrite', False)).lower())
-" | while IFS= read -r local_path && IFS= read -r blob_name && IFS= read -r container && IFS= read -r overwrite; do
+    print(f.get('manifest', ''))
+" | while IFS= read -r local_path && IFS= read -r blob_name && IFS= read -r container && IFS= read -r overwrite && IFS= read -r manifest; do
   [ -z "$local_path" ] && continue
   [ -z "$blob_name" ] && blob_name=$(basename "$local_path")
   [ -z "$container" ] && container="build-cache"
   [ -z "$overwrite" ] && overwrite=false
 
   echo "=== Build cache upload: $local_path [object=$blob_name container=$container overwrite=$overwrite backend=$CACHE_BACKEND] ==="
+
+  if [ -n "$manifest" ]; then
+    echo "  ✓ Entry is resolved via manifest '$manifest' — managed by refresh workflow, skipping upload."
+    continue
+  fi
 
   # Resolve symlinks so we operate on the real bytes
   real_path="$local_path"
