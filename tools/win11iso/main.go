@@ -16,27 +16,35 @@ import (
 	"github.com/csautter/dev-alchemy/pkg/build"
 )
 
+// Network calls, replaced in tests.
+var (
+	resolveWin11Link = build.ResolveWindows11Link
+	probeWin11ISO    = build.ProbeWin11ISO
+)
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
-	var err error
+	// cmd is a literal, not os.Args[1], so the log line cannot carry arbitrary input.
+	var cmd string
+	var run func([]string, io.Writer, time.Time) error
 	switch os.Args[1] {
 	case "check":
-		err = runCheck(os.Args[2:], os.Stdout, time.Now())
+		cmd, run = "check", runCheck
 	case "resolve":
-		err = runResolve(os.Args[2:], os.Stdout, time.Now())
+		cmd, run = "resolve", runResolve
 	case "fetch":
-		err = runFetch(os.Args[2:], os.Stdout, time.Now())
+		cmd, run = "fetch", runFetch
 	case "publish":
-		err = runPublish(os.Args[2:], os.Stdout, time.Now())
+		cmd, run = "publish", runPublish
 	default:
 		usage()
 		os.Exit(2)
 	}
-	if err != nil {
-		log.Fatalf("win11iso %s: %v", os.Args[1], err)
+	if err := run(os.Args[2:], os.Stdout, time.Now()); err != nil {
+		log.Fatalf("win11iso %s: %v", cmd, err)
 	}
 }
 
@@ -78,7 +86,7 @@ func runCheck(args []string, out io.Writer, now time.Time) error {
 		latest = ""
 	}
 	due, reason := build.Win11RefreshDue(m, now, latest, *force)
-	emit(out, "due", fmt.Sprint(due), "reason", reason)
+	emit(out, "due", fmt.Sprint(due), "reason", reason, "latest_release", latest)
 	return nil
 }
 
@@ -86,6 +94,7 @@ func runResolve(args []string, out io.Writer, now time.Time) error {
 	fs := flag.NewFlagSet("resolve", flag.ContinueOnError)
 	arch := fs.String("arch", "", "amd64 or arm64")
 	manifestPath := fs.String("manifest", "", "local manifest file (may not exist)")
+	announced := fs.String("announced-release", "", "latest_release printed by check; recorded when the ISO is unchanged")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -97,7 +106,7 @@ func runResolve(args []string, out io.Writer, now time.Time) error {
 		return err
 	}
 
-	info, err := build.ResolveWindows11Link(*arch)
+	info, err := resolveWin11Link(*arch)
 	if errors.Is(err, build.ErrMicrosoftRefused) {
 		log.Printf("Microsoft refused the request: %v", err)
 		emit(out, "outcome", "refused")
@@ -107,18 +116,16 @@ func runResolve(args []string, out io.Writer, now time.Time) error {
 		return err
 	}
 
-	if m != nil && m.SourceName == info.SourceName {
-		size, headErr := build.ProbeWin11ISO(info.URL)
-		if headErr != nil {
-			log.Printf("HEAD request failed, treating the ISO as new: %v", headErr)
-		} else if size == m.Size {
-			m.CheckedAt = now.UTC().Format(time.RFC3339)
-			if err := m.Save(*manifestPath); err != nil {
-				return err
-			}
-			emit(out, "outcome", "unchanged", "source_name", info.SourceName)
-			return nil
+	if m != nil && unchangedISO(m, info) {
+		m.CheckedAt = now.UTC().Format(time.RFC3339)
+		if *announced != "" {
+			m.AnnouncedRelease = *announced
 		}
+		if err := m.Save(*manifestPath); err != nil {
+			return err
+		}
+		emit(out, "outcome", "unchanged", "source_name", info.SourceName, "object", m.Object)
+		return nil
 	}
 
 	emit(out, "outcome", "new",
@@ -129,6 +136,24 @@ func runResolve(args []string, out io.Writer, now time.Time) error {
 	return nil
 }
 
+// unchangedISO reports whether the resolved link serves the ISO the manifest already points to.
+// Microsoft's published sha256 is decisive when available; otherwise the file name and size must match.
+// When the size cannot be probed, the ISO is downloaded and writeManifest dedupes it by sha256.
+func unchangedISO(m *build.Win11Manifest, info *build.Win11LinkInfo) bool {
+	if info.SHA256 != "" {
+		return strings.EqualFold(info.SHA256, m.SHA256)
+	}
+	if m.SourceName != info.SourceName {
+		return false
+	}
+	size, err := probeWin11ISO(info.URL)
+	if err != nil {
+		log.Printf("Size probe failed; downloading to compare sha256: %v", err)
+		return false
+	}
+	return size == m.Size
+}
+
 func runFetch(args []string, out io.Writer, now time.Time) error {
 	fs := flag.NewFlagSet("fetch", flag.ContinueOnError)
 	arch := fs.String("arch", "", "amd64 or arm64")
@@ -137,6 +162,7 @@ func runFetch(args []string, out io.Writer, now time.Time) error {
 	manifestPath := fs.String("manifest", "", "local manifest file (updated)")
 	sourceName := fs.String("source-name", "", "Microsoft's file name, e.g. Win11_25H2_English_x64.iso")
 	sha := fs.String("sha256", "", "expected sha256 (optional)")
+	announced := fs.String("announced-release", "", "latest_release printed by check")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -151,7 +177,7 @@ func runFetch(args []string, out io.Writer, now time.Time) error {
 	if err := build.DownloadWin11ISO(*url, local, strings.ToLower(*sha)); err != nil {
 		return err
 	}
-	return writeManifest(out, *arch, *manifestPath, *sourceName, object, local, now)
+	return writeManifest(out, *arch, *manifestPath, *sourceName, object, local, *announced, now)
 }
 
 func runPublish(args []string, out io.Writer, now time.Time) error {
@@ -160,7 +186,7 @@ func runPublish(args []string, out io.Writer, now time.Time) error {
 	iso := fs.String("iso", "", "ISO file downloaded manually")
 	sourceName := fs.String("source-name", "", "Microsoft's file name, e.g. Win11_25H2_English_x64.iso")
 	manifestPath := fs.String("manifest", "", "local manifest file (updated)")
-	epoch := fs.Bool("epoch-checked-at", false, "set checked_at to the Unix epoch so the next scheduled run checks Microsoft")
+	markDue := fs.Bool("mark-due", false, "backdate checked_at so the next scheduled run checks Microsoft")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -171,22 +197,30 @@ func runPublish(args []string, out io.Writer, now time.Time) error {
 		return errors.New("--iso, --source-name and --manifest are required")
 	}
 	object := build.Win11ObjectName(*sourceName, now)
-	if err := writeManifest(out, *arch, *manifestPath, *sourceName, object, *iso, now); err != nil {
+	if err := writeManifest(out, *arch, *manifestPath, *sourceName, object, *iso, "", now); err != nil {
 		return err
 	}
-	if *epoch {
+	if *markDue {
 		m, err := build.LoadWin11Manifest(*manifestPath)
 		if err != nil {
 			return err
 		}
-		m.CheckedAt = time.Unix(0, 0).UTC().Format(time.RFC3339)
+		m.MarkRefreshDue(now)
 		return m.Save(*manifestPath)
 	}
 	return nil
 }
 
-// writeManifest hashes the ISO, promotes it in the manifest and prints the outputs.
-func writeManifest(out io.Writer, arch, manifestPath, sourceName, object, local string, now time.Time) error {
+// writeManifest hashes the ISO, promotes it in the manifest and prints the outputs:
+//   - object:     the object the manifest now points to
+//   - existing:   true when that object is already on the remote (listed in the manifest history
+//     with the same sha256), so it must not be uploaded again
+//   - unchanged:  true when the ISO is byte-identical to the current object; only checked_at changed
+//   - pruned:     objects that fell out of the retention window
+//
+// A history entry with the same object name but different bytes (same-day re-publish of changed
+// media) is an error: the immutable object must never be replaced.
+func writeManifest(out io.Writer, arch, manifestPath, sourceName, object, local, announced string, now time.Time) error {
 	sum, size, err := build.HashFile(local)
 	if err != nil {
 		return err
@@ -199,14 +233,41 @@ func writeManifest(out io.Writer, arch, manifestPath, sourceName, object, local 
 		m = &build.Win11Manifest{}
 	}
 	m.Arch = arch
-	pruned := m.Promote(build.Win11HistoryEntry{
-		Object:      object,
-		SHA256:      sum,
-		PublishedAt: now.UTC().Format(time.RFC3339),
-	}, sourceName, size, now)
+	if announced != "" {
+		m.AnnouncedRelease = announced
+	}
+
+	entry := build.Win11HistoryEntry{Object: object, SHA256: sum, PublishedAt: now.UTC().Format(time.RFC3339)}
+	existing := false
+	for _, h := range m.History {
+		if h.SHA256 == sum {
+			// Same bytes as an already published object: reuse it instead of storing a duplicate.
+			entry, existing = h, true
+			break
+		}
+		if h.Object == object {
+			return fmt.Errorf("object %s is already published with sha256 %s, but %s has sha256 %s; retry tomorrow or publish under a different date", object, h.SHA256, local, sum)
+		}
+	}
+
+	unchanged := existing && entry.Object == m.Object
+	var pruned []string
+	if unchanged {
+		// Keep the name Microsoft serves these bytes under, so the next resolve compares like with like.
+		m.SourceName = sourceName
+		m.Release = build.ParseWin11Release(sourceName)
+		m.CheckedAt = now.UTC().Format(time.RFC3339)
+	} else {
+		pruned = m.Promote(entry, sourceName, size, now)
+	}
 	if err := m.Save(manifestPath); err != nil {
 		return err
 	}
-	emit(out, "object", object, "local_path", local, "pruned", strings.Join(pruned, " "))
+	emit(out,
+		"object", entry.Object,
+		"local_path", local,
+		"existing", fmt.Sprint(existing),
+		"unchanged", fmt.Sprint(unchanged),
+		"pruned", strings.Join(pruned, " "))
 	return nil
 }

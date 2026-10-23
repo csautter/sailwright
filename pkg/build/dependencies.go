@@ -685,6 +685,9 @@ func getWebFileDependencies() []WebFileDependency {
 			LocalPath: windows11ISOPath("amd64"),
 			Checksum:  "",
 			BeforeHook: func() (string, error) {
+				if err := migrateLegacyWindows11ISO("amd64"); err != nil {
+					return "", err
+				}
 				return getWindows11Download("amd64", windows11ISOPath("amd64"), false)
 			},
 			RelatedVmConfigs: []VirtualMachineConfig{
@@ -724,6 +727,9 @@ func getWebFileDependencies() []WebFileDependency {
 			LocalPath: windows11ISOPath("arm64"),
 			Checksum:  "",
 			BeforeHook: func() (string, error) {
+				if err := migrateLegacyWindows11ISO("arm64"); err != nil {
+					return "", err
+				}
 				return getWindows11Download("arm64", windows11ISOPath("arm64"), false)
 			},
 			RelatedVmConfigs: []VirtualMachineConfig{
