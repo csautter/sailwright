@@ -908,6 +908,10 @@ func getWebFileDependencies() []WebFileDependency {
 	}
 }
 
+const webFileChecksumAttempts = 3
+
+var webFileRetryDelay = 5 * time.Second
+
 func downloadWebFileDependency(p *mpb.Progress, dep WebFileDependency) error {
 	if dep.BeforeHook != nil {
 		newSource, err := dep.BeforeHook()
@@ -930,6 +934,12 @@ func downloadWebFileDependency(p *mpb.Progress, dep WebFileDependency) error {
 	var failures []string
 	for index, source := range sources {
 		err := downloadWebFileDependencyFromSource(p, dep, source)
+		// Mirrors occasionally serve a truncated or corrupted body; a fresh request usually succeeds.
+		for attempt := 2; attempt <= webFileChecksumAttempts && err != nil && isChecksumMismatch(err); attempt++ {
+			log.Printf("Checksum mismatch downloading %s from %s; retrying (attempt %d/%d)", dep.LocalPath, source, attempt, webFileChecksumAttempts)
+			time.Sleep(webFileRetryDelay)
+			err = downloadWebFileDependencyFromSource(p, dep, source)
+		}
 		if err == nil {
 			return nil
 		}
