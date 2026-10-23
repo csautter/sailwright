@@ -97,6 +97,11 @@ Three steps, the same on every host.
    ./dist/<os>-<arch>/sailwright-gateway serve --binary ./dist/<os>-<arch>/sailwright
    ```
 
+   Alternatively, download `sailwright_<version>_<os>_<arch>` and
+   `sailwright-gateway_<version>_<os>_<arch>` from the same
+   [release](https://github.com/csautter/sailwright/releases) and verify them
+   against the release checksums (see [SECURITY.md](../SECURITY.md)).
+
    Confirm the SHA-256. The gateway creates `~/.sailwright-gateway/` with only
    `gateway.sock` and a copy of the token. For unattended use pass
    `--binary-sha256 <hash>` instead; approvals still need an interactive

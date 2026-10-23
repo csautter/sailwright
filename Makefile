@@ -3,6 +3,8 @@ GOSEC ?= $(shell command -v gosec 2>/dev/null || echo "$$(go env GOPATH)/bin/gos
 BINARY_NAME ?= sailwright
 DIST_DIR ?= dist
 MAIN_PACKAGE ?= ./cmd/main.go
+GATEWAY_BINARY_NAME ?= sailwright-gateway
+GATEWAY_PACKAGE ?= ./cmd/sailwright-gateway
 VERSION ?= dev
 GO_LDFLAGS ?= -s -w
 RELEASE_GOOS ?= darwin linux windows
@@ -12,8 +14,11 @@ PACKAGE_VERSION = $(patsubst v%,%,$(VERSION))
 TARGET_BINARY_NAME = $(BINARY_NAME)$(if $(filter windows,$(GOOS)),.exe,)
 TARGET_DIST_DIR = $(DIST_DIR)/$(GOOS)-$(GOARCH)
 RELEASE_ASSET_BASENAME = sailwright_$(PACKAGE_VERSION)_$(GOOS)_$(GOARCH)
+TARGET_GATEWAY_BINARY_NAME = $(GATEWAY_BINARY_NAME)$(if $(filter windows,$(GOOS)),.exe,)
+GATEWAY_RELEASE_ASSET_BASENAME = $(GATEWAY_BINARY_NAME)_$(PACKAGE_VERSION)_$(GOOS)_$(GOARCH)
 
-.PHONY: build build-cli-local build-gateway-local test-e2e-smoke test-e2e build-cli-target build-cli-release package-cli-target package-cli-release clean-dist \
+.PHONY: build build-cli-local build-gateway-local test-e2e-smoke test-e2e build-cli-target build-cli-release package-cli-target package-cli-release \
+	build-gateway-target package-gateway-target clean-dist \
 	test-build-runner test-build test-deploy test-provision test-deploy-windows-hyperv test-clean-testcache \
 	test-build-integration test-build-specific test-macos-tart-runner test-gh-runner-func-request test-gh-runner-func-delete \
 	deploy-plan-terraform-azure-gh-runner deploy-apply-terraform-azure-gh-runner deploy-az-func-app gosec quickstart demo demo-gif demo-build-video
@@ -35,9 +40,14 @@ build-cli-local:
 
 # Host-side MCP gateway for agents in devcontainers (see docs/agent-gateway.md).
 build-gateway-local:
-	mkdir -p "$(DIST_DIR)/$(shell go env GOOS)-$(shell go env GOARCH)"
-	CGO_ENABLED=0 go build -trimpath -ldflags '$(GO_LDFLAGS) -X main.version=$(VERSION)' \
-		-o "$(DIST_DIR)/$(shell go env GOOS)-$(shell go env GOARCH)/sailwright-gateway$(shell go env GOEXE)" ./cmd/sailwright-gateway
+	$(MAKE) build-gateway-target GOOS=$(shell go env GOOS) GOARCH=$(shell go env GOARCH)
+
+build-gateway-target:
+	@test -n "$(GOOS)" || (echo "GOOS is required" && exit 1)
+	@test -n "$(GOARCH)" || (echo "GOARCH is required" && exit 1)
+	mkdir -p "$(TARGET_DIST_DIR)"
+	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) \
+		go build -trimpath -ldflags '$(GO_LDFLAGS) -X main.version=$(VERSION)' -o "$(TARGET_DIST_DIR)/$(TARGET_GATEWAY_BINARY_NAME)" $(GATEWAY_PACKAGE)
 
 build-cli-target:
 	@test -n "$(GOOS)" || (echo "GOOS is required" && exit 1)
@@ -69,9 +79,18 @@ package-cli-release: clean-dist
 	@set -e; \
 	for goos in $(RELEASE_GOOS); do \
 		for goarch in $(RELEASE_GOARCH); do \
-			$(MAKE) package-cli-target GOOS=$$goos GOARCH=$$goarch VERSION=$(VERSION); \
+			$(MAKE) package-cli-target package-gateway-target GOOS=$$goos GOARCH=$$goarch VERSION=$(VERSION); \
 		done; \
 	done
+
+package-gateway-target: build-gateway-target
+	@test -n "$(VERSION)" || (echo "VERSION is required" && exit 1)
+	rm -f "$(DIST_DIR)/$(GATEWAY_RELEASE_ASSET_BASENAME).tar.gz" "$(DIST_DIR)/$(GATEWAY_RELEASE_ASSET_BASENAME).zip"
+	if [ "$(GOOS)" = "windows" ]; then \
+		cd "$(TARGET_DIST_DIR)" && zip -q -j "../$(GATEWAY_RELEASE_ASSET_BASENAME).zip" "$(TARGET_GATEWAY_BINARY_NAME)"; \
+	else \
+		tar -C "$(TARGET_DIST_DIR)" -czf "$(DIST_DIR)/$(GATEWAY_RELEASE_ASSET_BASENAME).tar.gz" "$(TARGET_GATEWAY_BINARY_NAME)"; \
+	fi
 
 clean-dist:
 	rm -rf "$(DIST_DIR)"

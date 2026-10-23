@@ -143,6 +143,10 @@ Release assets are published on the
 After extraction, the executable is named `sailwright` on macOS/Linux and
 `sailwright.exe` on Windows.
 
+Each release also ships the host-side MCP gateway for agents as
+`sailwright-gateway_<version>_<os>_<arch>`; see
+[Agent Gateway](./docs/agent-gateway.md).
+
 If you prefer the shorter `sail` command, create it yourself as a shell alias
 such as `alias sail=sailwright`, or install a `sail` symlink that points to the
 `sailwright` executable.
