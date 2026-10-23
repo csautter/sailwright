@@ -1,3 +1,4 @@
+GO_MOD_TOOLCHAIN ?= go$(shell awk '/^go /{print $$2}' go.mod)
 GOSEC ?= $(shell command -v gosec 2>/dev/null || echo "$$(go env GOPATH)/bin/gosec")
 BINARY_NAME ?= sailwright
 DIST_DIR ?= dist
@@ -199,7 +200,7 @@ gosec:
 		rm -f gosec-stderr.log; \
 		echo "gosec did not analyze all packages; the results above are incomplete."; \
 		echo "Note: If the container Go version is newer than go.mod, run with the go.mod toolchain:"; \
-		echo "      GOTOOLCHAIN=go1.26.0 make gosec"; \
+		echo "      GOTOOLCHAIN=$(GO_MOD_TOOLCHAIN) make gosec"; \
 		exit 1; \
 	fi; \
 	rm -f gosec-stderr.log
