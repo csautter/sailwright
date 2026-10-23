@@ -7,9 +7,11 @@ import asyncio
 import json
 import os
 import random
+import re
 import sys
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -51,6 +53,9 @@ MICROSOFT_REFUSAL_MARKERS = (
     "715-123130",
     "unable to complete your request",
 )
+# Exit code reported when Microsoft refuses or challenges the request, so callers can tell
+# "blocked" (neutral) from "broken" (selectors changed, other errors).
+EXIT_CODE_MICROSOFT_REFUSED = 3
 CHALLENGE_MARKERS = (
     "verify you are human",
     "unusual traffic",
@@ -61,6 +66,10 @@ CHALLENGE_MARKERS = (
     "bot",
     "challenge",
 )
+
+
+class MicrosoftRefusedError(RuntimeError):
+    """Microsoft rejected or challenged the request (e.g. blocked datacenter IP)."""
 
 
 def resolve_app_data_dir() -> str:
@@ -231,7 +240,7 @@ async def raise_if_microsoft_refused(page):
         return
     markers = [marker for marker in MICROSOFT_REFUSAL_MARKERS if marker in body_text]
     if markers:
-        raise RuntimeError(
+        raise MicrosoftRefusedError(
             "Microsoft refused the Windows 11 download request "
             f"(detected: {', '.join(markers)}). This usually means the client IP is blocked."
         )
@@ -337,10 +346,41 @@ async def navigate_to_download_page(
             + "."
         )
 
-    raise RuntimeError(
+    message = (
         "Could not load the Microsoft Windows 11 download page after "
         f"{retries} attempts. Diagnostics were written to {diagnostics_dir}.{challenge_hint}"
-    ) from last_error
+    )
+    if last_metadata and last_metadata.get("challenge_markers"):
+        raise MicrosoftRefusedError(message) from last_error
+    raise RuntimeError(message) from last_error
+
+
+async def find_english_sha256(page, source_name: str) -> str:
+    """Best effort: read the sha256 of the English (United States) ISO from the hash table."""
+    try:
+        text = await page.locator("body").inner_text(timeout=5000)
+    except Exception:
+        return ""
+    # The table lists "<language>  <hash>" rows; take the row of the English (United States) ISO.
+    match = re.search(
+        r"English \(United States\)[^0-9A-Fa-f]{0,20}([0-9A-Fa-f]{64})", text
+    )
+    return match.group(1).lower() if match else ""
+
+
+async def write_link_info(page, link: str, arm: bool, output_dir: str) -> None:
+    source_name = os.path.basename(urlparse(link).path)
+    info = {
+        "url": link,
+        "source_name": source_name,
+        "sha256": await find_english_sha256(page, source_name),
+    }
+    info_path = os.path.join(
+        output_dir,
+        "win11_arm64_iso_link.json" if arm else "win11_amd64_iso_link.json",
+    )
+    with open(info_path, "w", encoding="utf-8") as f:
+        json.dump(info, f, indent=2)
 
 
 async def resolve_download_link(page, url: str, arm: bool, diagnostics_dir: str) -> str:
@@ -411,6 +451,8 @@ async def resolve_download_link(page, url: str, arm: bool, diagnostics_dir: str)
     )
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(link)
+
+    await write_link_info(page, link, arm, output_dir)
 
     return link
 
@@ -536,12 +578,16 @@ if __name__ == "__main__":
         f"(default: {DEFAULT_LINK_TIMEOUT_SECONDS})",
     )
     args = parser.parse_args()
-    asyncio.run(
-        fetch_win11_iso_link(
-            arm=args.arm,
-            headless=args.headless,
-            download=args.download,
-            save_path=args.save_path,
-            link_timeout_seconds=args.link_timeout,
+    try:
+        asyncio.run(
+            fetch_win11_iso_link(
+                arm=args.arm,
+                headless=args.headless,
+                download=args.download,
+                save_path=args.save_path,
+                link_timeout_seconds=args.link_timeout,
+            )
         )
-    )
+    except MicrosoftRefusedError as exc:
+        print(f"[REFUSED] {exc}", file=sys.stderr)
+        sys.exit(EXIT_CODE_MICROSOFT_REFUSED)

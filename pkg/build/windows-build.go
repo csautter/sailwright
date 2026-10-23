@@ -104,7 +104,7 @@ func buildPackerArgs(config VirtualMachineConfig, packerFile string) []string {
 
 	// Add ISO URL, CPU count, memory, and Packer file
 	args = append(args,
-		"-var", fmt.Sprintf("iso_url=%s", GetDirectoriesInstance().CachePath("windows11", "iso", "win11_25h2_english_amd64.iso")),
+		"-var", fmt.Sprintf("iso_url=%s", windows11ISOPath("amd64")),
 		"-var", fmt.Sprintf("cache_dir=%s", GetDirectoriesInstance().CacheDir),
 		"-var", fmt.Sprintf("cpus=%s", getVmCpuCountString(config)),
 		"-var", fmt.Sprintf("memory=%d", getVmMemoryMB(config)),
