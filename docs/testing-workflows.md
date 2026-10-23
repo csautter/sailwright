@@ -485,6 +485,9 @@ You will need a Windows ISO for the build. You can download one manually from Mi
 
 - [download_win_11.ps1](../scripts/windows/download_win_11.ps1)
 
+CI build workflows never download the ISO from Microsoft; they read a versioned copy from the build
+cache. See [Windows 11 ISO cache](./windows-iso-cache.md).
+
 Build details live here:
 
 - [Windows Packer README](../build/packer/windows/README.md)

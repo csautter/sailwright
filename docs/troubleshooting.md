@@ -2,6 +2,15 @@
 
 This page collects rare, host-specific issues that do not affect most Sailwright setups.
 
+## Windows 11 ISO Missing: "Microsoft download disabled in CI"
+
+A Windows 11 build fails with `Windows 11 ISO missing at …; Microsoft download disabled in CI`
+when `SAILWRIGHT_WIN11_ISO_OFFLINE` is `1` or `true` and the ISO is not in the cache. CI build jobs
+set this variable on purpose. Locally, unset it (it is often copied from a workflow's `env`) so the
+ISO is downloaded from Microsoft, or place the ISO at
+`<cache dir>/windows11/iso/win11_english_<arch>.iso`. For the CI side, see
+[Windows 11 ISO cache](./windows-iso-cache.md).
+
 ## Windows: Cygwin Ansible Shadowed by a Host Installation
 
 On Windows with Cygwin, the Ansible installation inside Cygwin can be shadowed by another Python or Ansible installation from the Windows host.
