@@ -25,6 +25,7 @@ on:
       - "build/packer/windows/**/*"
       - "pkg/build/**"
       - "pkg/deploy/**"
+      - "test/e2e/**"
       - "scripts/linux/*"
       - "scripts/linux/**/*"
       - "scripts/windows/*"
@@ -110,7 +111,7 @@ jobs:
     if: ${{ github.event_name == 'pull_request' || inputs.enable_az_hyperv }}
     name: build TestBuildHypervWindows11Amd64OnWindows
     needs: [provision-hyperv-runner]
-    timeout-minutes: 60
+    timeout-minutes: 360
     env:
       # Build jobs resolve the Windows 11 ISO through the cache manifest and never contact Microsoft.
       SAILWRIGHT_WIN11_ISO_OFFLINE: "1"
@@ -159,6 +160,29 @@ jobs:
           PACKER_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           make test-build-specific TEST_NAME=TestBuildHypervWindows11Amd64OnWindows
+
+      - name: Run Windows lifecycle E2E scenarios
+        if: steps.packer_build.outcome == 'success'
+        timeout-minutes: 240
+        shell: powershell
+        env:
+          SAILWRIGHT_E2E_TARGET: windows11//amd64/hyperv
+          SAILWRIGHT_E2E_OUT: ${{ runner.temp }}/e2e-lifecycle
+          SAILWRIGHT_E2E_REUSE_IMAGE: "1"
+        run: |
+          $env:SAILWRIGHT_E2E_BIN = Join-Path $env:RUNNER_TEMP 'sailwright-e2e.exe'
+          go build -o $env:SAILWRIGHT_E2E_BIN ./cmd/main.go
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -tags e2e ./test/e2e -run '^TestScenarios/(vm-lifecycle-windows|destroy-idempotent)$' -count=1 -timeout 4h -v
+          exit $LASTEXITCODE
+
+      - name: Upload lifecycle E2E reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-lifecycle-windows-hyperv
+          path: ${{ runner.temp }}/e2e-lifecycle
+          if-no-files-found: ignore
 
       - name: Run HyperV deploy smoke test
         if: steps.packer_build.outcome == 'success'

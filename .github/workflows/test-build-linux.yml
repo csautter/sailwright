@@ -25,6 +25,7 @@ on:
       - "build/packer/windows/**/*"
       - "pkg/build/**"
       - "pkg/deploy/**"
+      - "test/e2e/**"
       - "pkg/oci/**"
       - "pkg/provision/**"
       - "scripts/linux/*"
@@ -48,6 +49,7 @@ on:
       - "build/packer/windows/**/*"
       - "pkg/build/**"
       - "pkg/deploy/**"
+      - "test/e2e/**"
       - "pkg/oci/**"
       - "pkg/provision/**"
       - "scripts/linux/*"
@@ -195,7 +197,7 @@ jobs:
       DEV_ALCHEMY_VAGRANT_DIR: ${{ github.workspace }}/.dev-alchemy/.vagrant
       DEV_ALCHEMY_PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
       PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
-    timeout-minutes: 300
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -318,6 +320,29 @@ jobs:
           mkdir -p artifact
           go mod vendor
           make test-build-specific TEST_NAME=${{ matrix.go_test_name }}
+
+      - name: Run lifecycle E2E scenarios
+        if: steps.packer_build.outcome == 'success'
+        timeout-minutes: 240
+        shell: bash
+        env:
+          SAILWRIGHT_E2E_TARGET: ${{ matrix.vm_os }}/${{ matrix.ubuntu_type }}/${{ matrix.arch }}
+          SAILWRIGHT_E2E_OUT: ${{ runner.temp }}/e2e-lifecycle
+          SAILWRIGHT_E2E_REUSE_IMAGE: "1"
+          SAILWRIGHT_E2E_INCLUDE_UNSTABLE: "1"
+          SAILWRIGHT_E2E_ALLOW_HOST_CHANGES: "1"
+        run: |
+          export SAILWRIGHT_E2E_BIN="$RUNNER_TEMP/sailwright-e2e"
+          go build -o "$SAILWRIGHT_E2E_BIN" ./cmd/main.go
+          go test -tags e2e ./test/e2e -run '^TestScenarios/(vm-lifecycle-linux|destroy-idempotent|local-check)$' -count=1 -timeout 4h -v
+
+      - name: Upload lifecycle E2E reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-lifecycle-${{ matrix.go_test_name }}
+          path: ${{ runner.temp }}/e2e-lifecycle
+          if-no-files-found: ignore
 
       - name: Upload Ubuntu OCI build artifact
         if: steps.packer_build.outcome == 'success' && matrix.vm_os == 'ubuntu' && github.ref == 'refs/heads/main'

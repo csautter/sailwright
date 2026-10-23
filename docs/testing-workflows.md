@@ -67,6 +67,14 @@ that runs as a subtest of `go test -tags e2e ./test/e2e`:
 | `vm-lifecycle-macos` | macOS host | the same for every VM option of a macOS host (Tart, UTM) |
 | `vm-lifecycle-windows` | Windows host | the same for every VM option of a Windows host (Hyper-V) |
 
+The Linux and macOS build matrices and the disposable Windows Hyper-V job run one host-specific
+lifecycle per target and the destroy-idempotent scenario after a successful build. They set
+`SAILWRIGHT_E2E_REUSE_IMAGE=1` to skip the lifecycle's build step and consume the image produced
+by the preceding build test. The generic lifecycle is available for separate runs. Linux also runs `local-check` with
+`SAILWRIGHT_E2E_ALLOW_HOST_CHANGES=1` on its disposable runners. Reports upload even on failure.
+Each lifecycle step has a four-hour limit within the six-hour platform job limit; actual VM and
+provisioning behavior is validated in these platform jobs.
+
 The per-host scenarios run once per target, each as its own subtest, e.g.
 `TestScenarios/vm-lifecycle-linux/ubuntu-server-amd64`. On other hosts they are
 skipped. Targets that the CLI marks unstable on this host (emulated
@@ -104,6 +112,7 @@ SAILWRIGHT_E2E_EXECUTOR=gateway SAILWRIGHT_E2E_TARGET=ubuntu/server/amd64 \
 | `SAILWRIGHT_E2E_BIN` | Sailwright binary for the direct executor |
 | `SAILWRIGHT_E2E_TARGET` | `os/type/arch[/engine]`, e.g. `ubuntu/server/amd64` or `windows11//amd64/hyperv`; selects the target of `vm-lifecycle` and narrows the per-host matrices |
 | `SAILWRIGHT_E2E_INCLUDE_UNSTABLE` | `1` also runs matrix targets the CLI marks unstable |
+| `SAILWRIGHT_E2E_REUSE_IMAGE` | any nonempty value skips building in the host-specific lifecycle scenarios; the image must already exist (used by platform CI) |
 | `SAILWRIGHT_E2E_PULL_REF` | pull this OCI artifact instead of building in `vm-lifecycle` |
 | `SAILWRIGHT_E2E_ALLOW_HOST_CHANGES` | `1` lets the direct executor run host-changing steps |
 | `SAILWRIGHT_E2E_OUT` | report directory (default `test/e2e/out`) |
