@@ -16,7 +16,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
-from win11_iso_hash import extract_english_sha256
+from win11_iso_hash import find_english_sha256
 
 MICROSOFT_WIN11_ISO_URL = "https://www.microsoft.com/en-US/software-download/windows11"
 MICROSOFT_WIN11_ARM_ISO_URL = (
@@ -353,32 +353,6 @@ async def navigate_to_download_page(
     if last_metadata and last_metadata.get("challenge_markers"):
         raise MicrosoftRefusedError(message) from last_error
     raise RuntimeError(message) from last_error
-
-
-async def find_english_sha256(page) -> str:
-    """Best effort: read the sha256 of the English (United States) ISO from the hash table."""
-    # Table rows first: one row per language keeps the label and its hash together. Then the
-    # whole page text; text_content() includes collapsed sections that inner_text() skips.
-    try:
-        rows = await page.locator("tr").all_text_contents()
-    except Exception:
-        rows = []
-    for row in rows:
-        sha256 = extract_english_sha256(row)
-        if sha256:
-            return sha256
-    try:
-        text = await page.locator("body").text_content(timeout=5000) or ""
-    except Exception as exc:
-        print(f"[WARN] Could not read the page text for the sha256 lookup: {exc}")
-        return ""
-    sha256 = extract_english_sha256(text)
-    if not sha256:
-        print(
-            "[WARN] No sha256 for the English (United States) ISO found on the download page; "
-            "the ISO cannot be verified against Microsoft's published hash."
-        )
-    return sha256
 
 
 async def write_link_info(page, link: str, arm: bool, output_dir: str) -> None:
