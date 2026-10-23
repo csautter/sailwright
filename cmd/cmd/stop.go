@@ -131,6 +131,7 @@ func runStop(vm alchemy_build.VirtualMachineConfig) error {
 func init() {
 	rootCmd.AddCommand(stopCmd)
 	stopCmd.AddCommand(stopListCmd)
+	addListJSONFlag(stopListCmd)
 
 	stopCmd.Flags().StringVarP(&arch, "arch", "a", "amd64", "Target architecture (e.g., amd64, arm64)")
 	stopCmd.Flags().StringVarP(&osType, "type", "t", "server", "Type of OS (e.g., server, desktop)")

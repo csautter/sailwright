@@ -271,13 +271,13 @@ elif [[ "$host_arch" == "$arch" ]]; then
 	fi
 fi
 
-if [[ -z "$build_output_dir" ]]; then
-	build_output_dir="/tmp/dev-alchemy/qemu-out-ubuntu-${ubuntu_type}-${arch}"
-fi
-
 app_data_dir="${DEV_ALCHEMY_APP_DATA_DIR:-$(default_app_data_dir)}"
 cache_dir="${DEV_ALCHEMY_CACHE_DIR:-$app_data_dir/cache}"
 packer_cache_dir="${DEV_ALCHEMY_PACKER_CACHE_DIR:-$app_data_dir/packer_cache}"
+
+if [[ -z "$build_output_dir" ]]; then
+	build_output_dir="$cache_dir/ubuntu/qemu-out-ubuntu-${ubuntu_type}-${arch}"
+fi
 
 mkdir -p "$cache_dir" "$packer_cache_dir"
 export DEV_ALCHEMY_APP_DATA_DIR="$app_data_dir"
@@ -351,6 +351,22 @@ if [[ -d "$output_dir" ]]; then
 fi
 mkdir -p "$(dirname "$output_dir")"
 
+# Packer puts the QMP socket into the output directory by default. UNIX socket paths are
+# limited to 104 bytes on macOS and 108 on Linux, too short for an output directory in
+# the cache, so the socket gets its own short directory.
+qmp_socket_dir=""
+create_qmp_socket_dir() {
+	qmp_socket_dir="$(mktemp -d "/tmp/sw-qmp.XXXXXX")" || return 1
+	qmp_socket_path="$qmp_socket_dir/qmp.sock"
+}
+cleanup_qmp_socket_dir() {
+	if [[ -n "$qmp_socket_dir" && -d "$qmp_socket_dir" ]]; then
+		rm -rf "$qmp_socket_dir"
+	fi
+}
+create_qmp_socket_dir || exit 1
+trap cleanup_qmp_socket_dir EXIT
+
 packer_file="build/packer/linux/ubuntu/linux-ubuntu-qemu.pkr.hcl"
 packer init "$packer_file"
 
@@ -364,6 +380,7 @@ packer build \
 	-var "use_hardware_acceleration=$use_hardware_acceleration" \
 	-var "cache_dir=$cache_dir" \
 	-var "build_output_dir=$build_output_dir" \
+	-var "qmp_socket_path=$qmp_socket_path" \
 	-var "artifact_output_path=$artifact_output_path" \
 	-var "iso_url=$iso_path" \
 	-var "iso_checksum=sha256:$iso_checksum" \
@@ -374,3 +391,10 @@ packer build \
 	-var "cpus=$cpus" \
 	-var "memory=$memory" \
 	"$packer_file"
+packer_rc=$?
+# On success the artifact is in the cache and the output directory only holds Packer's
+# scratch files (for amd64 a full copy of the disk); on failure they are of no use either.
+rm -rf "$output_dir"
+if [[ "$packer_rc" -ne 0 ]]; then
+	exit "$packer_rc"
+fi

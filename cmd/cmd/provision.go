@@ -278,6 +278,7 @@ func runProvision(vm alchemy_build.VirtualMachineConfig, options alchemy_provisi
 func init() {
 	rootCmd.AddCommand(provisionCmd)
 	provisionCmd.AddCommand(provisionListCmd)
+	addListJSONFlag(provisionListCmd)
 
 	provisionCmd.Flags().StringVarP(&arch, "arch", "a", "amd64", "Target architecture (e.g., amd64, arm64)")
 	provisionCmd.Flags().StringVarP(&osType, "type", "t", "server", "Type of OS (e.g., server, desktop)")

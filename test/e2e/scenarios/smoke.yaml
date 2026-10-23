@@ -1,0 +1,31 @@
+name: smoke
+description: >-
+  The CLI starts, prints help and returns JSON listings for commands that need no
+  hypervisor tooling. Runs on every host OS in CI.
+steps:
+  - name: root help
+    op: cli
+    with: {args: ["--help"]}
+    expect: {output_regex: "Usage:"}
+  - name: build targets as JSON
+    op: list
+    with: {command: build}
+    expect: {output_regex: '"schema_version":1'}
+  - name: provision targets include the local host
+    op: list
+    with: {command: provision}
+    expect: {output_regex: '"os":"local"'}
+  - name: pull targets as JSON
+    op: list
+    with: {command: pull}
+    expect: {output_regex: '"schema_version":1'}
+  - name: push targets as JSON
+    op: list
+    with: {command: push}
+    expect: {output_regex: '"schema_version":1'}
+  - name: invalid build target exits non-zero
+    op: cli
+    # Through the gateway this call is outside the safe set and would need approval.
+    only: direct
+    with: {args: ["build", "not-an-os"]}
+    expect: {exit_code: 1, output_regex: "invalid combination"}

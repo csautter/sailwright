@@ -1,5 +1,15 @@
 {
   "attribution": {
     "commit": ""
+  },
+  "permissions": {
+    "allow": [
+      "mcp__sailwright-host__gateway_info",
+      "mcp__sailwright-host__list_targets",
+      "mcp__sailwright-host__command_help",
+      "mcp__sailwright-host__job_list",
+      "mcp__sailwright-host__job_status",
+      "mcp__sailwright-host__job_output"
+    ]
   }
 }

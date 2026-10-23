@@ -51,6 +51,119 @@ lifecycle (`install -> build -> create -> start -> provision --check ->
 provision -> (stop -> destroy)`), see
 [Automated Quick-Start](quickstart-automation.md).
 
+## Deterministic E2E Scenarios
+
+The repeated user cycles are covered by deterministic scenarios in
+[`test/e2e/scenarios`](../test/e2e/scenarios). Each scenario is a YAML file
+that runs as a subtest of `go test -tags e2e ./test/e2e`:
+
+| Scenario | Needs | Covers |
+| --- | --- | --- |
+| `smoke` | nothing | help output and `list --json` for commands that need no hypervisor |
+| `vm-lifecycle` | `SAILWRIGHT_E2E_TARGET` | target VM must not exist yet (preflight), pull or build, create, start, provision `--check`, provision, idempotent re-run, stop, destroy (always) |
+| `destroy-idempotent` | `SAILWRIGHT_E2E_TARGET` | destroying twice succeeds |
+| `local-check` | host changes allowed | `provision local --check` with the default playbook |
+| `vm-lifecycle-linux` | Linux host | the `vm-lifecycle` steps for every VM option of a Linux host |
+| `vm-lifecycle-macos` | macOS host | the same for every VM option of a macOS host (Tart, UTM) |
+| `vm-lifecycle-windows` | Windows host | the same for every VM option of a Windows host (Hyper-V) |
+
+The per-host scenarios run once per target, each as its own subtest, e.g.
+`TestScenarios/vm-lifecycle-linux/ubuntu-server-amd64`. On other hosts they are
+skipped. Targets that the CLI marks unstable on this host (emulated
+architectures) are skipped unless `SAILWRIGHT_E2E_INCLUDE_UNSTABLE=1`.
+`SAILWRIGHT_E2E_TARGET` narrows a matrix to one target. The run fails when
+`create list` offers a target that the scenario does not test, so new VM
+options get added to the matrix.
+
+Steps run through an executor:
+
+- **direct** runs the Sailwright binary itself. Use it on disposable CI runners
+  or as a human on the host.
+- **gateway** runs every step through [`sailwright-gateway`](./agent-gateway.md),
+  so agents in a devcontainer get the same tests and the gateway policy still
+  applies. Steps outside the safe set, such as `local-check`, wait for approval
+  on the gateway terminal.
+
+```bash
+# direct, on the host
+make test-e2e-smoke
+make test-e2e E2E_RUN='TestScenarios/vm-lifecycle' E2E_TARGET=ubuntu/server/amd64
+
+# every VM option of this host (one subtest per target)
+SAILWRIGHT_E2E_EXECUTOR=gateway go test -tags e2e ./test/e2e \
+  -run 'TestScenarios/vm-lifecycle-(linux|macos|windows)' -count=1 -timeout 24h -v
+
+# gateway, from the devcontainer
+SAILWRIGHT_E2E_EXECUTOR=gateway SAILWRIGHT_E2E_TARGET=ubuntu/server/amd64 \
+  go test -tags e2e ./test/e2e -run 'TestScenarios/(smoke|vm-lifecycle)' -count=1 -timeout 6h -v
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `SAILWRIGHT_E2E_EXECUTOR` | `direct` (default) or `gateway` |
+| `SAILWRIGHT_E2E_BIN` | Sailwright binary for the direct executor |
+| `SAILWRIGHT_E2E_TARGET` | `os/type/arch[/engine]`, e.g. `ubuntu/server/amd64` or `windows11//amd64/hyperv`; selects the target of `vm-lifecycle` and narrows the per-host matrices |
+| `SAILWRIGHT_E2E_INCLUDE_UNSTABLE` | `1` also runs matrix targets the CLI marks unstable |
+| `SAILWRIGHT_E2E_PULL_REF` | pull this OCI artifact instead of building in `vm-lifecycle` |
+| `SAILWRIGHT_E2E_ALLOW_HOST_CHANGES` | `1` lets the direct executor run host-changing steps |
+| `SAILWRIGHT_E2E_OUT` | report directory (default `test/e2e/out`) |
+| `SAILWRIGHT_GATEWAY_URL`, `SAILWRIGHT_GATEWAY_TOKEN`, `SAILWRIGHT_GATEWAY_DIR` | optional overrides; by default the gateway executor finds the gateway like `sailwright-gateway connect` (see [Agent Gateway](./agent-gateway.md#quick-start)) |
+
+With `-v`, command output is shown live, prefixed with `|`. Long downloads
+log a progress line every 10 seconds when no terminal is attached.
+
+Each run writes `<scenario>.json` and `<scenario>.md` reports with the host,
+binary hash and per-step results. For JUnit output, run the same command with
+`gotestsum --junitfile`.
+
+### Writing scenarios
+
+```yaml
+name: my-scenario            # must match the file name
+description: What this checks.
+requires: [target]           # target and/or host-changes
+# For a matrix instead of SAILWRIGHT_E2E_TARGET:
+# host_os: linux             # linux, darwin or windows
+# covers: create             # fail if `create list` offers a target missing below
+# targets: [ubuntu/server/amd64, windows11//amd64/hyperv]
+preflight:                   # checks before anything changes on the host
+  - name: target VM does not exist yet
+    op: list
+    with: {command: destroy}
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}
+steps:
+  - name: provision in check mode
+    op: provision            # build create start stop destroy provision pull provision_local list cli
+    with: {check: true}
+    expect:
+      exit_code: 0           # default 0
+      output_regex: "PLAY RECAP"
+      recap: {failed: 0, changed: 0}
+      state: {command: start, field: state, regex: "^running$"}
+      max_duration: 30m
+  - name: direct-only call
+    op: cli
+    only: direct             # or gateway
+    when_env: SAILWRIGHT_E2E_SOMETHING
+    with: {args: ["build", "list", "--json"]}
+  - name: only where the target can be built
+    op: build
+    when_listed: build       # skip if the target is not in `build list`
+always:
+  - name: cleanup
+    op: destroy
+```
+
+After a failed step the remaining steps are skipped; `always` steps still run.
+If a `preflight` step fails, nothing else runs, not even `always`: the scenario
+has not changed the host, so its cleanup must not touch what was already there.
+The lifecycle scenarios use this to stop before building when the target VM
+already exists, instead of destroying it at the end. Remove a leftover VM with
+`sailwright destroy <os> [--type ...] --arch ...` and run the scenario again.
+Only `${SAILWRIGHT_E2E_*}` variables are expanded in `with` values. Unknown
+fields, operations and recap keys are rejected when the scenario loads.
+
 ## OCI Build Artifact Registry Workflow
 
 Final build artifacts can be pushed to, and pulled from, an OCI registry. The

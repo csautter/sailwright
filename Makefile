@@ -1,3 +1,4 @@
+GO_MOD_TOOLCHAIN ?= go$(shell awk '/^go /{print $$2}' go.mod)
 GOSEC ?= $(shell command -v gosec 2>/dev/null || echo "$$(go env GOPATH)/bin/gosec")
 BINARY_NAME ?= sailwright
 DIST_DIR ?= dist
@@ -12,7 +13,7 @@ TARGET_BINARY_NAME = $(BINARY_NAME)$(if $(filter windows,$(GOOS)),.exe,)
 TARGET_DIST_DIR = $(DIST_DIR)/$(GOOS)-$(GOARCH)
 RELEASE_ASSET_BASENAME = sailwright_$(PACKAGE_VERSION)_$(GOOS)_$(GOARCH)
 
-.PHONY: build build-cli-local build-cli-target build-cli-release package-cli-target package-cli-release clean-dist \
+.PHONY: build build-cli-local build-gateway-local test-e2e-smoke test-e2e build-cli-target build-cli-release package-cli-target package-cli-release clean-dist \
 	test-build-runner test-build test-deploy test-provision test-deploy-windows-hyperv test-clean-testcache \
 	test-build-integration test-build-specific test-macos-tart-runner test-gh-runner-func-request test-gh-runner-func-delete \
 	deploy-plan-terraform-azure-gh-runner deploy-apply-terraform-azure-gh-runner deploy-az-func-app gosec quickstart demo demo-gif demo-build-video
@@ -31,6 +32,12 @@ build:
 
 build-cli-local:
 	$(MAKE) build-cli-target GOOS=$(shell go env GOOS) GOARCH=$(shell go env GOARCH)
+
+# Host-side MCP gateway for agents in devcontainers (see docs/agent-gateway.md).
+build-gateway-local:
+	mkdir -p "$(DIST_DIR)/$(shell go env GOOS)-$(shell go env GOARCH)"
+	CGO_ENABLED=0 go build -trimpath -ldflags '$(GO_LDFLAGS) -X main.version=$(VERSION)' \
+		-o "$(DIST_DIR)/$(shell go env GOOS)-$(shell go env GOARCH)/sailwright-gateway$(shell go env GOEXE)" ./cmd/sailwright-gateway
 
 build-cli-target:
 	@test -n "$(GOOS)" || (echo "GOOS is required" && exit 1)
@@ -84,6 +91,18 @@ test-provision:
 
 test-deploy-windows-hyperv:
 	RUN_INTEGRATION_TESTS=1 RUN_WINDOWS_HYPERV_DEPLOY_SMOKE=1 go test -timeout 60m -v ./pkg/deploy -run "TestGetHypervWindowsBoxPath_UsesExpectedBuildArtifact|TestGetHypervWindowsBoxPath_FallsBackToCachePath|TestRunHypervVagrantDeployOnWindows_Smoke"
+
+# Deterministic E2E scenarios (test/e2e). test-e2e-smoke needs no hypervisor.
+# Run other scenarios with E2E_RUN='TestScenarios/vm-lifecycle' E2E_TARGET=ubuntu/server/amd64.
+E2E_RUN ?= TestScenarios/smoke
+E2E_TARGET ?=
+test-e2e-smoke: build-cli-local
+	SAILWRIGHT_E2E_BIN="$(abspath $(DIST_DIR))/$(shell go env GOOS)-$(shell go env GOARCH)/$(BINARY_NAME)$(shell go env GOEXE)" \
+		go test -tags e2e ./test/e2e -run 'TestScenarios/smoke' -count=1 -v
+
+test-e2e: build-cli-local
+	SAILWRIGHT_E2E_BIN="$(abspath $(DIST_DIR))/$(shell go env GOOS)-$(shell go env GOARCH)/$(BINARY_NAME)$(shell go env GOEXE)" \
+		SAILWRIGHT_E2E_TARGET="$(E2E_TARGET)" go test -tags e2e ./test/e2e -run '$(E2E_RUN)' -count=1 -timeout 6h -v
 
 test-clean-testcache:
 	go clean -testcache
@@ -164,9 +183,24 @@ DEMO_BUILD_ARGS ?=
 demo-build-video:
 	bash demo/process-build-video.sh $(DEMO_BUILD_ARGS)
 
+# Run Go security scanning via gosec.
+# If gosec reports type errors due to Go toolchain export data version mismatches
+# (e.g. devcontainer toolchain newer than go.mod), match the go.mod toolchain:
+#   GOTOOLCHAIN=go1.26.0 make gosec
 gosec:
 	@if [ ! -x "$(GOSEC)" ]; then \
 		echo "gosec not found at $(GOSEC). Rebuild the dev container or run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0"; \
 		exit 1; \
 	fi
-	$(GOSEC) -no-fail -fmt sarif -out gosec-results.sarif -exclude-generated ./...
+	@# -no-fail exits 0 even when gosec cannot type-check packages (e.g. a gosec built against an
+	@# x/tools too old for the Go toolchain), which would report "no issues" without analyzing anything.
+	@$(GOSEC) -no-fail -fmt sarif -out gosec-results.sarif -exclude-generated ./... 2>gosec-stderr.log; status=$$?; \
+	if [ $$status -ne 0 ] || grep -q 'type errors' gosec-stderr.log; then \
+		grep -E 'type errors|[Ee]rror' gosec-stderr.log | head -5; \
+		rm -f gosec-stderr.log; \
+		echo "gosec did not analyze all packages; the results above are incomplete."; \
+		echo "Note: If the container Go version is newer than go.mod, run with the go.mod toolchain:"; \
+		echo "      GOTOOLCHAIN=$(GO_MOD_TOOLCHAIN) make gosec"; \
+		exit 1; \
+	fi; \
+	rm -f gosec-stderr.log

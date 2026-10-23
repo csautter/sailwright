@@ -21,6 +21,7 @@ import (
 	"github.com/hashicorp/go-getter"
 	"github.com/vbauerster/mpb/v8"
 	"github.com/vbauerster/mpb/v8/decor"
+	"golang.org/x/term"
 )
 
 // ProgressBarListener implements getter.ProgressListener using an mpb container
@@ -36,6 +37,7 @@ func (p *ProgressBarListener) TrackProgress(src string, current, total int64, r 
 	}
 
 	name := filepath.Base(src)
+	log.Printf("Downloading %s (%s)", name, formatByteSize(total))
 	p.bar = p.progress.AddBar(total,
 		mpb.PrependDecorators(
 			decor.Name(fmt.Sprintf("%-45s", "downloading "+name)),
@@ -48,17 +50,69 @@ func (p *ProgressBarListener) TrackProgress(src string, current, total int64, r 
 			decor.EwmaETA(decor.ET_STYLE_GO, 30),
 		),
 	)
-	return &progressReader{
+	reader := &progressReader{
 		reader:   r,
 		bar:      p.bar,
 		lastRead: time.Now(),
 	}
+	if !stdoutIsTerminal() {
+		// The progress bar only renders on a terminal; log plain progress lines instead
+		// so CI, pipes and the agent gateway can follow long downloads.
+		reader.plain = &plainProgress{name: name, current: current, total: total, lastLog: time.Now(), interval: plainProgressInterval, logf: log.Printf}
+	}
+	return reader
+}
+
+const plainProgressInterval = 10 * time.Second
+
+var stdoutIsTerminal = func() bool {
+	return term.IsTerminal(int(os.Stdout.Fd())) // #nosec G115 -- file descriptors fit in int.
+}
+
+// plainProgress logs download progress at a fixed interval.
+type plainProgress struct {
+	name     string
+	current  int64
+	total    int64
+	lastLog  time.Time
+	interval time.Duration
+	logf     func(format string, args ...any)
+}
+
+func (p *plainProgress) add(n int, now time.Time) {
+	p.current += int64(n)
+	if now.Sub(p.lastLog) < p.interval {
+		return
+	}
+	p.lastLog = now
+	if p.total > 0 {
+		p.logf("Downloading %s: %d%% (%s / %s)", p.name, p.current*100/p.total, formatByteSize(p.current), formatByteSize(p.total))
+		return
+	}
+	p.logf("Downloading %s: %s", p.name, formatByteSize(p.current))
+}
+
+func formatByteSize(size int64) string {
+	const unit = 1024
+	if size < 0 {
+		return "unknown size"
+	}
+	if size < unit {
+		return fmt.Sprintf("%d B", size)
+	}
+	value, exponent := float64(size), 0
+	for value >= unit && exponent < 4 {
+		value /= unit
+		exponent++
+	}
+	return fmt.Sprintf("%.2f %ciB", value, "KMGT"[exponent-1])
 }
 
 type progressReader struct {
 	reader   io.ReadCloser
 	bar      *mpb.Bar
 	lastRead time.Time
+	plain    *plainProgress
 }
 
 func (pr *progressReader) Read(p []byte) (int, error) {
@@ -71,6 +125,9 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 		}
 		pr.bar.EwmaIncrBy(n, elapsed)
 		pr.lastRead = now
+	}
+	if n > 0 && pr.plain != nil {
+		pr.plain.add(n, now)
 	}
 	return n, err
 }
@@ -851,6 +908,10 @@ func getWebFileDependencies() []WebFileDependency {
 	}
 }
 
+const webFileChecksumAttempts = 3
+
+var webFileRetryDelay = 5 * time.Second
+
 func downloadWebFileDependency(p *mpb.Progress, dep WebFileDependency) error {
 	if dep.BeforeHook != nil {
 		newSource, err := dep.BeforeHook()
@@ -873,6 +934,12 @@ func downloadWebFileDependency(p *mpb.Progress, dep WebFileDependency) error {
 	var failures []string
 	for index, source := range sources {
 		err := downloadWebFileDependencyFromSource(p, dep, source)
+		// Mirrors occasionally serve a truncated or corrupted body; a fresh request usually succeeds.
+		for attempt := 2; attempt <= webFileChecksumAttempts && err != nil && isChecksumMismatch(err); attempt++ {
+			log.Printf("Checksum mismatch downloading %s from %s; retrying (attempt %d/%d)", dep.LocalPath, source, attempt, webFileChecksumAttempts)
+			time.Sleep(webFileRetryDelay)
+			err = downloadWebFileDependencyFromSource(p, dep, source)
+		}
 		if err == nil {
 			return nil
 		}

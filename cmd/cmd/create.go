@@ -190,6 +190,7 @@ func createCommandArguments(vm alchemy_build.VirtualMachineConfig) string {
 func init() {
 	rootCmd.AddCommand(createCmd)
 	createCmd.AddCommand(createListCmd)
+	addListJSONFlag(createListCmd)
 
 	createCmd.Flags().StringVarP(&arch, "arch", "a", "amd64", "Target architecture (e.g., amd64, arm64)")
 	createCmd.Flags().StringVarP(&osType, "type", "t", "server", "Type of OS (e.g., server, desktop)")

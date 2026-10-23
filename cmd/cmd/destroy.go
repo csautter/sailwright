@@ -121,6 +121,7 @@ func runDestroy(vm alchemy_build.VirtualMachineConfig) error {
 func init() {
 	rootCmd.AddCommand(destroyCmd)
 	destroyCmd.AddCommand(destroyListCmd)
+	addListJSONFlag(destroyListCmd)
 
 	destroyCmd.Flags().StringVarP(&arch, "arch", "a", "amd64", "Target architecture (e.g., amd64, arm64)")
 	destroyCmd.Flags().StringVarP(&osType, "type", "t", "server", "Type of OS (e.g., server, desktop)")

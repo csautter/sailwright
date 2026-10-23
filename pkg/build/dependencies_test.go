@@ -393,6 +393,9 @@ func TestDownloadWebFileDependencyRetriesFallbackAfterChecksumMismatch(t *testin
 	expected := []byte("expected virtio payload")
 	checksum := sha256.Sum256(expected)
 
+	webFileRetryDelay = 0
+	t.Cleanup(func() { webFileRetryDelay = 5 * time.Second })
+
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("unexpected virtio payload"))
 	}))
@@ -424,7 +427,41 @@ func TestDownloadWebFileDependencyRetriesFallbackAfterChecksumMismatch(t *testin
 	}
 }
 
+func TestDownloadWebFileDependencyRetriesCorruptedDownload(t *testing.T) {
+	webFileRetryDelay = 0
+	t.Cleanup(func() { webFileRetryDelay = 5 * time.Second })
+
+	expected := []byte("expected virtio payload")
+	checksum := sha256.Sum256(expected)
+
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			_, _ = w.Write([]byte("corrupted"))
+			return
+		}
+		_, _ = w.Write(expected)
+	}))
+	defer server.Close()
+
+	dep := WebFileDependency{
+		LocalPath: filepath.Join(t.TempDir(), "artifact.iso"),
+		Source:    server.URL + "/artifact.iso",
+		Checksum:  fmt.Sprintf("sha256:%x", checksum),
+	}
+	if err := downloadWebFileDependency(nil, dep); err != nil {
+		t.Fatalf("expected retry to recover from a corrupted download: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected 2 requests, got %d", requests)
+	}
+}
+
 func TestDownloadWebFileDependencyRejectsChecksumMismatch(t *testing.T) {
+	webFileRetryDelay = 0
+	t.Cleanup(func() { webFileRetryDelay = 5 * time.Second })
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("unexpected payload"))
 	}))

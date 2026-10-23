@@ -1,0 +1,58 @@
+name: vm-lifecycle
+description: >-
+  The common user cycle for the one VM target in SAILWRIGHT_E2E_TARGET: obtain the image, create, start,
+  provision in check mode, provision, provision again without changes, stop and
+  destroy. The VM is always destroyed at the end; if it already exists before
+  the run, the scenario fails without touching it.
+requires: [target]
+preflight:
+  # Fail before building if the VM already exists, e.g. left over from an aborted
+  # run or created by hand. The always destroy below would otherwise delete it.
+  - name: target VM does not exist yet
+    op: list
+    with: {command: destroy}
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}
+steps:
+  - name: pull prebuilt image
+    op: pull
+    when_env: SAILWRIGHT_E2E_PULL_REF
+    with: {ref: "${SAILWRIGHT_E2E_PULL_REF}"}
+  - name: build image
+    op: build
+    unless_env: SAILWRIGHT_E2E_PULL_REF
+    when_listed: build
+    with: {headless: true}
+  - name: create VM
+    op: create
+    expect:
+      state: {command: start, field: start, regex: "^(ready to start|already running)$"}
+  - name: start VM
+    op: start
+    expect:
+      state: {command: start, field: start, regex: "^already running$"}
+  - name: provision in check mode
+    op: provision
+    when_listed: provision
+    with: {check: true}
+    expect:
+      recap: {failed: 0, unreachable: 0}
+  - name: provision
+    op: provision
+    when_listed: provision
+    expect:
+      recap: {failed: 0, unreachable: 0}
+  - name: provision again is idempotent
+    op: provision
+    when_listed: provision
+    expect:
+      recap: {failed: 0, unreachable: 0, changed: 0}
+  - name: stop VM
+    op: stop
+    expect:
+      state: {command: start, field: start, regex: "^ready to start$"}
+always:
+  - name: destroy VM
+    op: destroy
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}

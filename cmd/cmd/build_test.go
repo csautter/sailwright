@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
@@ -251,5 +252,41 @@ func TestBuildListRowIncludesArtifactStatus(t *testing.T) {
 	}
 	if !strings.Contains(output, "ubuntu") || !strings.Contains(output, "missing") {
 		t.Fatalf("expected missing ubuntu build artifact row, got %q", output)
+	}
+}
+
+func TestBuildCommandReturnsErrorWhenBuildFails(t *testing.T) {
+	vms := availableBuildVirtualMachines()
+	if len(vms) == 0 {
+		t.Skip("no build targets available on this host")
+	}
+	vm := vms[0]
+
+	previousRunner, previousArch, previousType, previousEngine := runBuildFunc, arch, osType, buildEngine
+	t.Cleanup(func() {
+		runBuildFunc, arch, osType, buildEngine = previousRunner, previousArch, previousType, previousEngine
+	})
+
+	runBuildFunc = func(alchemy_build.VirtualMachineConfig) error {
+		return errors.New("packer exploded")
+	}
+	arch, osType, buildEngine = vm.Arch, vm.UbuntuType, string(vm.VirtualizationEngine)
+
+	err := buildCmd.RunE(buildCmd, []string{vm.OS})
+	if err == nil || !strings.Contains(err.Error(), "packer exploded") {
+		t.Fatalf("expected build failure to be returned, got %v", err)
+	}
+}
+
+func TestBuildCommandReturnsErrorForInvalidCombination(t *testing.T) {
+	previousRunner := runBuildFunc
+	t.Cleanup(func() { runBuildFunc = previousRunner })
+	runBuildFunc = func(alchemy_build.VirtualMachineConfig) error {
+		t.Fatal("build must not run for an invalid combination")
+		return nil
+	}
+
+	if err := buildCmd.RunE(buildCmd, []string{"not-an-os"}); err == nil {
+		t.Fatal("expected an error for an invalid combination")
 	}
 }

@@ -21,6 +21,7 @@ import (
 type buildRunner func(ctx context.Context, vm alchemy_build.VirtualMachineConfig) error
 
 var inspectBuildArtifactExists = alchemy_build.BuildArtifactsExistQuiet
+var runBuildFunc = runBuild
 
 func isBuildSupported(vm alchemy_build.VirtualMachineConfig) bool {
 	switch vm.HostOs {
@@ -281,7 +282,7 @@ func printAvailableBuildCombinations() error {
 		return err
 	}
 
-	if len(engines) > 1 {
+	if len(engines) > 1 && !listOutputJSON {
 		fmt.Printf("\nCurrent host supports multiple virtualization engines: %s\n", displayBuildEngines(vms))
 	}
 
@@ -305,7 +306,7 @@ Example:
   sailwright build all --parallel 4
 `,
 	Args: cobra.ExactArgs(1), // Enforce exactly one positional argument
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		osName := args[0]
 
 		if osName != "ubuntu" {
@@ -320,8 +321,7 @@ Example:
 
 			available_virtual_machines, err := filterBuildVirtualMachinesByEngine(buildableVirtualMachines, buildEngine)
 			if err != nil {
-				fmt.Printf("❌ %v\n", err)
-				return
+				return fmt.Errorf("❌ %w", err)
 			}
 			fmt.Printf("🔧 Building all available stable VM configurations with %d parallel builds\n", parallel)
 			for i := range available_virtual_machines {
@@ -350,7 +350,7 @@ Example:
 					return ctx.Err()
 				default:
 				}
-				return runBuild(vm)
+				return runBuildFunc(vm)
 			}
 
 			errs := runParallelBuilds(ctx, available_virtual_machines, parallel, runner)
@@ -359,17 +359,16 @@ Example:
 				for _, e := range errs {
 					fmt.Printf("  - %v\n", e)
 				}
-			} else {
-				fmt.Printf("✅ All builds completed successfully\n")
+				return fmt.Errorf("❌ %d build(s) failed", len(errs))
 			}
-			return
+			fmt.Printf("✅ All builds completed successfully\n")
+			return nil
 		}
 
 		available_virtual_machines := availableBuildVirtualMachines()
 		VirtualMachineConfig, err := resolveBuildVirtualMachine(available_virtual_machines, osName, osType, arch, buildEngine)
 		if err != nil {
-			fmt.Printf("❌ %v\n", err)
-			return
+			return fmt.Errorf("❌ %w", err)
 		}
 		fmt.Printf("🔧 Building VM for OS: %s, Type: %s, Architecture: %s, Engine: %s\n", osName, osType, arch, alchemy_build.DisplayVirtualizationEngine(VirtualMachineConfig.VirtualizationEngine))
 
@@ -381,9 +380,10 @@ Example:
 		VirtualMachineConfig.NoCache = noCache
 		VirtualMachineConfig.Verbose = buildVerbose
 
-		if err := runBuild(VirtualMachineConfig); err != nil {
-			fmt.Printf("❌ Build failed for OS: %s, Type: %s, Architecture: %s — %v\n", osName, osType, arch, err)
+		if err := runBuildFunc(VirtualMachineConfig); err != nil {
+			return fmt.Errorf("❌ Build failed for OS: %s, Type: %s, Architecture: %s — %w", osName, osType, arch, err)
 		}
+		return nil
 	},
 }
 
@@ -399,6 +399,7 @@ var buildListCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(buildCmd)
 	buildCmd.AddCommand(buildListCmd)
+	addListJSONFlag(buildListCmd)
 
 	buildCmd.Flags().StringVarP(&arch, "arch", "a", "amd64", "Target architecture (e.g., amd64, arm64)")
 	buildCmd.Flags().StringVarP(&osType, "type", "t", "server", "Type of OS (e.g., server, desktop)")

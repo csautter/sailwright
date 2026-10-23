@@ -94,8 +94,12 @@ func createHypervTempDir(dirs *Directories) error {
 	return os.MkdirAll(tempPath, 0755)
 }
 
+// getQemuBuildOutputDir is Packer's scratch directory. It lives in the cache so it is
+// covered by the same disk and cleanup rules as the artifacts; the build scripts keep
+// the QMP socket on a short path under /tmp instead and remove the directory after a
+// successful build.
 func getQemuBuildOutputDir(config VirtualMachineConfig) string {
-	return filepath.Join("/tmp", "dev-alchemy", "qemu-out-"+GenerateVirtualMachineSlug(&config))
+	return GetDirectoriesInstance().CachePath(config.OS, "qemu-out-"+GenerateVirtualMachineSlug(&config))
 }
 
 func getDarwinQemuBuildOutputDir(config VirtualMachineConfig) string {

@@ -84,6 +84,12 @@ sailwright stop list
 sailwright destroy list
 ```
 
+### Machine-readable listings
+
+Every `list` subcommand accepts `--json` and prints a single-line JSON document
+for scripts and tools, for example `sailwright build list --json`. See
+[Machine-readable listings](docs/machine-readable-listings.md) for the contract.
+
 > Note: macOS guests are only supported on macOS hosts due to Apple platform
 > and licensing restrictions.
 
@@ -301,6 +307,11 @@ next level of detail:
   flows
 - [Automated Quick-Start](./docs/quickstart-automation.md) for the recorded,
   single-command end-to-end run of the full VM lifecycle
+- [Deterministic E2E Scenarios](./docs/testing-workflows.md#deterministic-e2e-scenarios)
+  for the scripted user-cycle tests on real hosts
+- [Agent Gateway](./docs/agent-gateway.md) (experimental) for letting coding
+  agents in a devcontainer drive Sailwright on the host through an MCP gateway
+  with host-side approval
 - [Demo Recordings](./docs/demo-recordings.md) for how the quick-start
   recordings and website terminal demo are produced
 - [Managed Application Data](./docs/managed-application-data.md) for cache,

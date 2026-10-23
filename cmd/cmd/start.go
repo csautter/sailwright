@@ -136,6 +136,7 @@ func runStart(vm alchemy_build.VirtualMachineConfig) error {
 func init() {
 	rootCmd.AddCommand(startCmd)
 	startCmd.AddCommand(startListCmd)
+	addListJSONFlag(startListCmd)
 
 	startCmd.Flags().StringVarP(&arch, "arch", "a", "amd64", "Target architecture (e.g., amd64, arm64)")
 	startCmd.Flags().StringVarP(&osType, "type", "t", "server", "Type of OS (e.g., server, desktop)")
