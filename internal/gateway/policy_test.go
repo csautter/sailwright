@@ -405,3 +405,10 @@ func TestRedactorWithRequiredHidesShortSecrets(t *testing.T) {
 		t.Fatalf("empty secrets must be ignored, got %q", got)
 	}
 }
+
+func TestRedactorWithKeepsRequiredShortSecrets(t *testing.T) {
+	r := NewRedactor("longenough").WithRequired("pw").With("xy")
+	if got := r.String("pw xy longenough"); strings.Contains(got, "pw") || strings.Contains(got, "longenough") {
+		t.Fatalf("With must keep the minimum length of the redactor it extends, got %q", got)
+	}
+}

@@ -207,18 +207,18 @@ func (g *Gateway) ServeListener(ctx context.Context, listener net.Listener) erro
 // The individual commands are not audited; one event records the refresh.
 func (g *Gateway) RefreshTargets(ctx context.Context) {
 	ctx = context.WithValue(ctx, quietInfoKey{}, true)
-	failed := 0
+	var failed []string
 	for _, command := range listCommands {
 		targets, err := g.listTargets(ctx, command)
 		if err != nil {
-			failed++
+			failed = append(failed, command)
 		}
 		g.catalog.Set(command, targets, err)
 	}
 	g.refreshPlaybooks()
 	event := AuditEvent{Event: "targets_refreshed", BinarySHA256: g.pinned.SHA256}
-	if failed > 0 {
-		event.Error = fmt.Sprintf("%d of %d listings failed", failed, len(listCommands))
+	if len(failed) > 0 {
+		event.Error = fmt.Sprintf("%d of %d listings failed: %s", len(failed), len(listCommands), strings.Join(failed, ", "))
 	}
 	_ = g.audit.Record(event)
 }

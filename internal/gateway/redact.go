@@ -23,6 +23,7 @@ var ansiPattern = regexp.MustCompile(`\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x
 // Redactor replaces known secret values with a marker.
 type Redactor struct {
 	secrets []string
+	minLen  int // shortest value kept, carried so With does not drop short required secrets
 }
 
 // NewRedactor builds a redactor; very short values are ignored to avoid mangling output.
@@ -46,7 +47,7 @@ func newRedactor(minLen int, secrets []string) *Redactor {
 	}
 	// Longest first so a secret that contains another one is fully replaced.
 	sort.Slice(kept, func(i, j int) bool { return len(kept[i]) > len(kept[j]) })
-	return &Redactor{secrets: kept}
+	return &Redactor{secrets: kept, minLen: minLen}
 }
 
 // maxSecretLen is the length of the longest secret that is redacted.
@@ -75,13 +76,15 @@ func (r *Redactor) safeCut(buf []byte, cut int) int {
 	return cut
 }
 
-// With returns a redactor that also hides the given secrets.
+// With returns a redactor that also hides the given secrets, keeping r's minimum length.
 func (r *Redactor) With(secrets ...string) *Redactor {
 	var all []string
+	minLen := minRedactedSecret
 	if r != nil {
 		all = append(all, r.secrets...)
+		minLen = r.minLen
 	}
-	return NewRedactor(append(all, secrets...)...)
+	return newRedactor(minLen, append(all, secrets...))
 }
 
 // WithRequired is like With but also hides short values. Use it for secrets that must

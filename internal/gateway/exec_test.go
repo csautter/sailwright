@@ -28,7 +28,12 @@ func TestProcessTreeHelper(t *testing.T) {
 		time.Sleep(time.Minute)
 	case "child":
 		beat := os.Getenv(treeBeatEnvKey)
-		for i := 0; i < 1200; i++ {
+		// Stop when the test is gone (its temp dir is removed) or after 10 s, so a failed
+		// assertion cannot leave a writer behind.
+		for i := 0; i < 200; i++ {
+			if _, err := os.Stat(filepath.Dir(beat)); err != nil {
+				return
+			}
 			_ = os.WriteFile(beat, []byte(strconv.Itoa(i)), 0o600)
 			time.Sleep(50 * time.Millisecond)
 		}
