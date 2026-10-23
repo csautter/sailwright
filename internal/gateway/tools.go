@@ -355,13 +355,19 @@ func (g *Gateway) toolRunCLI(_ context.Context, req *mcp.CallToolRequest, in run
 	var snapshot *Snapshot
 	bundleRoot := ""
 	if in.BundleRoot != "" {
-		hostRoot, _, err := TranslateAgentPath(in.BundleRoot, g.cfg.AgentWorkspaces)
+		hostRoot, mapping, err := TranslateAgentPath(in.BundleRoot, g.cfg.AgentWorkspaces)
 		if err != nil {
 			return nil, JobView{}, err
 		}
 		// Canonicalize once so snapshot, path rewrite and risk assessment agree.
 		bundleRoot = path.Clean(in.BundleRoot)
-		created, err := CreateSnapshot(bundleRoot, hostRoot, g.dirs.Staging, SnapshotLimits{MaxBytes: g.cfg.SnapshotMaxBytes, MaxFiles: g.cfg.SnapshotMaxFiles})
+		// TranslateAgentPath vetted the path for the approval prompt; the snapshot
+		// re-opens it through the workspace root so a later swap cannot escape.
+		rel := strings.TrimPrefix(strings.TrimPrefix(bundleRoot, mapping.Agent), "/")
+		if rel == "" {
+			rel = "."
+		}
+		created, err := CreateConfinedSnapshot(bundleRoot, mapping.Host, rel, hostRoot, g.dirs.Staging, SnapshotLimits{MaxBytes: g.cfg.SnapshotMaxBytes, MaxFiles: g.cfg.SnapshotMaxFiles})
 		if err != nil {
 			return nil, JobView{}, fmt.Errorf("snapshot bundle_root: %w", err)
 		}

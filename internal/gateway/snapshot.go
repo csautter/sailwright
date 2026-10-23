@@ -92,8 +92,37 @@ func TranslateAgentPath(agentPath string, workspaces []WorkspaceMapping) (string
 // CreateSnapshot copies hostRoot into a new directory below stagingRoot. Files are
 // read through os.Root, so symlinks cannot escape the bundle even if the agent swaps
 // files while the copy runs. Symlinks to directories are rejected.
+//
+// hostRoot is opened by path; use CreateConfinedSnapshot for agent-supplied paths.
 func CreateSnapshot(agentRoot string, hostRoot string, stagingRoot string, limits SnapshotLimits) (Snapshot, error) {
-	info, err := os.Stat(hostRoot)
+	root, err := os.OpenRoot(hostRoot)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("inspect bundle_root: %w", err)
+	}
+	defer root.Close()
+	return createSnapshotFrom(root, agentRoot, hostRoot, stagingRoot, limits)
+}
+
+// CreateConfinedSnapshot snapshots the directory rel below the operator-configured
+// workspace. The bundle root is opened through the workspace os.Root in one step, so
+// a symlink the agent swaps in after TranslateAgentPath cannot redirect it outside
+// the workspace. displayRoot is only recorded for the approval prompt.
+func CreateConfinedSnapshot(agentRoot string, workspaceHost string, rel string, displayRoot string, stagingRoot string, limits SnapshotLimits) (Snapshot, error) {
+	base, err := os.OpenRoot(workspaceHost)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("open agent workspace: %w", err)
+	}
+	defer base.Close()
+	root, err := base.OpenRoot(filepath.FromSlash(rel))
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("inspect bundle_root: %w", err)
+	}
+	defer root.Close()
+	return createSnapshotFrom(root, agentRoot, displayRoot, stagingRoot, limits)
+}
+
+func createSnapshotFrom(root *os.Root, agentRoot string, hostRoot string, stagingRoot string, limits SnapshotLimits) (Snapshot, error) {
+	info, err := root.Stat(".")
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("inspect bundle_root: %w", err)
 	}
@@ -109,7 +138,7 @@ func CreateSnapshot(agentRoot string, hostRoot string, stagingRoot string, limit
 		return Snapshot{}, err
 	}
 
-	snapshot, err := copyBundle(hostRoot, dir, limits)
+	snapshot, err := copyBundle(root, dir, limits)
 	if err != nil {
 		_ = RemoveSnapshot(dir)
 		return Snapshot{}, err
@@ -130,13 +159,7 @@ type snapshotEntry struct {
 	hash string
 }
 
-func copyBundle(hostRoot string, dir string, limits SnapshotLimits) (Snapshot, error) {
-	root, err := os.OpenRoot(hostRoot)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	defer root.Close()
-
+func copyBundle(root *os.Root, dir string, limits SnapshotLimits) (Snapshot, error) {
 	var entries []snapshotEntry
 	var total int64
 	files := 0

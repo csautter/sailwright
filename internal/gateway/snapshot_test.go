@@ -211,3 +211,32 @@ func TestRemoveStaleStagingRemovesOnlyGatewayLeftovers(t *testing.T) {
 		t.Fatalf("unrelated entries must stay: %v", err)
 	}
 }
+
+func TestCreateConfinedSnapshotRejectsRootSwappedForEscapingSymlink(t *testing.T) {
+	host := t.TempDir()
+	outside := t.TempDir()
+	writeFile(t, filepath.Join(outside, "secret"), "x")
+	if err := os.Symlink(outside, filepath.Join(host, "bundle")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// The path was a plain directory when vetted and became a symlink afterwards.
+	if _, err := CreateConfinedSnapshot("/w/bundle", host, "bundle", filepath.Join(host, "bundle"), t.TempDir(), defaultLimits()); err == nil {
+		t.Fatal("expected a root escaping the workspace to be rejected")
+	}
+}
+
+func TestCreateConfinedSnapshotFollowsSymlinksInsideWorkspace(t *testing.T) {
+	host := t.TempDir()
+	writeFile(t, filepath.Join(host, "real", "site.yml"), "- hosts: all\n")
+	if err := os.Symlink("real", filepath.Join(host, "alias")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	snapshot, err := CreateConfinedSnapshot("/w/alias", host, "alias", filepath.Join(host, "real"), t.TempDir(), defaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer RemoveSnapshot(snapshot.Dir)
+	if snapshot.Files != 1 {
+		t.Fatalf("got %d files", snapshot.Files)
+	}
+}
