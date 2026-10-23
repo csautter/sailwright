@@ -1,0 +1,268 @@
+name: Refresh Windows 11 ISO
+
+# The only workflow that talks to Microsoft's Windows 11 download page. It publishes versioned ISOs
+# plus a manifest to the FTP cache; all build workflows resolve the ISO through that manifest.
+# See docs/windows-iso-cache.md.
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    # Mondays; the offline "due" rule decides whether Microsoft is contacted at all.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Treat the refresh as due even if the due rule says to skip"
+        required: false
+        default: false
+        type: boolean
+      arch:
+        description: "Architecture to refresh"
+        required: false
+        default: both
+        type: choice
+        options:
+          - both
+          - amd64
+          - arm64
+      # Temporary: remove together with the "adopt" mode after the migration
+      # (docs/windows-iso-cache.md, "Migration from the flat cache", step 4).
+      adopt_legacy:
+        description: "One-time migration: publish the flat legacy win11_25h2_english_<arch>.iso as a versioned object"
+        required: false
+        default: false
+        type: boolean
+  pull_request:
+    paths:
+      - "scripts/macos/playwright_win11_iso.py"
+      - "scripts/macos/win11_iso_hash.py"
+      - "scripts/macos/requirements.txt"
+      - "tools/win11iso/**"
+      - "pkg/build/win11iso*.go"
+      - "pkg/build/dependencies.go"
+      - "pkg/build/testdata/win11_release_notes.html"
+      - ".github/actions/refresh-windows-iso/**"
+      - ".github/workflows/refresh-windows-iso.yml"
+
+concurrency:
+  # Never cancel a running refresh: two refreshes must not race on the manifest.
+  # Pull requests only resolve the link and get their own group so they cannot queue behind real runs.
+  group: ${{ github.event_name == 'pull_request' && format('refresh-windows-iso-pr-{0}', github.event.pull_request.number) || 'refresh-windows-iso' }}
+  cancel-in-progress: false
+
+env:
+  # PR runs only resolve the link: no download, no upload, and a refusal is just a warning.
+  REFRESH_MODE: ${{ github.event_name == 'pull_request' && 'resolve-only' || (inputs.adopt_legacy && 'adopt' || 'refresh') }}
+  REFRESH_FORCE: ${{ inputs.force && 'true' || 'false' }}
+  REFRESH_ARCH: ${{ inputs.arch || 'both' }}
+
+jobs:
+  refresh-hosted:
+    name: refresh on GitHub-hosted runner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      outcome_amd64: ${{ steps.amd64.outputs.outcome }}
+      outcome_arm64: ${{ steps.arm64.outputs.outcome }}
+      age_days_amd64: ${{ steps.amd64.outputs.age_days }}
+      age_days_arm64: ${{ steps.arm64.outputs.age_days }}
+    env:
+      DEV_ALCHEMY_APP_DATA_DIR: ${{ github.workspace }}/.dev-alchemy
+      DEV_ALCHEMY_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/cache
+      DEV_ALCHEMY_VAGRANT_DIR: ${{ github.workspace }}/.dev-alchemy/.vagrant
+      DEV_ALCHEMY_PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
+      PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies linux
+        if: env.REFRESH_MODE != 'adopt'
+        run: |
+          go run cmd/main.go install
+
+      - name: Prepare download directory on /mnt
+        run: |
+          sudo mkdir -p /mnt/win11iso
+          sudo chown "$(id -u):$(id -g)" /mnt/win11iso
+
+      - name: Refresh amd64
+        id: amd64
+        if: env.REFRESH_ARCH == 'both' || env.REFRESH_ARCH == 'amd64'
+        uses: ./.github/actions/refresh-windows-iso
+        with:
+          arch: amd64
+          mode: ${{ env.REFRESH_MODE }}
+          force: ${{ env.REFRESH_FORCE }}
+          download-dir: /mnt/win11iso
+          ftp-server: ${{ vars.BUILD_CACHE_FTP_SERVER }}
+          ftp-port: ${{ vars.BUILD_CACHE_FTP_PORT }}
+          ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
+          ftp-password: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
+          ftp-base-dir: /private
+
+      - name: Refresh arm64
+        id: arm64
+        if: env.REFRESH_ARCH == 'both' || env.REFRESH_ARCH == 'arm64'
+        uses: ./.github/actions/refresh-windows-iso
+        with:
+          arch: arm64
+          mode: ${{ env.REFRESH_MODE }}
+          force: ${{ env.REFRESH_FORCE }}
+          download-dir: /mnt/win11iso
+          ftp-server: ${{ vars.BUILD_CACHE_FTP_SERVER }}
+          ftp-port: ${{ vars.BUILD_CACHE_FTP_PORT }}
+          ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
+          ftp-password: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
+          ftp-base-dir: /private
+
+      - name: Upload Playwright diagnostics
+        if: failure() || (success() && (steps.amd64.outputs.outcome == 'refused' || steps.arm64.outputs.outcome == 'refused'))
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-diagnostics-refresh-hosted
+          path: ${{ env.DEV_ALCHEMY_CACHE_DIR }}/windows/playwright-diagnostics
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 7
+
+  # Second attempt for architectures Microsoft refused on the hosted runner: the self-hosted
+  # Tart runner has a residential/office IP that Microsoft usually accepts.
+  refresh-tart:
+    name: refresh on self-hosted Tart runner
+    needs: [refresh-hosted]
+    if: >-
+      github.event_name != 'pull_request' &&
+      vars.USE_TART_MACOS_RUNNERS == 'true' &&
+      (needs.refresh-hosted.outputs.outcome_amd64 == 'refused' || needs.refresh-hosted.outputs.outcome_arm64 == 'refused')
+    runs-on: macos-26-tart
+    timeout-minutes: 120
+    outputs:
+      outcome_amd64: ${{ steps.amd64.outputs.outcome }}
+      outcome_arm64: ${{ steps.arm64.outputs.outcome }}
+    env:
+      DEV_ALCHEMY_APP_DATA_DIR: ${{ github.workspace }}/.dev-alchemy
+      DEV_ALCHEMY_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/cache
+      DEV_ALCHEMY_VAGRANT_DIR: ${{ github.workspace }}/.dev-alchemy/.vagrant
+      DEV_ALCHEMY_PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
+      PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies macos
+        run: |
+          go run cmd/main.go install
+
+      - name: Refresh amd64
+        id: amd64
+        if: needs.refresh-hosted.outputs.outcome_amd64 == 'refused'
+        uses: ./.github/actions/refresh-windows-iso
+        with:
+          arch: amd64
+          mode: refresh
+          force: ${{ env.REFRESH_FORCE }}
+          download-dir: ${{ github.workspace }}/.win11iso
+          ftp-server: ${{ vars.BUILD_CACHE_FTP_SERVER }}
+          ftp-port: ${{ vars.BUILD_CACHE_FTP_PORT }}
+          ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
+          ftp-password: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
+          ftp-base-dir: /private
+
+      - name: Refresh arm64
+        id: arm64
+        if: needs.refresh-hosted.outputs.outcome_arm64 == 'refused'
+        uses: ./.github/actions/refresh-windows-iso
+        with:
+          arch: arm64
+          mode: refresh
+          force: ${{ env.REFRESH_FORCE }}
+          download-dir: ${{ github.workspace }}/.win11iso
+          ftp-server: ${{ vars.BUILD_CACHE_FTP_SERVER }}
+          ftp-port: ${{ vars.BUILD_CACHE_FTP_PORT }}
+          ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
+          ftp-password: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
+          ftp-base-dir: /private
+
+      - name: Upload Playwright diagnostics
+        if: failure() || (success() && (steps.amd64.outputs.outcome == 'refused' || steps.arm64.outputs.outcome == 'refused'))
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-diagnostics-refresh-tart
+          path: ${{ env.DEV_ALCHEMY_CACHE_DIR }}/windows/playwright-diagnostics
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 7
+
+  # A single refusal is harmless. A manifest that nobody could refresh for 90 days is not:
+  # fail loudly so a human publishes an ISO manually (docs/windows-iso-cache.md).
+  staleness-guard:
+    name: staleness guard
+    needs: [refresh-hosted, refresh-tart]
+    if: always() && github.event_name != 'pull_request' && needs.refresh-hosted.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fail when both runners are blocked and the manifest is stale
+        shell: bash
+        env:
+          HOSTED_AMD64: ${{ needs.refresh-hosted.outputs.outcome_amd64 }}
+          HOSTED_ARM64: ${{ needs.refresh-hosted.outputs.outcome_arm64 }}
+          TART_AMD64: ${{ needs.refresh-tart.outputs.outcome_amd64 }}
+          TART_ARM64: ${{ needs.refresh-tart.outputs.outcome_arm64 }}
+          AGE_AMD64: ${{ needs.refresh-hosted.outputs.age_days_amd64 }}
+          AGE_ARM64: ${{ needs.refresh-hosted.outputs.age_days_arm64 }}
+          # Staleness limit (docs/adr/0006-versioned-windows-iso-cache.md); the Go due rule only
+          # knows the 28-day re-check age.
+          MAX_AGE_DAYS: "90"
+        run: |
+          set -euo pipefail
+          stale=false
+          for arch in amd64 arm64; do
+            if [ "$arch" = "amd64" ]; then
+              hosted="$HOSTED_AMD64"; tart="$TART_AMD64"; age="$AGE_AMD64"
+            else
+              hosted="$HOSTED_ARM64"; tart="$TART_ARM64"; age="$AGE_ARM64"
+            fi
+            if [ "$hosted" != "refused" ]; then
+              continue
+            fi
+            # The Tart job only runs for refused architectures; any other outcome there means it succeeded.
+            if [ -n "$tart" ] && [ "$tart" != "refused" ]; then
+              continue
+            fi
+            age="${age:-9999}"
+            if [ "$age" -ge "$MAX_AGE_DAYS" ]; then
+              echo "::error title=Windows 11 ISO is stale ($arch)::Microsoft refused all runners and the manifest was last checked ${age} days ago. Publish an ISO manually (docs/windows-iso-cache.md)."
+              stale=true
+            else
+              echo "::warning title=Windows 11 ISO refresh blocked ($arch)::Microsoft refused all runners; the manifest was last checked ${age} days ago (limit ${MAX_AGE_DAYS})."
+            fi
+          done
+          if [ "$stale" = "true" ]; then
+            exit 1
+          fi

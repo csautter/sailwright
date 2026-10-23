@@ -19,6 +19,8 @@ inputs:
         - blob-name   (optional) object key; defaults to basename of local-path
         - container   (optional) legacy Azure container name; ignored by FTP; defaults to "build-cache"
         - overwrite   (optional) whether to replace an existing cached file/blob; defaults to false
+        - manifest    (optional) FTP key of a pointer JSON; such entries are managed by the
+                      "Refresh Windows 11 ISO" workflow and are skipped here
       Pass '[]' to skip all cache operations (e.g. for builds with no cached files).
     required: true
   subscription-id:

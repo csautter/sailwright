@@ -160,16 +160,28 @@ func (e matrixEntry) arch() string {
 	}
 }
 
+type cacheEntry struct {
+	LocalPath string `json:"local-path"`
+	Manifest  string `json:"manifest"`
+	BlobName  string `json:"blob-name"`
+}
+
+// cacheEntries returns the descriptors from the entry's cache_files JSON list.
+func (e matrixEntry) cacheEntries(t *testing.T) []cacheEntry {
+	t.Helper()
+
+	var files []cacheEntry
+	if err := json.Unmarshal([]byte(e["cache_files"]), &files); err != nil {
+		t.Fatalf("failed to parse cache_files of matrix entry %s: %v", e["go_test_name"], err)
+	}
+	return files
+}
+
 // cacheFiles returns the local paths from the entry's cache_files JSON list.
 func (e matrixEntry) cacheFiles(t *testing.T) []string {
 	t.Helper()
 
-	var files []struct {
-		LocalPath string `json:"local-path"`
-	}
-	if err := json.Unmarshal([]byte(e["cache_files"]), &files); err != nil {
-		t.Fatalf("failed to parse cache_files of matrix entry %s: %v", e["go_test_name"], err)
-	}
+	files := e.cacheEntries(t)
 	paths := make([]string, 0, len(files))
 	for _, f := range files {
 		paths = append(paths, f.LocalPath)

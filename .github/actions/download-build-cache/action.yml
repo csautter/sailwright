@@ -17,6 +17,12 @@ inputs:
         - local-path  (required) path where the file should live in the workspace
         - blob-name   (optional) object key; defaults to basename of local-path
         - container   (optional) legacy Azure container name; ignored by FTP; defaults to "build-cache"
+        - manifest    (optional) FTP key of a pointer JSON (e.g. "windows11/iso/win11-amd64.json").
+                      The manifest names a versioned object, which is downloaded to local-path,
+                      verified against the manifest sha256 and accompanied by a "<local-path>.json"
+                      sidecar. Files already in the workspace or local runner cache are re-hashed.
+                      An explicit blob-name is used as a legacy fallback only while the manifest
+                      does not exist. FTP backend only.
       Example:
         '[{"local-path":"./cache/windows11/iso/win11.iso","container":"build-cache"}]'
       Pass '[]' to skip all cache operations (e.g. for builds with no cached files).

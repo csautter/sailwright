@@ -124,7 +124,7 @@ func TestBuildWorkflowsCacheArchitectureSpecificDependencies(t *testing.T) {
 					}
 					if entry["vm_os"] == "windows11" {
 						want = append(want,
-							"./.dev-alchemy/cache/windows11/iso/win11_25h2_english_"+arch+".iso",
+							"./.dev-alchemy/cache/windows11/iso/win11_english_"+arch+".iso",
 							"./.dev-alchemy/cache/utm/utm-guest-tools-latest.iso",
 						)
 					}
@@ -135,8 +135,61 @@ func TestBuildWorkflowsCacheArchitectureSpecificDependencies(t *testing.T) {
 							t.Errorf("job %q matrix entry %s must cache %s", jobID, testName, path)
 						}
 					}
+
+					if entry["vm_os"] == "windows11" {
+						assertWindowsISOResolvedViaManifest(t, jobID, entry, jobs[jobID])
+					}
 				}
 			}
 		})
+	}
+}
+
+// assertWindowsISOResolvedViaManifest checks that a Windows 11 build resolves its ISO through the
+// manifest published by the refresh workflow and cannot fall back to Microsoft.
+func assertWindowsISOResolvedViaManifest(t *testing.T, jobID string, entry matrixEntry, j job) {
+	t.Helper()
+
+	testName, arch := entry["go_test_name"], entry.arch()
+	isoPath := "./.dev-alchemy/cache/windows11/iso/win11_english_" + arch + ".iso"
+	wantManifest := "windows11/iso/win11-" + arch + ".json"
+	// Fallback while the manifests are being adopted; remove with the legacy objects
+	// (docs/windows-iso-cache.md, "Migration from the flat cache").
+	wantLegacyBlob := "win11_25h2_english_" + arch + ".iso"
+
+	found := false
+	for _, cached := range entry.cacheEntries(t) {
+		if cached.LocalPath != isoPath {
+			continue
+		}
+		found = true
+		if cached.Manifest != wantManifest {
+			t.Errorf("job %q matrix entry %s must resolve %s via manifest %q, got %q", jobID, testName, isoPath, wantManifest, cached.Manifest)
+		}
+		if cached.BlobName != wantLegacyBlob {
+			t.Errorf("job %q matrix entry %s must fall back to the legacy object %q, got %q", jobID, testName, wantLegacyBlob, cached.BlobName)
+		}
+	}
+	if !found {
+		t.Errorf("job %q matrix entry %s does not cache %s", jobID, testName, isoPath)
+	}
+
+	if j.Env["SAILWRIGHT_WIN11_ISO_OFFLINE"] != "1" {
+		t.Errorf("job %q must set SAILWRIGHT_WIN11_ISO_OFFLINE=1 so Windows 11 builds never contact Microsoft", jobID)
+	}
+}
+
+func TestColdCacheBootstrapDoesNotContactMicrosoft(t *testing.T) {
+	t.Parallel()
+
+	jobs := loadWorkflow(t, linuxBuildWorkflow).Jobs
+	cold, ok := jobs["test-cold-cache-dependency-bootstrap"]
+	if !ok {
+		t.Fatal("expected job test-cold-cache-dependency-bootstrap")
+	}
+	for _, s := range cold.Steps {
+		if strings.Contains(s.Run, "TestGetWindows11Download") {
+			t.Errorf("cold-cache step %q must not run live Windows 11 download tests; the refresh workflow owns that", s.Name)
+		}
 	}
 }

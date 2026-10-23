@@ -1,0 +1,71 @@
+name: 'Refresh Windows 11 ISO'
+description: >
+  Refreshes the versioned Windows 11 ISO cache for one architecture: evaluates the offline
+  "due" rule, resolves the download link at Microsoft, and, when a new ISO exists, downloads it,
+  uploads the immutable object plus the manifest to the FTP cache, and prunes old objects.
+  A Microsoft refusal is reported as outcome=refused and never fails the step.
+  Requires Go and Python on the runner.
+
+inputs:
+  arch:
+    description: 'amd64 or arm64'
+    required: true
+  mode:
+    description: >
+      refresh: full workflow. resolve-only: resolve the link only (no download, no upload).
+      adopt: one-time migration of the flat legacy object into a versioned object plus manifest.
+    required: false
+    default: 'refresh'
+  force:
+    description: 'Treat the refresh as due regardless of the due rule.'
+    required: false
+    default: 'false'
+  download-dir:
+    description: 'Directory with enough space (about 8 GB) for the ISO download.'
+    required: true
+  ftp-server:
+    description: 'FTP server hostname. Explicit TLS is enforced.'
+    required: false
+    default: ''
+  ftp-port:
+    description: 'FTP server port.'
+    required: false
+    default: ''
+  ftp-username:
+    description: 'FTP username'
+    required: false
+    default: ''
+  ftp-password:
+    description: 'FTP password'
+    required: false
+    default: ''
+  ftp-base-dir:
+    description: 'Base directory on the FTP server.'
+    required: false
+    default: '/private'
+
+outputs:
+  outcome:
+    description: 'skipped, refused, unchanged, new, or adopted'
+    value: ${{ steps.refresh.outputs.outcome }}
+  age_days:
+    description: 'Days since the manifest was last checked before this run (9999 without manifest).'
+    value: ${{ steps.refresh.outputs.age_days }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Refresh Windows 11 ISO
+      id: refresh
+      shell: bash
+      env:
+        ARCH: ${{ inputs.arch }}
+        MODE: ${{ inputs.mode }}
+        FORCE: ${{ inputs.force }}
+        DOWNLOAD_DIR: ${{ inputs.download-dir }}
+        FTP_SERVER: ${{ inputs.ftp-server }}
+        FTP_PORT: ${{ inputs.ftp-port }}
+        FTP_USERNAME: ${{ inputs.ftp-username }}
+        FTP_PASSWORD: ${{ inputs.ftp-password }}
+        FTP_BASE_DIR: ${{ inputs.ftp-base-dir }}
+      run: bash "${{ github.action_path }}/scripts/refresh.sh"

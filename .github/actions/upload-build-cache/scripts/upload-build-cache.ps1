@@ -252,6 +252,11 @@ foreach ($f in $files) {
 
     Write-Host "=== Build cache upload: $localPath [object=$blobName container=$container overwrite=$overwrite backend=$cacheBackend] ==="
 
+    if ($null -ne $f.PSObject.Properties['manifest'] -and $f.'manifest') {
+        Write-Host "  [ok] Entry is resolved via manifest '$($f.'manifest')' - managed by refresh workflow, skipping upload."
+        continue
+    }
+
     if (-not (Test-Path $localPath -PathType Leaf)) {
         Write-Host "  [miss] File not found at $localPath - skipping."
         continue

@@ -112,6 +112,8 @@ jobs:
     needs: [provision-hyperv-runner]
     timeout-minutes: 60
     env:
+      # Build jobs resolve the Windows 11 ISO through the cache manifest and never contact Microsoft.
+      SAILWRIGHT_WIN11_ISO_OFFLINE: "1"
       DEV_ALCHEMY_APP_DATA_DIR: ${{ github.workspace }}\.dev-alchemy
       DEV_ALCHEMY_CACHE_DIR: ${{ github.workspace }}\.dev-alchemy\cache
       DEV_ALCHEMY_VAGRANT_DIR: ${{ github.workspace }}\.dev-alchemy\.vagrant
@@ -133,7 +135,7 @@ jobs:
         uses: ./.github/actions/download-build-cache
         with:
           storage-backend: ftp
-          files: '[{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_25h2_english_amd64.iso","container":"build-cache"}]'
+          files: '[{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_amd64.iso","manifest":"windows11/iso/win11-amd64.json","blob-name":"win11_25h2_english_amd64.iso"}]'
           ftp-server: ${{ vars.BUILD_CACHE_FTP_SERVER }}
           ftp-port: ${{ vars.BUILD_CACHE_FTP_PORT }}
           ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
@@ -200,7 +202,7 @@ jobs:
         uses: ./.github/actions/upload-build-cache
         with:
           storage-backend: ftp
-          files: '[{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_25h2_english_amd64.iso","container":"build-cache"},{"local-path":"./artifact/hyperv-diagnostics-TestBuildHypervWindows11Amd64OnWindows.zip","blob-name":"hyperv-diagnostics-TestBuildHypervWindows11Amd64OnWindows.zip","container":"build-cache","overwrite":true}]'
+          files: '[{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_amd64.iso","manifest":"windows11/iso/win11-amd64.json","blob-name":"win11_25h2_english_amd64.iso"},{"local-path":"./artifact/hyperv-diagnostics-TestBuildHypervWindows11Amd64OnWindows.zip","blob-name":"hyperv-diagnostics-TestBuildHypervWindows11Amd64OnWindows.zip","container":"build-cache","overwrite":true}]'
           ftp-server: ${{ vars.BUILD_CACHE_FTP_SERVER }}
           ftp-port: ${{ vars.BUILD_CACHE_FTP_PORT }}
           ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
@@ -355,6 +357,8 @@ jobs:
     needs: [provision-virtualbox-runner]
     timeout-minutes: 80
     env:
+      # Build jobs resolve the Windows 11 ISO through the cache manifest and never contact Microsoft.
+      SAILWRIGHT_WIN11_ISO_OFFLINE: "1"
       DEV_ALCHEMY_APP_DATA_DIR: ${{ github.workspace }}\.dev-alchemy
       DEV_ALCHEMY_CACHE_DIR: ${{ github.workspace }}\.dev-alchemy\cache
       DEV_ALCHEMY_VAGRANT_DIR: ${{ github.workspace }}\.dev-alchemy\.vagrant
@@ -376,7 +380,7 @@ jobs:
         uses: ./.github/actions/download-build-cache
         with:
           storage-backend: ftp
-          files: '[{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_25h2_english_amd64.iso","container":"build-cache"}]'
+          files: '[{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_amd64.iso","manifest":"windows11/iso/win11-amd64.json","blob-name":"win11_25h2_english_amd64.iso"}]'
           ftp-server: ${{ vars.BUILD_CACHE_FTP_SERVER }}
           ftp-port: ${{ vars.BUILD_CACHE_FTP_PORT }}
           ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
@@ -406,7 +410,7 @@ jobs:
         uses: ./.github/actions/upload-build-cache
         with:
           storage-backend: ftp
-          files: '[{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_25h2_english_amd64.iso","container":"build-cache"}]'
+          files: '[{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_amd64.iso","manifest":"windows11/iso/win11-amd64.json","blob-name":"win11_25h2_english_amd64.iso"}]'
           ftp-server: ${{ vars.BUILD_CACHE_FTP_SERVER }}
           ftp-port: ${{ vars.BUILD_CACHE_FTP_PORT }}
           ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
