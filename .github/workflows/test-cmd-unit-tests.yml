@@ -23,6 +23,7 @@ on:
       - "test/workflowcheck/**"
       - "pkg/build/**"
       - "pkg/oci/**"
+      - "tools/**"
       - "roles_test_1/**"
       - "roles_test_2/**"
       - "runtimeassets.go"
@@ -46,6 +47,7 @@ on:
       - "test/workflowcheck/**"
       - "pkg/build/**"
       - "pkg/oci/**"
+      - "tools/**"
       - "roles_test_1/**"
       - "roles_test_2/**"
       - "runtimeassets.go"
@@ -81,6 +83,9 @@ jobs:
 
       - name: Run OCI package tests
         run: go test ./pkg/oci/...
+
+      - name: Run tools tests
+        run: go test ./tools/...
 
       - name: Run gateway and E2E runner tests
         run: go test ${{ runner.os == 'Linux' && '-race' || '' }} ./internal/gateway/... ./cmd/sailwright-gateway/... ./test/e2e/...
