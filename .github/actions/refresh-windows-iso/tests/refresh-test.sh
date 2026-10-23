@@ -274,6 +274,28 @@ for day in 20250101 20250201 20250301; do
   printf 'x' > "$remote/windows11/iso/win11_25h2_english_x64_${day}.iso"
 done
 printf 'par' > "$remote/windows11/iso/$object"
+# A file is not a leftover when the other architecture still references it.
+for reference in current history; do
+  echo "--- refuse replacement of object in another architecture's $reference"
+  python3 - "$remote/windows11/iso/win11-arm64.json" "$object" "$reference" <<'PYREF'
+import json, sys
+obj = sys.argv[2]
+m = {"schema": 1, "arch": "arm64", "object": obj, "sha256": "a" * 64, "history": []}
+if sys.argv[3] == "history":
+    m["object"] = "other.iso"
+    m["history"] = [{"object": obj, "sha256": "a" * 64}]
+with open(sys.argv[1], "w") as f:
+    json.dump(m, f)
+PYREF
+  cp "$manifest" "$root/manifest.before"
+  cp "$remote/windows11/iso/$object" "$root/object.before"
+  if run_refresh; then fail "must not overwrite an object referenced by another architecture"; fi
+  grep -F "Refusing to replace object" "$root/refresh.out" >/dev/null || fail "missing cross-manifest conflict message"
+  cmp -s "$manifest" "$root/manifest.before" || fail "manifest changed on cross-manifest conflict"
+  cmp -s "$remote/windows11/iso/$object" "$root/object.before" || fail "referenced object overwritten"
+  if grep -F -- "--upload-file" "$FAKE_FTP_LOG" >/dev/null; then fail "conflict must prevent uploads"; fi
+done
+rm "$remote/windows11/iso/win11-arm64.json"
 run_refresh || { cat "$root/refresh.out"; fail "publish over leftover"; }
 grep -F "Replacing unreferenced object" "$root/refresh.out" >/dev/null || fail "leftover not reported"
 cmp -s "$remote/windows11/iso/$object" "$root/v1.iso" || fail "leftover object not replaced"
@@ -310,5 +332,12 @@ checked_at="$(manifest_field checked_at)"
 expected_checked="$(python3 -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) - timedelta(days=28)).strftime("%Y-%m-%d"))')"
 [[ "$checked_at" == "$expected_checked"* ]] || fail "adopt checked_at $checked_at, want $expected_checked"
 [ -e "$remote/win11_25h2_english_amd64.iso" ] || fail "legacy object must be left in place"
+
+echo "--- unexpected source names produce distinct objects for each requested architecture"
+reset_remote
+FAKE_SOURCE=Win11_26H1_English_x64_v2.iso run_refresh || { cat "$root/refresh.out"; fail "amd64 fallback"; }
+ARCH=arm64 FAKE_SOURCE=Win11_26H1_English_ARM.iso FAKE_ISO="$root/v2.iso" run_refresh || { cat "$root/refresh.out"; fail "arm64 fallback"; }
+cmp -s "$remote/windows11/iso/win11_unknown_english_amd64_${today}.iso" "$root/v1.iso" || fail "amd64 fallback changed"
+cmp -s "$remote/windows11/iso/win11_unknown_english_arm64_${today}.iso" "$root/v2.iso" || fail "arm64 fallback missing"
 
 echo "All refresh.sh tests passed."

@@ -28,7 +28,8 @@ windows11/iso/win11-arm64.json
 **Object name:** the base name of Microsoft's download URL (`Win11_25H2_English_x64v2.iso`),
 lower-cased, plus `_<YYYYMMDD>` for the day the ISO was first seen. Names that do not match
 `^Win11_\d{2}H[12]_[A-Za-z]+_(x64|Arm64)(v\d+)?\.iso$` become
-`win11_unknown_english_<arch>_<date>.iso` and log a warning.
+`win11_unknown_english_<arch>_<date>.iso` (using the requested `amd64` or `arm64` architecture)
+and log a warning.
 
 **Manifest** (`win11-<arch>.json`, schema 1):
 
@@ -66,12 +67,16 @@ and renames, with a warning; the manifest is then missing only between those two
 has the same sha256 as an object in `history`, that object is reused instead of storing a copy; if
 it is the current object, only `checked_at` changes. Different bytes under a name that is already in
 `history` (same-day re-publish of changed media) fail the run. An object under the new name that no
-manifest references is a leftover from an interrupted run and is replaced.
+manifest references is a leftover from an interrupted run and is replaced. Before replacing it,
+the publisher checks the current object and history in both architectures' remote manifests.
 
 ## How build jobs use it
 
 Build workflows list the ISO as
 `{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_<arch>.iso","manifest":"windows11/iso/win11-<arch>.json","blob-name":"win11_25h2_english_<arch>.iso"}`.
+If a manifest references a missing object, the download step emits a `Build cache` error annotation
+and disables legacy fallback. Run **Refresh Windows 11 ISO** to restore the missing object.
+
 The `download-build-cache` action fetches the manifest, downloads `windows11/iso/<object>`, verifies
 the sha256 (deleting the file on mismatch) and writes the manifest next to the ISO as
 `<local-path>.json`. A file already in the workspace or in the Tart runner's local cache is used
@@ -88,7 +93,7 @@ replaces it). It is removed after the migration, see below.
 is FTP only; the legacy Azure backend fails with a clear message.
 
 Build jobs set `SAILWRIGHT_WIN11_ISO_OFFLINE=1` (`1` or `true`). If the ISO is missing, the build
-fails immediately with "Windows 11 ISO missing at …; Microsoft download disabled in CI" instead of
+fails immediately with "missing Windows 11 ISO at …; Microsoft download disabled in CI" instead of
 falling back to Playwright. `build/packer/windows/windows11-qemu.sh` honors the same variable when
 it is run directly.
 

@@ -133,7 +133,7 @@ func runResolve(args []string, out io.Writer, now time.Time) error {
 		"url", info.URL,
 		"source_name", info.SourceName,
 		"sha256", info.SHA256,
-		"object", build.Win11ObjectName(info.SourceName, now))
+		"object", build.Win11ObjectName(info.SourceName, *arch, now))
 	return nil
 }
 
@@ -173,7 +173,7 @@ func runFetch(args []string, out io.Writer, now time.Time) error {
 	if *url == "" || *outDir == "" || *manifestPath == "" || *sourceName == "" {
 		return errors.New("--url, --out, --manifest and --source-name are required")
 	}
-	object := build.Win11ObjectName(*sourceName, now)
+	object := build.Win11ObjectName(*sourceName, *arch, now)
 	local := filepath.Join(*outDir, object)
 	if err := build.DownloadWin11ISO(*url, local, strings.ToLower(*sha)); err != nil {
 		return err
@@ -197,7 +197,7 @@ func runPublish(args []string, out io.Writer, now time.Time) error {
 	if *iso == "" || *sourceName == "" || *manifestPath == "" {
 		return errors.New("--iso, --source-name and --manifest are required")
 	}
-	object := build.Win11ObjectName(*sourceName, now)
+	object := build.Win11ObjectName(*sourceName, *arch, now)
 	if err := writeManifest(out, *arch, *manifestPath, *sourceName, object, *iso, "", now); err != nil {
 		return err
 	}

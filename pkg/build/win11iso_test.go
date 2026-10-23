@@ -14,16 +14,20 @@ import (
 
 func TestWin11ObjectName(t *testing.T) {
 	day := time.Date(2026, 10, 23, 5, 0, 0, 0, time.UTC)
-	tests := map[string]string{
-		"Win11_25H2_English_x64.iso":   "win11_25h2_english_x64_20261023.iso",
-		"Win11_25H2_English_x64v2.iso": "win11_25h2_english_x64v2_20261023.iso",
-		"Win11_25H2_English_Arm64.iso": "win11_25h2_english_arm64_20261023.iso",
-		"Weird.iso":                    "win11_unknown_english_x64_20261023.iso",
-		"Weird_Arm64.iso":              "win11_unknown_english_arm64_20261023.iso",
+	tests := []struct {
+		source, arch, want string
+	}{
+		{"Win11_25H2_English_x64.iso", "amd64", "win11_25h2_english_x64_20261023.iso"},
+		{"Win11_25H2_English_x64v2.iso", "amd64", "win11_25h2_english_x64v2_20261023.iso"},
+		{"Win11_25H2_English_Arm64.iso", "arm64", "win11_25h2_english_arm64_20261023.iso"},
+		{"Weird.iso", "amd64", "win11_unknown_english_amd64_20261023.iso"},
+		{"Weird.iso", "arm64", "win11_unknown_english_arm64_20261023.iso"},
+		{"Win11_26H1_English_ARM.iso", "arm64", "win11_unknown_english_arm64_20261023.iso"},
+		{"Win11_26H1_English_x64_v2.iso", "amd64", "win11_unknown_english_amd64_20261023.iso"},
 	}
-	for in, want := range tests {
-		if got := Win11ObjectName(in, day); got != want {
-			t.Errorf("Win11ObjectName(%q) = %q, want %q", in, got, want)
+	for _, tt := range tests {
+		if got := Win11ObjectName(tt.source, tt.arch, day); got != tt.want {
+			t.Errorf("Win11ObjectName(%q, %q) = %q, want %q", tt.source, tt.arch, got, tt.want)
 		}
 	}
 }
@@ -307,9 +311,68 @@ func TestGetWindows11DownloadOffline(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	for _, want := range []string{"Windows 11 ISO missing at " + savePath, "Microsoft download disabled in CI", "docs/windows-iso-cache.md"} {
+	for _, want := range []string{"missing Windows 11 ISO at " + savePath, "Microsoft download disabled in CI", "docs/windows-iso-cache.md"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+}
+
+func TestResolveWindows11LinkMetadata(t *testing.T) {
+	previous := directoriesInstance
+	directoriesInstance = &Directories{CacheDir: t.TempDir()}
+	t.Cleanup(func() { directoriesInstance = previous })
+	link := "https://example.invalid/Win11_26H1_English_Arm64.iso?token=new"
+	for _, tt := range []struct {
+		name, data   string
+		keepMetadata bool
+	}{
+		{"matching", `{"url":"` + link + `","source_name":"published.iso","sha256":"abc"}`, true},
+		{"matching with whitespace", `{"url":" ` + link + ` ","source_name":"published.iso","sha256":"abc"}`, true},
+		{"stale", `{"url":"https://example.invalid/old.iso","source_name":"old.iso","sha256":"abc"}`, false},
+		{"missing URL", `{"source_name":"old.iso","sha256":"abc"}`, false},
+		{"invalid JSON", `{`, false},
+		{"missing file", "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			info, err := resolveWindows11Link("arm64", func(arch, dst string, download bool) (string, error) {
+				if arch != "arm64" || download {
+					t.Fatal("unexpected resolver arguments")
+				}
+				if _, err := os.Stat(dst); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("destination must not exist: %v", err)
+				}
+				file := GetDirectoriesInstance().CachePath("windows", "win11_arm64_iso_link.json")
+				if err := os.MkdirAll(filepath.Dir(file), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if tt.data == "" {
+					if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
+						t.Fatal(err)
+					}
+				} else if err := os.WriteFile(file, []byte(tt.data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return " " + link + "\n", nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := &Win11LinkInfo{URL: link, SourceName: "Win11_26H1_English_Arm64.iso"}
+			if tt.keepMetadata {
+				want.SourceName, want.SHA256 = "published.iso", "abc"
+			}
+			if *info != *want {
+				t.Errorf("info = %+v, want %+v", info, want)
+			}
+		})
+	}
+}
+
+func TestReadWin11LinkInfoRejectsUnsupportedArch(t *testing.T) {
+	for _, arch := range []string{"", "x64", "../../other"} {
+		if _, err := ReadWin11LinkInfo(arch); err == nil {
+			t.Errorf("accepted unsupported arch %q", arch)
 		}
 	}
 }

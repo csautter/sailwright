@@ -77,17 +77,14 @@ type Win11Manifest struct {
 }
 
 // Win11ObjectName builds the immutable remote object name from Microsoft's file name and the first-seen date.
-func Win11ObjectName(sourceName string, firstSeen time.Time) string {
+// Unexpected source names use the requested architecture (amd64 or arm64) in the fallback.
+func Win11ObjectName(sourceName, arch string, firstSeen time.Time) string {
 	date := firstSeen.UTC().Format("20060102")
 	if win11SourceNamePattern.MatchString(sourceName) {
 		base := strings.TrimSuffix(strings.ToLower(sourceName), ".iso")
 		return base + "_" + date + ".iso"
 	}
 	log.Printf("Warning: unexpected Windows 11 ISO name %q; using fallback object name", sourceName)
-	arch := "x64"
-	if strings.Contains(strings.ToLower(sourceName), "arm64") {
-		arch = "arm64"
-	}
 	return "win11_unknown_english_" + arch + "_" + date + ".iso"
 }
 
@@ -335,7 +332,10 @@ type Win11LinkInfo struct {
 
 // ReadWin11LinkInfo reads the link description of the last resolution for an architecture.
 func ReadWin11LinkInfo(arch string) (*Win11LinkInfo, error) {
-	// #nosec G304 -- arch is allowlisted by win11URLFileArch.
+	if arch != "amd64" && arch != "arm64" {
+		return nil, fmt.Errorf("unsupported arch %q", arch)
+	}
+	// #nosec G304 -- arch is allowlisted above.
 	data, err := os.ReadFile(GetDirectoriesInstance().CachePath("windows", "win11_"+arch+"_iso_link.json"))
 	if err != nil {
 		return nil, err
@@ -350,6 +350,10 @@ func ReadWin11LinkInfo(arch string) (*Win11LinkInfo, error) {
 // ResolveWindows11Link asks Microsoft (via Playwright) for the current ISO link. It returns
 // ErrMicrosoftRefused when Microsoft blocks the request.
 func ResolveWindows11Link(arch string) (*Win11LinkInfo, error) {
+	return resolveWindows11Link(arch, getWindows11Download)
+}
+
+func resolveWindows11Link(arch string, resolve func(string, string, bool) (string, error)) (*Win11LinkInfo, error) {
 	if arch != "amd64" && arch != "arm64" {
 		return nil, fmt.Errorf("unsupported arch %q", arch)
 	}
@@ -359,13 +363,13 @@ func ResolveWindows11Link(arch string) (*Win11LinkInfo, error) {
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 	// The path must not exist, otherwise getWindows11Download short-circuits.
-	link, err := getWindows11Download(arch, filepath.Join(tmp, "missing.iso"), false)
+	link, err := resolve(arch, filepath.Join(tmp, "missing.iso"), false)
 	if err != nil {
 		return nil, err
 	}
 	link = strings.TrimSpace(link)
 	info, infoErr := ReadWin11LinkInfo(arch)
-	if infoErr != nil {
+	if infoErr != nil || strings.TrimSpace(info.URL) != link {
 		info = &Win11LinkInfo{}
 	}
 	info.URL = link
@@ -484,5 +488,5 @@ func isWin11RefusedExit(err error) bool {
 }
 
 func win11OfflineError(savePath string) error {
-	return fmt.Errorf("Windows 11 ISO missing at %s; Microsoft download disabled in CI. Run the 'Refresh Windows 11 ISO' workflow or publish one manually (docs/windows-iso-cache.md)", savePath)
+	return fmt.Errorf("missing Windows 11 ISO at %s; Microsoft download disabled in CI. Run the 'Refresh Windows 11 ISO' workflow or publish one manually (docs/windows-iso-cache.md)", savePath)
 }

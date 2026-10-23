@@ -104,6 +104,28 @@ ftp_rename() {
     "$(ftp_url "${ISO_DIR}/")"
 }
 
+# Both supported architectures share the ISO directory. Read the remote manifests, including
+# their histories, before replacing a leftover; the local manifest may already be promoted.
+assert_object_unreferenced() {
+  local object="$1" arch key size snapshot
+  for arch in amd64 arm64; do
+    key="${ISO_DIR}/win11-${arch}.json"
+    size="$(ftp_size "$key")"
+    [ -n "$size" ] || continue
+    snapshot="${WORK_DIR}/remote-${arch}.json"
+    ftp_get "$key" "$snapshot"
+    if ! python3 - "$snapshot" "$object" <<'PYREF'
+import json, sys
+m = json.load(open(sys.argv[1]))
+objects = [m["object"]] + [entry["object"] for entry in m.get("history", [])]
+sys.exit(1 if sys.argv[2] in objects else 0)
+PYREF
+    then
+      fail "Refusing to replace object ${object}: referenced by remote manifest ${key}, or the manifest could not be read."
+    fi
+  done
+}
+
 # Uploads a file under a temporary name, verifies the remote size and renames it to its key, so
 # readers only ever see a complete ISO or manifest. An interrupted upload leaves at most a
 # temporary object behind, never a truncated file under the final name.
@@ -112,6 +134,13 @@ ftp_publish() {
   local key="$2"
   local tmp_key="${key}.upload-${GITHUB_RUN_ID:-local}-$$"
   local expected remote
+  if [[ "$key" == "${ISO_DIR}/"*.iso ]]; then
+    remote="$(ftp_size "$key")"
+    if [ -n "$remote" ]; then
+      assert_object_unreferenced "${key##*/}"
+      echo "Replacing unreferenced object ${key} left over from an interrupted run."
+    fi
+  fi
   expected="$(wc -c < "$file" | tr -d ' ')"
   if ! ftp_curl --progress-bar --ftp-create-dirs --upload-file "$file" "$(ftp_url "$tmp_key")"; then
     ftp_delete "$tmp_key" 2>/dev/null || true
@@ -315,17 +344,14 @@ if [ "$unchanged" = "true" ]; then
 fi
 
 # Objects are immutable once a manifest references them. "existing" means the manifest history
-# already lists this object with the same sha256; any other object under this name is a leftover
-# of an interrupted run that no manifest references, so it is replaced.
+# already lists this object with the same sha256. Before replacing any leftover, ftp_publish
+# checks both remote manifests to ensure neither architecture references it.
 remote_size="$(ftp_size "${ISO_DIR}/${object}")"
 if [ "$existing" = "true" ] && [ -n "$remote_size" ]; then
   expected_size="$(wc -c < "$local_path" | tr -d ' ')"
   referenced_object_available "$object" "$expected_size"
   echo "Object ${ISO_DIR}/${object} is already published with the same sha256; not uploading again."
 else
-  if [ -n "$remote_size" ]; then
-    echo "Replacing unreferenced object ${ISO_DIR}/${object} left over from an interrupted run."
-  fi
   ftp_publish "$local_path" "${ISO_DIR}/${object}"
 fi
 ftp_publish "$MANIFEST" "$MANIFEST_KEY"
