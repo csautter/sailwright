@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.1](https://github.com/csautter/sailwright/compare/v0.19.0...v0.19.1) (2026-10-23)
+
+
+### Fixed
+
+* **build:** do not fail the build when virtio-win mirror probes time out ([570a2aa](https://github.com/csautter/sailwright/commit/570a2aa191425d50911636aa1baed0d088921052))
+
+
+### CI
+
+* **release:** publish sailwright-gateway binaries as release assets ([176be10](https://github.com/csautter/sailwright/commit/176be10fe9c6e9561ccfd16c0bed319746b950bf))
+* **release:** publish sailwright-gateway binaries as release assets ([5e1b674](https://github.com/csautter/sailwright/commit/5e1b67449d45478a88e023c414899d7c78833937))
+
 ## [0.19.0](https://github.com/csautter/sailwright/compare/v0.18.0...v0.19.0) (2026-10-23)
 
 
