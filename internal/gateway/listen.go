@@ -29,6 +29,8 @@ func fromLocalSocket(ctx context.Context) bool {
 // the devcontainer. The TCP listener serves Docker Desktop on macOS and Windows,
 // where host.docker.internal reaches the host's loopback.
 type Listeners struct {
+	// Lock is the state dir lock, held for as long as the gateway runs.
+	Lock       *StateLock
 	TCP        net.Listener
 	Socket     net.Listener
 	SocketPath string
@@ -39,6 +41,7 @@ type Listeners struct {
 
 // Close closes all listeners.
 func (l *Listeners) Close() {
+	defer l.Lock.Release()
 	for _, listener := range []net.Listener{l.TCP, l.Socket, l.View} {
 		if listener != nil {
 			_ = listener.Close()
@@ -49,7 +52,12 @@ func (l *Listeners) Close() {
 // Listen opens the TCP listener (unless listen is off) and, except on Windows, the agent Unix socket, and
 // writes a copy of the token next to the socket.
 func (g *Gateway) Listen() (*Listeners, error) {
-	listeners := &Listeners{}
+	// Only the lock holder may remove stale staging files or clean the cache.
+	lock, err := AcquireStateLock(g.cfg.StateDir)
+	if err != nil {
+		return nil, err
+	}
+	listeners := &Listeners{Lock: lock}
 	if g.cfg.ListenAddr.IsValid() {
 		tcp, err := net.Listen("tcp", g.cfg.ListenAddr.String())
 		if err != nil {

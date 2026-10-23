@@ -365,6 +365,11 @@ The gateway must be stopped.`,
 			if err != nil {
 				return err
 			}
+			lock, err := gateway.AcquireStateLock(cfg.StateDir)
+			if err != nil {
+				return fmt.Errorf("%w; stop it before cleaning", err)
+			}
+			defer lock.Release()
 			if cfg.ListenAddr.IsValid() {
 				if conn, err := net.DialTimeout("tcp", cfg.ListenAddr.String(), time.Second); err == nil {
 					_ = conn.Close()
