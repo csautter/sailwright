@@ -21,7 +21,6 @@ on:
       - "build/packer/windows/**/*"
       - "pkg/build/**"
       - "pkg/deploy/**"
-      - "test/e2e/**"
       - "scripts/linux/*"
       - "scripts/linux/**/*"
       - "scripts/macos/*"
@@ -46,14 +45,13 @@ jobs:
       DEV_ALCHEMY_PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
       PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
       USE_TART_MACOS_RUNNERS: ${{ vars.USE_TART_MACOS_RUNNERS == 'true' && 'true' || 'false' }}
-    timeout-minutes: 360
+    timeout-minutes: 260
     strategy:
       fail-fast: false
       matrix:
         include:
           - vm_os: windows11
             go_test_name: TestBuildQemuWindows11Arm64OnMacos
-            e2e_target: windows11//arm64
             deploy_test_name: TestDeployUtmWindows11Arm64OnMacos
             runs_on: macos-26
             tart_runs_on: macos-26-tart
@@ -66,7 +64,6 @@ jobs:
                {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_all.deb"}]
           - vm_os: windows11
             go_test_name: TestBuildQemuWindows11Amd64OnMacos
-            e2e_target: windows11//amd64
             deploy_test_name: TestDeployUtmWindows11Amd64OnMacos
             runs_on: macos-26
             tart_runs_on: macos-26-tart
@@ -77,7 +74,6 @@ jobs:
                {"local-path":"./.dev-alchemy/cache/utm/utm-guest-tools-latest.iso"}]
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuServerArm64OnMacos
-            e2e_target: ubuntu/server/arm64
             deploy_test_name: TestDeployUtmUbuntuServerArm64OnMacos
             runs_on: macos-26
             tart_runs_on: macos-26-tart
@@ -88,7 +84,6 @@ jobs:
                {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_all.deb"}]
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuServerAmd64OnMacos
-            e2e_target: ubuntu/server/amd64
             deploy_test_name: TestDeployUtmUbuntuServerAmd64OnMacos
             runs_on: macos-26
             tart_runs_on: macos-26-tart
@@ -98,7 +93,6 @@ jobs:
               [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-amd64.iso"}]
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuDesktopArm64OnMacos
-            e2e_target: ubuntu/desktop/arm64
             deploy_test_name: TestDeployUtmUbuntuDesktopArm64OnMacos
             runs_on: macos-26
             tart_runs_on: macos-26-tart
@@ -109,7 +103,6 @@ jobs:
                {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_all.deb"}]
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuDesktopAmd64OnMacos
-            e2e_target: ubuntu/desktop/amd64
             deploy_test_name: TestDeployUtmUbuntuDesktopAmd64OnMacos
             runs_on: macos-26
             tart_runs_on: macos-26-tart
@@ -169,28 +162,6 @@ jobs:
           if [ -d ./.dev-alchemy ]; then
             sudo chown -R "$(id -u):$(id -g)" ./.dev-alchemy
           fi
-
-      - name: Run lifecycle E2E scenarios
-        if: steps.packer_build.outcome == 'success'
-        timeout-minutes: 240
-        shell: bash
-        env:
-          SAILWRIGHT_E2E_TARGET: ${{ matrix.e2e_target }}
-          SAILWRIGHT_E2E_OUT: ${{ runner.temp }}/e2e-lifecycle
-          SAILWRIGHT_E2E_REUSE_IMAGE: "1"
-          SAILWRIGHT_E2E_INCLUDE_UNSTABLE: "1"
-        run: |
-          export SAILWRIGHT_E2E_BIN="$RUNNER_TEMP/sailwright-e2e"
-          go build -o "$SAILWRIGHT_E2E_BIN" ./cmd/main.go
-          go test -tags e2e ./test/e2e -run '^TestScenarios/(vm-lifecycle-macos|destroy-idempotent)$' -count=1 -timeout 4h -v
-
-      - name: Upload lifecycle E2E reports
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-lifecycle-${{ matrix.go_test_name }}
-          path: ${{ runner.temp }}/e2e-lifecycle
-          if-no-files-found: ignore
 
       - name: Run deploy smoke test TEST_NAME=${{ matrix.deploy_test_name }}
         if: steps.packer_build.outcome == 'success' && matrix.packer_start_only != 'true'

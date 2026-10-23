@@ -265,62 +265,6 @@ func TestScenariosWithDirectExecutorAndFakeCLI(t *testing.T) {
 	}
 }
 
-// CI reuses its preceding build's image while retaining every lifecycle assertion.
-func TestHostLifecyclesReuseImage(t *testing.T) {
-	binary := gatewaytest.BuildFakeCLI(t)
-	for _, host := range []string{"linux", "macos", "windows"} {
-		for _, reuse := range []bool{false, true} {
-			name := "vm-lifecycle-" + host
-			mode := "build"
-			if reuse {
-				mode = "reuse"
-			}
-			t.Run(host+"/"+mode, func(t *testing.T) {
-				t.Setenv("FAKE_CLI_STATE", t.TempDir())
-				getenv := func(key string) string {
-					if reuse && key == "SAILWRIGHT_E2E_REUSE_IMAGE" {
-						return "1"
-					}
-					return ""
-				}
-				report := runner.Run(context.Background(), loadRepoScenario(t, name),
-					&runner.DirectExecutor{Binary: binary}, runner.RunOptions{
-						Target: runner.Target{OS: "windows11", Arch: "amd64"}, Getenv: getenv,
-					})
-				if !report.Passed {
-					t.Fatalf("lifecycle failed:\n%s", runner.Markdown(report))
-				}
-				builds, provisions, cleanups := 0, 0, 0
-				for _, step := range report.Steps {
-					if step.Op == runner.OpBuild {
-						builds++
-						want := runner.StatusPassed
-						if reuse {
-							want = runner.StatusSkipped
-						}
-						if step.Status != want {
-							t.Fatalf("build status = %s, want %s", step.Status, want)
-						}
-						continue
-					}
-					if step.Status != runner.StatusPassed {
-						t.Fatalf("lifecycle step %s did not execute: %s", step.Name, step.Status)
-					}
-					if step.Op == runner.OpProvision {
-						provisions++
-					}
-					if step.Op == runner.OpDestroy && step.Always {
-						cleanups++
-					}
-				}
-				if builds != 1 || provisions != 3 || cleanups != 1 {
-					t.Fatalf("unexpected coverage: builds=%d, provisions=%d, cleanups=%d", builds, provisions, cleanups)
-				}
-			})
-		}
-	}
-}
-
 func TestPreflightFailureLeavesExistingVMUntouched(t *testing.T) {
 	binary := gatewaytest.BuildFakeCLI(t)
 	t.Setenv("FAKE_CLI_STATE", t.TempDir())

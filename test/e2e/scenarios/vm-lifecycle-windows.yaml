@@ -21,7 +21,6 @@ preflight:
 steps:
   - name: build image
     op: build
-    unless_env: SAILWRIGHT_E2E_REUSE_IMAGE
     when_listed: build        # skipped for targets that start from a public image (Tart)
     with: {headless: true}
   - name: create VM
