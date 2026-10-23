@@ -503,6 +503,13 @@ func becomeSupported(args []string) bool {
 	if runtime.GOOS == "windows" || len(args) < 2 || args[0] != "provision" {
 		return false
 	}
+	for _, arg := range args[1:] {
+		if arg == "-i" || arg == "--inventory" || arg == "--inventory-path" || strings.HasPrefix(arg, "--inventory-path=") || strings.HasPrefix(arg, "--inventory=") {
+			// A custom inventory can point "local" at a remote host, so the sudo
+			// password must not be offered.
+			return false
+		}
+	}
 	for i, arg := range args {
 		if i == 0 {
 			continue
