@@ -27,6 +27,8 @@ on:
           - both
           - amd64
           - arm64
+      # Temporary: remove together with the "adopt" mode after the migration
+      # (docs/windows-iso-cache.md, "Migration from the flat cache", step 4).
       adopt_legacy:
         description: "One-time migration: publish the flat legacy win11_25h2_english_<arch>.iso as a versioned object"
         required: false
@@ -35,9 +37,12 @@ on:
   pull_request:
     paths:
       - "scripts/macos/playwright_win11_iso.py"
+      - "scripts/macos/win11_iso_hash.py"
       - "scripts/macos/requirements.txt"
       - "tools/win11iso/**"
       - "pkg/build/win11iso*.go"
+      - "pkg/build/dependencies.go"
+      - "pkg/build/testdata/win11_release_notes.html"
       - ".github/actions/refresh-windows-iso/**"
       - ".github/workflows/refresh-windows-iso.yml"
 
@@ -231,6 +236,8 @@ jobs:
           TART_ARM64: ${{ needs.refresh-tart.outputs.outcome_arm64 }}
           AGE_AMD64: ${{ needs.refresh-hosted.outputs.age_days_amd64 }}
           AGE_ARM64: ${{ needs.refresh-hosted.outputs.age_days_arm64 }}
+          # Staleness limit (docs/adr/0006-versioned-windows-iso-cache.md); the Go due rule only
+          # knows the 28-day re-check age.
           MAX_AGE_DAYS: "90"
         run: |
           set -euo pipefail

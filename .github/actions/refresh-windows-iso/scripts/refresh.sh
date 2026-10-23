@@ -5,6 +5,7 @@
 #   FORCE         - "true" to treat the refresh as due
 #   DOWNLOAD_DIR  - directory for the ISO download
 #   FTP_*         - FTP server, port, username, password, and base dir. Explicit TLS is enforced.
+#   WIN11ISO_TOOL - optional command replacing "go run ./tools/win11iso" (tests)
 # Writes outcome and age_days to $GITHUB_OUTPUT. A Microsoft refusal is not an error.
 set -euo pipefail
 
@@ -69,12 +70,21 @@ ftp_curl() {
     --retry 3 --retry-delay 5 --user "${FTP_USERNAME}:${FTP_PASSWORD}" "$@"
 }
 
-# Prints the remote size, or nothing when the object does not exist.
+# Prints the remote size, or nothing when the object does not exist. Any other failure
+# (authentication, TLS, network) fails the run instead of looking like a missing object.
+# Assign the result to a variable: inside "[ -n "$(ftp_size …)" ]" a failure would be ignored.
 ftp_size() {
   local headers
-  if ! headers="$(ftp_curl --head --dump-header - --output /dev/null "$(ftp_url "$1")" 2>/dev/null)"; then
-    return 0
-  fi
+  local status=0
+  headers="$(ftp_curl --head --dump-header - --output /dev/null "$(ftp_url "$1")" 2>"${WORK_DIR}/curl.err")" || status=$?
+  case "$status" in
+    0) ;;
+    19|78) return 0 ;;
+    *)
+      cat "${WORK_DIR}/curl.err" >&2
+      fail "FTP size check of $1 failed with curl exit code $status."
+      ;;
+  esac
   printf '%s\n' "$headers" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-length" {print $2}' | tail -n 1
 }
 
@@ -82,26 +92,47 @@ ftp_get() {
   ftp_curl --output "$2" "$(ftp_url "$1")"
 }
 
-# Deletes an object below the ISO directory (argument: file name only).
+# Deletes a remote object (argument: key below the base dir).
 ftp_delete() {
-  ftp_curl --output /dev/null --quote "DELE ${FTP_BASE_DIR_NORMALIZED}/${ISO_DIR}/$1" "$(ftp_url "${ISO_DIR}/")"
+  ftp_curl --output /dev/null --quote "DELE ${FTP_BASE_DIR_NORMALIZED}/$1" "$(ftp_url "${ISO_DIR}/")"
 }
 
-# Uploads a file and verifies the remote size, deleting a partial ISO object on mismatch.
-ftp_put() {
+# Renames a remote object (arguments: source and target key below the base dir).
+ftp_rename() {
+  ftp_curl --output /dev/null \
+    --quote "RNFR ${FTP_BASE_DIR_NORMALIZED}/$1" --quote "RNTO ${FTP_BASE_DIR_NORMALIZED}/$2" \
+    "$(ftp_url "${ISO_DIR}/")"
+}
+
+# Uploads a file under a temporary name, verifies the remote size and renames it to its key, so
+# readers only ever see a complete ISO or manifest. An interrupted upload leaves at most a
+# temporary object behind, never a truncated file under the final name.
+ftp_publish() {
   local file="$1"
   local key="$2"
+  local tmp_key="${key}.upload-${GITHUB_RUN_ID:-local}-$$"
   local expected remote
   expected="$(wc -c < "$file" | tr -d ' ')"
-  ftp_curl --progress-bar --ftp-create-dirs --upload-file "$file" "$(ftp_url "$key")"
-  remote="$(ftp_size "$key")"
+  if ! ftp_curl --progress-bar --ftp-create-dirs --upload-file "$file" "$(ftp_url "$tmp_key")"; then
+    ftp_delete "$tmp_key" 2>/dev/null || true
+    fail "Upload of $key failed."
+  fi
+  remote="$(ftp_size "$tmp_key")"
   if [ "$remote" != "$expected" ]; then
-    case "$key" in
-      *.iso) ftp_delete "$(basename "$key")" || true ;;
-      *) ;;
-    esac
+    ftp_delete "$tmp_key" || true
     fail "Upload of $key failed verification (local $expected bytes, remote ${remote:-missing})."
   fi
+  if ftp_rename "$tmp_key" "$key"; then
+    return 0
+  fi
+  # Some servers refuse to rename onto an existing file. Fall back to delete + rename; the target
+  # is missing only for the duration of two FTP commands.
+  echo "::warning title=Windows 11 ISO refresh ($ARCH)::The FTP server refused to replace $key by rename; replacing it non-atomically."
+  if ftp_delete "$key" && ftp_rename "$tmp_key" "$key"; then
+    return 0
+  fi
+  ftp_delete "$tmp_key" || true
+  fail "Could not move the uploaded $tmp_key to $key."
 }
 
 output_value() {
@@ -129,18 +160,19 @@ prune_objects() {
   local object
   for object in $1; do
     echo "Pruning ${ISO_DIR}/${object}"
-    ftp_delete "$object" || echo "::warning title=Windows 11 ISO prune::Could not delete ${ISO_DIR}/${object}"
+    ftp_delete "${ISO_DIR}/${object}" || echo "::warning title=Windows 11 ISO prune::Could not delete ${ISO_DIR}/${object}"
   done
 }
 
 mkdir -p "$WORK_DIR" "$DOWNLOAD_DIR"
 rm -f "${MANIFEST:?}"
-tool=(go run ./tools/win11iso)
+read -r -a tool <<< "${WIN11ISO_TOOL:-go run ./tools/win11iso}"
 
 summary "### Windows 11 ISO refresh (${MODE})"
 
 if init_ftp; then
-  if [ -n "$(ftp_size "$MANIFEST_KEY")" ]; then
+  manifest_size="$(ftp_size "$MANIFEST_KEY")"
+  if [ -n "$manifest_size" ]; then
     ftp_get "$MANIFEST_KEY" "$MANIFEST"
     echo "Loaded manifest ${MANIFEST_KEY}."
   else
@@ -164,13 +196,14 @@ if [ "$MODE" = "adopt" ]; then
     finish adopted "manifest already exists, nothing to migrate"
     exit 0
   fi
-  [ -n "$(ftp_size "$legacy")" ] || fail "Legacy object ${legacy} not found on the FTP server."
+  legacy_size="$(ftp_size "$legacy")"
+  [ -n "$legacy_size" ] || fail "Legacy object ${legacy} not found on the FTP server."
   ftp_get "$legacy" "${DOWNLOAD_DIR}/${legacy}"
   "${tool[@]}" publish --arch "$ARCH" --iso "${DOWNLOAD_DIR}/${legacy}" \
-    --source-name "$source_name" --manifest "$MANIFEST" --epoch-checked-at | tee "${WORK_DIR}/publish.out"
+    --source-name "$source_name" --manifest "$MANIFEST" --mark-due | tee "${WORK_DIR}/publish.out"
   object="$(output_value "${WORK_DIR}/publish.out" object)"
-  ftp_put "${DOWNLOAD_DIR}/${legacy}" "${ISO_DIR}/${object}"
-  ftp_put "$MANIFEST" "$MANIFEST_KEY"
+  ftp_publish "${DOWNLOAD_DIR}/${legacy}" "${ISO_DIR}/${object}"
+  ftp_publish "$MANIFEST" "$MANIFEST_KEY"
   rm -f "${DOWNLOAD_DIR:?}/${legacy:?}"
   finish adopted "legacy ISO published as ${object}; the legacy object is left in place"
   exit 0
@@ -181,6 +214,7 @@ if [ "$MODE" != "refresh" ] && [ "$MODE" != "resolve-only" ]; then
 fi
 
 # 1. Offline due rule (only talks to the docs host).
+latest_release=""
 if [ "$MODE" = "resolve-only" ]; then
   due=true
   reason="resolve-only mode always resolves"
@@ -192,6 +226,11 @@ else
   "${tool[@]}" check --arch "$ARCH" --manifest "$MANIFEST" ${force_args[@]+"${force_args[@]}"} | tee "${WORK_DIR}/check.out"
   due="$(output_value "${WORK_DIR}/check.out" due)"
   reason="$(output_value "${WORK_DIR}/check.out" reason)"
+  latest_release="$(output_value "${WORK_DIR}/check.out" latest_release)"
+fi
+announced_args=()
+if [ -n "$latest_release" ]; then
+  announced_args=(--announced-release "$latest_release")
 fi
 if [ "$due" != "true" ]; then
   finish skipped "$reason"
@@ -200,7 +239,7 @@ fi
 echo "Refresh is due: $reason"
 
 # 2. Resolve the link (no download).
-"${tool[@]}" resolve --arch "$ARCH" --manifest "$MANIFEST" | tee "${WORK_DIR}/resolve.out"
+"${tool[@]}" resolve --arch "$ARCH" --manifest "$MANIFEST" ${announced_args[@]+"${announced_args[@]}"} | tee "${WORK_DIR}/resolve.out"
 outcome="$(output_value "${WORK_DIR}/resolve.out" outcome)"
 case "$outcome" in
   refused)
@@ -210,8 +249,8 @@ case "$outcome" in
     ;;
   unchanged)
     if [ "$MODE" = "refresh" ]; then
-      ftp_put "$MANIFEST" "$MANIFEST_KEY"
-      finish unchanged "ISO unchanged, checked_at updated"
+      ftp_publish "$MANIFEST" "$MANIFEST_KEY"
+      finish unchanged "ISO unchanged ($(output_value "${WORK_DIR}/resolve.out" object)), checked_at updated"
     else
       finish unchanged "ISO unchanged (resolve-only, nothing uploaded)"
     fi
@@ -233,18 +272,38 @@ sha="$(output_value "${WORK_DIR}/resolve.out" sha256)"
 fetch_args=(--arch "$ARCH" --url "$url" --out "$DOWNLOAD_DIR" --manifest "$MANIFEST" --source-name "$source_name")
 if [ -n "$sha" ]; then
   fetch_args+=(--sha256 "$sha")
+  sha_source="verified against Microsoft's published sha256"
+else
+  echo "::warning title=Windows 11 ISO refresh ($ARCH)::Microsoft's sha256 for ${source_name} was not found; the ISO is published without an end-to-end checksum."
+  sha_source="no Microsoft sha256 available"
 fi
-"${tool[@]}" fetch "${fetch_args[@]}" | tee "${WORK_DIR}/fetch.out"
+"${tool[@]}" fetch "${fetch_args[@]}" ${announced_args[@]+"${announced_args[@]}"} | tee "${WORK_DIR}/fetch.out"
 object="$(output_value "${WORK_DIR}/fetch.out" object)"
 local_path="$(output_value "${WORK_DIR}/fetch.out" local_path)"
 pruned="$(output_value "${WORK_DIR}/fetch.out" pruned)"
+existing="$(output_value "${WORK_DIR}/fetch.out" existing)"
+unchanged="$(output_value "${WORK_DIR}/fetch.out" unchanged)"
 
-if [ -z "$(ftp_size "${ISO_DIR}/${object}")" ]; then
-  ftp_put "$local_path" "${ISO_DIR}/${object}"
-else
-  echo "Object ${ISO_DIR}/${object} already exists; not uploading again."
+if [ "$unchanged" = "true" ]; then
+  ftp_publish "$MANIFEST" "$MANIFEST_KEY"
+  rm -f "${local_path:?}"
+  finish unchanged "downloaded ISO is identical to ${object}, checked_at updated"
+  exit 0
 fi
-ftp_put "$MANIFEST" "$MANIFEST_KEY"
+
+# Objects are immutable once a manifest references them. "existing" means the manifest history
+# already lists this object with the same sha256; any other object under this name is a leftover
+# of an interrupted run that no manifest references, so it is replaced.
+remote_size="$(ftp_size "${ISO_DIR}/${object}")"
+if [ "$existing" = "true" ] && [ -n "$remote_size" ]; then
+  echo "Object ${ISO_DIR}/${object} is already published with the same sha256; not uploading again."
+else
+  if [ -n "$remote_size" ]; then
+    echo "Replacing unreferenced object ${ISO_DIR}/${object} left over from an interrupted run."
+  fi
+  ftp_publish "$local_path" "${ISO_DIR}/${object}"
+fi
+ftp_publish "$MANIFEST" "$MANIFEST_KEY"
 rm -f "${local_path:?}"
 prune_objects "$pruned"
-finish new "published ${object}"
+finish new "published ${object} (${sha_source})"
