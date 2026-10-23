@@ -54,12 +54,12 @@ You can use `curl` or `wget` to download the ISO using the link saved in the fil
 APP_DATA_DIR="${DEV_ALCHEMY_APP_DATA_DIR:-$HOME/Library/Application Support/dev-alchemy}"
 CACHE_DIR="${DEV_ALCHEMY_CACHE_DIR:-$APP_DATA_DIR/cache}"
 cd "$CACHE_DIR/windows/"
-curl --progress-bar -o ../windows11/iso/win11_25h2_english_amd64.iso "$(cat ./win11_amd64_iso_url.txt)"
+curl --progress-bar -o ../windows11/iso/win11_english_amd64.iso "$(cat ./win11_amd64_iso_url.txt)"
 ```
 or for arm:
 ```bash
 APP_DATA_DIR="${DEV_ALCHEMY_APP_DATA_DIR:-$HOME/Library/Application Support/dev-alchemy}"
 CACHE_DIR="${DEV_ALCHEMY_CACHE_DIR:-$APP_DATA_DIR/cache}"
 cd "$CACHE_DIR/windows/"
-curl --progress-bar -o ../windows11/iso/win11_25h2_english_arm64.iso "$(cat ./win11_arm64_iso_url.txt)"
+curl --progress-bar -o ../windows11/iso/win11_english_arm64.iso "$(cat ./win11_arm64_iso_url.txt)"
 ```

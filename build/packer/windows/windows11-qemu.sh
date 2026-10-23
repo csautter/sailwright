@@ -511,7 +511,12 @@ if is_truthy "$packer_start_only"; then
 	echo "Using isolated cache directory for start-only Packer probe: $effective_cache_dir"
 fi
 
-windows_source_iso_path="${cache_dir}/windows11/iso/win11_25h2_english_${arch}.iso"
+windows_source_iso_path="${cache_dir}/windows11/iso/win11_english_${arch}.iso"
+legacy_windows_iso_path="${cache_dir}/windows11/iso/win11_25h2_english_${arch}.iso"
+if [[ ! -f "$windows_source_iso_path" && -f "$legacy_windows_iso_path" ]]; then
+	echo "Renaming legacy Windows 11 ISO $legacy_windows_iso_path to $windows_source_iso_path"
+	mv "$legacy_windows_iso_path" "$windows_source_iso_path"
+fi
 download_windows_iso_if_missing "$arch" "$windows_source_iso_path"
 
 bash "${project_root}/scripts/macos/download-utm-guest-tools.sh"

@@ -71,8 +71,10 @@ env:
   OCI_UBUNTU_IMAGE: ghcr.io/${{ github.repository_owner }}/ubuntu-24
 
 jobs:
-  # The cold-cache bootstrap talks to Microsoft's download page, which often rejects
-  # GitHub-hosted runner IPs. Run it nightly and on PRs that change the bootstrap code.
+  # The cold-cache bootstrap exercises the Python/Playwright environment setup and the other
+  # cold downloads, but never contacts Microsoft: resolving the Windows 11 ISO link is owned by
+  # refresh-windows-iso.yml, where a refusal is a neutral result. Run it nightly and on PRs that
+  # change the bootstrap code.
   detect-cold-cache-changes:
     if: github.event_name == 'pull_request'
     name: detect cold-cache relevant changes
@@ -93,8 +95,8 @@ jobs:
           PR_FROM_BOT: ${{ github.event.pull_request.user.type == 'Bot' || startsWith(github.head_ref, 'renovate/') }}
         run: |
           set -euo pipefail
+          # playwright_win11_iso.py is covered by the PR trigger of refresh-windows-iso.yml.
           patterns=(
-            "scripts/macos/playwright_win11_iso.py"
             "scripts/macos/requirements.txt"
             "pkg/build/dependencies_test.go"
           )
@@ -166,7 +168,7 @@ jobs:
         env:
           RUN_INTEGRATION_TESTS: "1"
         run: |
-          go test -timeout 45m -v ./pkg/build -run '^(TestGetWindows11DownloadAmd64|TestGetWindows11DownloadArm64|TestResolveDebianPackageURL|TestResolveAndDownloadQemuEfiAarch64)$'
+          go test -timeout 45m -v ./pkg/build -run '^(TestIntegrationBootstrapWindows11DownloadEnv|TestResolveDebianPackageURL|TestResolveAndDownloadQemuEfiAarch64)$'
 
       - name: Upload Playwright diagnostics
         if: failure()
@@ -186,6 +188,8 @@ jobs:
       contents: read
       id-token: write
     env:
+      # Build jobs resolve the Windows 11 ISO through the cache manifest and never contact Microsoft.
+      DEV_ALCHEMY_WIN11_ISO_OFFLINE: "1"
       DEV_ALCHEMY_APP_DATA_DIR: ${{ github.workspace }}/.dev-alchemy
       DEV_ALCHEMY_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/cache
       DEV_ALCHEMY_VAGRANT_DIR: ${{ github.workspace }}/.dev-alchemy/.vagrant
@@ -225,7 +229,7 @@ jobs:
             packer_start_only: "true"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_25h2_english_amd64.iso","container":"build-cache"},
+              [{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_amd64.iso","manifest":"windows11/iso/win11-amd64.json"},
                {"local-path":"./.dev-alchemy/cache/utm/utm-guest-tools-latest.iso"},
                {"local-path":"./.dev-alchemy/cache/windows/virtio-win.iso"}]
           - vm_os: ubuntu
@@ -259,7 +263,7 @@ jobs:
             packer_start_only: "true"
             packer_start_timeout: "180"
             cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_25h2_english_arm64.iso","container":"build-cache"},
+              [{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_arm64.iso","manifest":"windows11/iso/win11-arm64.json"},
                {"local-path":"./.dev-alchemy/cache/utm/utm-guest-tools-latest.iso"},
                {"local-path":"./.dev-alchemy/cache/windows/virtio-win.iso"},
                {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_all.deb"}]
