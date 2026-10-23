@@ -576,8 +576,8 @@ fi
 if is_truthy "$packer_start_only"; then
 	run_packer_build_start_only
 else
-	run_packer_build
-	packer_rc=$?
+	packer_rc=0
+	run_packer_build || packer_rc=$?
 	# On success the artifact is in the cache and the output directory only holds
 	# Packer's scratch files; on failure they are of no use either.
 	rm -rf "$output_dir"
