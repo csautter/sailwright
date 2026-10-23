@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
 )
 
 const (
@@ -142,6 +144,11 @@ func TestVncSnapshotDirMirrorsCLISlug(t *testing.T) {
 	for target, want := range cases {
 		if got := vncSnapshotDir(cache, target); got != want {
 			t.Errorf("vncSnapshotDir(%+v) = %s, want %s", target, got, want)
+		}
+		// The CLI helper is the source of truth for the layout.
+		cli := alchemy_build.VirtualMachineConfig{OS: target.OS, UbuntuType: target.Type, Arch: target.Arch}
+		if got := alchemy_build.VncSnapshotDir(cache, cli); got != want {
+			t.Errorf("pkg/build VncSnapshotDir(%+v) = %s, want %s; update vncSnapshotDir", target, got, want)
 		}
 	}
 }

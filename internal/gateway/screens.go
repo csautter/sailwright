@@ -59,7 +59,7 @@ type JobTarget struct {
 
 // vncSnapshotDir mirrors the CLI's recording directory (pkg/build/vnc_recording.go
 // with GenerateVirtualMachineSlug: os[-type]-arch). The gateway does not import CLI
-// internals, so a change there must be repeated here.
+// internals; TestVncSnapshotDirMirrorsCLISlug fails when the two layouts diverge.
 func vncSnapshotDir(cacheDir string, target JobTarget) string {
 	slug := strings.ToLower(target.OS)
 	if target.Type != "" {

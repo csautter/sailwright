@@ -31,6 +31,13 @@ type VncRecordingConfig struct {
 	StreamedToVideo bool
 }
 
+// VncSnapshotDir is where the VNC snapshot process stores console frames for a VM.
+// sailwright-gateway mirrors this layout without importing this package; a test in
+// internal/gateway keeps both in sync.
+func VncSnapshotDir(cacheDir string, vm_config VirtualMachineConfig) string {
+	return filepath.Join(cacheDir, vm_config.OS, "qemu-out-"+GenerateVirtualMachineSlug(&vm_config)+"-vncsnapshot")
+}
+
 func RunVncSnapshotProcess(vm_config VirtualMachineConfig, ctx context.Context, process_config RunProcessConfig, recording_config *VncRecordingConfig) context.Context {
 	// if running on windows, skip vnc snapshot
 	if runtime.GOOS == "windows" {
@@ -39,7 +46,7 @@ func RunVncSnapshotProcess(vm_config VirtualMachineConfig, ctx context.Context, 
 	}
 	vnc_display := strconv.Itoa(vm_config.VncPort - 5900)
 
-	snapshot_dir := filepath.Join(GetDirectoriesInstance().GetDirectories().CacheDir, vm_config.OS, "qemu-out-"+GenerateVirtualMachineSlug(&vm_config)+"-vncsnapshot")
+	snapshot_dir := VncSnapshotDir(GetDirectoriesInstance().GetDirectories().CacheDir, vm_config)
 	recording_config.OutputFolder = snapshot_dir
 
 	if err := os.RemoveAll(snapshot_dir); err != nil {
