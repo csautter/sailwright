@@ -366,7 +366,8 @@ Delete it? Created VMs are not affected; the next build downloads and builds aga
 Enter or a second Ctrl+C keeps the cache. There is no question when the
 gateway is stopped with SIGTERM or runs without a terminal. To delete the
 cache later, or from a script, run `sailwright-gateway clean` (add `--yes` to
-skip the question) while the gateway is stopped. Both only empty the two
+skip the question) while the gateway is stopped; it refuses while the TCP
+listener, the agent socket or the state directory lock is in use. Both only empty the two
 cache folders; created VMs, `.vagrant`, `libvirt/images`, the config and a
 `shared_cache_dir` are never touched.
 

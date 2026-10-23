@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (experimental)
+Accepted (experimental)
 
 ## Context
 
@@ -22,7 +22,8 @@ set of Sailwright operations to agents over MCP (Streamable HTTP) and enforces
 policy on the host.
 
 - **Separate binary, no CLI internals.** The gateway follows the
-  `sailwright-<name>` naming scheme but does not import CLI packages. It
+  `sailwright-<name>` naming scheme but does not import CLI packages (tests
+  may import them to detect drift). It
   discovers valid targets at runtime with `sailwright <command> list --json`
   (schema version 1) and refuses other schema versions.
 - **Pinned CLI binary.** The operator confirms the SHA-256 of a copied binary at
@@ -41,7 +42,8 @@ policy on the host.
   permissions on the agent folder.
 - **Transport.** A `0600` Unix socket in a dedicated folder mounted into the
   container (Linux). For Docker Desktop, a loopback TCP listener with token,
-  source, `Host` and `Origin` checks. Wildcard binds are refused.
+  source, `Host` and `Origin` checks. Wildcard binds are refused. The TCP
+  listener is off by default on Linux (`listen: off`) and required on Windows.
 - **Isolated state.** The CLI runs with its own app-data, config and cache
   directories below the gateway data dir. `shared_cache_dir` is an explicit,
   documented opt-out that weakens isolation.
@@ -58,7 +60,8 @@ policy on the host.
   where that matters.
 - Some logic is deliberately duplicated rather than imported, for example the
   VNC snapshot directory layout mirrors `GenerateVirtualMachineSlug`. Changes to
-  the CLI layout need a matching gateway change.
+  the CLI layout need a matching gateway change; `TestVncSnapshotDirMirrorsCLISlug`
+  enforces this.
 - The MCP tool surface is experimental and may change until E2E clients depend
   on it.
 - The operator must run the gateway in a foreground terminal and remains the

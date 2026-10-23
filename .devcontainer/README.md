@@ -20,3 +20,17 @@ Mounted automatically when present:
 
 Copy `mounts.local.example` to `mounts.local` and add `source:target[:ro]`
 lines. Then rebuild the container.
+
+## Host prerequisites
+
+- `initializeCommand` runs `bash .devcontainer/initialize-host.sh` on the host.
+  On Windows, Git Bash must come before WSL's `bash.exe` on `PATH`; under WSL
+  `HOME` is the WSL home, so the gateway folder would be mounted from the wrong
+  place and `sailwright-gateway connect` would fail to authenticate.
+
+## Upgrading from the single-container setup
+
+The devcontainer now uses Docker Compose, which changes the project name. Existing
+containers are not reused and keep running or lingering; remove the old one
+(`docker rm -f <container>` or `docker compose down`) after rebuilding. Named
+volumes are reused.
