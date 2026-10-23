@@ -419,7 +419,7 @@ func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, socketPath str
 	if socketPath != "" {
 		socket = socketPath
 	}
-	tcpURL := "TCP off (agent socket only)"
+	tcpURL := "TCP off (agent socket only; set listen: to enable)"
 	if cfg.ListenAddr.IsValid() {
 		tcpURL = fmt.Sprintf("http://%s/mcp", cfg.ListenAddr)
 	}
