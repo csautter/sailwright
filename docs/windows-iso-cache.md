@@ -95,6 +95,16 @@ it is run directly.
 Locally the ISO lives at `win11_english_<arch>.iso`. A legacy `win11_25h2_english_<arch>.iso` is
 renamed once, during dependency reconciliation (or by the QEMU/UTM shell scripts).
 
+### Windows 11 ISO missing: "Microsoft download disabled in CI"
+
+This error means `SAILWRIGHT_WIN11_ISO_OFFLINE` is `1` or `true` and the ISO is missing from
+`<cache dir>/windows11/iso/win11_english_<arch>.iso`. In CI, check the `download-build-cache` step
+and confirm that the manifest and referenced ISO are available in the FTP build cache. Keep
+offline mode enabled so build jobs continue to use the managed cache.
+
+When reproducing a workflow locally, unset `SAILWRIGHT_WIN11_ISO_OFFLINE` to allow a download
+from Microsoft, or place the ISO at the cache path above.
+
 ## When Microsoft is contacted ("due" rule)
 
 The workflow runs every Monday and evaluates the rule offline first:
