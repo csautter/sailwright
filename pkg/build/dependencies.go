@@ -213,13 +213,21 @@ func virtioWinISOURLs(version string) []string {
 }
 
 func selectFastestVirtioWinISOURL(version string) (string, error) {
-	urls := virtioWinISOURLs(version)
-	selected, err := selectFastestDownloadURL(urls, virtioWinProbeBytes, virtioWinProbeTimeout)
-	if err != nil {
-		return "", fmt.Errorf("failed to select fastest virtio-win download URL: %w", err)
-	}
-	log.Printf("Selected fastest virtio-win download URL: %s", selected)
+	selected := selectFastestDownloadURLOrDefault(virtioWinISOURLs(version), virtioWinProbeBytes, virtioWinProbeTimeout)
+	log.Printf("Selected virtio-win download URL: %s", selected)
 	return selected, nil
+}
+
+// selectFastestDownloadURLOrDefault returns the fastest URL, or the first one when every probe
+// fails: a slow or briefly unreachable mirror must not abort the build, because the download
+// itself still tries all sources in order.
+func selectFastestDownloadURLOrDefault(urls []string, probeBytes int64, timeout time.Duration) string {
+	selected, err := selectFastestDownloadURL(urls, probeBytes, timeout)
+	if err != nil && len(urls) > 0 {
+		log.Printf("Could not select fastest download URL, using default source order: %v", err)
+		return urls[0]
+	}
+	return selected
 }
 
 type downloadProbeResult struct {
@@ -303,6 +311,10 @@ func probeDownloadURL(ctx context.Context, client *http.Client, candidate string
 
 	bytesRead, err := io.Copy(io.Discard, io.LimitReader(resp.Body, probeBytes))
 	duration := time.Since(start)
+	if err != nil && bytesRead > 0 && ctx.Err() != nil {
+		// The probe window ran out mid-body; the bytes read so far still measure the mirror's speed.
+		err = nil
+	}
 	if err != nil {
 		return downloadProbeResult{URL: candidate, Bytes: bytesRead, Duration: duration, Err: err}
 	}
