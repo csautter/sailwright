@@ -24,6 +24,11 @@ updates:
     directory: "/build/docker/ansible"
     schedule:
       interval: weekly
+    ignore:
+      # Stay on Ubuntu LTS releases only (26.04 -> 28.04); skip interim releases.
+      # Raise the lower bound when moving to the next LTS.
+      - dependency-name: "ubuntu"
+        versions: [">26.04, <28.04"]
 
   - package-ecosystem: docker
     directory: "/build/docker/ansible-windows-ssh"

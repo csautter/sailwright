@@ -280,6 +280,16 @@
   },
   "packageRules": [
     {
+      "description": "Only propose Ubuntu LTS releases for the base image",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "ubuntu"
+      ],
+      "versioning": "ubuntu"
+    },
+    {
       "matchDatasources": [
         "custom.virtio-win"
       ],
