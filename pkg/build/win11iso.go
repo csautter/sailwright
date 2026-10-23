@@ -269,7 +269,7 @@ func fetchLatestWin11Release(client *http.Client, url string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("release notes returned HTTP %d", resp.StatusCode)
 	}
@@ -342,7 +342,7 @@ func ResolveWindows11Link(arch string) (*Win11LinkInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 	// The path must not exist, otherwise getWindows11Download short-circuits.
 	link, err := getWindows11Download(arch, filepath.Join(tmp, "missing.iso"), false)
 	if err != nil {
@@ -371,7 +371,7 @@ func ProbeWin11ISO(url string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("HEAD %d", resp.StatusCode)
 	}
@@ -399,7 +399,7 @@ func HashFile(file string) (string, int64, error) {
 	if err != nil {
 		return "", 0, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	h := sha256.New()
 	n, err := io.Copy(h, f)
 	if err != nil {

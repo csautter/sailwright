@@ -41,7 +41,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: win11iso <check|resolve|fetch|publish> [flags]")
+	_, _ = fmt.Fprintln(os.Stderr, "usage: win11iso <check|resolve|fetch|publish> [flags]")
 }
 
 func validArch(arch string) error {
@@ -53,7 +53,7 @@ func validArch(arch string) error {
 
 func emit(w io.Writer, pairs ...string) {
 	for i := 0; i+1 < len(pairs); i += 2 {
-		fmt.Fprintf(w, "%s=%s\n", pairs[i], pairs[i+1])
+		_, _ = fmt.Fprintf(w, "%s=%s\n", pairs[i], pairs[i+1])
 	}
 }
 
