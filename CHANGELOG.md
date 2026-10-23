@@ -5,6 +5,93 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0](https://github.com/csautter/sailwright/compare/v0.18.0...v0.19.0) (2026-10-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **gateway:** sailwright-gateway no longer listens on TCP by default on Linux; agents use the agent socket. Set "listen: 127.0.0.1:7391" to restore TCP.
+
+### Added
+
+* agent test gateway ([8b1d7aa](https://github.com/csautter/sailwright/commit/8b1d7aa14c5f72bec32e339a9c17be04aaf65b33))
+* **build:** log download progress when stdout is not a terminal ([f560bfa](https://github.com/csautter/sailwright/commit/f560bfaafcf7fb7e367ef9ff48ba8b85c972fee4))
+* **cli:** add --json output to list subcommands ([e9a4ed4](https://github.com/csautter/sailwright/commit/e9a4ed4c7f92e4474e0ae059a32b52754dd51bab))
+* **gateway:** add agent Unix socket and stdio connect bridge ([603b284](https://github.com/csautter/sailwright/commit/603b284a09804782f0c985afc10dab5e163b8813))
+* **gateway:** add sailwright-gateway for agent access from devcontainers ([137edd2](https://github.com/csautter/sailwright/commit/137edd26a18430053fd981d4af6d5822a5517c25))
+* **gateway:** allow disabling the TCP listener and default it off on Linux ([524ec94](https://github.com/csautter/sailwright/commit/524ec9401b6676f8af8c6a306384dba1929d0719))
+* **gateway:** approve local provisioning with a sudo password ([417371c](https://github.com/csautter/sailwright/commit/417371c5c6faadfad619786a699bcfd62e4e18be))
+* **gateway:** audit start and stop, expose limits in gateway_info ([6e94c60](https://github.com/csautter/sailwright/commit/6e94c602cac84014528ffee01b5a6c04ceac0320))
+* **gateway:** cap and prune job logs, summarize background refresh audit ([662d0ea](https://github.com/csautter/sailwright/commit/662d0eafe8c0e5a2d642415ec6b14466818263f9))
+* **gateway:** hint at the listen setting in the banner when TCP is off ([9ccfbe2](https://github.com/csautter/sailwright/commit/9ccfbe27f9415510a761c37865b2e4d8f33213cf))
+* **gateway:** offer to delete the cache on shutdown ([eb7b4fd](https://github.com/csautter/sailwright/commit/eb7b4fdde69c68becdbfe26660af5c6f7840b80f))
+* **gateway:** show the build console to agents and on the host ([33e9ccc](https://github.com/csautter/sailwright/commit/33e9ccc2154bfc078e081c64c0b01212d42fac60))
+* **gateway:** show the job log path and add --follow ([72599cf](https://github.com/csautter/sailwright/commit/72599cf6f0986db19a6b9c5d7fbbdfbd380ecfde))
+* **runners:** build Azure runner golden image in GitHub Actions ([958abfa](https://github.com/csautter/sailwright/commit/958abfa6c2965736341e60d55af4c46b3e04628f))
+* **terraform:** add build_cache_enabled switch for legacy Azure build cache ([837700a](https://github.com/csautter/sailwright/commit/837700ac818ccf2177772c4a88619912f07f82c0))
+* **terraform:** add image builder identity and resource groups for golden image CI ([cda9923](https://github.com/csautter/sailwright/commit/cda9923a6ac0150893c462f59a951c4ed442a8a6))
+
+
+### Fixed
+
+* **build:** do not stop on terminal hand-off when running in the background ([b4bf288](https://github.com/csautter/sailwright/commit/b4bf28872fa9e26bf14fa3b5bc28ccb728842d45))
+* **build:** keep the qemu packer output dir in the cache ([55d8a6b](https://github.com/csautter/sailwright/commit/55d8a6ba32546ae31cc0ad7973e655f440034bd4))
+* **build:** remove QEMU Packer scratch output after failed builds ([a8f4f04](https://github.com/csautter/sailwright/commit/a8f4f04b77ba3bb234f0e9ab2800837fae680a22))
+* **build:** retry web file downloads on checksum mismatch ([f771d35](https://github.com/csautter/sailwright/commit/f771d35abf492d02334e2332aacae19d174af42e))
+* **cache:** treat FTP build cache upload failures as warnings ([e7baba8](https://github.com/csautter/sailwright/commit/e7baba8793506f96b20355fe0b5b59cd4c2fa916))
+* **ci:** grant id-token permission to release-binaries caller ([856c107](https://github.com/csautter/sailwright/commit/856c1079c1f2fc82a3e8012d323b620c23680389))
+* **ci:** grant id-token permission to release-binaries caller ([4c2a89f](https://github.com/csautter/sailwright/commit/4c2a89f3e3fa3463967bbae037377777804a4f33))
+* **cli:** exit non-zero when a build fails ([92adb70](https://github.com/csautter/sailwright/commit/92adb70a60552338fb5d49cd873a66f82a97c139))
+* **deps:** sync virtio-win pins and automate checksum updates ([7b9b133](https://github.com/csautter/sailwright/commit/7b9b133c1026a16713eac34a6282e039613454f3))
+* **devcontainer:** auto-install declared VS Code extensions on start ([5b289ef](https://github.com/csautter/sailwright/commit/5b289ef059809406cd456cc99b109fcb52500f34))
+* **devcontainer:** satisfy shellcheck SC2088 in initialize-host.sh ([e204149](https://github.com/csautter/sailwright/commit/e204149115c0563866850bd7e675ad5aa86b534a))
+* **gateway:** address gosec findings ([b7369de](https://github.com/csautter/sailwright/commit/b7369de6824631c872c29c999bc872d7892a9019))
+* **gateway:** bind before printing the listening banner ([9874287](https://github.com/csautter/sailwright/commit/98742878e3fa432179b6e592d60b2ed617cfebbc))
+* **gateway:** do not fail jobs when the process tree cannot be attached ([ebb6474](https://github.com/csautter/sailwright/commit/ebb6474a5355ca8e56a00c00fe0dbe2a97ea291b))
+* **gateway:** do not offer the sudo password with a custom inventory ([0b22de5](https://github.com/csautter/sailwright/commit/0b22de53d6ff869eeaa0ee5d527bd8b90f539153))
+* **gateway:** harden shared cache check, become detection and redaction ([9a49921](https://github.com/csautter/sailwright/commit/9a49921c0dafc86806690f30e106dfb971e2f8e8))
+* **gateway:** harden snapshot copy and approval console ([79e21f3](https://github.com/csautter/sailwright/commit/79e21f3e12c47455fb738f11fac700387822195e))
+* **gateway:** hold an exclusive state-dir lock while the gateway runs ([ca97585](https://github.com/csautter/sailwright/commit/ca9758596ea543e5d4cc4c3d0d8f694f7b5e481a))
+* **gateway:** keep large data in the platform data dir ([b948587](https://github.com/csautter/sailwright/commit/b948587753751b151cab9a169166f62e2d4cdc35))
+* **gateway:** name failed listings in the audit and keep redactor limits on With ([7ebd406](https://github.com/csautter/sailwright/commit/7ebd4063de165240c57366f3e5a1b18ec283682f))
+* **gateway:** never split a complete secret at the forced redaction flush ([47289eb](https://github.com/csautter/sailwright/commit/47289ebf3c6998a1f07d93c0ad34a061928817c8))
+* **gateway:** open bundle_root through the workspace root when snapshotting ([a18cb08](https://github.com/csautter/sailwright/commit/a18cb08d337023b19679d6a7f0dbfc2f1ade648d))
+* **gateway:** redact short sudo passwords and per-job secrets in job errors ([9e20b7d](https://github.com/csautter/sailwright/commit/9e20b7dfae83761e506bf2184d260bbc97b8f7b2))
+* **gateway:** resolve bundle_root symlinks and canonicalize path ([fd930a8](https://github.com/csautter/sailwright/commit/fd930a842084adb4d9fbcbde82638218f8774745))
+* **gateway:** run jobs in their own session without a terminal ([c0609c4](https://github.com/csautter/sailwright/commit/c0609c44fcc2a465b8536d62d085e7a1c9d02aab))
+* **gateway:** use escapes for invisible characters and annotate gosec findings ([fe9f9f3](https://github.com/csautter/sailwright/commit/fe9f9f3adf8038119a01a89f8c40de83c8c000d7))
+* **gateway:** wait for jobs and background refreshes on shutdown ([aeeb89b](https://github.com/csautter/sailwright/commit/aeeb89b0c3ebec2281dae47805453ab26b851689))
+* **gateway:** warn before approve-sudo when args can redirect the play ([c9d6b0d](https://github.com/csautter/sailwright/commit/c9d6b0dad00a0051564e1022cb7c2586a1d7cd04))
+* **make:** fail gosec target when packages are not analyzed ([60571b9](https://github.com/csautter/sailwright/commit/60571b95454df2127f04110539d1d118896b340b))
+* **packer:** remove scratch output after failed builds under set -e ([fa679c3](https://github.com/csautter/sailwright/commit/fa679c3ffea0710c66daeac47beabe083a9a42a6))
+* **runners:** store Azure golden image on Standard HDD and skip unused VirtualBox image ([693671f](https://github.com/csautter/sailwright/commit/693671f256d9bd33b1d6d7f7b6efc0ad6a80a679))
+* **ubuntu:** use new cdimage path for arm64 live server ISO ([eb37d53](https://github.com/csautter/sailwright/commit/eb37d531bf2a8267b348f8546e22098d15eda5fe))
+* **ubuntu:** use new cdimage path for arm64 live server ISO ([747ecd2](https://github.com/csautter/sailwright/commit/747ecd2e2e63191bd3634243a9acf887aebad8c9))
+* **win11:** fail fast with diagnostics when resolving the ISO link ([31c13fc](https://github.com/csautter/sailwright/commit/31c13fc50a1c3c5d6060bbc72624235c8d54a8cb))
+
+
+### Changed
+
+* **devcontainer:** generate host mounts via compose override ([44eeeaa](https://github.com/csautter/sailwright/commit/44eeeaaf9565c0bbed98e6cbc5ab4fbd2d0c037f))
+* **gateway:** amortize job output buffer compaction ([6d92910](https://github.com/csautter/sailwright/commit/6d9291095b6e6120e71bdfce928e9cac4b2838e0))
+* **gateway:** move output buffering and become helpers out of jobs.go ([8e0c3b2](https://github.com/csautter/sailwright/commit/8e0c3b2f9cc3060288ebc2ed07b374a5592e71c6))
+* **test:** split static file checks and parse workflows as YAML ([a70c77e](https://github.com/csautter/sailwright/commit/a70c77ecab1a368e232a3f56730b51ec4ae7f6c9))
+* **test:** split static file checks and parse workflows as YAML ([dc397b0](https://github.com/csautter/sailwright/commit/dc397b0b3718e2a0dde159320c2f56a16a31f58b))
+
+
+### CI
+
+* **linux:** run cold-cache bootstrap nightly and on relevant PRs ([b0db6f5](https://github.com/csautter/sailwright/commit/b0db6f52300d1b4b1e3447da0e54af7505727d8b))
+* remove Hetzner self-hosted runner and S3 cache backend ([6a87023](https://github.com/csautter/sailwright/commit/6a87023b533e15a866d9e63148f02b955eb74611))
+* remove Hetzner self-hosted runner and S3 cache backend ([1f2401c](https://github.com/csautter/sailwright/commit/1f2401cdd8e770e2d7c0ecedef209c002f3a5b64))
+* run gateway tests and the E2E smoke scenario on all host OSes ([8a541b8](https://github.com/csautter/sailwright/commit/8a541b8c52d88d79130a9bc8d4b7ca7a6a2c76af))
+* **test:** run gateway and E2E runner tests with -race on Linux ([5d35313](https://github.com/csautter/sailwright/commit/5d353134c072c53de10927d379db15872c214b05))
+
+
+### Documentation
+
+* **gateway:** document the Linux listen default, devcontainer prerequisites and ADR status ([a104f4f](https://github.com/csautter/sailwright/commit/a104f4f90dcbb3c9d6f489484e123969bb070bef))
+
 ## [0.18.0](https://github.com/csautter/sailwright/compare/v0.17.0...v0.18.0) (2026-07-23)
 
 
