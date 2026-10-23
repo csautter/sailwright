@@ -373,6 +373,26 @@ func TestLineRedactingWriterCatchesSecretAcrossForcedFlush(t *testing.T) {
 	}
 }
 
+func TestLineRedactingWriterCatchesCompleteSecretStraddlingForcedFlush(t *testing.T) {
+	const secret = "s3cr3t-value-123"
+	for trailing := 0; trailing < len(secret); trailing++ {
+		var out strings.Builder
+		writer := newLineRedactingWriter(NewRedactor(secret), &out)
+		chunk := strings.Repeat("a", maxPendingLineSize+1) + secret + strings.Repeat("b", trailing)
+		for _, part := range []string{chunk, "zzz\n"} {
+			if _, err := writer.Write([]byte(part)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := writer.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(out.String(), secret[:6]) || strings.Contains(out.String(), secret[len(secret)-6:]) {
+			t.Fatalf("trailing %d: secret leaked", trailing)
+		}
+	}
+}
+
 func TestRedactorWithRequiredHidesShortSecrets(t *testing.T) {
 	base := NewRedactor("longenough")
 	if got := base.With("pw").String("pw longenough"); got != "pw ***" {

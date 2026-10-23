@@ -57,6 +57,24 @@ func (r *Redactor) maxSecretLen() int {
 	return len(r.secrets[0]) // sorted longest first
 }
 
+// safeCut moves cut back to the start of any secret occurrence that straddles it, so
+// a complete secret is never split between two emitted chunks.
+func (r *Redactor) safeCut(buf []byte, cut int) int {
+	if r == nil {
+		return cut
+	}
+	for moved := true; moved; {
+		moved = false
+		for _, secret := range r.secrets {
+			from := max(0, cut-len(secret)+1)
+			if i := bytes.Index(buf[from:], []byte(secret)); i >= 0 && from+i < cut && from+i+len(secret) > cut {
+				cut, moved = from+i, true
+			}
+		}
+	}
+	return cut
+}
+
 // With returns a redactor that also hides the given secrets.
 func (r *Redactor) With(secrets ...string) *Redactor {
 	var all []string
@@ -133,6 +151,7 @@ func (w *lineRedactingWriter) Write(p []byte) (int, error) {
 				cut--
 			}
 		}
+		cut = w.redactor.safeCut(w.pending, cut)
 		if cut > 0 {
 			if err := w.emit(w.pending[:cut]); err != nil {
 				return 0, err
