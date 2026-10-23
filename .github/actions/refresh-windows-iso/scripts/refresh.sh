@@ -135,6 +135,19 @@ ftp_publish() {
   fail "Could not move the uploaded $tmp_key to $key."
 }
 
+# Check immutable referenced objects before accepting an unchanged result. Missing objects can be
+# restored from verified bytes; a conflicting size indicates corruption and must fail the refresh.
+referenced_object_available() {
+  local object="$1" expected="$2" remote
+  remote="$(ftp_size "${ISO_DIR}/${object}")" || exit $?
+  if [ -z "$remote" ]; then
+    summary "- **${ARCH}**: referenced object ${object} is missing; restoring verified bytes"
+    return 1
+  fi
+  [ "$remote" = "$expected" ] || fail "Referenced object ${object} has unexpected size: expected $expected, got $remote."
+  summary "- **${ARCH}**: referenced object ${object} available (${remote} bytes)"
+}
+
 output_value() {
   # Reads a key=value line produced by tools/win11iso from a file.
   sed -n "s/^$2=//p" "$1" | head -n 1
@@ -248,13 +261,19 @@ case "$outcome" in
     exit 0
     ;;
   unchanged)
-    if [ "$MODE" = "refresh" ]; then
-      ftp_publish "$MANIFEST" "$MANIFEST_KEY"
-      finish unchanged "ISO unchanged ($(output_value "${WORK_DIR}/resolve.out" object)), checked_at updated"
-    else
+    if [ "$MODE" = "resolve-only" ]; then
       finish unchanged "ISO unchanged (resolve-only, nothing uploaded)"
+      exit 0
     fi
-    exit 0
+    object="$(output_value "${WORK_DIR}/resolve.out" object)"
+    expected_size="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["size"])' "$MANIFEST")"
+    if referenced_object_available "$object" "$expected_size"; then
+      ftp_publish "$MANIFEST" "$MANIFEST_KEY"
+      finish unchanged "ISO unchanged (${object}), remote size verified, checked_at updated"
+      exit 0
+    fi
+    # Resolve emits the current digest on unchanged results so repair downloads must match it,
+    # including when unchanged was inferred from the source name and size.
     ;;
   new) ;;
   *) fail "Unexpected resolve outcome '${outcome}'." ;;
@@ -285,9 +304,13 @@ existing="$(output_value "${WORK_DIR}/fetch.out" existing)"
 unchanged="$(output_value "${WORK_DIR}/fetch.out" unchanged)"
 
 if [ "$unchanged" = "true" ]; then
+  expected_size="$(wc -c < "$local_path" | tr -d ' ')"
+  if ! referenced_object_available "$object" "$expected_size"; then
+    ftp_publish "$local_path" "${ISO_DIR}/${object}"
+  fi
   ftp_publish "$MANIFEST" "$MANIFEST_KEY"
   rm -f "${local_path:?}"
-  finish unchanged "downloaded ISO is identical to ${object}, checked_at updated"
+  finish unchanged "downloaded ISO is identical to ${object}, remote object verified/restored, checked_at updated"
   exit 0
 fi
 
@@ -296,6 +319,8 @@ fi
 # of an interrupted run that no manifest references, so it is replaced.
 remote_size="$(ftp_size "${ISO_DIR}/${object}")"
 if [ "$existing" = "true" ] && [ -n "$remote_size" ]; then
+  expected_size="$(wc -c < "$local_path" | tr -d ' ')"
+  referenced_object_available "$object" "$expected_size"
   echo "Object ${ISO_DIR}/${object} is already published with the same sha256; not uploading again."
 else
   if [ -n "$remote_size" ]; then

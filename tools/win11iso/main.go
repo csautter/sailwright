@@ -124,7 +124,8 @@ func runResolve(args []string, out io.Writer, now time.Time) error {
 		if err := m.Save(*manifestPath); err != nil {
 			return err
 		}
-		emit(out, "outcome", "unchanged", "source_name", info.SourceName, "object", m.Object)
+		emit(out, "outcome", "unchanged", "source_name", info.SourceName, "object", m.Object,
+			"url", info.URL, "sha256", m.SHA256)
 		return nil
 	}
 

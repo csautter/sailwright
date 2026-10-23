@@ -304,8 +304,8 @@ function Get-Sha256 {
 function Download-ManifestEntry {
     # Resolves a "manifest" descriptor to a versioned object, verifies its sha256 and writes a sidecar JSON.
     # Files from the workspace or the runner cache are hashed too: a name proves nothing about the bytes.
-    # Returns $true when the file is in place, $false when the manifest or its object does not exist,
-    # so the caller can fall back to a legacy blob-name.
+    # Returns an explicit outcome: ok, manifest-missing, or object-missing.
+    # Only a missing manifest permits migration fallback to a legacy blob-name.
     param(
         [Parameter(Mandatory = $true)][string]$LocalPath,
         [Parameter(Mandatory = $true)][string]$ManifestKey
@@ -319,7 +319,7 @@ function Download-ManifestEntry {
     $resolved = Get-ManifestObject -ManifestKey $ManifestKey
     if (-not $resolved) {
         Write-Host "  [miss] Manifest $script:FtpBaseDirNormalized/$ManifestKey not found."
-        return $false
+        return 'manifest-missing'
     }
     $object = $resolved.Manifest.object
     $sha256 = $resolved.Manifest.sha256
@@ -331,7 +331,7 @@ function Download-ManifestEntry {
         try { $current = (Get-Content -Path $sidecar -Raw | ConvertFrom-Json).object } catch { $current = $null }
         if ($current -eq $object -and (Get-Sha256 -Path $LocalPath) -eq $sha256) {
             Write-Host "  [ok] Already present at $LocalPath and matches the manifest (sha256 verified) - skipping."
-            return $true
+            return 'ok'
         }
     }
     if (Test-Path $LocalPath) {
@@ -352,7 +352,7 @@ function Download-ManifestEntry {
                 Write-Host "  [ok] Found $object in local runner cache (sha256 verified) - copying."
                 Copy-Item -Path $cached -Destination $LocalPath -Force
                 Set-Content -Path $sidecar -Value $resolved.Raw -NoNewline
-                return $true
+                return 'ok'
             }
             Write-Host "  [cache] Local runner cache copy of $object does not match the manifest sha256; evicting it."
             Remove-Item -Path $cached -Force
@@ -363,8 +363,8 @@ function Download-ManifestEntry {
     $url = Get-FtpRemoteUrl $objectKey
     Write-Host "  [download] Downloading $script:FtpBaseDirNormalized/$objectKey..."
     if (-not (Test-FtpObject -Url $url)) {
-        Write-Host "  [miss] FTP object $script:FtpBaseDirNormalized/$objectKey not found."
-        return $false
+        Write-Host "  [miss] Manifest $ManifestKey references missing FTP object $script:FtpBaseDirNormalized/$objectKey; legacy fallback is disabled."
+        return 'object-missing'
     }
 
     $tmpPath = "$LocalPath.part"
@@ -383,7 +383,7 @@ function Download-ManifestEntry {
     Set-Content -Path $sidecar -Value $resolved.Raw -NoNewline
     Write-Host "  [ok] Downloaded $object -> $LocalPath (sha256 verified)."
     Save-ToLocalCache -LocalPath $LocalPath -BlobName $object
-    return $true
+    return 'ok'
 }
 
 foreach ($f in $files) {
@@ -400,7 +400,7 @@ foreach ($f in $files) {
     #    is the legacy flat object, used only while the manifest does not exist yet (migration).
     if ($null -ne $f.PSObject.Properties['manifest'] -and $f.'manifest') {
         $resolvedEntry = Download-ManifestEntry -LocalPath $localPath -ManifestKey $f.'manifest'
-        if ($resolvedEntry -or -not $legacyBlobName) {
+        if ($resolvedEntry -ne 'manifest-missing' -or -not $legacyBlobName) {
             continue
         }
         Write-Host "  [cache] Falling back to the legacy object '$blobName'."

@@ -66,7 +66,7 @@ if [ -n "$upload" ]; then
   exit 0
 fi
 if [ "$head" = "true" ]; then
-  if [ -n "${FAKE_FTP_HEAD_EXIT:-}" ]; then
+  if [ -n "${FAKE_FTP_HEAD_EXIT:-}" ] && { [ -z "${FAKE_FTP_HEAD_KEY:-}" ] || [ "$key" = "$FAKE_FTP_HEAD_KEY" ]; }; then
     echo "curl: (${FAKE_FTP_HEAD_EXIT}) fake failure" >&2
     exit "$FAKE_FTP_HEAD_EXIT"
   fi
@@ -89,6 +89,18 @@ case "$cmd" in
     printf 'due=true\nreason=fake\nlatest_release=%s\n' "${FAKE_LATEST:-}"
     ;;
   resolve)
+    if [ "${FAKE_OUTCOME:-new}" = unchanged ]; then
+      while [ "$#" -gt 0 ]; do
+        if [ "$1" = --manifest ]; then manifest="$2"; break; fi
+        shift
+      done
+      python3 - "$manifest" <<'PYRESOLVE'
+import json, sys
+m = json.load(open(sys.argv[1]))
+print("object=" + m["object"])
+print("sha256=" + m["sha256"])
+PYRESOLVE
+    fi
     printf 'outcome=%s\nurl=https://example.invalid/%s\nsource_name=%s\nsha256=\n' \
       "${FAKE_OUTCOME:-new}" "${FAKE_SOURCE:-Win11_25H2_English_x64.iso}" "${FAKE_SOURCE:-Win11_25H2_English_x64.iso}"
     ;;
@@ -207,6 +219,30 @@ echo "--- resolve reports unchanged: manifest re-published, no download"
 FAKE_OUTCOME=unchanged run_refresh || { cat "$root/refresh.out"; fail "resolve unchanged"; }
 [ "$(outcome)" = "unchanged" ] || fail "outcome $(outcome)"
 grep -F "RNTO /cache/windows11/iso/win11-amd64.json" "$FAKE_FTP_LOG" >/dev/null || fail "manifest not re-published"
+
+for resolve_outcome in new unchanged; do
+  echo "--- missing object is repaired on $resolve_outcome resolution"
+  rm -f "$remote/windows11/iso/$object"
+  FAKE_OUTCOME="$resolve_outcome" run_refresh || { cat "$root/refresh.out"; fail "repair $resolve_outcome"; }
+  [ "$(outcome)" = "unchanged" ] || fail "repair outcome $(outcome)"
+  cmp -s "$remote/windows11/iso/$object" "$root/v1.iso" || fail "missing object not restored"
+  assert_no_upload_leftovers
+
+  echo "--- inconsistent remote size fails on $resolve_outcome resolution"
+  cp "$manifest" "$root/manifest.before"
+  printf 'bad' > "$remote/windows11/iso/$object"
+  if FAKE_OUTCOME="$resolve_outcome" run_refresh; then
+    fail "inconsistent remote size must fail"
+  fi
+  grep -F "unexpected size" "$root/refresh.out" >/dev/null || fail "missing size error"
+  cmp -s "$manifest" "$root/manifest.before" || fail "manifest published despite invalid object"
+  cp "$root/v1.iso" "$remote/windows11/iso/$object"
+done
+
+# Errors during conditional availability checks must not be treated as missing objects.
+if FAKE_OUTCOME=unchanged FAKE_FTP_HEAD_EXIT=67 FAKE_FTP_HEAD_KEY="windows11/iso/$object" run_refresh; then
+  fail "authentication failure must fail unchanged resolution"
+fi
 
 echo "--- refused: no FTP writes"
 FAKE_OUTCOME=refused run_refresh || { cat "$root/refresh.out"; fail "refused run"; }

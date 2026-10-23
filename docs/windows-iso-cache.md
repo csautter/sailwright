@@ -119,6 +119,10 @@ The workflow runs every Monday and evaluates the rule offline first:
 4. `now - checked_at >= 28 days`: due (catches `v2` media refreshes).
 5. Otherwise skipped; the reason is written to the step summary.
 
+Before recording an unchanged ISO as successfully checked, the refresh verifies that the referenced
+remote object exists with the expected size. Missing objects are restored from bytes verified against
+the manifest digest before the manifest is published. An inconsistent existing size fails the refresh.
+
 When due, only the link is resolved first. The ISO counts as unchanged, and only `checked_at` is
 updated, if Microsoft's published sha256 equals the manifest's, or (without a published sha256) if
 `source_name` and the size match. The size comes from a HEAD request, or from a one-byte ranged GET
@@ -152,6 +156,7 @@ Use this when both runners are blocked. Download the English (United States) ISO
 the Microsoft download page, then:
 
 ```bash
+set -euo pipefail
 export FTP_USER=… FTP_PASS=… FTP_HOST=…
 ARCH=amd64                       # or arm64
 SRC=Win11_25H2_English_x64.iso   # Win11_25H2_English_Arm64.iso for arm64; add v2 etc. as Microsoft names it
@@ -161,7 +166,15 @@ cache_curl() { curl --fail --ssl-reqd --user "$FTP_USER:$FTP_PASS" "$@"; }
 
 # 1. Fetch the current manifest. Exit code 78 (or 19) means none exists yet; stop on anything else.
 rm -f win11-$ARCH.json
-cache_curl -o win11-$ARCH.json "ftp://$FTP_HOST$DIR/win11-$ARCH.json"; echo "curl exit code: $?"
+if cache_curl -o win11-$ARCH.json "ftp://$FTP_HOST$DIR/win11-$ARCH.json"; then
+  :
+else
+  status=$?
+  case "$status" in
+    19|78) rm -f win11-$ARCH.json ;;
+    *) echo "Manifest fetch failed (curl exit code $status)" >&2; exit "$status" ;;
+  esac
+fi
 
 # 2. Write the new manifest. Prints object=…, existing=…, unchanged=… and pruned=….
 go run ./tools/win11iso publish --arch $ARCH --iso "$ISO" --source-name "$SRC" \

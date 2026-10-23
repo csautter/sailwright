@@ -251,7 +251,7 @@ download_manifest_entry() {
   local cached
   local sidecar="${local_path}.json"
 
-  MANIFEST_RESULT=miss
+  MANIFEST_RESULT='manifest-missing'
   initialize_ftp
   manifest_url="$(ftp_remote_url "$manifest_key")"
   echo "  ↓ Resolving manifest '$FTP_BASE_DIR_NORMALIZED/$manifest_key'..."
@@ -322,7 +322,8 @@ print(m["sha256"])
   echo "  ↓ Downloading $FTP_BASE_DIR_NORMALIZED/$object_key..."
   if ! ftp_object_exists "$object_url"; then
     rm -f "$manifest_tmp"
-    echo "  ✗ FTP object $FTP_BASE_DIR_NORMALIZED/$object_key not found."
+    echo "  ✗ Manifest $manifest_key references missing FTP object $FTP_BASE_DIR_NORMALIZED/$object_key; legacy fallback is disabled."
+    MANIFEST_RESULT='object-missing'
     return 0
   fi
   tmp_path="${local_path}.part"
@@ -368,7 +369,7 @@ for f in data:
       fail "Manifest cache entries are only supported with the ftp backend (got '$CACHE_BACKEND')."
     fi
     download_manifest_entry "$local_path" "$manifest"
-    if [ "$MANIFEST_RESULT" = "ok" ] || [ -z "$legacy_blob_name" ]; then
+    if [ "$MANIFEST_RESULT" != "manifest-missing" ] || [ -z "$legacy_blob_name" ]; then
       continue
     fi
     echo "  ↷ Falling back to the legacy object '$blob_name'."

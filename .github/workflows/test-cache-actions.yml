@@ -14,6 +14,7 @@ on:
       - "tools/win11iso/**"
       - "pkg/build/win11iso*.go"
       - "scripts/macos/win11_iso_hash.py"
+      - "scripts/macos/playwright_win11_iso.py"
       - "test/scripts/**"
       - ".github/workflows/test-cache-actions.yml"
   pull_request:
@@ -24,6 +25,7 @@ on:
       - "tools/win11iso/**"
       - "pkg/build/win11iso*.go"
       - "scripts/macos/win11_iso_hash.py"
+      - "scripts/macos/playwright_win11_iso.py"
       - "test/scripts/**"
       - ".github/workflows/test-cache-actions.yml"
 
@@ -294,6 +296,22 @@ jobs:
           run_download '[{"local-path":"'"$absent_target"'","manifest":"windows11/iso/absent.json"}]'
           test ! -e "$absent_target"
 
+          # An authoritative manifest with a missing object never permits legacy fallback,
+          # including when unverified workspace bytes or a legacy runner-cache hit exist.
+          printf '{"schema":1,"object":"missing-version.iso","sha256":"%s"}' "$iso_sha" > "$remote/windows11/iso/broken.json"
+          printf 'legacy-iso' > "$remote/legacy.iso"
+          broken_target="$workspace/manifest/broken.iso"
+          broken_entry='[{"local-path":"'"$broken_target"'","manifest":"windows11/iso/broken.json","blob-name":"legacy.iso"}]'
+          for legacy_cache in absent present; do
+            if [ "$legacy_cache" = present ]; then printf 'legacy-iso' > "$local_cache/legacy.iso"; fi
+            printf 'stale-iso' > "$broken_target"
+            run_download "$broken_entry" > "$root/broken.out"
+            grep -F "references missing FTP object" "$root/broken.out" >/dev/null
+            test ! -e "$broken_target"
+            test ! -e "$broken_target.json"
+            if grep -F "Falling back" "$root/broken.out"; then exit 1; fi
+          done
+
           # The local runner cache is keyed by the versioned object name and verified by sha256.
           printf '{"schema":1,"object":"win11_cached_20270201.iso","sha256":"%s"}' "$iso_sha" > "$remote/windows11/iso/win11-cached.json"
           printf '%s' "$iso_payload" > "$local_cache/win11_cached_20270201.iso"
@@ -552,6 +570,19 @@ jobs:
               $absentTarget = Join-Path $workspace 'manifest/absent.iso'
               Invoke-CacheScript -Script $downloadScript -Files (ConvertTo-CacheJson @(@{'local-path' = $absentTarget; 'manifest' = 'windows11/iso/absent.json'}))
               if (Test-Path $absentTarget) { throw 'Expected a missing manifest to leave the target absent.' }
+
+              # A present manifest forbids fallback even with legacy workspace/runner-cache bytes.
+              Set-Content -Path (Join-Path $remote 'windows11/iso/broken.json') -Value ('{{"schema":1,"object":"missing-version.iso","sha256":"{0}"}}' -f $isoSha) -NoNewline
+              Set-Content -Path (Join-Path $remote 'legacy.iso') -Value 'legacy-iso' -NoNewline
+              $brokenTarget = Join-Path $workspace 'manifest/broken.iso'
+              $brokenEntry = ConvertTo-CacheJson @(@{'local-path' = $brokenTarget; 'manifest' = 'windows11/iso/broken.json'; 'blob-name' = 'legacy.iso'})
+              foreach ($legacyCache in @($false, $true)) {
+                  if ($legacyCache) { Set-Content -Path (Join-Path $localCache 'legacy.iso') -Value 'legacy-iso' -NoNewline }
+                  Set-Content -Path $brokenTarget -Value 'stale-iso' -NoNewline
+                  $brokenOutput = Invoke-CacheScript -Script $downloadScript -Files $brokenEntry 6>&1 | Out-String
+                  if ($brokenOutput -notmatch 'references missing FTP object' -or $brokenOutput -match 'Falling back') { throw "Unexpected resolution: $brokenOutput" }
+                  if ((Test-Path $brokenTarget) -or (Test-Path "$brokenTarget.json")) { throw 'Broken manifest must leave no usable ISO.' }
+              }
 
               # The local runner cache is verified by sha256; a corrupt copy is evicted and replaced.
               Set-Content -Path (Join-Path $remote 'windows11/iso/win11-cached.json') -Value ('{{"schema":1,"object":"win11_cached_20270201.iso","sha256":"{0}"}}' -f $isoSha) -NoNewline

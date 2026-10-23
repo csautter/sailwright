@@ -44,7 +44,9 @@ ISOs from Microsoft for CI. It publishes them to the FTP build cache below
   caches.
 - **Publication is atomic.** Each file is uploaded under a temporary name,
   size-checked, and renamed into place. The object is in place before the
-  manifest that references it.
+  manifest that references it. An unchanged refresh checks the referenced object's
+  availability before advancing `checked_at` and restores a missing object from
+  verified bytes.
 - **Retention** keeps the current object plus two previous ones (`history`).
   Pruning happens only after the new manifest is in place and never deletes the
   current object.

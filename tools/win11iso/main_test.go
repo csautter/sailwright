@@ -194,6 +194,11 @@ func TestResolve(t *testing.T) {
 			}
 			after, _ := os.ReadFile(manifest)
 			if tt.want == "outcome=unchanged" {
+				for _, want := range []string{"url=" + tt.info.URL + "\n", "sha256=" + currentSHA + "\n"} {
+					if !strings.Contains(out.String(), want) {
+						t.Errorf("unchanged result must support verified repair: output %q lacks %q", out.String(), want)
+					}
+				}
 				m, _ := build.LoadWin11Manifest(manifest)
 				if m.CheckedAt != "2026-11-30T04:00:00Z" || m.AnnouncedRelease != "26H1" {
 					t.Errorf("unchanged must record the check: %+v", m)
