@@ -103,6 +103,9 @@ type job struct {
 	finished chan struct{}
 	// screens is set for build jobs.
 	screens *screenRecorder
+	// redactor adds per-job secrets (a sudo password); nil means the manager's. Only
+	// the job's execute goroutine reads or writes it.
+	redactor *Redactor
 }
 
 func (j *job) snapshotView() JobView {
@@ -302,7 +305,8 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 			}
 			defer cleanup()
 			argv = WithBecomePasswordFile(argv, path)
-			redactor = m.redactor.With(approval.BecomePassword)
+			redactor = m.redactor.WithRequired(approval.BecomePassword)
+			j.redactor = redactor
 			j.update(func(v *JobView) {
 				v.SudoPassword = true
 				v.Argv = redactor.Strings(argv)
@@ -385,10 +389,15 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 
 func (m *JobManager) finish(j *job, state JobState, code *int, message string, started time.Time) {
 	finished := time.Now().UTC()
+	redactor := m.redactor
+	if j.redactor != nil {
+		redactor = j.redactor
+	}
+	message = redactor.String(message)
 	j.update(func(v *JobView) {
 		v.State = state
 		v.ExitCode = code
-		v.Error = m.redactor.String(message)
+		v.Error = message
 		v.Finished = finished
 	})
 	view := j.snapshotView()

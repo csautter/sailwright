@@ -27,9 +27,13 @@ type Redactor struct {
 
 // NewRedactor builds a redactor; very short values are ignored to avoid mangling output.
 func NewRedactor(secrets ...string) *Redactor {
+	return newRedactor(minRedactedSecret, secrets)
+}
+
+func newRedactor(minLen int, secrets []string) *Redactor {
 	var kept []string
 	for _, secret := range secrets {
-		if len(secret) < minRedactedSecret {
+		if secret == "" || len(secret) < minLen {
 			continue
 		}
 		kept = append(kept, secret)
@@ -60,6 +64,16 @@ func (r *Redactor) With(secrets ...string) *Redactor {
 		all = append(all, r.secrets...)
 	}
 	return NewRedactor(append(all, secrets...)...)
+}
+
+// WithRequired is like With but also hides short values. Use it for secrets that must
+// never appear, such as a sudo password, accepting that output may be mangled.
+func (r *Redactor) WithRequired(secrets ...string) *Redactor {
+	var all []string
+	if r != nil {
+		all = append(all, r.secrets...)
+	}
+	return newRedactor(1, append(all, secrets...))
 }
 
 // String redacts a string. A nil redactor returns the value unchanged.

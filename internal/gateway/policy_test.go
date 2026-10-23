@@ -372,3 +372,16 @@ func TestLineRedactingWriterCatchesSecretAcrossForcedFlush(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactorWithRequiredHidesShortSecrets(t *testing.T) {
+	base := NewRedactor("longenough")
+	if got := base.With("pw").String("pw longenough"); got != "pw ***" {
+		t.Fatalf("With must ignore short values, got %q", got)
+	}
+	if got := base.WithRequired("pw").String("my pw is pw, longenough"); strings.Contains(got, "pw is pw") || strings.Contains(got, "longenough") {
+		t.Fatalf("WithRequired must hide short values and keep earlier secrets, got %q", got)
+	}
+	if got := base.WithRequired("").String("unchanged"); got != "unchanged" {
+		t.Fatalf("empty secrets must be ignored, got %q", got)
+	}
+}
