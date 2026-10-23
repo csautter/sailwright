@@ -125,7 +125,7 @@ if [ -f "$LOCAL_FILE" ]; then
       continue
     fi
     case "$source_path" in
-      '~' | '~/'*) source_path="$USER_HOME${source_path#\~}" ;;
+      \~ | \~/*) source_path="$USER_HOME${source_path#\~}" ;;
       /* | [A-Za-z]:*) ;;
       *) source_path="$REPO_ROOT/$source_path" ;;
     esac
