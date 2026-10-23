@@ -7,7 +7,6 @@ import asyncio
 import json
 import os
 import random
-import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -17,6 +16,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
+from win11_iso_hash import extract_english_sha256
 
 MICROSOFT_WIN11_ISO_URL = "https://www.microsoft.com/en-US/software-download/windows11"
 MICROSOFT_WIN11_ARM_ISO_URL = (
@@ -355,17 +355,30 @@ async def navigate_to_download_page(
     raise RuntimeError(message) from last_error
 
 
-async def find_english_sha256(page, source_name: str) -> str:
+async def find_english_sha256(page) -> str:
     """Best effort: read the sha256 of the English (United States) ISO from the hash table."""
+    # Table rows first: one row per language keeps the label and its hash together. Then the
+    # whole page text; text_content() includes collapsed sections that inner_text() skips.
     try:
-        text = await page.locator("body").inner_text(timeout=5000)
+        rows = await page.locator("tr").all_text_contents()
     except Exception:
+        rows = []
+    for row in rows:
+        sha256 = extract_english_sha256(row)
+        if sha256:
+            return sha256
+    try:
+        text = await page.locator("body").text_content(timeout=5000) or ""
+    except Exception as exc:
+        print(f"[WARN] Could not read the page text for the sha256 lookup: {exc}")
         return ""
-    # The table lists "<language>  <hash>" rows; take the row of the English (United States) ISO.
-    match = re.search(
-        r"English \(United States\)[^0-9A-Fa-f]{0,20}([0-9A-Fa-f]{64})", text
-    )
-    return match.group(1).lower() if match else ""
+    sha256 = extract_english_sha256(text)
+    if not sha256:
+        print(
+            "[WARN] No sha256 for the English (United States) ISO found on the download page; "
+            "the ISO cannot be verified against Microsoft's published hash."
+        )
+    return sha256
 
 
 async def write_link_info(page, link: str, arm: bool, output_dir: str) -> None:
@@ -373,7 +386,7 @@ async def write_link_info(page, link: str, arm: bool, output_dir: str) -> None:
     info = {
         "url": link,
         "source_name": source_name,
-        "sha256": await find_english_sha256(page, source_name),
+        "sha256": await find_english_sha256(page),
     }
     info_path = os.path.join(
         output_dir,
