@@ -144,7 +144,9 @@ save_to_local_cache() {
     else
       echo "  ↑ Saving to local runner cache: $cached"
       mkdir -p "$(dirname "$cached")"
-      cp "$local_path" "$cached"
+      # Copy under a temporary name first, so an interrupted copy never becomes a cache hit.
+      cp "$local_path" "${cached}.part.$$"
+      mv "${cached}.part.$$" "$cached"
       echo "  ✓ Saved to local runner cache."
     fi
   fi
@@ -218,8 +220,22 @@ download_from_azure() {
   fi
 }
 
+sha256_of() {
+  python3 -c '
+import hashlib, sys
+h = hashlib.sha256()
+with open(sys.argv[1], "rb") as f:
+    for chunk in iter(lambda: f.read(1 << 20), b""):
+        h.update(chunk)
+print(h.hexdigest())
+' "$1"
+}
+
 # Resolves a "manifest" descriptor: fetches the pointer JSON, then materializes the versioned
-# object it names at local_path (verified against the manifest sha256) plus a "<local_path>.json" sidecar.
+# object it names at local_path (verified against the manifest sha256) plus a "<local_path>.json"
+# sidecar. Files from the workspace or the runner cache are hashed too: a name proves nothing
+# about the bytes. Sets MANIFEST_RESULT to "ok", or "miss" when the manifest or its object does
+# not exist, so the caller can fall back to a legacy blob-name.
 download_manifest_entry() {
   local local_path="$1"
   local manifest_key="$2"
@@ -232,8 +248,10 @@ download_manifest_entry() {
   local object_url
   local tmp_path
   local actual_sha
+  local cached
   local sidecar="${local_path}.json"
 
+  MANIFEST_RESULT=miss
   initialize_ftp
   manifest_url="$(ftp_remote_url "$manifest_key")"
   echo "  ↓ Resolving manifest '$FTP_BASE_DIR_NORMALIZED/$manifest_key'..."
@@ -247,29 +265,57 @@ download_manifest_entry() {
     rm -f "$manifest_tmp"
     fail "Failed to download manifest $FTP_BASE_DIR_NORMALIZED/$manifest_key."
   fi
-  parsed="$(python3 -c '
-import json, sys
+  # Same rules as LoadWin11Manifest: the object name ends up in a local path and an FTP URL.
+  if ! parsed="$(python3 -c '
+import json, re, sys
 m = json.load(open(sys.argv[1]))
+if m.get("schema") != 1:
+    sys.exit("unsupported schema %r" % m.get("schema"))
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.iso", m.get("object", "")):
+    sys.exit("invalid object name %r" % m.get("object"))
+if not re.fullmatch(r"[0-9a-f]{64}", m.get("sha256", "")):
+    sys.exit("invalid sha256 %r" % m.get("sha256"))
 print(m["object"])
 print(m["sha256"])
-' "$manifest_tmp")" || {
+' "$manifest_tmp")"; then
     rm -f "$manifest_tmp"
     fail "Manifest $manifest_key is not valid."
-  }
+  fi
   object="$(printf '%s\n' "$parsed" | sed -n 1p)"
   sha256="$(printf '%s\n' "$parsed" | sed -n 2p)"
   object_key="$(dirname "$manifest_key")/${object}"
   echo "  ✓ Manifest points to $object (sha256 ${sha256:0:12}…)."
 
+  # Workspace copy from an earlier run: keep it only if the sidecar names this object and the bytes match.
+  if [ -f "$local_path" ] && [ -f "$sidecar" ]; then
+    if [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("object", ""))' "$sidecar" 2>/dev/null || true)" = "$object" ] &&
+      [ "$(sha256_of "$local_path")" = "$sha256" ]; then
+      rm -f "$manifest_tmp"
+      echo "  ✓ Already present at $local_path and matches the manifest (sha256 verified) — skipping."
+      MANIFEST_RESULT=ok
+      return 0
+    fi
+  fi
+  if [ -e "$local_path" ] || [ -L "$local_path" ]; then
+    echo "  ↻ Existing $local_path is stale or unverified; replacing it."
+    rm -f "$local_path" "$sidecar"
+  fi
+
   mkdir -p "$(dirname "$local_path")"
 
   # Local runner cache is keyed by the versioned object name, so a new ISO never hits a stale copy.
-  if [ -n "${LOCAL_CACHE_DIR:-}" ] && [ -f "${LOCAL_CACHE_DIR}/${object}" ]; then
-    echo "  ✓ Found $object in local runner cache — creating symlink."
-    ln -sf "${LOCAL_CACHE_DIR}/${object}" "$local_path"
-    cp "$manifest_tmp" "$sidecar"
-    rm -f "$manifest_tmp"
-    return 0
+  cached="${LOCAL_CACHE_DIR:-}/${object}"
+  if [ -n "${LOCAL_CACHE_DIR:-}" ] && [ -f "$cached" ]; then
+    if [ "$(sha256_of "$cached")" = "$sha256" ]; then
+      echo "  ✓ Found $object in local runner cache (sha256 verified) — creating symlink."
+      ln -sf "$cached" "$local_path"
+      cp "$manifest_tmp" "$sidecar"
+      rm -f "$manifest_tmp"
+      MANIFEST_RESULT=ok
+      return 0
+    fi
+    echo "  ↻ Local runner cache copy of $object does not match the manifest sha256; evicting it."
+    rm -f "$cached"
   fi
 
   object_url="$(ftp_remote_url "$object_key")"
@@ -285,14 +331,7 @@ print(m["sha256"])
     rm -f "$tmp_path" "$manifest_tmp"
     fail "Failed to download $FTP_BASE_DIR_NORMALIZED/$object_key from FTP."
   fi
-  actual_sha="$(python3 -c '
-import hashlib, sys
-h = hashlib.sha256()
-with open(sys.argv[1], "rb") as f:
-    for chunk in iter(lambda: f.read(1 << 20), b""):
-        h.update(chunk)
-print(h.hexdigest())
-' "$tmp_path")"
+  actual_sha="$(sha256_of "$tmp_path")"
   if [ "$actual_sha" != "$sha256" ]; then
     rm -f "$tmp_path" "$manifest_tmp"
     fail "sha256 mismatch for $object: expected $sha256, got $actual_sha. Deleted download."
@@ -302,27 +341,7 @@ print(h.hexdigest())
   rm -f "$manifest_tmp"
   echo "  ✓ Downloaded $object → $local_path (sha256 verified)."
   save_to_local_cache "$local_path" "$object"
-}
-
-# True when local_path was materialized from the manifest object currently named in its sidecar.
-manifest_entry_is_current() {
-  local local_path="$1"
-  local manifest_key="$2"
-  local manifest_tmp
-  local remote_object
-  local local_object
-
-  [ -f "$local_path" ] && [ -f "${local_path}.json" ] || return 1
-  initialize_ftp
-  manifest_tmp="$(mktemp)"
-  if ! curl "${FTP_CURL_COMMON_ARGS[@]}" --output "$manifest_tmp" "$(ftp_remote_url "$manifest_key")" 2>/dev/null; then
-    rm -f "$manifest_tmp"
-    return 0
-  fi
-  remote_object="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["object"])' "$manifest_tmp" 2>/dev/null || true)"
-  local_object="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["object"])' "${local_path}.json" 2>/dev/null || true)"
-  rm -f "$manifest_tmp"
-  [ -z "$remote_object" ] || [ "$remote_object" = "$local_object" ]
+  MANIFEST_RESULT=ok
 }
 
 # Iterate over each entry in the JSON array using Python (always available on runners)
@@ -336,26 +355,23 @@ for f in data:
     print(f.get('manifest', ''))
 " | while IFS= read -r local_path && IFS= read -r blob_name && IFS= read -r container && IFS= read -r manifest; do
   [ -z "$local_path" ] && continue
+  legacy_blob_name="$blob_name"
   [ -z "$blob_name" ] && blob_name=$(basename "$local_path")
   [ -z "$container" ] && container="build-cache"
 
   echo "=== Build cache: $local_path [object=$blob_name container=$container backend=$CACHE_BACKEND] ==="
 
-  # 0. Manifest-resolved entries (versioned objects behind a pointer file)
+  # 0. Manifest-resolved entries (versioned objects behind a pointer file). An explicit blob-name
+  #    is the legacy flat object, used only while the manifest does not exist yet (migration).
   if [ -n "$manifest" ]; then
     if [ "$CACHE_BACKEND" != "ftp" ] && [ "$CACHE_BACKEND" != "ftps" ]; then
       fail "Manifest cache entries are only supported with the ftp backend (got '$CACHE_BACKEND')."
     fi
-    if manifest_entry_is_current "$local_path" "$manifest"; then
-      echo "  ✓ Already present at $local_path and matches the manifest — skipping."
+    download_manifest_entry "$local_path" "$manifest"
+    if [ "$MANIFEST_RESULT" = "ok" ] || [ -z "$legacy_blob_name" ]; then
       continue
     fi
-    if [ -e "$local_path" ] || [ -L "$local_path" ]; then
-      echo "  ↻ Existing $local_path is stale or unverified; replacing it."
-      rm -f "$local_path" "${local_path}.json"
-    fi
-    download_manifest_entry "$local_path" "$manifest"
-    continue
+    echo "  ↷ Falling back to the legacy object '$blob_name'."
   fi
 
   # 1. Already present in workspace → nothing to do

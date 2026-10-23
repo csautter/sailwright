@@ -183,7 +183,10 @@ function Save-ToLocalCache {
                 New-Item -ItemType Directory -Path $cachedParent -Force | Out-Null
             }
             Write-Host "  [cache] Saving to local runner cache: $cached"
-            Copy-Item -Path $LocalPath -Destination $cached -Force
+            # Copy under a temporary name first, so an interrupted copy never becomes a cache hit.
+            $cachedPart = "$cached.part.$PID"
+            Copy-Item -Path $LocalPath -Destination $cachedPart -Force
+            Move-Item -Path $cachedPart -Destination $cached -Force
             Write-Host '  [ok] Saved to local runner cache.'
         }
     }
@@ -275,8 +278,15 @@ function Get-ManifestObject {
         $curlArgs = $script:FtpCurlCommonArgs + @('--output', $tmp, $url)
         Invoke-FtpCurl -Arguments $curlArgs | Out-Null
         $raw = Get-Content -Path $tmp -Raw
-        $manifest = $raw | ConvertFrom-Json
-        if (-not $manifest.object -or -not $manifest.sha256) {
+        try {
+            $manifest = $raw | ConvertFrom-Json
+        } catch {
+            Write-Fail "Manifest $ManifestKey is not valid."
+        }
+        # Same rules as LoadWin11Manifest: the object name ends up in a local path and an FTP URL.
+        if ($manifest.schema -ne 1 -or
+            "$($manifest.object)" -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*\.iso$' -or
+            "$($manifest.sha256)" -cnotmatch '^[0-9a-f]{64}$') {
             Write-Fail "Manifest $ManifestKey is not valid."
         }
         return [pscustomobject]@{ Manifest = $manifest; Raw = $raw }
@@ -285,8 +295,17 @@ function Get-ManifestObject {
     }
 }
 
+function Get-Sha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    return (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
 function Download-ManifestEntry {
     # Resolves a "manifest" descriptor to a versioned object, verifies its sha256 and writes a sidecar JSON.
+    # Files from the workspace or the runner cache are hashed too: a name proves nothing about the bytes.
+    # Returns $true when the file is in place, $false when the manifest or its object does not exist,
+    # so the caller can fall back to a legacy blob-name.
     param(
         [Parameter(Mandatory = $true)][string]$LocalPath,
         [Parameter(Mandatory = $true)][string]$ManifestKey
@@ -300,18 +319,19 @@ function Download-ManifestEntry {
     $resolved = Get-ManifestObject -ManifestKey $ManifestKey
     if (-not $resolved) {
         Write-Host "  [miss] Manifest $script:FtpBaseDirNormalized/$ManifestKey not found."
-        return
+        return $false
     }
     $object = $resolved.Manifest.object
     $sha256 = $resolved.Manifest.sha256
     Write-Host "  [ok] Manifest points to $object."
 
-    # Skip when the workspace already holds this exact object.
-    if ((Test-Path $LocalPath) -and (Test-Path $sidecar -PathType Leaf)) {
-        $current = (Get-Content -Path $sidecar -Raw | ConvertFrom-Json).object
-        if ($current -eq $object) {
-            Write-Host "  [ok] Already present at $LocalPath and matches the manifest - skipping."
-            return
+    # Workspace copy from an earlier run: keep it only if the sidecar names this object and the bytes match.
+    if ((Test-Path $LocalPath -PathType Leaf) -and (Test-Path $sidecar -PathType Leaf)) {
+        $current = $null
+        try { $current = (Get-Content -Path $sidecar -Raw | ConvertFrom-Json).object } catch { $current = $null }
+        if ($current -eq $object -and (Get-Sha256 -Path $LocalPath) -eq $sha256) {
+            Write-Host "  [ok] Already present at $LocalPath and matches the manifest (sha256 verified) - skipping."
+            return $true
         }
     }
     if (Test-Path $LocalPath) {
@@ -328,10 +348,14 @@ function Download-ManifestEntry {
     if ($localCacheDir -and (Test-Path $localCacheDir -PathType Container)) {
         $cached = Join-Path $localCacheDir $object
         if (Test-Path $cached -PathType Leaf) {
-            Write-Host "  [ok] Found $object in local runner cache - copying."
-            Copy-Item -Path $cached -Destination $LocalPath -Force
-            Set-Content -Path $sidecar -Value $resolved.Raw -NoNewline
-            return
+            if ((Get-Sha256 -Path $cached) -eq $sha256) {
+                Write-Host "  [ok] Found $object in local runner cache (sha256 verified) - copying."
+                Copy-Item -Path $cached -Destination $LocalPath -Force
+                Set-Content -Path $sidecar -Value $resolved.Raw -NoNewline
+                return $true
+            }
+            Write-Host "  [cache] Local runner cache copy of $object does not match the manifest sha256; evicting it."
+            Remove-Item -Path $cached -Force
         }
     }
 
@@ -340,7 +364,7 @@ function Download-ManifestEntry {
     Write-Host "  [download] Downloading $script:FtpBaseDirNormalized/$objectKey..."
     if (-not (Test-FtpObject -Url $url)) {
         Write-Host "  [miss] FTP object $script:FtpBaseDirNormalized/$objectKey not found."
-        return
+        return $false
     }
 
     $tmpPath = "$LocalPath.part"
@@ -350,8 +374,8 @@ function Download-ManifestEntry {
     $curlArgs = $script:FtpCurlTransferArgs + @('--location', '--output', $tmpPath, $url)
     Invoke-FtpCurl -Arguments $curlArgs | Out-Null
 
-    $actual = (Get-FileHash -Path $tmpPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actual -ne $sha256.ToLowerInvariant()) {
+    $actual = Get-Sha256 -Path $tmpPath
+    if ($actual -ne $sha256) {
         Remove-Item -Path $tmpPath -Force
         Write-Fail "sha256 mismatch for ${object}: expected $sha256, got $actual. Deleted download."
     }
@@ -359,21 +383,27 @@ function Download-ManifestEntry {
     Set-Content -Path $sidecar -Value $resolved.Raw -NoNewline
     Write-Host "  [ok] Downloaded $object -> $LocalPath (sha256 verified)."
     Save-ToLocalCache -LocalPath $LocalPath -BlobName $object
+    return $true
 }
 
 foreach ($f in $files) {
     $localPath = $f.'local-path'
     $blobName  = $f.'blob-name'
+    $legacyBlobName = $blobName
     if (-not $blobName) { $blobName = Split-Path -Leaf $localPath }
     $container = $f.'container'
     if (-not $container) { $container = "build-cache" }
 
     Write-Host "=== Build cache: $localPath [object=$blobName container=$container backend=$cacheBackend] ==="
 
-    # 0. Manifest-resolved entries (versioned objects behind a pointer file)
+    # 0. Manifest-resolved entries (versioned objects behind a pointer file). An explicit blob-name
+    #    is the legacy flat object, used only while the manifest does not exist yet (migration).
     if ($null -ne $f.PSObject.Properties['manifest'] -and $f.'manifest') {
-        Download-ManifestEntry -LocalPath $localPath -ManifestKey $f.'manifest'
-        continue
+        $resolvedEntry = Download-ManifestEntry -LocalPath $localPath -ManifestKey $f.'manifest'
+        if ($resolvedEntry -or -not $legacyBlobName) {
+            continue
+        }
+        Write-Host "  [cache] Falling back to the legacy object '$blobName'."
     }
 
     # 1. Already present in workspace -> nothing to do

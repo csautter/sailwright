@@ -10,14 +10,44 @@ on:
     paths:
       - ".github/actions/download-build-cache/**"
       - ".github/actions/upload-build-cache/**"
+      - ".github/actions/refresh-windows-iso/**"
+      - "tools/win11iso/**"
+      - "pkg/build/win11iso*.go"
+      - "scripts/macos/win11_iso_hash.py"
+      - "test/scripts/**"
       - ".github/workflows/test-cache-actions.yml"
   pull_request:
     paths:
       - ".github/actions/download-build-cache/**"
       - ".github/actions/upload-build-cache/**"
+      - ".github/actions/refresh-windows-iso/**"
+      - "tools/win11iso/**"
+      - "pkg/build/win11iso*.go"
+      - "scripts/macos/win11_iso_hash.py"
+      - "test/scripts/**"
       - ".github/workflows/test-cache-actions.yml"
 
 jobs:
+  refresh-windows-iso:
+    name: Validate Windows 11 ISO refresh script
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test refresh.sh against a fake FTPS server
+        shell: bash
+        run: bash .github/actions/refresh-windows-iso/tests/refresh-test.sh
+
+      - name: Test Microsoft sha256 extraction
+        run: python3 -m unittest discover -s test/scripts -v
+
   cache-actions:
     name: Validate build cache actions
     runs-on: ubuntu-latest
@@ -38,6 +68,8 @@ jobs:
           scripts=(
             ".github/actions/download-build-cache/scripts/download-build-cache.sh"
             ".github/actions/upload-build-cache/scripts/upload-build-cache.sh"
+            ".github/actions/refresh-windows-iso/scripts/refresh.sh"
+            ".github/actions/refresh-windows-iso/tests/refresh-test.sh"
           )
 
           for script in "${scripts[@]}"; do
@@ -262,13 +294,48 @@ jobs:
           run_download '[{"local-path":"'"$absent_target"'","manifest":"windows11/iso/absent.json"}]'
           test ! -e "$absent_target"
 
-          # The local runner cache is keyed by the versioned object name.
+          # The local runner cache is keyed by the versioned object name and verified by sha256.
           printf '{"schema":1,"object":"win11_cached_20270201.iso","sha256":"%s"}' "$iso_sha" > "$remote/windows11/iso/win11-cached.json"
-          printf 'cached-iso' > "$local_cache/win11_cached_20270201.iso"
+          printf '%s' "$iso_payload" > "$local_cache/win11_cached_20270201.iso"
           cached_target="$workspace/manifest/cached.iso"
-          run_download '[{"local-path":"'"$cached_target"'","manifest":"windows11/iso/win11-cached.json"}]'
+          cached_entry='[{"local-path":"'"$cached_target"'","manifest":"windows11/iso/win11-cached.json"}]'
+          run_download "$cached_entry" | grep -F "local runner cache (sha256 verified)" >/dev/null
           test -L "$cached_target"
-          test "$(cat "$cached_target")" = "cached-iso"
+          test "$(cat "$cached_target")" = "$iso_payload"
+
+          # A corrupt runner-cache copy is evicted and replaced by the verified remote object.
+          rm -f "$cached_target" "$cached_target.json"
+          printf 'corrupt-cache' > "$local_cache/win11_cached_20270201.iso"
+          printf '%s' "$iso_payload" > "$remote/windows11/iso/win11_cached_20270201.iso"
+          run_download "$cached_entry" | grep -F "evicting it" >/dev/null
+          test ! -L "$cached_target"
+          test "$(cat "$cached_target")" = "$iso_payload"
+          test "$(cat "$local_cache/win11_cached_20270201.iso")" = "$iso_payload"
+          if ls "$local_cache"/*.part.* >/dev/null 2>&1; then
+            echo "Runner cache must not keep temporary copies" >&2
+            exit 1
+          fi
+
+          # A workspace file whose sidecar matches but whose bytes do not is downloaded again.
+          printf 'tampered' > "$cached_target"
+          run_download "$cached_entry" | grep -F "stale or unverified" >/dev/null
+          test "$(cat "$cached_target")" = "$iso_payload"
+
+          # Unsafe object names are rejected before they reach a path or URL.
+          printf '{"schema":1,"object":"../escape.iso","sha256":"%s"}' "$iso_sha" > "$remote/windows11/iso/win11-evil.json"
+          if run_download '[{"local-path":"'"$workspace/manifest/evil.iso"'","manifest":"windows11/iso/win11-evil.json"}]' > "$root/evil.out" 2>&1; then
+            echo "Unsafe object name must fail" >&2
+            exit 1
+          fi
+          grep -F "is not valid" "$root/evil.out" >/dev/null
+
+          # Without a manifest, an explicit blob-name falls back to the legacy flat object (migration).
+          printf 'legacy-iso' > "$remote/win11_25h2_english_amd64.iso"
+          legacy_target="$workspace/manifest/legacy.iso"
+          run_download '[{"local-path":"'"$legacy_target"'","manifest":"windows11/iso/absent.json","blob-name":"win11_25h2_english_amd64.iso"}]' |
+            grep -F "Falling back to the legacy object" >/dev/null
+          test "$(cat "$legacy_target")" = "legacy-iso"
+          test ! -e "$legacy_target.json"
 
           # The azure backend does not support manifests.
           if CACHE_BACKEND=azure run_download "$manifest_entry" > "$root/azure.out" 2>&1; then
@@ -485,6 +552,45 @@ jobs:
               $absentTarget = Join-Path $workspace 'manifest/absent.iso'
               Invoke-CacheScript -Script $downloadScript -Files (ConvertTo-CacheJson @(@{'local-path' = $absentTarget; 'manifest' = 'windows11/iso/absent.json'}))
               if (Test-Path $absentTarget) { throw 'Expected a missing manifest to leave the target absent.' }
+
+              # The local runner cache is verified by sha256; a corrupt copy is evicted and replaced.
+              Set-Content -Path (Join-Path $remote 'windows11/iso/win11-cached.json') -Value ('{{"schema":1,"object":"win11_cached_20270201.iso","sha256":"{0}"}}' -f $isoSha) -NoNewline
+              Set-Content -Path (Join-Path $localCache 'win11_cached_20270201.iso') -Value $isoPayload -NoNewline
+              $cachedTarget = Join-Path $workspace 'manifest/cached.iso'
+              $cachedEntry = ConvertTo-CacheJson @(@{'local-path' = $cachedTarget; 'manifest' = 'windows11/iso/win11-cached.json'})
+              $hit = Invoke-CacheScript -Script $downloadScript -Files $cachedEntry 6>&1 | Out-String
+              if ($hit -notmatch 'local runner cache \(sha256 verified\)') { throw "Expected a verified runner-cache hit. Output: $hit" }
+              Assert-FileContent -Path $cachedTarget -Expected $isoPayload
+
+              Remove-Item -Path $cachedTarget, "$cachedTarget.json" -Force
+              Set-Content -Path (Join-Path $localCache 'win11_cached_20270201.iso') -Value 'corrupt-cache' -NoNewline
+              Set-Content -Path (Join-Path $remote 'windows11/iso/win11_cached_20270201.iso') -Value $isoPayload -NoNewline
+              $evicted = Invoke-CacheScript -Script $downloadScript -Files $cachedEntry 6>&1 | Out-String
+              if ($evicted -notmatch 'evicting it') { throw "Expected the corrupt runner-cache copy to be evicted. Output: $evicted" }
+              Assert-FileContent -Path $cachedTarget -Expected $isoPayload
+              Assert-FileContent -Path (Join-Path $localCache 'win11_cached_20270201.iso') -Expected $isoPayload
+
+              # A workspace file whose sidecar matches but whose bytes do not is downloaded again.
+              Set-Content -Path $cachedTarget -Value 'tampered' -NoNewline
+              Invoke-CacheScript -Script $downloadScript -Files $cachedEntry
+              Assert-FileContent -Path $cachedTarget -Expected $isoPayload
+
+              # Unsafe object names are rejected before they reach a path or URL.
+              Set-Content -Path (Join-Path $remote 'windows11/iso/win11-evil.json') -Value ('{{"schema":1,"object":"../escape.iso","sha256":"{0}"}}' -f $isoSha) -NoNewline
+              $evilFailed = $false
+              try {
+                  Invoke-CacheScript -Script $downloadScript -Files (ConvertTo-CacheJson @(@{'local-path' = (Join-Path $workspace 'manifest/evil.iso'); 'manifest' = 'windows11/iso/win11-evil.json'})) 2>&1 | Out-Null
+              } catch {
+                  $evilFailed = $true
+              }
+              if (-not $evilFailed) { throw 'Unsafe object name must fail.' }
+
+              # Without a manifest, an explicit blob-name falls back to the legacy flat object (migration).
+              Set-Content -Path (Join-Path $remote 'win11_25h2_english_amd64.iso') -Value 'legacy-iso' -NoNewline
+              $legacyTarget = Join-Path $workspace 'manifest/legacy.iso'
+              $legacyOutput = Invoke-CacheScript -Script $downloadScript -Files (ConvertTo-CacheJson @(@{'local-path' = $legacyTarget; 'manifest' = 'windows11/iso/absent.json'; 'blob-name' = 'win11_25h2_english_amd64.iso'})) 6>&1 | Out-String
+              if ($legacyOutput -notmatch 'Falling back to the legacy object') { throw "Expected the legacy fallback. Output: $legacyOutput" }
+              Assert-FileContent -Path $legacyTarget -Expected 'legacy-iso'
 
               # The azure backend does not support manifests.
               $azureFailed = $false
