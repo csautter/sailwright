@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -411,6 +412,10 @@ The gateway must be stopped.`,
 }
 
 func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, socketPath string, viewURL string, approvals bool) {
+	writeBanner(os.Stdout, cfg, pinned, socketPath, viewURL, approvals)
+}
+
+func writeBanner(out io.Writer, cfg gateway.Config, pinned gateway.PinnedBinary, socketPath string, viewURL string, approvals bool) {
 	approvalState := "disabled (safe set only)"
 	if approvals {
 		approvalState = "enabled on this terminal"
@@ -427,7 +432,7 @@ func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, socketPath str
 	if viewURL != "" {
 		liveView = viewURL + "  (build console, open in a browser on this host)"
 	}
-	fmt.Printf(`
+	fmt.Fprintf(out, `
 sailwright-gateway %s
   listening:  %s
   socket:     %s
