@@ -201,8 +201,8 @@ agent_workspaces:                  # container path -> host path of the bind mou
     host: /home/me/Projects/my-roles
 job_timeout: 6h
 approval_ttl: 10m
-min_free_disk_gb: 20               # -1 disables the check
-clean_prompt_min_gb: 20            # offer to delete the cache on Ctrl+C from this size; -1 disables
+min_free_disk_gb: 20               # 0 or unset means the default (20); -1 disables the check
+clean_prompt_min_gb: 20            # offer to delete the cache on Ctrl+C from this size; 0 or unset means 20; -1 disables
 output_limit_bytes: 8388608
 snapshot_max_bytes: 52428800
 snapshot_max_files: 5000
@@ -214,7 +214,7 @@ screen_stuck_after: 15m            # hint when console and output stay unchanged
 
 | Tool | Tier | Maps to |
 | --- | --- | --- |
-| `gateway_info` | info | host, binary hash, targets, playbooks, approval state |
+| `gateway_info` | info | host, binary hash, targets, playbooks, approval state, limits (timeout, output, snapshot, disk) |
 | `list_targets` | info | `sailwright <command> list --json` |
 | `command_help` | info | `sailwright [command] [list] --help` |
 | `vm_build`, `vm_create`, `vm_start`, `vm_stop`, `vm_destroy` | safe | the matching command for one listed target |
@@ -382,7 +382,7 @@ cache folders; created VMs, `.vagrant`, `libvirt/images`, the config and a
 | `staging/` | read-only bundle snapshots, removed after each job |
 | `logs/<job>.log` | redacted output per job, capped at 64 MiB; removed with the job history and after 30 days |
 | `screens/<job>/` | last sampled build console frames, cleared on restart |
-| `audit.jsonl` | audit log |
+| `audit.jsonl` | audit log, including `gateway_started` / `gateway_stopped` with version and binary hash |
 
 The agent folder (`agent_dir`, default `~/.sailwright-gateway`) is separate
 from the state directory and only holds `gateway.sock` and a copy of `token`.

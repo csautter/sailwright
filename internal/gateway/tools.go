@@ -81,6 +81,19 @@ type GatewayInfo struct {
 	Targets         map[string][]string `json:"targets"`
 	TargetErrors    map[string]string   `json:"target_errors,omitempty"`
 	VMAccess        string              `json:"vm_access"`
+	Limits          GatewayLimits       `json:"limits"`
+}
+
+// GatewayLimits are the operator-configured limits an agent can run into.
+type GatewayLimits struct {
+	JobTimeoutSeconds  int64 `json:"job_timeout_seconds"`
+	ApprovalTTLSeconds int64 `json:"approval_ttl_seconds"`
+	OutputLimitBytes   int   `json:"output_limit_bytes"`
+	SnapshotMaxBytes   int64 `json:"snapshot_max_bytes"`
+	SnapshotMaxFiles   int   `json:"snapshot_max_files"`
+	// MinFreeDiskGB is the free space required before build, create and pull; 0 means
+	// the check is disabled.
+	MinFreeDiskGB int `json:"min_free_disk_gb"`
 }
 
 type listTargetsInput struct {
@@ -222,6 +235,14 @@ func (g *Gateway) toolGatewayInfo(_ context.Context, _ *mcp.CallToolRequest, _ e
 		Targets:         g.catalog.Summary(),
 		TargetErrors:    g.catalog.Errors(),
 		VMAccess:        "not available yet",
+		Limits: GatewayLimits{
+			JobTimeoutSeconds:  int64(g.cfg.JobTimeoutValue.Seconds()),
+			ApprovalTTLSeconds: int64(g.cfg.ApprovalTTLValue.Seconds()),
+			OutputLimitBytes:   g.cfg.OutputLimitBytes,
+			SnapshotMaxBytes:   g.cfg.SnapshotMaxBytes,
+			SnapshotMaxFiles:   g.cfg.SnapshotMaxFiles,
+			MinFreeDiskGB:      max(g.cfg.MinFreeDiskGB, 0),
+		},
 	}, nil
 }
 

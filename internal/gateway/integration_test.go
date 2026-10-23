@@ -102,6 +102,16 @@ func TestGatewayExposesExpectedTools(t *testing.T) {
 	if info.BinarySHA256 == "" || info.ApprovalEnabled || len(info.Targets["create"]) == 0 {
 		t.Fatalf("unexpected gateway info %+v", info)
 	}
+	if info.Limits.JobTimeoutSeconds <= 0 || info.Limits.OutputLimitBytes <= 0 || info.Limits.SnapshotMaxFiles <= 0 {
+		t.Fatalf("expected limits in gateway info, got %+v", info.Limits)
+	}
+	audit, err := os.ReadFile(filepath.Join(h.StateDir, "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(audit), `"event":"gateway_started"`) || !strings.Contains(string(audit), `"gateway_version"`) {
+		t.Fatalf("expected a gateway_started audit event, got:\n%s", audit)
+	}
 }
 
 func TestGatewayRunsSafeJobsWithCanonicalArgvAndCleanEnv(t *testing.T) {

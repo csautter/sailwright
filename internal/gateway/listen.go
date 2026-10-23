@@ -158,15 +158,30 @@ func (g *Gateway) ServeListeners(ctx context.Context, listeners *Listeners) erro
 		return errors.New("no listeners to serve")
 	}
 
+	g.recordLifecycle("gateway_started", listeners)
 	var firstErr error
 	select {
 	case <-ctx.Done():
 	case firstErr = <-errs:
 	}
+	defer g.recordLifecycle("gateway_stopped", listeners)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	for _, server := range servers {
 		_ = server.Shutdown(shutdownCtx)
 	}
 	return firstErr
+}
+
+// recordLifecycle audits a start or stop with the version and pinned binary hash, so
+// log lines can be correlated across restarts.
+func (g *Gateway) recordLifecycle(event string, listeners *Listeners) {
+	params := map[string]any{"gateway_version": g.version, "pid": os.Getpid()}
+	if listeners.TCP != nil {
+		params["tcp"] = listeners.TCP.Addr().String()
+	}
+	if listeners.SocketPath != "" {
+		params["socket"] = listeners.SocketPath
+	}
+	_ = g.audit.Record(AuditEvent{Event: event, Params: params, BinarySHA256: g.pinned.SHA256})
 }
