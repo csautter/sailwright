@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -23,7 +24,14 @@ const (
 
 // defaultWindowsExecutableSuffixes mirrors the default PATHEXT order. Lower
 // index wins when one directory holds several variants of the same extension.
+// These are also the only suffixes CreateProcess can start without an
+// explicit interpreter.
 var defaultWindowsExecutableSuffixes = []string{".com", ".exe", ".bat", ".cmd"}
+
+// batchUnsafeArgumentChars are characters that cmd.exe interprets when it
+// re-parses the command line of a .bat or .cmd file. Go's argument quoting does
+// not protect against this, so such arguments are rejected.
+const batchUnsafeArgumentChars = "\"&|<>^%!\r\n"
 
 type Executable struct {
 	Name string
@@ -137,6 +145,12 @@ func Run(ctx context.Context, options RunOptions) error {
 		return err
 	}
 
+	if runtime.GOOS == "windows" {
+		if err := validateBatchArgs(extension, options.Args); err != nil {
+			return err
+		}
+	}
+
 	stdin := options.Stdin
 	if stdin == nil {
 		stdin = os.Stdin
@@ -161,6 +175,19 @@ func Run(ctx context.Context, options RunOptions) error {
 		return fmt.Errorf("run extension %q (%s): %w", extension.Name, extension.Path, err)
 	}
 
+	return nil
+}
+
+func validateBatchArgs(extension Executable, args []string) error {
+	suffix := strings.ToLower(filepath.Ext(extension.Path))
+	if suffix != ".bat" && suffix != ".cmd" {
+		return nil
+	}
+	for _, arg := range args {
+		if strings.ContainsAny(arg, batchUnsafeArgumentChars) {
+			return fmt.Errorf("extension %q is a batch file and argument %q contains characters that cmd.exe would interpret; use an .exe extension to pass such arguments", extension.Name, arg)
+		}
+	}
 	return nil
 }
 
@@ -228,21 +255,24 @@ func trimExecutableSuffix(name string) string {
 
 // windowsExecutableSuffixes returns the lower-cased PATHEXT entries on Windows
 // and the Windows defaults elsewhere, so names stay identical across platforms.
-// PowerShell scripts are deliberately not listed: they cannot be started
-// directly and need an explicit interpreter.
+// Only suffixes CreateProcess can start are kept; scripts such as .ps1, .vbs or
+// .js need an explicit interpreter and are deliberately not listed.
 func windowsExecutableSuffixes() []string {
 	if runtime.GOOS != "windows" {
 		return defaultWindowsExecutableSuffixes
 	}
+	return parsePathext(os.Getenv("PATHEXT"))
+}
 
+func parsePathext(pathext string) []string {
 	var suffixes []string
-	for _, suffix := range strings.Split(os.Getenv("PATHEXT"), string(os.PathListSeparator)) {
+	for _, suffix := range strings.Split(pathext, ";") {
 		suffix = strings.ToLower(strings.TrimSpace(suffix))
-		if suffix == "" || suffix == ".ps1" {
-			continue
-		}
-		if !strings.HasPrefix(suffix, ".") {
+		if suffix != "" && !strings.HasPrefix(suffix, ".") {
 			suffix = "." + suffix
+		}
+		if !slices.Contains(defaultWindowsExecutableSuffixes, suffix) || slices.Contains(suffixes, suffix) {
+			continue
 		}
 		suffixes = append(suffixes, suffix)
 	}
@@ -277,6 +307,7 @@ func executableSuffixRankOf(suffix string) int {
 }
 
 func isExecutableFile(path string) (bool, error) {
+	// #nosec G703 -- path joins an absolute PATH entry with a directory entry name; it is only inspected, never derived from user input.
 	info, err := os.Stat(path)
 	if err != nil {
 		return false, err

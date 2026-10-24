@@ -85,6 +85,52 @@ func TestDiscoverPrefersPathextOrderWithinDirectory(t *testing.T) {
 	}
 }
 
+func TestParsePathextKeepsOnlyLaunchableSuffixes(t *testing.T) {
+	got := parsePathext(".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.PS1;exe")
+	want := []string{".com", ".exe", ".bat", ".cmd"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("expected suffixes %v, got %v", want, got)
+	}
+}
+
+func TestParsePathextKeepsConfiguredOrder(t *testing.T) {
+	got := parsePathext(".CMD;.EXE")
+	want := []string{".cmd", ".exe"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("expected suffixes %v, got %v", want, got)
+	}
+}
+
+func TestParsePathextFallsBackToDefaults(t *testing.T) {
+	got := parsePathext(".VBS;.PS1")
+	if strings.Join(got, ",") != strings.Join(defaultWindowsExecutableSuffixes, ",") {
+		t.Fatalf("expected default suffixes, got %v", got)
+	}
+}
+
+func TestValidateBatchArgsRejectsCmdMetacharacters(t *testing.T) {
+	for _, path := range []string{`C:\bin\sailwright-demo.bat`, `C:\bin\sailwright-demo.CMD`} {
+		for _, arg := range []string{`"&calc.exe`, "a|b", "a>b", "a<b", "a^b", "%PATH%", "!x!", "a\nb"} {
+			err := validateBatchArgs(Executable{Name: "demo", Path: path}, []string{"scan", arg})
+			if err == nil {
+				t.Fatalf("expected argument %q for %q to be rejected", arg, path)
+			}
+		}
+	}
+}
+
+func TestValidateBatchArgsAllowsSafeArgumentsAndExecutables(t *testing.T) {
+	batch := Executable{Name: "demo", Path: `C:\bin\sailwright-demo.cmd`}
+	if err := validateBatchArgs(batch, []string{"scan", "--out", `C:\out dir\snapshot.json`}); err != nil {
+		t.Fatalf("expected safe batch arguments to pass, got %v", err)
+	}
+
+	exe := Executable{Name: "demo", Path: `C:\bin\sailwright-demo.exe`}
+	if err := validateBatchArgs(exe, []string{`"&calc.exe`}); err != nil {
+		t.Fatalf("expected .exe arguments to pass unchanged, got %v", err)
+	}
+}
+
 func TestRunPassesArgumentsEnvironmentAndExitCode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses a POSIX shell script as extension")

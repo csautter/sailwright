@@ -61,12 +61,14 @@ path separators.
 
 ### Windows
 
-On Windows, an extension must have one of the file suffixes listed in
-`PATHEXT` (by default `.com`, `.exe`, `.bat`, `.cmd`). If one directory holds
-several variants of the same extension, the `PATHEXT` order decides.
+On Windows, an extension must have one of the suffixes `.com`, `.exe`, `.bat`,
+or `.cmd` that is also listed in `PATHEXT`. Other `PATHEXT` entries such as
+`.vbs` or `.js` are ignored because they need an interpreter. If one directory
+holds several variants of the same extension, the `PATHEXT` order decides.
 
 - Prefer `.exe` extensions. Arguments passed to `.bat` and `.cmd` files are
-  re-parsed by `cmd.exe`, which makes quoting of special characters fragile.
+  re-parsed by `cmd.exe`, so Sailwright refuses to start a batch extension when
+  an argument contains any of `" & | < > ^ % !` or a line break.
 - PowerShell scripts (`.ps1`) are not started directly. Wrap them in a small
   `.cmd` or `.exe` launcher that calls `pwsh -NoProfile -File`.
 
@@ -76,6 +78,10 @@ Every executable on `PATH` that matches `sailwright-<name>` is trusted and runs
 with the permissions of the current user, the same model that `git` and
 `kubectl` use for their plugins. There is no sandbox. Only install extensions
 from sources you trust, especially when provisioning with elevated privileges.
+
+Extensions inherit the full environment of the `sailwright` process, including
+credentials such as cloud or registry tokens. Unset sensitive variables before
+running an extension you do not fully trust.
 
 ## Recommended Extension Commands
 
