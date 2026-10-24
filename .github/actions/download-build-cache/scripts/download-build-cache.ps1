@@ -153,7 +153,8 @@ function Invoke-FtpCurl {
     if ($exitCode -eq 0) {
         return $true
     }
-    if ($AllowMissing -and ($exitCode -eq 78 -or $exitCode -eq 19)) {
+    # 9: the server refused to change into the parent directory, i.e. the directory does not exist.
+    if ($AllowMissing -and ($exitCode -eq 78 -or $exitCode -eq 19 -or $exitCode -eq 9)) {
         return $false
     }
 

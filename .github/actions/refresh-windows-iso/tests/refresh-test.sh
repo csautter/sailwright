@@ -65,6 +65,8 @@ if [ -n "$upload" ]; then
   cp "$upload" "$path"
   exit 0
 fi
+# Like a real server, a missing parent directory fails the CWD with curl exit 9.
+[ -d "$(dirname "$path")" ] || { echo "curl: (9) Server denied you to change to the given directory" >&2; exit 9; }
 if [ "$head" = "true" ]; then
   if [ -n "${FAKE_FTP_HEAD_EXIT:-}" ] && { [ -z "${FAKE_FTP_HEAD_KEY:-}" ] || [ "$key" = "$FAKE_FTP_HEAD_KEY" ]; }; then
     echo "curl: (${FAKE_FTP_HEAD_EXIT}) fake failure" >&2
@@ -184,6 +186,8 @@ fi
 assert_no_upload_leftovers
 
 echo "--- first publish: object, then manifest, both renamed into place"
+# The ISO directory does not exist before the first publish.
+rm -rf "$remote/windows11"
 run_refresh || { cat "$root/refresh.out"; fail "first publish"; }
 [ "$(outcome)" = "new" ] || fail "outcome $(outcome)"
 [ "$(manifest_field object)" = "$object" ] || fail "manifest object $(manifest_field object)"
@@ -324,6 +328,7 @@ grep -F "failed with curl exit code 67" "$root/refresh.out" >/dev/null || fail "
 
 echo "--- adopt: legacy flat object becomes a versioned object, due on the next run"
 reset_remote
+rm -rf "$remote/windows11"
 cp "$root/v1.iso" "$remote/win11_25h2_english_amd64.iso"
 MODE=adopt run_refresh || { cat "$root/refresh.out"; fail "adopt"; }
 [ "$(outcome)" = "adopted" ] || fail "outcome $(outcome)"

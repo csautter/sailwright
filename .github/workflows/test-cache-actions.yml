@@ -158,6 +158,8 @@ jobs:
           # With FAKE_CURL_REMOTE set, serve files from that directory as the FTP base dir /cache.
           if [ -n "${FAKE_CURL_REMOTE:-}" ]; then
             rel="${url#ftp://localhost/cache/}"
+            # Like a real server, a missing parent directory fails the CWD with curl exit 9.
+            if [ ! -d "$(dirname "$FAKE_CURL_REMOTE/$rel")" ]; then exit 9; fi
             if [ "$is_head" = "true" ]; then
               if [ -f "$FAKE_CURL_REMOTE/$rel" ]; then exit 0; fi
               exit 78
@@ -356,6 +358,16 @@ jobs:
           test "$(cat "$legacy_target")" = "legacy-iso"
           test ! -e "$legacy_target.json"
 
+          # Before the first publish the manifest directory does not exist (curl exit 9): still a miss,
+          # so the legacy fallback applies and later entries are processed.
+          fresh_target="$workspace/manifest/fresh.iso"
+          printf 'after-fresh' > "$remote/after-fresh.bin"
+          after_target="$workspace/manifest/after-fresh.bin"
+          run_download '[{"local-path":"'"$fresh_target"'","manifest":"windows11/fresh/win11-amd64.json","blob-name":"win11_25h2_english_amd64.iso"},{"local-path":"'"$after_target"'","blob-name":"after-fresh.bin"}]' |
+            grep -F "Falling back to the legacy object" >/dev/null
+          test "$(cat "$fresh_target")" = "legacy-iso"
+          test "$(cat "$after_target")" = "after-fresh"
+
           # The azure backend does not support manifests.
           if CACHE_BACKEND=azure run_download "$manifest_entry" > "$root/azure.out" 2>&1; then
             echo "Azure backend with manifest must fail" >&2
@@ -450,6 +462,8 @@ jobs:
           # With FAKE_CURL_REMOTE set, serve files from that directory as the FTP base dir /cache.
           if [ -n "${FAKE_CURL_REMOTE:-}" ]; then
             rel="${url#ftp://localhost/cache/}"
+            # Like a real server, a missing parent directory fails the CWD with curl exit 9.
+            if [ ! -d "$(dirname "$FAKE_CURL_REMOTE/$rel")" ]; then exit 9; fi
             if [ "$is_head" = "true" ]; then
               if [ -f "$FAKE_CURL_REMOTE/$rel" ]; then exit 0; fi
               exit 78
@@ -623,6 +637,12 @@ jobs:
               $legacyOutput = Invoke-CacheScript -Script $downloadScript -Files (ConvertTo-CacheJson @(@{'local-path' = $legacyTarget; 'manifest' = 'windows11/iso/absent.json'; 'blob-name' = 'win11_25h2_english_amd64.iso'})) 6>&1 | Out-String
               if ($legacyOutput -notmatch 'Falling back to the legacy object') { throw "Expected the legacy fallback. Output: $legacyOutput" }
               Assert-FileContent -Path $legacyTarget -Expected 'legacy-iso'
+
+              # Before the first publish the manifest directory does not exist (curl exit 9): still a miss.
+              $freshTarget = Join-Path $workspace 'manifest/fresh.iso'
+              $freshOutput = Invoke-CacheScript -Script $downloadScript -Files (ConvertTo-CacheJson @(@{'local-path' = $freshTarget; 'manifest' = 'windows11/fresh/win11-amd64.json'; 'blob-name' = 'win11_25h2_english_amd64.iso'})) 6>&1 | Out-String
+              if ($freshOutput -notmatch 'Falling back to the legacy object') { throw "Expected the legacy fallback for a missing manifest directory. Output: $freshOutput" }
+              Assert-FileContent -Path $freshTarget -Expected 'legacy-iso'
 
               # The azure backend does not support manifests.
               $azureFailed = $false

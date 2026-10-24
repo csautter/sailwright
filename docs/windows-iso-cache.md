@@ -146,7 +146,10 @@ publish, and a refusal is a warning.
 `scripts/macos/playwright_win11_iso.py` exits with code **3** when it detects a refusal or challenge
 page. Go maps that to `ErrMicrosoftRefused`. Anything else (changed selectors, timeouts) still fails
 the job. FTP errors other than "not found" (authentication, TLS, network) also fail the job instead
-of being treated as an empty cache.
+of being treated as an empty cache. "Not found" covers curl exit codes 19 and 78, and 9 (the server
+refused to change into the directory): before the first publish `windows11/iso/` does not exist, so
+the manifest lookup returns 9. The refresh workflow then publishes as usual, and build jobs fall back
+to the legacy object.
 
 ### Fallback and staleness guard
 

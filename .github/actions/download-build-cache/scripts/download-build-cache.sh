@@ -126,7 +126,9 @@ ftp_object_exists() {
   if [ "$status" -eq 0 ]; then
     return 0
   fi
-  if [ "$status" -eq 78 ] || [ "$status" -eq 19 ]; then
+  # 9: the server refused to change into the parent directory, i.e. the directory does not exist
+  # (for example windows11/iso before the first manifest is published).
+  if [ "$status" -eq 78 ] || [ "$status" -eq 19 ] || [ "$status" -eq 9 ]; then
     return 1
   fi
 

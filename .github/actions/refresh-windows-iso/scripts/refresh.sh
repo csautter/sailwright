@@ -70,7 +70,8 @@ ftp_curl() {
     --retry 3 --retry-delay 5 --user "${FTP_USERNAME}:${FTP_PASSWORD}" "$@"
 }
 
-# Prints the remote size, or nothing when the object does not exist. Any other failure
+# Prints the remote size, or nothing when the object does not exist (curl exit 19/78, or 9 when the
+# parent directory does not exist, as windows11/iso before the first publish). Any other failure
 # (authentication, TLS, network) fails the run instead of looking like a missing object.
 # Assign the result to a variable: inside "[ -n "$(ftp_size …)" ]" a failure would be ignored.
 ftp_size() {
@@ -79,7 +80,7 @@ ftp_size() {
   headers="$(ftp_curl --head --dump-header - --output /dev/null "$(ftp_url "$1")" 2>"${WORK_DIR}/curl.err")" || status=$?
   case "$status" in
     0) ;;
-    19|78) return 0 ;;
+    9|19|78) return 0 ;;
     *)
       cat "${WORK_DIR}/curl.err" >&2
       fail "FTP size check of $1 failed with curl exit code $status."
