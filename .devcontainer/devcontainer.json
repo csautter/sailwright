@@ -7,7 +7,8 @@
   "service": "dev",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "containerEnv": {
-    "GOTOOLCHAIN": "auto"
+    "GOTOOLCHAIN": "auto",
+    "CLAUDE_CONFIG_DIR": "/root/.claude"
   },
   "initializeCommand": "bash .devcontainer/initialize-host.sh",
   "features": {

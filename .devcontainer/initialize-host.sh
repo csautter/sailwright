@@ -105,10 +105,12 @@ add_nested() { # source target
 } >"$TMP_FILE"
 
 # Always mounted; the sources are created because they are devcontainer-owned.
-mkdir -p "$USER_HOME/.sailwright-gateway" "$USER_HOME/.claude-devcontainer"
+# The agent state dirs keep Claude Code and Codex sessions across rebuilds.
+mkdir -p "$USER_HOME/.sailwright-gateway" "$USER_HOME/.claude-devcontainer" "$USER_HOME/.codex-devcontainer"
 add_mount "$REPO_ROOT" "/workspaces/$REPO_NAME"
 add_mount "$USER_HOME/.sailwright-gateway" /run/sailwright-gateway ro
 add_mount "$USER_HOME/.claude-devcontainer" /root/.claude
+add_mount "$USER_HOME/.codex-devcontainer" /root/.codex
 
 # Agent configuration, mounted when present on the host.
 add_if_exists "$USER_HOME/.agents/skills" /root/.agents/skills

@@ -14,7 +14,22 @@ Mounted automatically when present:
 - Sibling repos next to this checkout: `sailwright-plans`,
   `sailwright-roles-private`
 - Always: `~/.sailwright-gateway` (read-only, see
-  [agent gateway](../docs/agent-gateway.md)) and `~/.claude-devcontainer`
+  [agent gateway](../docs/agent-gateway.md)), `~/.claude-devcontainer`
+  (`/root/.claude`) and `~/.codex-devcontainer` (`/root/.codex`)
+
+## Agent sessions
+
+Claude Code and Codex keep their state in devcontainer-owned host directories,
+so sessions, history, settings and logins survive a container rebuild:
+
+- `~/.claude-devcontainer` is `/root/.claude`. `CLAUDE_CONFIG_DIR` points there,
+  so `.claude.json` (onboarding, project trust, MCP servers) is kept as well.
+- `~/.codex-devcontainer` is `/root/.codex` (`sessions/`, `history.jsonl`,
+  `config.toml`). `~/.codex/skills` is mounted on top of it, and a host
+  `~/.codex/auth.json` is linked in on every start so the login is shared with
+  the host.
+
+Delete these directories on the host to reset the agents' state.
 
 ## Extra personal mounts (optional)
 
