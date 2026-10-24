@@ -257,6 +257,7 @@ func writeManifest(out io.Writer, arch, manifestPath, sourceName, object, local,
 		// Keep the name Microsoft serves these bytes under, so the next resolve compares like with like.
 		m.SourceName = sourceName
 		m.Release = build.ParseWin11Release(sourceName)
+		m.Build = build.ParseWin11Build(sourceName)
 		m.CheckedAt = now.UTC().Format(time.RFC3339)
 	} else {
 		pruned = m.Promote(entry, sourceName, size, now)

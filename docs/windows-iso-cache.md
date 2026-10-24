@@ -21,15 +21,23 @@ staleness guard below.
 windows11/iso/win11_25h2_english_x64_20261023.iso      # immutable, never overwritten
 windows11/iso/win11_25h2_english_x64v2_20270114.iso    # Microsoft media refresh ("v2")
 windows11/iso/win11_25h2_english_arm64_20261023.iso
+windows11/iso/windows11_client_x64_en-us_26300_9457_20261124.iso  # newer Microsoft naming
 windows11/iso/win11-amd64.json                         # pointer, overwritten on change
 windows11/iso/win11-arm64.json
 ```
 
 **Object name:** the base name of Microsoft's download URL (`Win11_25H2_English_x64v2.iso`),
-lower-cased, plus `_<YYYYMMDD>` for the day the ISO was first seen. Names that do not match
-`^Win11_\d{2}H[12]_[A-Za-z]+_(x64|Arm64)(v\d+)?\.iso$` become
-`win11_unknown_english_<arch>_<date>.iso` (using the requested `amd64` or `arm64` architecture)
-and log a warning.
+lower-cased, plus `_<YYYYMMDD>` for the day the ISO was first seen. Two naming schemes are
+recognized:
+
+- `^Win11_\d{2}H[12]_[A-Za-z]+_(x64|Arm64)(v\d+)?\.iso$`, for example `Win11_25H2_English_x64v2.iso`.
+  The release (`25H2`) is taken from the name.
+- `^Windows11_Client_(x64|arm64)_[A-Za-z]{2}-[A-Za-z]{2}_(\d+)_(\d+)\.iso$`, Microsoft's newer naming,
+  for example `Windows11_Client_x64_en-us_26300_9457.iso`. The build (`26300.9457`) is taken from
+  the name; the name carries no release, so `release` stays empty.
+
+Other names become `win11_unknown_english_<arch>_<date>.iso` (using the requested `amd64` or
+`arm64` architecture) and log a warning.
 
 **Manifest** (`win11-<arch>.json`, schema 1):
 
@@ -50,7 +58,8 @@ and log a warning.
 }
 ```
 
-`build` is optional and currently empty. `announced_release` is the newest release the release
+`build` is filled from `Windows11_Client_…` names and empty for `Win11_…` names. `release` is
+empty for `Windows11_Client_…` names; the due rule then treats each new announcement as newer, once. `announced_release` is the newest release the release
 notes announced at the last successful check (see the due rule). Readers reject manifests with an
 unknown `schema`, an object name outside `[A-Za-z0-9._-]` or a malformed sha256.
 
@@ -167,7 +176,7 @@ the Microsoft download page, then:
 set -euo pipefail
 export FTP_USER=… FTP_PASS=… FTP_HOST=…
 ARCH=amd64                       # or arm64
-SRC=Win11_25H2_English_x64.iso   # Win11_25H2_English_Arm64.iso for arm64; add v2 etc. as Microsoft names it
+SRC=Windows11_Client_x64_en-us_26300_9457.iso   # the downloaded file name exactly as Microsoft serves it
 ISO=~/Downloads/$SRC
 DIR=/private/windows11/iso
 cache_curl() { curl --fail --ssl-reqd --user "$FTP_USER:$FTP_PASS" "$@"; }

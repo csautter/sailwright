@@ -20,6 +20,9 @@ func TestWin11ObjectName(t *testing.T) {
 		{"Win11_25H2_English_x64.iso", "amd64", "win11_25h2_english_x64_20261023.iso"},
 		{"Win11_25H2_English_x64v2.iso", "amd64", "win11_25h2_english_x64v2_20261023.iso"},
 		{"Win11_25H2_English_Arm64.iso", "arm64", "win11_25h2_english_arm64_20261023.iso"},
+		{"Windows11_Client_x64_en-us_26300_9457.iso", "amd64", "windows11_client_x64_en-us_26300_9457_20261023.iso"},
+		{"Windows11_Client_arm64_en-us_26300_9457.iso", "arm64", "windows11_client_arm64_en-us_26300_9457_20261023.iso"},
+		{"Windows11_Client_x64_en-us_26300.iso", "amd64", "win11_unknown_english_amd64_20261023.iso"},
 		{"Weird.iso", "amd64", "win11_unknown_english_amd64_20261023.iso"},
 		{"Weird.iso", "arm64", "win11_unknown_english_arm64_20261023.iso"},
 		{"Win11_26H1_English_ARM.iso", "arm64", "win11_unknown_english_arm64_20261023.iso"},
@@ -38,6 +41,15 @@ func TestParseWin11ReleaseAndSourceName(t *testing.T) {
 	}
 	if got := ParseWin11Release("nonsense.iso"); got != "" {
 		t.Errorf("release = %q, want empty", got)
+	}
+	if got := ParseWin11Release("Windows11_Client_x64_en-us_26300_9457.iso"); got != "" {
+		t.Errorf("release = %q, want empty for the client naming", got)
+	}
+	if got := ParseWin11Build("Windows11_Client_arm64_en-us_26300_9457.iso"); got != "26300.9457" {
+		t.Errorf("build = %q", got)
+	}
+	if got := ParseWin11Build("Win11_25H2_English_x64.iso"); got != "" {
+		t.Errorf("build = %q, want empty", got)
 	}
 	got := Win11SourceNameFromURL("https://software.download.prss.microsoft.com/dbazure/Win11_25H2_English_x64v2.iso?t=abc&P1=1")
 	if got != "Win11_25H2_English_x64v2.iso" {

@@ -44,8 +44,11 @@ var ErrMicrosoftRefused = errors.New("microsoft refused the Windows 11 download 
 
 var (
 	win11SourceNamePattern = regexp.MustCompile(`^Win11_\d{2}H[12]_[A-Za-z]+_(x64|Arm64)(v\d+)?\.iso$`)
-	win11ReleasePattern    = regexp.MustCompile(`^Win11_(\d{2}H[12])_`)
-	win11NotesPattern      = regexp.MustCompile(`Version\s+(\d{2})H([12])`)
+	// win11ClientSourceNamePattern matches Microsoft's newer naming, e.g. Windows11_Client_x64_en-us_26300_9457.iso
+	// (build 26300.9457). It carries a build number but no release.
+	win11ClientSourceNamePattern = regexp.MustCompile(`^Windows11_Client_(x64|arm64)_[A-Za-z]{2}-[A-Za-z]{2}_(\d+)_(\d+)\.iso$`)
+	win11ReleasePattern          = regexp.MustCompile(`^Win11_(\d{2}H[12])_`)
+	win11NotesPattern            = regexp.MustCompile(`Version\s+(\d{2})H([12])`)
 	// win11ObjectPattern guards object names before they reach FTP commands (DELE) or local paths.
 	win11ObjectPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*\.iso$`)
 	win11SHA256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -80,7 +83,7 @@ type Win11Manifest struct {
 // Unexpected source names use the requested architecture (amd64 or arm64) in the fallback.
 func Win11ObjectName(sourceName, arch string, firstSeen time.Time) string {
 	date := firstSeen.UTC().Format("20060102")
-	if win11SourceNamePattern.MatchString(sourceName) {
+	if win11SourceNamePattern.MatchString(sourceName) || win11ClientSourceNamePattern.MatchString(sourceName) {
 		base := strings.TrimSuffix(strings.ToLower(sourceName), ".iso")
 		return base + "_" + date + ".iso"
 	}
@@ -95,6 +98,15 @@ func ParseWin11Release(sourceName string) string {
 		return ""
 	}
 	return m[1]
+}
+
+// ParseWin11Build extracts the build (e.g. "26300.9457") from Microsoft's ISO file name; "" if unknown.
+func ParseWin11Build(sourceName string) string {
+	m := win11ClientSourceNamePattern.FindStringSubmatch(sourceName)
+	if m == nil {
+		return ""
+	}
+	return m[2] + "." + m[3]
 }
 
 // Win11SourceNameFromURL returns Microsoft's file name (the URL path basename, ignoring the query string).
@@ -180,6 +192,7 @@ func (m *Win11Manifest) Promote(entry Win11HistoryEntry, sourceName string, size
 	m.Object = entry.Object
 	m.SourceName = sourceName
 	m.Release = ParseWin11Release(sourceName)
+	m.Build = ParseWin11Build(sourceName)
 	m.SHA256 = entry.SHA256
 	m.Size = size
 	m.PublishedAt = entry.PublishedAt

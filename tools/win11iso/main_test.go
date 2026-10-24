@@ -63,6 +63,45 @@ func TestPublishMarkDue(t *testing.T) {
 	}
 }
 
+func TestPublishClientSourceName(t *testing.T) {
+	dir := t.TempDir()
+	iso := filepath.Join(dir, "x.iso")
+	_ = os.WriteFile(iso, []byte("iso"), 0o600)
+	manifest := filepath.Join(dir, "m.json")
+	day := time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)
+	publish := func(sourceName string, now time.Time) string {
+		t.Helper()
+		var out bytes.Buffer
+		args := []string{"--arch", "amd64", "--iso", iso, "--source-name", sourceName, "--manifest", manifest}
+		if err := runPublish(args, &out, now); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+
+	// An adopted legacy ISO later served under the client naming: same bytes, so only the metadata changes.
+	publish("Win11_25H2_English_x64.iso", day)
+	out := publish("Windows11_Client_x64_en-us_26300_9457.iso", day.AddDate(0, 0, 28))
+	if !strings.Contains(out, "unchanged=true") {
+		t.Errorf("output: %s", out)
+	}
+	m, _ := build.LoadWin11Manifest(manifest)
+	if m.SourceName != "Windows11_Client_x64_en-us_26300_9457.iso" || m.Build != "26300.9457" || m.Release != "" {
+		t.Errorf("manifest %+v", m)
+	}
+
+	// New bytes under the client naming become a versioned object named after Microsoft's file.
+	_ = os.WriteFile(iso, []byte("iso-new"), 0o600)
+	out = publish("Windows11_Client_x64_en-us_26300_9457.iso", day.AddDate(0, 0, 29))
+	if !strings.Contains(out, "object=windows11_client_x64_en-us_26300_9457_20261122.iso") {
+		t.Errorf("output: %s", out)
+	}
+	m, _ = build.LoadWin11Manifest(manifest)
+	if m.Build != "26300.9457" || m.Object != "windows11_client_x64_en-us_26300_9457_20261122.iso" {
+		t.Errorf("manifest %+v", m)
+	}
+}
+
 // publishBytes publishes content as the ISO of the given day and returns the helper output.
 func publishBytes(t *testing.T, manifest, content string, day time.Time) (string, error) {
 	t.Helper()
