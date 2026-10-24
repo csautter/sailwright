@@ -24,9 +24,12 @@ lines. Then rebuild the container.
 ## Host prerequisites
 
 - `initializeCommand` runs `bash .devcontainer/initialize-host.sh` on the host.
-  On Windows, Git Bash must come before WSL's `bash.exe` on `PATH`; under WSL
-  `HOME` is the WSL home, so the gateway folder would be mounted from the wrong
-  place and `sailwright-gateway connect` would fail to authenticate.
+  On Windows this works with Git Bash or WSL's `bash.exe`, whichever comes
+  first on `PATH`. Under WSL, a checkout on a Windows drive uses the Windows
+  profile (`%USERPROFILE%`) as home and passes `C:/...` paths to Docker
+  Desktop. A checkout inside the WSL filesystem keeps the WSL home.
+- On Windows, the workspace is a bind mount from the Windows drive, which is
+  noticeably slower for `git` and Go builds than a checkout inside WSL.
 
 ## Upgrading from the single-container setup
 

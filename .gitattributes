@@ -1,0 +1,6 @@
+# Keep LF for files executed inside Linux containers or by bash on Windows
+# hosts, even when a Windows checkout uses core.autocrlf=true.
+*.sh text eol=lf
+.devcontainer/** text eol=lf
+Dockerfile text eol=lf
+Makefile text eol=lf

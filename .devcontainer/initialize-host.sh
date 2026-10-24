@@ -7,16 +7,38 @@
 # starting. Extra personal mounts go in .devcontainer/mounts.local.
 set -euo pipefail
 
-# Resolve user home directory across Unix and Windows environments
-USER_HOME="${HOME:-${USERPROFILE:-}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# On Windows, `bash` may resolve to WSL's bash.exe instead of Git Bash. If the
+# checkout lives on a Windows drive, VS Code and Docker Desktop run on Windows:
+# use the Windows profile as home and hand Docker C:/... paths. A checkout
+# inside the WSL filesystem (VS Code WSL remote) keeps the Linux paths.
+WSL_WINDOWS=false
+if [ -n "${WSL_DISTRO_NAME:-}" ] && command -v wslpath >/dev/null 2>&1; then
+  case "$(wslpath -m "$REPO_ROOT" 2>/dev/null)" in
+    [A-Za-z]:/*) WSL_WINDOWS=true ;;
+  esac
+fi
+
+if $WSL_WINDOWS; then
+  WIN_PROFILE="$(cd "$REPO_ROOT" && cmd.exe /d /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')" || WIN_PROFILE=""
+  case "$WIN_PROFILE" in
+    [A-Za-z]:\\*) USER_HOME="$(wslpath -u "$WIN_PROFILE")" ;;
+    *)
+      echo "Error: running under WSL but could not read the Windows USERPROFILE via cmd.exe." >&2
+      exit 1
+      ;;
+  esac
+else
+  USER_HOME="${HOME:-${USERPROFILE:-}}"
+fi
 
 if [ -z "$USER_HOME" ]; then
   echo "Error: Neither HOME nor USERPROFILE is set." >&2
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_NAME="$(basename "$REPO_ROOT")"
 PARENT_DIR="$(dirname "$REPO_ROOT")"
 GENERATED_DIR="$SCRIPT_DIR/.generated"
@@ -34,6 +56,8 @@ SKIPPED=()
 host_path() {
   if command -v cygpath >/dev/null 2>&1; then
     cygpath -m "$1"
+  elif $WSL_WINDOWS; then
+    wslpath -m "$1"
   else
     printf '%s' "$1"
   fi
@@ -126,7 +150,12 @@ if [ -f "$LOCAL_FILE" ]; then
     fi
     case "$source_path" in
       \~ | \~/*) source_path="$USER_HOME${source_path#\~}" ;;
-      /* | [A-Za-z]:*) ;;
+      [A-Za-z]:*)
+        if $WSL_WINDOWS; then
+          source_path="$(wslpath -u "$source_path")"
+        fi
+        ;;
+      /*) ;;
       *) source_path="$REPO_ROOT/$source_path" ;;
     esac
     add_if_exists "$source_path" "$target" "$ro"
