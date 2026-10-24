@@ -585,6 +585,7 @@ jobs:
               $absentTarget = Join-Path $workspace 'manifest/absent.iso'
               Invoke-CacheScript -Script $downloadScript -Files (ConvertTo-CacheJson @(@{'local-path' = $absentTarget; 'manifest' = 'windows11/iso/absent.json'}))
               if (Test-Path $absentTarget) { throw 'Expected a missing manifest to leave the target absent.' }
+              if ($LASTEXITCODE -ne 0) { throw "Expected LASTEXITCODE to be reset after a missing manifest, got $LASTEXITCODE." }
 
               # A present manifest forbids fallback even with legacy workspace/runner-cache bytes.
               Set-Content -Path (Join-Path $remote 'windows11/iso/broken.json') -Value ('{{"schema":1,"object":"missing-version.iso","sha256":"{0}"}}' -f $isoSha) -NoNewline
@@ -643,6 +644,7 @@ jobs:
               $freshOutput = Invoke-CacheScript -Script $downloadScript -Files (ConvertTo-CacheJson @(@{'local-path' = $freshTarget; 'manifest' = 'windows11/fresh/win11-amd64.json'; 'blob-name' = 'win11_25h2_english_amd64.iso'})) 6>&1 | Out-String
               if ($freshOutput -notmatch 'Falling back to the legacy object') { throw "Expected the legacy fallback for a missing manifest directory. Output: $freshOutput" }
               Assert-FileContent -Path $freshTarget -Expected 'legacy-iso'
+              if ($LASTEXITCODE -ne 0) { throw "Expected LASTEXITCODE to be reset after a missing manifest directory, got $LASTEXITCODE." }
 
               # The azure backend does not support manifests.
               $azureFailed = $false

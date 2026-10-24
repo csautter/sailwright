@@ -155,6 +155,8 @@ function Invoke-FtpCurl {
     }
     # 9: the server refused to change into the parent directory, i.e. the directory does not exist.
     if ($AllowMissing -and ($exitCode -eq 78 -or $exitCode -eq 19 -or $exitCode -eq 9)) {
+        # The Actions PowerShell wrapper exits with $LASTEXITCODE, which still holds curl's code.
+        $global:LASTEXITCODE = 0
         return $false
     }
 
