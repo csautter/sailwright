@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -21,6 +22,10 @@ var rootCmd = &cobra.Command{
 func Execute() {
 	err := rootCmd.Execute()
 	if err != nil {
+		var exitErr *exitCodeError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.code)
+		}
 		os.Exit(1)
 	}
 }
