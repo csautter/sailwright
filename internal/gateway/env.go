@@ -21,6 +21,8 @@ const (
 
 // baseEnvNames are the host variables a sailwright child process needs to find its
 // tools. Anything else, notably SSH_AUTH_SOCK and cloud credentials, is dropped.
+// On Windows, the Hyper-V cmdlets that Packer calls fail with "Value cannot be null.
+// Parameter name: name" when COMPUTERNAME is missing.
 var baseEnvNames = map[string][]string{
 	"unix": {"PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ", "XDG_RUNTIME_DIR", "LIBVIRT_DEFAULT_URI"},
 	"windows": {
@@ -28,7 +30,8 @@ var baseEnvNames = map[string][]string{
 		"USERPROFILE", "USERNAME", "USERDOMAIN", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
 		"ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles",
 		"CommonProgramFiles(x86)", "CommonProgramW6432", "PSModulePath", "NUMBER_OF_PROCESSORS",
-		"PROCESSOR_ARCHITECTURE", "OS",
+		"PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION", "OS",
+		"COMPUTERNAME", "ALLUSERSPROFILE", "PUBLIC",
 	},
 }
 
