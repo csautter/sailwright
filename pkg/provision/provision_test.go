@@ -1875,6 +1875,73 @@ func TestEnsureSSHPasswordAuthDependenciesRequiresSSHPass(t *testing.T) {
 	}
 }
 
+func stubWindowsCygwinSSHPassPreflight(t *testing.T, output string, runErr error) *[]string {
+	t.Helper()
+
+	bashPath := filepath.Join(t.TempDir(), "bash.exe")
+	if err := os.WriteFile(bashPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("failed to create fake bash executable: %v", err)
+	}
+	t.Setenv("CYGWIN_BASH_PATH", bashPath)
+	t.Setenv("CYGWIN_TERMINAL_PATH", "")
+
+	previousGOOS := runtimeGOOS
+	previousLookPath := lookPathProvisionCommand
+	previousRunner := runProvisionCommandWithCombinedOutputWithEnv
+	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
+		lookPathProvisionCommand = previousLookPath
+		runProvisionCommandWithCombinedOutputWithEnv = previousRunner
+	})
+
+	runtimeGOOS = "windows"
+	lookPathProvisionCommand = func(file string) (string, error) {
+		t.Fatalf("did not expect Windows PATH lookup for %s", file)
+		return "", nil
+	}
+
+	var invocation []string
+	runProvisionCommandWithCombinedOutputWithEnv = func(_ string, _ time.Duration, executable string, args []string, _ []string) (string, error) {
+		invocation = append([]string{executable}, args...)
+		return output, runErr
+	}
+
+	return &invocation
+}
+
+func TestEnsureSSHPasswordAuthDependenciesUsesCygwinOnWindows(t *testing.T) {
+	invocation := stubWindowsCygwinSSHPassPreflight(t, "/usr/bin/sshpass\n", nil)
+
+	err := ensureSSHPasswordAuthDependencies(sshAnsibleConnectionConfig{
+		Connection: "ssh",
+		Password:   "P@ssw0rd!",
+	})
+	if err != nil {
+		t.Fatalf("expected cygwin sshpass to satisfy preflight, got %v", err)
+	}
+	if got := strings.Join((*invocation)[1:], " "); got != "-l -c command -v sshpass" {
+		t.Fatalf("expected cygwin login shell sshpass lookup, got %q", got)
+	}
+	if !strings.HasSuffix((*invocation)[0], "bash.exe") {
+		t.Fatalf("expected cygwin bash executable, got %q", (*invocation)[0])
+	}
+}
+
+func TestEnsureSSHPasswordAuthDependenciesReportsMissingCygwinSSHPass(t *testing.T) {
+	stubWindowsCygwinSSHPassPreflight(t, "", errors.New("exit status 1"))
+
+	err := ensureSSHPasswordAuthDependencies(sshAnsibleConnectionConfig{
+		Connection: "ssh",
+		Password:   "P@ssw0rd!",
+	})
+	if err == nil {
+		t.Fatal("expected missing cygwin sshpass error")
+	}
+	if !strings.Contains(err.Error(), "Cygwin sshpass package") {
+		t.Fatalf("expected cygwin install hint in error, got %v", err)
+	}
+}
+
 func TestEnsureSSHPasswordAuthDependenciesSkipsNonOpenSSHPasswordAuth(t *testing.T) {
 	previousLookPath := lookPathProvisionCommand
 	t.Cleanup(func() {

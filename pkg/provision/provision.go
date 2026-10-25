@@ -21,6 +21,8 @@ import (
 )
 
 const (
+	cygwinSSHPassPreflightTimeout = 30 * time.Second
+
 	hypervWindowsAnsibleUserEnvVar           = "HYPERV_WINDOWS_ANSIBLE_USER"
 	hypervWindowsAnsiblePasswordEnvVar       = "HYPERV_WINDOWS_ANSIBLE_PASSWORD" // #nosec G101 -- environment variable name, not an embedded credential.
 	hypervWindowsAnsibleConnectionEnvVar     = "HYPERV_WINDOWS_ANSIBLE_CONNECTION"
@@ -1386,9 +1388,42 @@ func ensureSSHPasswordAuthDependencies(connectionConfig sshAnsibleConnectionConf
 		return nil
 	}
 
+	if runtimeGoos() == "windows" {
+		return ensureCygwinSSHPassAvailable()
+	}
+
 	if _, err := lookPathProvisionCommand("sshpass"); err != nil {
 		return fmt.Errorf(
 			"sshpass is required for Ansible SSH password authentication with ansible_connection=ssh; install it (Ubuntu/Debian: sudo apt install sshpass) or configure a non-password SSH connection: %w",
+			err,
+		)
+	}
+
+	return nil
+}
+
+// On Windows, ansible-playbook runs inside Cygwin bash, so sshpass must be
+// resolvable from the Cygwin login shell rather than the Windows PATH.
+func ensureCygwinSSHPassAvailable() error {
+	cygwinBashExecutable, err := getCygwinBashExecutable()
+	if err != nil {
+		return fmt.Errorf("failed to locate cygwin bash executable for sshpass preflight: %w", err)
+	}
+
+	output, err := runProvisionCommandWithCombinedOutputWithEnv(
+		"",
+		cygwinSSHPassPreflightTimeout,
+		cygwinBashExecutable,
+		[]string{"-l", "-c", "command -v sshpass"},
+		nil,
+	)
+	if err != nil || strings.TrimSpace(output) == "" {
+		if err == nil {
+			err = errors.New("command -v sshpass returned no path")
+		}
+		return fmt.Errorf(
+			"sshpass is required for Ansible SSH password authentication with ansible_connection=ssh, but it was not found in the Cygwin environment used to run Ansible (%s); install the Cygwin sshpass package (scripts/windows/sailwright-self-setup.ps1 installs it) or configure a non-password SSH connection: %w",
+			cygwinBashExecutable,
 			err,
 		)
 	}
