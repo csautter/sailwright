@@ -76,12 +76,12 @@ Write-Output "Vagrant Box IP Address: $vagrant_ip"
 
 Do not create `inventory/hyperv_windows_winrm.yml`. Hyper-V provisioning now passes the discovered host directly to Ansible and reads credentials from environment variables.
 
-Set these values in a project-root `.env` file (or process environment):
+Credentials default to the `Administrator` / `P@ssw0rd!` account baked into the Windows image. Override them in a project-root `.env` file (or process environment) if you changed it:
 
 ```dotenv
-HYPERV_WINDOWS_ANSIBLE_USER=Administrator
-HYPERV_WINDOWS_ANSIBLE_PASSWORD=your-secure-password
 # Optional (defaults shown):
+HYPERV_WINDOWS_ANSIBLE_USER=Administrator
+HYPERV_WINDOWS_ANSIBLE_PASSWORD=P@ssw0rd!
 HYPERV_WINDOWS_ANSIBLE_CONNECTION=winrm
 HYPERV_WINDOWS_ANSIBLE_WINRM_TRANSPORT=basic
 HYPERV_WINDOWS_ANSIBLE_PORT=5985

@@ -75,14 +75,14 @@ sailwright provision windows11 --arch $arch --check
 sailwright provision windows11 --arch $arch
 ```
 
-Set the required WinRM credentials in project-root `.env` or process environment before provisioning:
+WinRM credentials default to the `Administrator` / `P@ssw0rd!` account from the answer files. Override them in project-root `.env` or the process environment if you changed it:
 
 ```dotenv
 UTM_WINDOWS_ANSIBLE_USER=Administrator
-UTM_WINDOWS_ANSIBLE_PASSWORD=your-secure-password
+UTM_WINDOWS_ANSIBLE_PASSWORD=P@ssw0rd!
 # On Linux/libvirt use:
 LIBVIRT_WINDOWS_ANSIBLE_USER=Administrator
-LIBVIRT_WINDOWS_ANSIBLE_PASSWORD=your-secure-password
+LIBVIRT_WINDOWS_ANSIBLE_PASSWORD=P@ssw0rd!
 ```
 
 ### Security Note

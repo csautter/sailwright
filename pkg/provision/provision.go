@@ -99,6 +99,8 @@ const (
 	defaultProvisionPlaybook      = "./playbooks/role-sources-test.yml"
 	bundledSetupProvisionPlaybook = "./playbooks/setup.yml"
 	defaultUbuntuGuestPassword    = "P@ssw0rd!" // #nosec G101 -- documented default credential for disposable local/test Ubuntu guests.
+	defaultWindowsGuestUser       = "Administrator"
+	defaultWindowsGuestPassword   = "P@ssw0rd!" // #nosec G101 -- credential baked into the Windows Packer autounattend.xml files for disposable guests.
 	defaultTartGuestUser          = "admin"
 	defaultTartGuestPassword      = "admin" // #nosec G101 -- documented default Tart guest credential for local testing.
 
@@ -1686,26 +1688,11 @@ func loadWindowsAnsibleConnectionConfig(projectDir string, envVars windowsAnsibl
 	}
 
 	connectionConfig := windowsAnsibleConnectionConfig{
-		User:           resolveEnvValue(envVars.User, valuesFromFile),
-		Password:       resolveEnvValue(envVars.Password, valuesFromFile),
+		User:           defaultIfEmpty(resolveEnvValue(envVars.User, valuesFromFile), defaultWindowsGuestUser),
+		Password:       defaultIfEmpty(resolveEnvValue(envVars.Password, valuesFromFile), defaultWindowsGuestPassword),
 		Connection:     defaultIfEmpty(resolveEnvValue(envVars.Connection, valuesFromFile), "winrm"),
 		WinrmTransport: defaultIfEmpty(resolveEnvValue(envVars.WinrmTransport, valuesFromFile), "basic"),
 		Port:           defaultIfEmpty(resolveEnvValue(envVars.Port, valuesFromFile), "5985"),
-	}
-
-	missing := make([]string, 0, 2)
-	if connectionConfig.User == "" {
-		missing = append(missing, envVars.User)
-	}
-	if connectionConfig.Password == "" {
-		missing = append(missing, envVars.Password)
-	}
-	if len(missing) > 0 {
-		return windowsAnsibleConnectionConfig{}, fmt.Errorf(
-			"missing required values %s; define them in process environment or in %q",
-			strings.Join(missing, ", "),
-			envFilePath,
-		)
 	}
 
 	return connectionConfig, nil

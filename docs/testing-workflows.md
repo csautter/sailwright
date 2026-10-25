@@ -385,12 +385,12 @@ If `/dev/kvm` is unavailable or unreliable, set
 `DEV_ALCHEMY_QEMU_FORCE_SOFTWARE_EMULATION=1` to bypass KVM probing and force
 QEMU TCG software emulation.
 
-Set WinRM credentials in project-root `.env` or the process environment:
+WinRM credentials default to the `Administrator` / `P@ssw0rd!` account baked into the Windows images. Override them in project-root `.env` or the process environment if you changed it:
 
 ```dotenv
-LIBVIRT_WINDOWS_ANSIBLE_USER=Administrator
-LIBVIRT_WINDOWS_ANSIBLE_PASSWORD=your-secure-password
 # Optional (defaults shown):
+LIBVIRT_WINDOWS_ANSIBLE_USER=Administrator
+LIBVIRT_WINDOWS_ANSIBLE_PASSWORD=P@ssw0rd!
 LIBVIRT_WINDOWS_ANSIBLE_CONNECTION=winrm
 LIBVIRT_WINDOWS_ANSIBLE_WINRM_TRANSPORT=basic
 LIBVIRT_WINDOWS_ANSIBLE_PORT=5985
@@ -500,12 +500,12 @@ sailwright.exe provision windows11 --arch amd64 --check
 sailwright.exe provision windows11 --arch amd64
 ```
 
-Set WinRM credentials in project-root `.env` or the process environment:
+WinRM credentials default to the `Administrator` / `P@ssw0rd!` account baked into the Windows images. Override them in project-root `.env` or the process environment if you changed it:
 
 ```dotenv
-HYPERV_WINDOWS_ANSIBLE_USER=Administrator
-HYPERV_WINDOWS_ANSIBLE_PASSWORD=your-secure-password
 # Optional (defaults shown):
+HYPERV_WINDOWS_ANSIBLE_USER=Administrator
+HYPERV_WINDOWS_ANSIBLE_PASSWORD=P@ssw0rd!
 HYPERV_WINDOWS_ANSIBLE_CONNECTION=winrm
 HYPERV_WINDOWS_ANSIBLE_WINRM_TRANSPORT=basic
 HYPERV_WINDOWS_ANSIBLE_PORT=5985
@@ -581,12 +581,12 @@ sailwright create windows11 --arch $arch
 
 Open UTM and start the created VM.
 
-Set WinRM credentials in project-root `.env` or the process environment:
+WinRM credentials default to the `Administrator` / `P@ssw0rd!` account baked into the Windows images. Override them in project-root `.env` or the process environment if you changed it:
 
 ```dotenv
-UTM_WINDOWS_ANSIBLE_USER=Administrator
-UTM_WINDOWS_ANSIBLE_PASSWORD=your-secure-password
 # Optional (defaults shown):
+UTM_WINDOWS_ANSIBLE_USER=Administrator
+UTM_WINDOWS_ANSIBLE_PASSWORD=P@ssw0rd!
 UTM_WINDOWS_ANSIBLE_CONNECTION=winrm
 UTM_WINDOWS_ANSIBLE_WINRM_TRANSPORT=basic
 UTM_WINDOWS_ANSIBLE_PORT=5985
