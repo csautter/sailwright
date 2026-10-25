@@ -216,6 +216,14 @@ download_windows_iso_if_missing() {
 		return 0
 	fi
 
+	# Same guard as getWindows11Download in pkg/build: CI build jobs must never contact Microsoft.
+	case "$(printf '%s' "${SAILWRIGHT_WIN11_ISO_OFFLINE:-}" | tr '[:upper:]' '[:lower:]')" in
+	1 | true)
+		echo "Windows 11 ISO missing at $iso_path; Microsoft download disabled in CI. Run the 'Refresh Windows 11 ISO' workflow or publish one manually (docs/windows-iso-cache.md)" >&2
+		return 1
+		;;
+	esac
+
 	echo "Downloading Windows 11 $target_arch ISO"
 	mkdir -p "$(dirname "$iso_path")"
 	cd "${project_root}/scripts/macos" || exit 1
@@ -511,7 +519,13 @@ if is_truthy "$packer_start_only"; then
 	echo "Using isolated cache directory for start-only Packer probe: $effective_cache_dir"
 fi
 
-windows_source_iso_path="${cache_dir}/windows11/iso/win11_25h2_english_${arch}.iso"
+windows_source_iso_path="${cache_dir}/windows11/iso/win11_english_${arch}.iso"
+# One-time rename of the pre-versioning file name; mirrors migrateLegacyWindows11ISO in pkg/build/win11iso.go.
+legacy_windows_iso_path="${cache_dir}/windows11/iso/win11_25h2_english_${arch}.iso"
+if [[ ! -f "$windows_source_iso_path" && -f "$legacy_windows_iso_path" ]]; then
+	echo "Renaming legacy Windows 11 ISO $legacy_windows_iso_path to $windows_source_iso_path"
+	mv "$legacy_windows_iso_path" "$windows_source_iso_path"
+fi
 download_windows_iso_if_missing "$arch" "$windows_source_iso_path"
 
 bash "${project_root}/scripts/macos/download-utm-guest-tools.sh"

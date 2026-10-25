@@ -3,6 +3,7 @@ package build
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -208,11 +209,33 @@ func TestIntegrationDependencyReconciliation(t *testing.T) {
 	}
 }
 
+// TestIntegrationBootstrapWindows11DownloadEnv covers the cold start of the Playwright environment
+// (venv, pip, Chromium) without contacting Microsoft.
+func TestIntegrationBootstrapWindows11DownloadEnv(t *testing.T) {
+	if os.Getenv("RUN_INTEGRATION_TESTS") == "" {
+		t.Skip("skipping integration test; set RUN_INTEGRATION_TESTS=1 to run")
+	}
+	pythonCommand, err := resolvePythonVenvCommand()
+	if err != nil {
+		t.Fatalf("Failed to resolve Python: %v", err)
+	}
+	workdir := filepath.Join(GetDirectoriesInstance().ProjectDir, "scripts", "macos")
+	if err := bootstrapPythonEnvWithCommand(workdir, pythonCommand); err != nil {
+		t.Fatalf("Failed to bootstrap the Windows 11 download environment: %v", err)
+	}
+	if missing, err := missingPythonVenvExecutables(workdir); err != nil || len(missing) > 0 {
+		t.Fatalf("venv executables missing after bootstrap: %v (err=%v)", missing, err)
+	}
+}
+
 func TestGetWindows11DownloadAmd64(t *testing.T) {
 	if os.Getenv("RUN_INTEGRATION_TESTS") == "" {
 		t.Skip("skipping integration test; set RUN_INTEGRATION_TESTS=1 to run")
 	}
-	_, err := getWindows11Download("amd64", GetDirectoriesInstance().CachePath("windows11", "iso", "win11_25h2_english_amd64.iso"), false)
+	_, err := getWindows11Download("amd64", windows11ISOPath("amd64"), false)
+	if errors.Is(err, ErrMicrosoftRefused) {
+		t.Skipf("Microsoft refused the request: %v", err)
+	}
 	if err != nil {
 		t.Fatalf("Failed to get Windows 11 download: %v", err)
 	}
@@ -222,7 +245,10 @@ func TestGetWindows11DownloadArm64(t *testing.T) {
 	if os.Getenv("RUN_INTEGRATION_TESTS") == "" {
 		t.Skip("skipping integration test; set RUN_INTEGRATION_TESTS=1 to run")
 	}
-	_, err := getWindows11Download("arm64", GetDirectoriesInstance().CachePath("windows11", "iso", "win11_25h2_english_arm64.iso"), false)
+	_, err := getWindows11Download("arm64", windows11ISOPath("arm64"), false)
+	if errors.Is(err, ErrMicrosoftRefused) {
+		t.Skipf("Microsoft refused the request: %v", err)
+	}
 	if err != nil {
 		t.Fatalf("Failed to get Windows 11 download: %v", err)
 	}

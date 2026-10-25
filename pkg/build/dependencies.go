@@ -576,6 +576,9 @@ func getWindows11Download(arch string, savePath string, download bool) (string, 
 
 	_, err := os.Stat(savePath)
 	if err != nil && os.IsNotExist(err) {
+		if Win11ISOOffline() {
+			return "", win11OfflineError(savePath)
+		}
 		log.Printf("Windows 11 ISO not found at %s, will attempt to get download url", savePath)
 	} else {
 		log.Printf("File already exists at %s, skipping evaluation of download url", savePath)
@@ -620,6 +623,9 @@ func getWindows11Download(arch string, savePath string, download bool) (string, 
 		Timeout:        10 * time.Minute,
 	}
 	if _, err := RunExternalProcess(config); err != nil {
+		if isWin11RefusedExit(err) {
+			return "", fmt.Errorf("%w: %v", ErrMicrosoftRefused, err)
+		}
 		return "", fmt.Errorf("playwright script failed: %w", err)
 	}
 
@@ -688,10 +694,13 @@ func getWebFileDependencies() []WebFileDependency {
 			},
 		},
 		{
-			LocalPath: GetDirectoriesInstance().CachePath("windows11", "iso", "win11_25h2_english_amd64.iso"),
+			LocalPath: windows11ISOPath("amd64"),
 			Checksum:  "",
 			BeforeHook: func() (string, error) {
-				return getWindows11Download("amd64", GetDirectoriesInstance().CachePath("windows11", "iso", "win11_25h2_english_amd64.iso"), false)
+				if err := migrateLegacyWindows11ISO("amd64"); err != nil {
+					return "", err
+				}
+				return getWindows11Download("amd64", windows11ISOPath("amd64"), false)
 			},
 			RelatedVmConfigs: []VirtualMachineConfig{
 				{
@@ -727,10 +736,13 @@ func getWebFileDependencies() []WebFileDependency {
 			},
 		},
 		{
-			LocalPath: GetDirectoriesInstance().CachePath("windows11", "iso", "win11_25h2_english_arm64.iso"),
+			LocalPath: windows11ISOPath("arm64"),
 			Checksum:  "",
 			BeforeHook: func() (string, error) {
-				return getWindows11Download("arm64", GetDirectoriesInstance().CachePath("windows11", "iso", "win11_25h2_english_arm64.iso"), false)
+				if err := migrateLegacyWindows11ISO("arm64"); err != nil {
+					return "", err
+				}
+				return getWindows11Download("arm64", windows11ISOPath("arm64"), false)
 			},
 			RelatedVmConfigs: []VirtualMachineConfig{
 				{

@@ -149,7 +149,8 @@ function Invoke-FtpCurl {
     if ($exitCode -eq 0) {
         return $true
     }
-    if ($AllowMissing -and ($exitCode -eq 78 -or $exitCode -eq 19)) {
+    # 9: the server refused to change into the parent directory, i.e. the directory does not exist.
+    if ($AllowMissing -and ($exitCode -eq 78 -or $exitCode -eq 19 -or $exitCode -eq 9)) {
         return $false
     }
 
@@ -251,6 +252,11 @@ foreach ($f in $files) {
     }
 
     Write-Host "=== Build cache upload: $localPath [object=$blobName container=$container overwrite=$overwrite backend=$cacheBackend] ==="
+
+    if ($null -ne $f.PSObject.Properties['manifest'] -and $f.'manifest') {
+        Write-Host "  [ok] Entry is resolved via manifest '$($f.'manifest')' - managed by refresh workflow, skipping upload."
+        continue
+    }
 
     if (-not (Test-Path $localPath -PathType Leaf)) {
         Write-Host "  [miss] File not found at $localPath - skipping."

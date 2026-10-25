@@ -25,7 +25,8 @@ GITHUB_REPO=myorg/myrepo ./create-macos-tart-runner.sh
 ## Build cache
 
 Workflows that test Packer builds require large files — Windows 11 ISOs
-(`win11_25h2_english_arm64.iso`, `win11_25h2_english_amd64.iso`) and potentially other large
+(versioned objects such as `win11_25h2_english_arm64_20261023.iso`, see
+[docs/windows-iso-cache.md](../../docs/windows-iso-cache.md)) and potentially other large
 build dependencies such as toolchain archives. These files are several gigabytes. On runners
 with a slow or metered internet connection the remote cache download dominates job run-time.
 
@@ -51,20 +52,20 @@ First run (cache empty)
 FTP server (/private, explicit TLS)
     │  download-build-cache action
     ▼
-Workflow workspace: cache/windows11/iso/win11_25h2_english_arm64.iso  (real file)
-    │  upload-build-cache action  (cp)
+Workflow workspace: cache/windows11/iso/win11_english_arm64.iso  (real file, resolved via win11-arm64.json)
+    │  download-build-cache action  (saves a copy under the versioned object name)
     ▼
-Host machine: ~/build-cache/win11_25h2_english_arm64.iso           (persists)
+Host machine: ~/build-cache/win11_25h2_english_arm64_20261023.iso  (persists)
 
 Every subsequent run (cache warm)
 ──────────────────────────────────────────────────────────────
-Host machine: ~/build-cache/win11_25h2_english_arm64.iso
+Host machine: ~/build-cache/win11_25h2_english_arm64_20261023.iso
     │  VirtioFS (tart --dir, read-write)
     ▼
-Tart VM: /Volumes/My Shared Files/build-cache/win11_25h2_english_arm64.iso
+Tart VM: /Volumes/My Shared Files/build-cache/win11_25h2_english_arm64_20261023.iso
     │  download-build-cache action  (ln -sf)
     ▼
-Workflow workspace: cache/windows11/iso/win11_25h2_english_arm64.iso  (symlink → no download)
+Workflow workspace: cache/windows11/iso/win11_english_arm64.iso  (symlink → no download)
 ```
 
 ### Set up the cache directory (one time per host)
@@ -72,7 +73,7 @@ Workflow workspace: cache/windows11/iso/win11_25h2_english_arm64.iso  (symlink �
 Just create an empty directory — the first workflow run fills it:
 
 ```bash
-mkdir -p ~/iso-cache
+mkdir -p ~/build-cache
 ```
 
 That's it. Alternatively, if you want to pre-seed the cache to avoid the first slow download
@@ -80,13 +81,13 @@ That's it. Alternatively, if you want to pre-seed the cache to avoid the first s
 
 ```bash
 # Option A – copy from USB drive / NAS / another machine:
-cp /path/to/win11_25h2_english_arm64.iso ~/iso-cache/
+cp /path/to/win11_25h2_english_arm64_20261023.iso ~/build-cache/
 
 # Option B – download once from the FTP build cache with explicit TLS:
 curl --fail --ssl-reqd \
   --user "${BUILD_CACHE_FTP_USERNAME}:${BUILD_CACHE_FTP_PASSWORD}" \
-  --output ~/iso-cache/win11_25h2_english_arm64.iso \
-  "ftp://${BUILD_CACHE_FTP_SERVER}/private/win11_25h2_english_arm64.iso"
+  --output ~/build-cache/win11_25h2_english_arm64_20261023.iso \
+  "ftp://${BUILD_CACHE_FTP_SERVER}/private/windows11/iso/win11_25h2_english_arm64_20261023.iso"
 ```
 
 ### Start the runner with caching enabled
@@ -155,6 +156,25 @@ Cached files are large and rarely change. When a new version appears:
 2. The next workflow run will automatically download the new file from the remote cache and
    repopulate the cache.
 3. Alternatively, copy the new file directly into `~/build-cache/` to avoid any slow first run.
+
+Windows 11 ISOs are the exception: every refresh publishes a new versioned object
+(`win11_<release>_english_<arch>_<YYYYMMDD>.iso`), so the cache picks it up without manual steps.
+Cache hits are verified against the manifest sha256 (a corrupt copy is evicted and downloaded
+again). Old versions are not pruned from the host, though, and each one takes about 7 GB. Delete
+the versions that no longer appear in the current manifests now and then:
+
+```bash
+# Lists cached Windows 11 ISOs that no current manifest references; delete them after a review.
+keep="$(for arch in amd64 arm64; do
+  curl --fail --silent --ssl-reqd --user "${BUILD_CACHE_FTP_USERNAME}:${BUILD_CACHE_FTP_PASSWORD}" \
+    "ftp://${BUILD_CACHE_FTP_SERVER}/private/windows11/iso/win11-${arch}.json" |
+    python3 -c 'import json,sys; print("\n".join(h["object"] for h in json.load(sys.stdin)["history"]))'
+done)"
+for f in ~/build-cache/win11_*_[0-9]*.iso; do
+  [ -e "$f" ] || continue
+  printf '%s\n' "$keep" | grep -qxF "$(basename "$f")" || echo "unreferenced: $f"
+done
+```
 
 ### Environment variables
 

@@ -129,7 +129,9 @@ ftp_object_exists() {
   if [ "$status" -eq 0 ]; then
     return 0
   fi
-  if [ "$status" -eq 78 ] || [ "$status" -eq 19 ]; then
+  # 9: the server refused to change into the parent directory, i.e. the directory does not exist
+  # (for example windows11/iso before the first manifest is published).
+  if [ "$status" -eq 78 ] || [ "$status" -eq 19 ] || [ "$status" -eq 9 ]; then
     return 1
   fi
 
@@ -228,13 +230,19 @@ for f in data:
     print(f.get('blob-name', ''))
     print(f.get('container', 'build-cache'))
     print(str(f.get('overwrite', False)).lower())
-" | while IFS= read -r local_path && IFS= read -r blob_name && IFS= read -r container && IFS= read -r overwrite; do
+    print(f.get('manifest', ''))
+" | while IFS= read -r local_path && IFS= read -r blob_name && IFS= read -r container && IFS= read -r overwrite && IFS= read -r manifest; do
   [ -z "$local_path" ] && continue
   [ -z "$blob_name" ] && blob_name=$(basename "$local_path")
   [ -z "$container" ] && container="build-cache"
   [ -z "$overwrite" ] && overwrite=false
 
   echo "=== Build cache upload: $local_path [object=$blob_name container=$container overwrite=$overwrite backend=$CACHE_BACKEND] ==="
+
+  if [ -n "$manifest" ]; then
+    echo "  ✓ Entry is resolved via manifest '$manifest' — managed by refresh workflow, skipping upload."
+    continue
+  fi
 
   # Resolve symlinks so we operate on the real bytes
   real_path="$local_path"

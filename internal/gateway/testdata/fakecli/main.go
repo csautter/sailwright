@@ -278,8 +278,25 @@ func writeState(id, state string) {
 
 func removeState(id string) {
 	if path := stateFile(id); path != "" {
-		_ = os.Remove(path)
-		_ = os.Remove(path + ".provisioned")
+		removeFile(path)
+		removeFile(path + ".provisioned")
+	}
+}
+
+// removeFile retries because the gateway's background `list` refresh may be reading the file:
+// Windows refuses to delete a file another process has open (sharing violation).
+func removeFile(path string) {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := os.Remove(path)
+		if err == nil || os.IsNotExist(err) {
+			return
+		}
+		if time.Now().After(deadline) {
+			fmt.Fprintf(os.Stderr, "remove state %s: %v\n", path, err)
+			os.Exit(1)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

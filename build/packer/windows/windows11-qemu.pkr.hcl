@@ -108,7 +108,7 @@ locals {
   host_same_arch  = var.host_arch == var.arch
 
   win11_default_iso = {
-    amd64 = "${local.cache_directory}/windows11/iso/win11_25h2_english_amd64.iso"
+    amd64 = "${local.cache_directory}/windows11/iso/win11_english_amd64.iso"
     arm64 = "${local.cache_directory}/windows11/iso/Win11_ARM64_Unattended.iso"
   }
   win11_iso         = var.iso_url != "" ? var.iso_url : local.win11_default_iso[var.arch]
