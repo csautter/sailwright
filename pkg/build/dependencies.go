@@ -484,10 +484,12 @@ func bootstrapPythonEnvWithCommand(workdir string, pythonCommand pythonVenvComma
 		return err
 	}
 
-	venvPython, pipPath := pythonVenvExecutablePaths(workdir)
+	venvPython, _ := pythonVenvExecutablePaths(workdir)
 
+	// Run pip through the venv interpreter: the pip.exe launcher hardcodes the interpreter
+	// path from creation time and can exit 1 without output once that path is stale.
 	log.Printf("Installing required Python packages for Windows 11 download script")
-	if _, err := RunCliCommand(workdir, pipPath, []string{"install", "-r", "requirements.txt"}); err != nil {
+	if _, err := RunCliCommand(workdir, venvPython, []string{"-m", "pip", "install", "-r", "requirements.txt"}); err != nil {
 		return fmt.Errorf("failed to install Windows 11 download script requirements: %w", err)
 	}
 
@@ -518,10 +520,17 @@ func ensurePythonVenvWithCommand(workdir string, pythonCommand pythonVenvCommand
 		if err != nil {
 			return err
 		}
+		reason := ""
 		if len(missing) > 0 {
-			log.Printf("Python virtual environment for Windows 11 download script is incomplete; missing %s; recreating", strings.Join(missing, ", "))
+			reason = fmt.Sprintf("is incomplete; missing %s", strings.Join(missing, ", "))
+		} else if err := checkPythonVenvUsable(workdir); err != nil {
+			// The base interpreter may have been upgraded, moved or removed since creation.
+			reason = fmt.Sprintf("is not usable (%v)", err)
+		}
+		if reason != "" {
+			log.Printf("Python virtual environment for Windows 11 download script %s; recreating", reason)
 			if err := os.RemoveAll(venvDir); err != nil {
-				return fmt.Errorf("failed to remove incomplete Python venv: %w", err)
+				return fmt.Errorf("failed to remove broken Python venv: %w", err)
 			}
 			if _, err := RunCliCommand(workdir, pythonCommand.executable, pythonCommand.args("-m", "venv", ".venv")); err != nil {
 				return fmt.Errorf("failed to recreate Python venv: %w", err)
@@ -538,6 +547,13 @@ func ensurePythonVenvWithCommand(workdir string, pythonCommand pythonVenvCommand
 	}
 
 	return nil
+}
+
+// checkPythonVenvUsable verifies that the venv interpreter starts and can import pip.
+func checkPythonVenvUsable(workdir string) error {
+	venvPython, _ := pythonVenvExecutablePaths(workdir)
+	_, err := RunCliCommand(workdir, venvPython, []string{"-m", "pip", "--version"})
+	return err
 }
 
 func pythonVenvExecutablePaths(workdir string) (venvPython, pipPath string) {

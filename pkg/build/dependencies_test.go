@@ -51,6 +51,32 @@ func TestBootstrapPythonEnv_IncompleteVenvRecreateFails(t *testing.T) {
 	}
 }
 
+// TestBootstrapPythonEnv_UnusableVenvIsRecreated verifies that a venv whose executables
+// exist but cannot run (e.g. its base interpreter was removed) is recreated.
+func TestBootstrapPythonEnv_UnusableVenvIsRecreated(t *testing.T) {
+	workdir := t.TempDir()
+	venvPython, pipPath := pythonVenvExecutablePaths(workdir)
+	for _, path := range []string{venvPython, pipPath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatalf("could not create parent directory for %s: %v", path, err)
+		}
+		// An empty file is not a runnable executable on any platform.
+		if err := os.WriteFile(path, []byte{}, 0755); err != nil {
+			t.Fatalf("could not create fake executable %s: %v", path, err)
+		}
+	}
+	badPython := filepath.Join(t.TempDir(), "nonexistent-python")
+
+	err := bootstrapPythonEnv(workdir, badPython)
+
+	if err == nil {
+		t.Fatal("expected error when unusable venv cannot be recreated, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to recreate Python venv") {
+		t.Errorf("expected error to mention venv recreation failure, got: %v", err)
+	}
+}
+
 func TestMissingPythonVenvExecutables(t *testing.T) {
 	workdir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(workdir, ".venv"), 0755); err != nil {
