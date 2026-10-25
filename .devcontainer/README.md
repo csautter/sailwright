@@ -27,9 +27,10 @@ so sessions, history, settings and logins survive a container rebuild:
 - `~/.codex-devcontainer` is `/root/.codex` (`sessions/`, `history.jsonl`,
   `config.toml`). `~/.codex/skills` is mounted on top of it, and a host
   `~/.codex/auth.json` is linked in on every start so the login is shared with
-  the host. Its `.tmp/` plugin cache lives in the `sailwright-codex-tmp`
-  Docker volume instead, because Codex rewrites thousands of files there on
-  every start and host bind mounts are slow.
+  the host. Its `.tmp/` plugin cache and `tmp/` runtime helpers live in the
+  `sailwright-codex-tmp` and `sailwright-codex-runtime-tmp` Docker volumes
+  instead: Codex rewrites thousands of files in `.tmp/` on every start, and a
+  Windows host mount cannot delete the locked helper dirs in `tmp/`.
 
 Delete these directories on the host to reset the agents' state.
 

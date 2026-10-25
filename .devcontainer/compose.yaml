@@ -11,9 +11,11 @@ services:
     volumes:
       - vscode-server-data:/root/.vscode-server/data
       - vscode-server-extensions:/root/.vscode-server/extensions
-      # Codex syncs thousands of plugin files here on every start; keep that
-      # cache off the slow host bind mount of /root/.codex.
+      # Codex syncs thousands of plugin files into .tmp on every start and
+      # keeps locked helper dirs in tmp that a Windows host mount cannot
+      # delete; keep both off the host bind mount of /root/.codex.
       - codex-tmp:/root/.codex/.tmp
+      - codex-runtime-tmp:/root/.codex/tmp
 
 volumes:
   vscode-server-data:
@@ -22,3 +24,5 @@ volumes:
     name: skills-vscode-server-extensions
   codex-tmp:
     name: sailwright-codex-tmp
+  codex-runtime-tmp:
+    name: sailwright-codex-runtime-tmp
