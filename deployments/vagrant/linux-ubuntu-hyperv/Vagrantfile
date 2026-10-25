@@ -11,6 +11,9 @@ Vagrant.configure("2") do |config|
     h.memory = ENV.fetch("VAGRANT_VM_MEMORY_MB", "8192").to_i
     h.cpus = ENV.fetch("VAGRANT_VM_CPUS", "4").to_i
     h.enable_virtualization_extensions = true
+    # Wait longer than Vagrant's 120s default for the guest to report its IP;
+    # desktop images can take longer to bring up networking on first boot.
+    h.ip_address_timeout = ENV.fetch("VAGRANT_IP_ADDRESS_TIMEOUT", "600").to_i
   end
 
   config.vm.communicator = "ssh"
