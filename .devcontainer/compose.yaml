@@ -11,9 +11,14 @@ services:
     volumes:
       - vscode-server-data:/root/.vscode-server/data
       - vscode-server-extensions:/root/.vscode-server/extensions
+      # Codex syncs thousands of plugin files here on every start; keep that
+      # cache off the slow host bind mount of /root/.codex.
+      - codex-tmp:/root/.codex/.tmp
 
 volumes:
   vscode-server-data:
     name: skills-vscode-server-data
   vscode-server-extensions:
     name: skills-vscode-server-extensions
+  codex-tmp:
+    name: sailwright-codex-tmp
