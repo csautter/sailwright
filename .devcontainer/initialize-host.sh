@@ -112,6 +112,12 @@ add_mount "$USER_HOME/.sailwright-gateway" /run/sailwright-gateway ro
 add_mount "$USER_HOME/.claude-devcontainer" /root/.claude
 add_mount "$USER_HOME/.codex-devcontainer" /root/.codex
 
+# VS Code's remote Machine settings (clone-color.sh writes the window color
+# there) get a volume per clone; the rest of .vscode-server/data stays shared.
+MACHINE_VOLUME="$(printf '%s' "$REPO_NAME" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-')-vscode-machine"
+printf '      - vscode-machine:/root/.vscode-server/data/Machine\n' >>"$TMP_FILE"
+MOUNTED+=("volume $MACHINE_VOLUME -> /root/.vscode-server/data/Machine")
+
 # Agent configuration, mounted when present on the host.
 add_if_exists "$USER_HOME/.agents/skills" /root/.agents/skills
 add_if_exists "$USER_HOME/.agents/skills" /root/.claude/skills
@@ -163,6 +169,8 @@ if [ -f "$LOCAL_FILE" ]; then
     add_if_exists "$source_path" "$target" "$ro"
   done <"$LOCAL_FILE"
 fi
+
+printf 'volumes:\n  vscode-machine:\n    name: %s\n' "$(yaml_quote "$MACHINE_VOLUME")" >>"$TMP_FILE"
 
 mv "$TMP_FILE" "$OUT_FILE"
 trap - EXIT

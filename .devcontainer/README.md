@@ -34,6 +34,19 @@ so sessions, history, settings and logins survive a container rebuild:
 
 Delete these directories on the host to reset the agents' state.
 
+## Clone window colors
+
+`clone-color.sh` runs on every start and colors the VS Code window by the
+clone's name suffix (`sailwright-a` blue, `-b` green, `-c` orange, `-d` purple,
+...), so parallel clones are easy to tell apart. A folder without a `-suffix`
+is left uncolored. The colors are written to the container's remote Machine
+settings (`~/.vscode-server/data/Machine/settings.json`), not to the tracked
+`.vscode/settings.json`. That `Machine` directory is a per-clone volume
+(`<clone>-vscode-machine`, added by `initialize-host.sh`), because the rest of
+`~/.vscode-server/data` is shared by all clones and one clone's color would
+otherwise show up in every window. Edit the palette at the top of the script
+to change them.
+
 ## Extra personal mounts (optional)
 
 Copy `mounts.local.example` to `mounts.local` and add `source:target[:ro]`
