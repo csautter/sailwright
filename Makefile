@@ -209,7 +209,7 @@ demo-build-video:
 #   GOTOOLCHAIN=go1.26.0 make gosec
 gosec:
 	@if [ ! -x "$(GOSEC)" ]; then \
-		echo "gosec not found at $(GOSEC). Rebuild the dev container or run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0"; \
+		echo "gosec not found at $(GOSEC). Rebuild the dev container or run: go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0"; \
 		exit 1; \
 	fi
 	@# -no-fail exits 0 even when gosec cannot type-check packages (e.g. a gosec built against an
