@@ -12,12 +12,22 @@ on:
     branches: [main]
     paths:
       - "pkg/oci/**"
+      - "pkg/build/**"
       - "cmd/cmd/oci.go"
+      - "cmd/cmd/build_prebuilt.go"
+      - "cmd/cmd/vm_listing.go"
+      - "go.mod"
+      - "go.sum"
       - ".github/workflows/test-pull-published-images.yml"
   pull_request:
     paths:
       - "pkg/oci/**"
+      - "pkg/build/**"
       - "cmd/cmd/oci.go"
+      - "cmd/cmd/build_prebuilt.go"
+      - "cmd/cmd/vm_listing.go"
+      - "go.mod"
+      - "go.sum"
       - ".github/workflows/test-pull-published-images.yml"
 
 concurrency:
@@ -58,8 +68,9 @@ jobs:
             done
           done
 
-  # Full download through the sailwright CLI, once anonymously (what the
-  # interactive prebuilt offer relies on) and once with registry credentials.
+  # Full download through the sailwright CLI, once anonymously (how the
+  # interactive prebuilt offer in `sailwright build` pulls) and once with
+  # registry credentials.
   pull:
     name: Pull ${{ matrix.type }}-${{ matrix.arch }} (${{ matrix.auth }})
     runs-on: ubuntu-24.04

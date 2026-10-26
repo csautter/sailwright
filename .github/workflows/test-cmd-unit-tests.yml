@@ -14,6 +14,7 @@ on:
       # Static checks in pkg/build and test/workflowcheck read these files.
       - ".github/workflows/test-build-linux.yml"
       - ".github/workflows/test-build-macos.yml"
+      - ".github/workflows/test-pull-published-images.yml"
       - "build/packer/**"
       - "scripts/linux/**"
       - "scripts/macos/**"
@@ -38,6 +39,7 @@ on:
       # Static checks in pkg/build and test/workflowcheck read these files.
       - ".github/workflows/test-build-linux.yml"
       - ".github/workflows/test-build-macos.yml"
+      - ".github/workflows/test-pull-published-images.yml"
       - "build/packer/**"
       - "scripts/linux/**"
       - "scripts/macos/**"
