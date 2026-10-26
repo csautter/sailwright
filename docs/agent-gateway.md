@@ -97,6 +97,13 @@ Three steps, the same on every host.
    ./dist/<os>-<arch>/sailwright-gateway serve --binary ./dist/<os>-<arch>/sailwright
    ```
 
+   On macOS or Linux you can install both binaries with Homebrew instead,
+   then pass `--binary "$(brew --prefix)/bin/sailwright"`:
+
+   ```bash
+   brew install csautter/sailwright/sailwright csautter/sailwright/sailwright-gateway
+   ```
+
    Alternatively, download `sailwright_<version>_<os>_<arch>` and
    `sailwright-gateway_<version>_<os>_<arch>` from the same
    [release](https://github.com/csautter/sailwright/releases) and verify them

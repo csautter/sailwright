@@ -36,6 +36,15 @@ targets before they ever touch a developer's machine.
 
 ## Quick Start
 
+On macOS or Linux with [Homebrew](https://brew.sh):
+
+```bash
+brew install csautter/sailwright/sailwright
+sailwright install && sailwright build list
+```
+
+Or download a release archive directly:
+
 ```bash
 TAG="$(curl -fsSL https://api.github.com/repos/csautter/sailwright/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
 curl -fLO "https://github.com/csautter/sailwright/releases/download/${TAG}/sailwright_${TAG#v}_linux_amd64.tar.gz" && tar -xzf sailwright_*_linux_amd64.tar.gz
@@ -131,8 +140,23 @@ transport behavior, cleanup flags, and rollback steps, see
 
 You can either:
 
+- install it with Homebrew on macOS or Linux
 - download a release binary for normal use
 - clone the repository when you want to edit playbooks, roles, or project code
+
+#### Install with Homebrew
+
+The [csautter/homebrew-sailwright](https://github.com/csautter/homebrew-sailwright)
+tap is updated on every release and installs the same release binaries,
+verified against the published SHA-256 checksums, plus shell completions:
+
+```bash
+brew install csautter/sailwright/sailwright
+# host-side MCP gateway for agents, optional:
+brew install csautter/sailwright/sailwright-gateway
+```
+
+Update with `brew upgrade sailwright`.
 
 #### Download a release binary
 
@@ -326,6 +350,8 @@ next level of detail:
   and SSH setup on Windows targets plus OpenSSH rollback notes
 - [Example Ansible Roles](./docs/example-roles.md) for the current sample role
   catalog and repository layout
+- [Homebrew Tap](./docs/homebrew-tap.md) for how release formulae are
+  generated and published
 - [Troubleshooting Guide](./docs/troubleshooting.md) for rare host-specific
   issues
 - [Licensing FAQ](./docs/licensing.md) for free and commercial use under the
