@@ -191,6 +191,10 @@ rm -rf "$remote/windows11"
 run_refresh || { cat "$root/refresh.out"; fail "first publish"; }
 [ "$(outcome)" = "new" ] || fail "outcome $(outcome)"
 [ "$(manifest_field object)" = "$object" ] || fail "manifest object $(manifest_field object)"
+for line in "Uploading windows11/iso/${object}" "Verified remote size" "Published windows11/iso/${object}." \
+  "Published windows11/iso/win11-amd64.json."; do
+  grep -F "$line" "$root/refresh.out" >/dev/null || { cat "$root/refresh.out"; fail "missing upload log line: $line"; }
+done
 [ "$(manifest_field sha256)" = "$(sha_of "$remote/windows11/iso/$object")" ] || fail "manifest sha256 does not match the stored object"
 object_rename="$(grep -n "RNTO /cache/windows11/iso/${object}" "$FAKE_FTP_LOG" | cut -d: -f1)"
 manifest_rename="$(grep -n "RNTO /cache/windows11/iso/win11-amd64.json" "$FAKE_FTP_LOG" | cut -d: -f1)"

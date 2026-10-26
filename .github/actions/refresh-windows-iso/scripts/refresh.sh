@@ -89,6 +89,15 @@ ftp_size() {
   printf '%s\n' "$headers" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-length" {print $2}' | tail -n 1
 }
 
+# Formats a byte count for log lines (portable: no numfmt on the macOS Tart runner).
+human_size() {
+  awk -v b="$1" 'BEGIN {
+    if (b >= 1073741824) printf "%.2f GiB", b / 1073741824
+    else if (b >= 1048576) printf "%.1f MiB", b / 1048576
+    else printf "%d bytes", b
+  }'
+}
+
 ftp_get() {
   ftp_curl --output "$2" "$(ftp_url "$1")"
 }
@@ -143,22 +152,30 @@ ftp_publish() {
     fi
   fi
   expected="$(wc -c < "$file" | tr -d ' ')"
-  if ! ftp_curl --progress-bar --ftp-create-dirs --upload-file "$file" "$(ftp_url "$tmp_key")"; then
+  local started=$SECONDS elapsed
+  # --silent in ftp_curl suppresses curl's progress output, so report each stage explicitly.
+  echo "Uploading ${key} ($(human_size "$expected")) as ${tmp_key}..."
+  if ! ftp_curl --ftp-create-dirs --upload-file "$file" "$(ftp_url "$tmp_key")"; then
     ftp_delete "$tmp_key" 2>/dev/null || true
     fail "Upload of $key failed."
   fi
+  elapsed=$((SECONDS - started))
+  echo "Uploaded ${tmp_key} in ${elapsed}s ($(human_size "$((expected / (elapsed > 0 ? elapsed : 1)))")/s)."
   remote="$(ftp_size "$tmp_key")"
   if [ "$remote" != "$expected" ]; then
     ftp_delete "$tmp_key" || true
     fail "Upload of $key failed verification (local $expected bytes, remote ${remote:-missing})."
   fi
+  echo "Verified remote size of ${tmp_key}: ${remote} bytes."
   if ftp_rename "$tmp_key" "$key"; then
+    echo "Published ${key}."
     return 0
   fi
   # Some servers refuse to rename onto an existing file. Fall back to delete + rename; the target
   # is missing only for the duration of two FTP commands.
   echo "::warning title=Windows 11 ISO refresh ($ARCH)::The FTP server refused to replace $key by rename; replacing it non-atomically."
   if ftp_delete "$key" && ftp_rename "$tmp_key" "$key"; then
+    echo "Published ${key}."
     return 0
   fi
   ftp_delete "$tmp_key" || true
@@ -175,6 +192,7 @@ referenced_object_available() {
     return 1
   fi
   [ "$remote" = "$expected" ] || fail "Referenced object ${object} has unexpected size: expected $expected, got $remote."
+  echo "Referenced object ${ISO_DIR}/${object} is available (${remote} bytes)."
   summary "- **${ARCH}**: referenced object ${object} available (${remote} bytes)"
 }
 
