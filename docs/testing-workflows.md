@@ -206,6 +206,13 @@ ghcr.io/csautter/ubuntu-24:desktop-arm64-linux-build
 
 Windows VM build artifacts are intentionally not published.
 
+The `Test Pull of Published OCI Images` workflow
+(`.github/workflows/test-pull-published-images.yml`) runs weekly and on changes
+to the OCI code. It checks that all four published tags resolve to a VM build
+artifact with matching annotations, and pulls `server-amd64` anonymously and
+`server-arm64` with `GITHUB_TOKEN` through the CLI, then verifies the pulled
+qcow2 image.
+
 Because local VM builds take a long time, an interactive
 `sailwright build ubuntu ...` on Linux and macOS hosts offers to pull the
 matching published artifact instead. The default answer is no, which builds
