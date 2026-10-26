@@ -380,6 +380,10 @@ Example:
 		VirtualMachineConfig.NoCache = noCache
 		VirtualMachineConfig.Verbose = buildVerbose
 
+		if offerPrebuiltArtifact(cmd, VirtualMachineConfig) {
+			return nil
+		}
+
 		if err := runBuildFunc(VirtualMachineConfig); err != nil {
 			return fmt.Errorf("❌ Build failed for OS: %s, Type: %s, Architecture: %s — %w", osName, osType, arch, err)
 		}

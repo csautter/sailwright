@@ -297,6 +297,12 @@ sailwright provision ubuntu --type server --arch amd64 --check
 sailwright provision ubuntu --type server --arch amd64
 ```
 
+Local VM builds take a long time. On Linux and macOS hosts, an interactive
+`sailwright build ubuntu ...` therefore offers to pull the ready-to-use image
+from `ghcr.io/csautter/ubuntu-24` instead. The default answer is no, which
+builds locally. The offer is skipped when the artifact already exists, with
+`--no-cache`, for `build all`, and when stdin is not a terminal.
+
 If you are targeting Windows and remote access is not configured yet, start
 with [Windows Ansible Access](./docs/windows-ansible-access.md).
 
