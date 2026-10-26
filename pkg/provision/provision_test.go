@@ -1861,11 +1861,15 @@ func TestBuildSSHProvisionArgs(t *testing.T) {
 }
 
 func TestEnsureSSHPasswordAuthDependenciesRequiresSSHPass(t *testing.T) {
+	previousGOOS := runtimeGOOS
 	previousLookPath := lookPathProvisionCommand
 	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
 		lookPathProvisionCommand = previousLookPath
 	})
 
+	// Windows hosts check sshpass through Cygwin; this test covers the PATH lookup.
+	runtimeGOOS = "linux"
 	var lookedUp []string
 	lookPathProvisionCommand = func(file string) (string, error) {
 		lookedUp = append(lookedUp, file)
