@@ -99,6 +99,65 @@ function Install-Sailwright([string]$Version, [string]$InstallDir, [switch]$NoGa
         return $null
     }
 
+    function Install-Binaries([string[]]$Names, [string]$SourceDir, [string]$DestinationDir) {
+        New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
+        $replacements = @()
+        try {
+            # Stage every binary before changing an existing installation. A
+            # missing archive member or full disk must leave it usable.
+            foreach ($name in $Names) {
+                $target = Join-Path $DestinationDir "$name.exe"
+                $replacement = [pscustomobject]@{
+                    Target = $target
+                    Staged = "$target.$([System.Guid]::NewGuid().ToString('N')).tmp"
+                    Backup = $null
+                    Installed = $false
+                }
+                $replacements += $replacement
+                Copy-Item -LiteralPath (Join-Path $SourceDir "$name\$name.exe") -Destination $replacement.Staged
+            }
+
+            foreach ($replacement in $replacements) {
+                # Windows permits renaming a running executable, so keep it
+                # alongside the replacement until every promotion succeeds.
+                if (Test-Path -LiteralPath $replacement.Target) {
+                    $replacement.Backup = "$($replacement.Target).$([System.Guid]::NewGuid().ToString('N')).old"
+                    Move-Item -LiteralPath $replacement.Target -Destination $replacement.Backup
+                }
+                Move-Item -LiteralPath $replacement.Staged -Destination $replacement.Target
+                $replacement.Installed = $true
+            }
+        } catch {
+            $installError = $_
+            for ($index = $replacements.Count - 1; $index -ge 0; $index--) {
+                $replacement = $replacements[$index]
+                try {
+                    if ($replacement.Installed) {
+                        Remove-Item -LiteralPath $replacement.Target -Force
+                    }
+                    if ($replacement.Backup -and (Test-Path -LiteralPath $replacement.Backup)) {
+                        Move-Item -LiteralPath $replacement.Backup -Destination $replacement.Target
+                    }
+                } catch {
+                    Write-Warning "Could not restore $($replacement.Target); previous binary retained at $($replacement.Backup). $_"
+                }
+            }
+            throw $installError
+        } finally {
+            foreach ($replacement in $replacements) {
+                Remove-Item -LiteralPath $replacement.Staged -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        # Only discard backups after the complete install succeeds. A running
+        # executable may remain as .old until a later successful update.
+        foreach ($name in $Names) {
+            Get-ChildItem -LiteralPath $DestinationDir -Filter "$name.exe.*.old" -ErrorAction SilentlyContinue |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+            Write-Host "Installed $(Join-Path $DestinationDir "$name.exe")"
+        }
+    }
+
     $arch = Get-Arch
 
     if (-not $Version) {
@@ -164,25 +223,7 @@ function Install-Sailwright([string]$Version, [string]$InstallDir, [switch]$NoGa
             Expand-Archive -LiteralPath $assetPath -DestinationPath (Join-Path $tmpDir $name) -Force
         }
 
-        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-        foreach ($name in $binaries) {
-            $target = Join-Path $InstallDir "$name.exe"
-            # Windows cannot overwrite a running executable, for example a
-            # running sailwright-gateway, but it can rename one. Move the old
-            # binary aside and delete it once it is no longer running.
-            Get-ChildItem -LiteralPath $InstallDir -Filter "$name.exe.*.old" -ErrorAction SilentlyContinue |
-                Remove-Item -Force -ErrorAction SilentlyContinue
-            $old = $null
-            if (Test-Path -LiteralPath $target) {
-                $old = "$target.$([System.Guid]::NewGuid().ToString('N')).old"
-                Move-Item -LiteralPath $target -Destination $old
-            }
-            Copy-Item -LiteralPath (Join-Path $tmpDir "$name\$name.exe") -Destination $target
-            if ($old) {
-                Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue
-            }
-            Write-Host "Installed $target"
-        }
+        Install-Binaries -Names $binaries -SourceDir $tmpDir -DestinationDir $InstallDir
     } finally {
         Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }

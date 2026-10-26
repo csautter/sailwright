@@ -9,6 +9,8 @@ on:
     paths:
       - "scripts/install.sh"
       - "scripts/install.ps1"
+      - "test/install/**"
+      - "docs/installation.md"
       - ".github/workflows/test-install-scripts.yml"
       # The scripts depend on the archive names and layout and on the
       # checksums and signing set up by the release workflow.
@@ -31,6 +33,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      - name: Test Unix staging and manual verification offline
+        run: python3 -m unittest discover -s test/install -v
 
       - name: Install the latest release without cosign
         run: |
@@ -98,6 +103,13 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      - name: Test binary replacement recovery offline
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Install-Module -Name Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck
+          Import-Module Pester -MinimumVersion 5.5.0
+          Invoke-Pester -Path test/install/install.Tests.ps1 -Output Detailed -CI
 
       - name: Install the latest release without cosign
         run: |

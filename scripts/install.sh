@@ -168,7 +168,8 @@ main() {
 	esac
 
 	tmp_dir="$(mktemp -d)"
-	trap 'rm -rf "$tmp_dir"' EXIT
+	staged_file=''
+	trap 'if [ -n "$staged_file" ]; then rm -f "$staged_file"; fi; rm -rf "$tmp_dir"' EXIT
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
 
@@ -218,9 +219,13 @@ main() {
 	mkdir -p "$install_dir"
 	for name in $binaries; do
 		# Copy next to the target and rename so a running binary is replaced atomically.
-		cp "${tmp_dir}/${name}/${name}" "${install_dir}/.${name}.tmp"
-		chmod 0755 "${install_dir}/.${name}.tmp"
-		mv -f "${install_dir}/.${name}.tmp" "${install_dir}/${name}"
+		# Exclusively create a unique file so stale symlinks and other installers
+		# cannot redirect the copy or share its staging path.
+		staged_file="$(mktemp "${install_dir}/.${name}.XXXXXX")"
+		cp "${tmp_dir}/${name}/${name}" "$staged_file"
+		chmod 0755 "$staged_file"
+		mv -f "$staged_file" "${install_dir}/${name}"
+		staged_file=''
 		info "Installed ${install_dir}/${name}"
 	done
 
