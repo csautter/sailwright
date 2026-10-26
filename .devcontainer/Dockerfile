@@ -7,10 +7,10 @@ ENV RENOVATE_VERSION="44.168.3"
 # renovate: datasource=npm depName=@openai/codex versioning=npm
 ENV CODEX_VERSION="0.164.0"
 # renovate: datasource=custom.powershell-linux-x64 depName=PowerShell/PowerShell versioning=semver
-ENV POWERSHELL_VERSION="7.6.7"
-ENV POWERSHELL_SHA256_X64="6896f9e3a6b0a354bf470835a96da76d2f801cd50dcf047ad7c4563bf93bf431"
-# renovate: datasource=custom.powershell-linux-arm64 depName=PowerShell/PowerShell version=7.6.7 versioning=semver
-ENV POWERSHELL_SHA256_ARM64="ba465efdfb0984c1c5dc5ed9eb0b79a7e91a1b52c45f99377058c0659b84d3f1"
+ENV POWERSHELL_VERSION="7.6.9"
+ENV POWERSHELL_SHA256_X64="1da6d6d6035d651f20e70ddee7c4c15ac6ab8b9fb40ee92240d91263f28a884b"
+# renovate: datasource=custom.powershell-linux-arm64 depName=PowerShell/PowerShell version=7.6.9 versioning=semver
+ENV POWERSHELL_SHA256_ARM64="02eb9991af447c7e7fe881acde195961afd397c40b8eb1c2b3856b84ec2d85f2"
 # renovate: datasource=custom.terragrunt-linux-amd64 depName=gruntwork-io/terragrunt versioning=semver
 ENV TERRAGRUNT_VERSION="1.1.6"
 ENV TERRAGRUNT_SHA256_AMD64="d75a80bb264758ba00dabcb17f4b507fcdab4ca90d9e41f96750df036bf69b04"
