@@ -429,6 +429,17 @@ func TestProvisionStatusMarksLocalNonWindowsHostsUnstable(t *testing.T) {
 	}
 }
 
+func TestIsInteractiveInputRejectsNonTerminalFiles(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("failed to open %s: %v", os.DevNull, err)
+	}
+	defer devNull.Close()
+	if isInteractiveInput(devNull) {
+		t.Fatalf("expected %s not to count as interactive input", os.DevNull)
+	}
+}
+
 func TestConfirmProvisionIntentRequiresYesForNonInteractiveWindowsLocal(t *testing.T) {
 	previousAssumeYes := assumeYes
 	t.Cleanup(func() {

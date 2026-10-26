@@ -59,8 +59,8 @@ The agent, and everything it reads, is treated as untrusted.
 - **No shell, clean environment.** Commands are started directly with an
   argument list. The child environment is rebuilt from a short allowlist plus
   `env_passthrough`; `SSH_AUTH_SOCK`, cloud credentials and similar host
-  variables are not passed on. stdin is closed, so prompts fail instead of
-  hanging.
+  variables are not passed on. stdin is `/dev/null`, which Sailwright treats
+  as non-interactive, so prompts are skipped or fail instead of hanging.
 - **Isolated state.** Sailwright runs with its own app-data, config and cache
   directories below the gateway data dir, so your regular Sailwright data and
   role-source configuration are not used. This costs disk space; see
