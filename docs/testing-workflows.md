@@ -206,6 +206,12 @@ ghcr.io/csautter/ubuntu-24:desktop-arm64-linux-build
 
 Windows VM build artifacts are intentionally not published.
 
+Because local VM builds take a long time, an interactive
+`sailwright build ubuntu ...` on Linux and macOS hosts offers to pull the
+matching published artifact instead. The default answer is no, which builds
+locally. The offer is skipped when the artifact already exists, with
+`--no-cache`, for `build all`, and when stdin is not a terminal.
+
 For HTTPS registries with an internal or self-signed certificate, prefer adding
 the registry CA with `--ca-file /path/to/ca.pem`. For short-lived testing
 against a registry you already trust, `--insecure-skip-tls-verify` disables TLS
