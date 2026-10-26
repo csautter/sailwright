@@ -18,14 +18,11 @@
 set -eu
 
 REPO_URL="https://github.com/csautter/sailwright"
-# Base URL for release downloads; overridable so tests can serve local files.
+# Base URL for release downloads. SAILWRIGHT_DOWNLOAD_URL is for tests only,
+# so they can serve local files.
 DOWNLOAD_URL="${SAILWRIGHT_DOWNLOAD_URL:-${REPO_URL}/releases/download}"
 COSIGN_IDENTITY="${REPO_URL}/.github/workflows/release-binaries.yml@refs/heads/main"
 COSIGN_ISSUER="https://token.actions.githubusercontent.com"
-
-version="${SAILWRIGHT_VERSION:-}"
-install_dir="${SAILWRIGHT_INSTALL_DIR:-${HOME}/.local/bin}"
-no_gateway="${SAILWRIGHT_NO_GATEWAY:-0}"
 
 usage() {
 	cat <<'EOF'
@@ -47,41 +44,6 @@ fail() {
 	printf 'error: %s\n' "$*" >&2
 	exit 1
 }
-
-while [ $# -gt 0 ]; do
-	case "$1" in
-	--version)
-		[ $# -ge 2 ] || fail "--version needs a value"
-		version="$2"
-		shift 2
-		;;
-	--install-dir)
-		[ $# -ge 2 ] || fail "--install-dir needs a value"
-		install_dir="$2"
-		shift 2
-		;;
-	--no-gateway)
-		no_gateway=1
-		shift
-		;;
-	-h | --help)
-		usage
-		exit 0
-		;;
-	*)
-		usage >&2
-		fail "unknown option: $1"
-		;;
-	esac
-done
-
-if command -v curl >/dev/null 2>&1; then
-	downloader=curl
-elif command -v wget >/dev/null 2>&1; then
-	downloader=wget
-else
-	fail "curl or wget is required"
-fi
 
 # download <url> <file>
 download() {
@@ -141,84 +103,146 @@ expected_sha256() {
 	awk -v asset="$1" '{ file = $2; sub(/^\*/, "", file); sub(/.*\//, "", file); if (file == asset) { print $1; exit } }' "$2"
 }
 
-os="$(detect_os)"
-arch="$(detect_arch "$os")"
+# Everything runs from main, called on the last line, so that a download cut
+# off while piping into sh runs nothing.
+main() {
+	version="${SAILWRIGHT_VERSION:-}"
+	install_dir="${SAILWRIGHT_INSTALL_DIR:-${HOME}/.local/bin}"
+	no_gateway="${SAILWRIGHT_NO_GATEWAY:-0}"
 
-if [ -z "$version" ]; then
-	version="$(latest_tag)"
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--version)
+			[ $# -ge 2 ] || fail "--version needs a value"
+			version="$2"
+			shift 2
+			;;
+		--install-dir)
+			[ $# -ge 2 ] || fail "--install-dir needs a value"
+			install_dir="$2"
+			shift 2
+			;;
+		--no-gateway)
+			no_gateway=1
+			shift
+			;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		*)
+			usage >&2
+			fail "unknown option: $1"
+			;;
+		esac
+	done
+
+	if command -v curl >/dev/null 2>&1; then
+		downloader=curl
+	elif command -v wget >/dev/null 2>&1; then
+		downloader=wget
+	else
+		fail "curl or wget is required"
+	fi
+
+	os="$(detect_os)"
+	arch="$(detect_arch "$os")"
+
+	if [ -z "$version" ]; then
+		version="$(latest_tag)"
+		case "$version" in
+		v[0-9]*) ;;
+		*) fail "could not determine the latest release; pass --version" ;;
+		esac
+	fi
 	case "$version" in
-	v[0-9]*) ;;
-	*) fail "could not determine the latest release; pass --version" ;;
+	v*) ;;
+	*) version="v${version}" ;;
 	esac
-fi
-case "$version" in
-v*) ;;
-*) version="v${version}" ;;
-esac
-plain_version="${version#v}"
+	plain_version="${version#v}"
 
-tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT INT TERM
+	# Make the path absolute so the PATH hint below is usable from any directory.
+	case "$install_dir" in
+	/*) ;;
+	*) install_dir="$(pwd)/${install_dir}" ;;
+	esac
 
-info "Installing sailwright ${version} (${os}/${arch}) to ${install_dir}"
+	tmp_dir="$(mktemp -d)"
+	trap 'rm -rf "$tmp_dir"' EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
 
-checksums="sailwright_${plain_version}_checksums.txt"
-download "${DOWNLOAD_URL}/${version}/${checksums}" "${tmp_dir}/${checksums}" ||
-	fail "could not download ${checksums}; does release ${version} exist?"
+	info "Installing sailwright ${version} (${os}/${arch}) to ${install_dir}"
 
-if command -v cosign >/dev/null 2>&1; then
-	info "Verifying the checksums signature with cosign"
-	download "${DOWNLOAD_URL}/${version}/${checksums}.sig" "${tmp_dir}/${checksums}.sig" ||
-		fail "could not download ${checksums}.sig"
-	download "${DOWNLOAD_URL}/${version}/${checksums}.pem" "${tmp_dir}/${checksums}.pem" ||
-		fail "could not download ${checksums}.pem"
-	cosign verify-blob \
-		--certificate "${tmp_dir}/${checksums}.pem" \
-		--signature "${tmp_dir}/${checksums}.sig" \
-		--certificate-identity "$COSIGN_IDENTITY" \
-		--certificate-oidc-issuer "$COSIGN_ISSUER" \
-		"${tmp_dir}/${checksums}" >/dev/null 2>&1 ||
-		fail "cosign could not verify ${checksums}; aborting"
-fi
+	checksums="sailwright_${plain_version}_checksums.txt"
+	download "${DOWNLOAD_URL}/${version}/${checksums}" "${tmp_dir}/${checksums}" ||
+		fail "could not download ${checksums}; does release ${version} exist?"
 
-binaries="sailwright"
-if [ "$no_gateway" != 1 ]; then
-	binaries="sailwright sailwright-gateway"
-fi
+	if command -v cosign >/dev/null 2>&1; then
+		info "Verifying the checksums signature with cosign"
+		download "${DOWNLOAD_URL}/${version}/${checksums}.sig" "${tmp_dir}/${checksums}.sig" ||
+			fail "could not download ${checksums}.sig"
+		download "${DOWNLOAD_URL}/${version}/${checksums}.pem" "${tmp_dir}/${checksums}.pem" ||
+			fail "could not download ${checksums}.pem"
+		cosign verify-blob \
+			--certificate "${tmp_dir}/${checksums}.pem" \
+			--signature "${tmp_dir}/${checksums}.sig" \
+			--certificate-identity "$COSIGN_IDENTITY" \
+			--certificate-oidc-issuer "$COSIGN_ISSUER" \
+			"${tmp_dir}/${checksums}" >"${tmp_dir}/cosign.log" 2>&1 || {
+			cat "${tmp_dir}/cosign.log" >&2
+			fail "cosign could not verify ${checksums}; aborting"
+		}
+	fi
 
-for name in $binaries; do
-	asset="${name}_${plain_version}_${os}_${arch}.tar.gz"
-	download "${DOWNLOAD_URL}/${version}/${asset}" "${tmp_dir}/${asset}" ||
-		fail "could not download ${asset}"
+	binaries="sailwright"
+	if [ "$no_gateway" != 1 ]; then
+		binaries="sailwright sailwright-gateway"
+	fi
 
-	expected="$(expected_sha256 "$asset" "${tmp_dir}/${checksums}")"
-	[ -n "$expected" ] || fail "no checksum for ${asset} in ${checksums}"
-	actual="$(sha256_of "${tmp_dir}/${asset}")"
-	[ "$actual" = "$expected" ] ||
-		fail "checksum mismatch for ${asset} (expected ${expected}, got ${actual}); aborting"
+	for name in $binaries; do
+		asset="${name}_${plain_version}_${os}_${arch}.tar.gz"
+		download "${DOWNLOAD_URL}/${version}/${asset}" "${tmp_dir}/${asset}" ||
+			fail "could not download ${asset}"
 
-	mkdir -p "${tmp_dir}/${name}"
-	tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}/${name}" "$name"
-done
+		expected="$(expected_sha256 "$asset" "${tmp_dir}/${checksums}")"
+		[ -n "$expected" ] || fail "no checksum for ${asset} in ${checksums}"
+		actual="$(sha256_of "${tmp_dir}/${asset}")"
+		[ "$actual" = "$expected" ] ||
+			fail "checksum mismatch for ${asset} (expected ${expected}, got ${actual}); aborting"
 
-mkdir -p "$install_dir"
-for name in $binaries; do
-	# Copy next to the target and rename so a running binary is replaced atomically.
-	cp "${tmp_dir}/${name}/${name}" "${install_dir}/.${name}.tmp"
-	chmod 0755 "${install_dir}/.${name}.tmp"
-	mv -f "${install_dir}/.${name}.tmp" "${install_dir}/${name}"
-	info "Installed ${install_dir}/${name}"
-done
+		mkdir -p "${tmp_dir}/${name}"
+		tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}/${name}" "$name"
+	done
 
-case ":${PATH}:" in
-*":${install_dir}:"*) ;;
-*)
+	mkdir -p "$install_dir"
+	for name in $binaries; do
+		# Copy next to the target and rename so a running binary is replaced atomically.
+		cp "${tmp_dir}/${name}/${name}" "${install_dir}/.${name}.tmp"
+		chmod 0755 "${install_dir}/.${name}.tmp"
+		mv -f "${install_dir}/.${name}.tmp" "${install_dir}/${name}"
+		info "Installed ${install_dir}/${name}"
+	done
+
+	case ":${PATH}:" in
+	*":${install_dir}:"*) ;;
+	*)
+		info ""
+		info "${install_dir} is not on your PATH. Add this line to your shell profile"
+		info "(~/.zprofile for zsh, ~/.profile or ~/.bashrc for bash):"
+		info "  export PATH=\"${install_dir}:\$PATH\""
+		;;
+	esac
+
+	# Warn when another install, e.g. from Homebrew, comes first on PATH.
+	resolved="$(command -v sailwright 2>/dev/null || true)"
+	if [ -n "$resolved" ] && [ "$resolved" != "${install_dir}/sailwright" ]; then
+		info ""
+		info "warning: sailwright resolves to ${resolved}, not ${install_dir}/sailwright"
+	fi
+
 	info ""
-	info "${install_dir} is not on your PATH. Add this line to your shell profile"
-	info "(~/.zprofile for zsh, ~/.profile or ~/.bashrc for bash):"
-	info "  export PATH=\"${install_dir}:\$PATH\""
-	;;
-esac
+	info "Next: sailwright install && sailwright build list"
+}
 
-info ""
-info "Next: sailwright install && sailwright build list"
+main "$@"
