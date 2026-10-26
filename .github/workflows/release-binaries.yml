@@ -10,6 +10,8 @@ on:
       HOMEBREW_TAP_TOKEN:
         required: false
   pull_request:
+  # Run from main only: install.sh and install.ps1 verify the checksums
+  # signature against release-binaries.yml@refs/heads/main.
   workflow_dispatch:
     inputs:
       version:
@@ -86,11 +88,28 @@ jobs:
       VERSION: ${{ inputs.version }}
 
     steps:
+      - name: Require main
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::Publish from main only; the install scripts reject signatures from ${GITHUB_REF}."
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Download packaged artifacts
         uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
+
+      # Published on every release so that
+      # https://github.com/csautter/sailwright/releases/latest/download/install.{sh,ps1}
+      # stays a stable URL.
+      - name: Add install scripts
+        run: cp scripts/install.sh scripts/install.ps1 dist/
 
       - name: Generate checksums
         run: |
@@ -112,6 +131,143 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload --repo "${GITHUB_REPOSITORY}" "${VERSION}" dist/* --clobber
+
+  install-script-verify:
+    name: Verify install script (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    if: ${{ github.event_name != 'pull_request' }}
+    needs:
+      - publish
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    env:
+      VERSION: ${{ inputs.version }}
+
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install with the published install.sh
+        if: ${{ runner.os != 'Windows' }}
+        run: |
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}/install.sh" |
+            sh -s -- --version "${VERSION}" --install-dir "${RUNNER_TEMP}/bin" | tee install.log
+          grep -q "Verifying the checksums signature with cosign" install.log
+          "${RUNNER_TEMP}/bin/sailwright" --help | grep -q "Usage:"
+          "${RUNNER_TEMP}/bin/sailwright-gateway" --help | grep -q "Usage:"
+
+      - name: Install with the published install.ps1
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $env:SAILWRIGHT_VERSION = $env:VERSION
+          $env:SAILWRIGHT_INSTALL_DIR = Join-Path $env:RUNNER_TEMP 'bin'
+          irm "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:VERSION/install.ps1" | iex
+          if (-not ((& sailwright --help) -match 'Usage:')) { throw 'sailwright --help failed' }
+          if (-not ((& sailwright-gateway --help) -match 'Usage:')) { throw 'sailwright-gateway --help failed' }
+
+  # Install this PR's archives with the install scripts, so a change to the
+  # archive names or layout fails here instead of after a release.
+  install-script-check:
+    name: Check install script (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    if: ${{ github.event_name == 'pull_request' }}
+    needs:
+      - build
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-amd64
+          - os: macos-latest
+            target: darwin-arm64
+          - os: windows-latest
+            target: windows-amd64
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      VERSION: 0.0.0-pr.${{ github.event.pull_request.number }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: release-${{ matrix.target }}
+          path: dist
+
+      # Lay the archives out like a release with a checksums file. There is
+      # no signature, and the runners have no cosign, so the scripts skip it.
+      - name: Stage a local release
+        shell: bash
+        run: |
+          serve_dir="serve/v${VERSION}"
+          mkdir -p "${serve_dir}"
+          for asset in dist/*_pr-"${PR_NUMBER}"_*; do
+            name="$(basename "${asset}")"
+            mv "${asset}" "${serve_dir}/${name/_pr-${PR_NUMBER}_/_${VERSION}_}"
+          done
+          cd "${serve_dir}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -- * > "sailwright_${VERSION}_checksums.txt"
+          else
+            shasum -a 256 -- * > "sailwright_${VERSION}_checksums.txt"
+          fi
+          cat "sailwright_${VERSION}_checksums.txt"
+
+      - name: Install with install.sh
+        if: ${{ runner.os != 'Windows' }}
+        run: |
+          python3 -m http.server 8765 --directory serve >/dev/null 2>&1 &
+          server=$!
+          trap 'kill "${server}"' EXIT
+          for _ in $(seq 30); do
+            curl -fsS -o /dev/null http://127.0.0.1:8765/ && break
+            sleep 0.5
+          done
+          SAILWRIGHT_DOWNLOAD_URL=http://127.0.0.1:8765 sh scripts/install.sh \
+            --version "v${VERSION}" --install-dir "${RUNNER_TEMP}/bin"
+          "${RUNNER_TEMP}/bin/sailwright" --help | grep -q "Usage:"
+          "${RUNNER_TEMP}/bin/sailwright-gateway" --help | grep -q "Usage:"
+
+      - name: Install with install.ps1
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $server = Start-Process python -ArgumentList '-m', 'http.server', '8765', '--directory', (Resolve-Path serve) -PassThru -WindowStyle Hidden
+          try {
+            foreach ($attempt in 1..30) {
+              try {
+                Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8765/' | Out-Null
+                break
+              } catch {
+                Start-Sleep -Milliseconds 500
+              }
+            }
+            $env:SAILWRIGHT_DOWNLOAD_URL = 'http://127.0.0.1:8765'
+            $env:SAILWRIGHT_VERSION = "v$env:VERSION"
+            $installDir = Join-Path $env:RUNNER_TEMP 'bin'
+            $env:SAILWRIGHT_INSTALL_DIR = $installDir
+            Get-Content -Raw scripts/install.ps1 | Invoke-Expression
+            if (-not ((& (Join-Path $installDir 'sailwright.exe') --help) -match 'Usage:')) { throw 'sailwright --help failed' }
+            if (-not ((& (Join-Path $installDir 'sailwright-gateway.exe') --help) -match 'Usage:')) { throw 'sailwright-gateway --help failed' }
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
 
   homebrew-formula-check:
     name: Check Homebrew formulae

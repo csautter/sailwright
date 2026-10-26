@@ -104,6 +104,9 @@ Three steps, the same on every host.
    brew install csautter/sailwright/sailwright csautter/sailwright/sailwright-gateway
    ```
 
+   The [install script](./installation.md#install-script) installs both
+   binaries on macOS, Linux and Windows as well.
+
    Alternatively, download `sailwright_<version>_<os>_<arch>` and
    `sailwright-gateway_<version>_<os>_<arch>` from the same
    [release](https://github.com/csautter/sailwright/releases) and verify them

@@ -36,20 +36,33 @@ targets before they ever touch a developer's machine.
 
 ## Quick Start
 
-On macOS or Linux with [Homebrew](https://brew.sh):
+macOS ([Homebrew](https://brew.sh)):
 
 ```bash
 brew install csautter/sailwright/sailwright
 sailwright install && sailwright build list
 ```
 
-Or download a release archive directly:
+Linux:
 
 ```bash
-TAG="$(curl -fsSL https://api.github.com/repos/csautter/sailwright/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
-curl -fLO "https://github.com/csautter/sailwright/releases/download/${TAG}/sailwright_${TAG#v}_linux_amd64.tar.gz" && tar -xzf sailwright_*_linux_amd64.tar.gz
-./sailwright install && ./sailwright build list
+curl -fsSL https://github.com/csautter/sailwright/releases/latest/download/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+sailwright install && sailwright build list
 ```
+
+Windows (PowerShell):
+
+```powershell
+irm https://github.com/csautter/sailwright/releases/latest/download/install.ps1 | iex
+sailwright install; sailwright build list
+```
+
+Both options work on macOS and Linux: use the install script on a Mac without
+Homebrew, or Homebrew on Linux if you already use it. The install scripts
+verify the download against the release checksums and need no `sudo` or admin
+rights. See [Installation](./docs/installation.md) for options and manual
+installs.
 
 See [🚀 Getting Started](#-getting-started) below for macOS/Windows steps,
 cloning the repo instead, and running your first full workflow.
@@ -140,8 +153,10 @@ transport behavior, cleanup flags, and rollback steps, see
 
 You can either:
 
-- install it with Homebrew on macOS or Linux
-- download a release binary for normal use
+- install it with Homebrew (default on macOS, also works on Linux)
+- install it with the install script (default on Linux and Windows, also works
+  on macOS)
+- download a release binary manually
 - clone the repository when you want to edit playbooks, roles, or project code
 
 #### Install with Homebrew
@@ -158,7 +173,25 @@ brew install csautter/sailwright/sailwright-gateway
 
 Update with `brew upgrade sailwright`.
 
-#### Download a release binary
+#### Install with the install script
+
+```bash
+# macOS / Linux: installs to ~/.local/bin
+curl -fsSL https://github.com/csautter/sailwright/releases/latest/download/install.sh | sh
+```
+
+```powershell
+# Windows: installs to %LOCALAPPDATA%\Programs\sailwright and adds it to the user PATH
+irm https://github.com/csautter/sailwright/releases/latest/download/install.ps1 | iex
+```
+
+Both scripts install the latest release of `sailwright` and
+`sailwright-gateway`, abort if a SHA-256 checksum does not match, and also
+verify the cosign signature of the checksums when `cosign` is installed. Rerun
+the command to update. See [Installation](./docs/installation.md) for pinning
+a version, choosing another directory, or skipping the gateway.
+
+#### Manual install
 
 Release assets are published on the
 [GitHub Releases page](https://github.com/csautter/sailwright/releases) as
@@ -350,6 +383,8 @@ next level of detail:
   and SSH setup on Windows targets plus OpenSSH rollback notes
 - [Example Ansible Roles](./docs/example-roles.md) for the current sample role
   catalog and repository layout
+- [Installation](./docs/installation.md) for the install scripts, options,
+  manual install and uninstall
 - [Homebrew Tap](./docs/homebrew-tap.md) for how release formulae are
   generated and published
 - [Troubleshooting Guide](./docs/troubleshooting.md) for rare host-specific
