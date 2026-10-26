@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -151,6 +152,15 @@ func TestBuildChildEnvDropsHostEnvironment(t *testing.T) {
 	for _, required := range []string{"LIBVIRT_UBUNTU_ANSIBLE_PASSWORD=vmpass", envAppDataDir + "=" + dirs.AppData, envConfigDir + "=" + dirs.Config} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("child env misses %q:\n%s", required, joined)
+		}
+	}
+}
+
+func TestWindowsChildEnvKeepsHyperVPrerequisites(t *testing.T) {
+	// Hyper-V cmdlets resolve the local host through COMPUTERNAME.
+	for _, required := range []string{"COMPUTERNAME", "SystemRoot", "PSModulePath"} {
+		if !slices.Contains(baseEnvNames["windows"], required) {
+			t.Fatalf("windows child env allowlist misses %q", required)
 		}
 	}
 }

@@ -1258,48 +1258,60 @@ func TestLoadWindowsHypervAnsibleConnectionConfig_EnvOverridesDotEnv(t *testing.
 	}
 }
 
-func TestLoadWindowsHypervAnsibleConnectionConfig_ReturnsErrorWhenRequiredValuesMissing(t *testing.T) {
+func TestLoadWindowsHypervAnsibleConnectionConfig_UsesDefaults(t *testing.T) {
 	projectDir := t.TempDir()
 
-	_, err := loadWindowsHypervAnsibleConnectionConfig(projectDir)
-	if err == nil {
-		t.Fatal("expected missing configuration to return an error")
+	connectionConfig, err := loadWindowsHypervAnsibleConnectionConfig(projectDir)
+	if err != nil {
+		t.Fatalf("loadWindowsHypervAnsibleConnectionConfig returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), hypervWindowsAnsibleUserEnvVar) {
-		t.Fatalf("expected missing user env var name in error, got: %v", err)
+
+	if connectionConfig.User != "Administrator" {
+		t.Fatalf("expected default user Administrator, got %q", connectionConfig.User)
 	}
-	if !strings.Contains(err.Error(), hypervWindowsAnsiblePasswordEnvVar) {
-		t.Fatalf("expected missing password env var name in error, got: %v", err)
+	if connectionConfig.Password != "P@ssw0rd!" {
+		t.Fatalf("expected default password, got %q", connectionConfig.Password)
+	}
+	if connectionConfig.Connection != "winrm" {
+		t.Fatalf("expected default connection winrm, got %q", connectionConfig.Connection)
 	}
 }
 
-func TestLoadWindowsUtmAnsibleConnectionConfig_ReturnsErrorWhenRequiredValuesMissing(t *testing.T) {
+func TestLoadWindowsUtmAnsibleConnectionConfig_UsesDefaults(t *testing.T) {
 	projectDir := t.TempDir()
 
-	_, err := loadWindowsUtmAnsibleConnectionConfig(projectDir)
-	if err == nil {
-		t.Fatal("expected missing configuration to return an error")
+	connectionConfig, err := loadWindowsUtmAnsibleConnectionConfig(projectDir)
+	if err != nil {
+		t.Fatalf("loadWindowsUtmAnsibleConnectionConfig returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), utmWindowsAnsibleUserEnvVar) {
-		t.Fatalf("expected missing user env var name in error, got: %v", err)
+
+	if connectionConfig.User != "Administrator" {
+		t.Fatalf("expected default user Administrator, got %q", connectionConfig.User)
 	}
-	if !strings.Contains(err.Error(), utmWindowsAnsiblePasswordEnvVar) {
-		t.Fatalf("expected missing password env var name in error, got: %v", err)
+	if connectionConfig.Password != "P@ssw0rd!" {
+		t.Fatalf("expected default password, got %q", connectionConfig.Password)
+	}
+	if connectionConfig.Connection != "winrm" {
+		t.Fatalf("expected default connection winrm, got %q", connectionConfig.Connection)
 	}
 }
 
-func TestLoadWindowsLibvirtAnsibleConnectionConfig_ReturnsErrorWhenRequiredValuesMissing(t *testing.T) {
+func TestLoadWindowsLibvirtAnsibleConnectionConfig_UsesDefaults(t *testing.T) {
 	projectDir := t.TempDir()
 
-	_, err := loadWindowsLibvirtAnsibleConnectionConfig(projectDir)
-	if err == nil {
-		t.Fatal("expected missing configuration to return an error")
+	connectionConfig, err := loadWindowsLibvirtAnsibleConnectionConfig(projectDir)
+	if err != nil {
+		t.Fatalf("loadWindowsLibvirtAnsibleConnectionConfig returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), libvirtWindowsAnsibleUserEnvVar) {
-		t.Fatalf("expected missing user env var name in error, got: %v", err)
+
+	if connectionConfig.User != "Administrator" {
+		t.Fatalf("expected default user Administrator, got %q", connectionConfig.User)
 	}
-	if !strings.Contains(err.Error(), libvirtWindowsAnsiblePasswordEnvVar) {
-		t.Fatalf("expected missing password env var name in error, got: %v", err)
+	if connectionConfig.Password != "P@ssw0rd!" {
+		t.Fatalf("expected default password, got %q", connectionConfig.Password)
+	}
+	if connectionConfig.Connection != "winrm" {
+		t.Fatalf("expected default connection winrm, got %q", connectionConfig.Connection)
 	}
 }
 
@@ -1849,11 +1861,15 @@ func TestBuildSSHProvisionArgs(t *testing.T) {
 }
 
 func TestEnsureSSHPasswordAuthDependenciesRequiresSSHPass(t *testing.T) {
+	previousGOOS := runtimeGOOS
 	previousLookPath := lookPathProvisionCommand
 	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
 		lookPathProvisionCommand = previousLookPath
 	})
 
+	// Windows hosts check sshpass through Cygwin; this test covers the PATH lookup.
+	runtimeGOOS = "linux"
 	var lookedUp []string
 	lookPathProvisionCommand = func(file string) (string, error) {
 		lookedUp = append(lookedUp, file)
@@ -1872,6 +1888,73 @@ func TestEnsureSSHPasswordAuthDependenciesRequiresSSHPass(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sudo apt install sshpass") {
 		t.Fatalf("expected install hint in error, got %v", err)
+	}
+}
+
+func stubWindowsCygwinSSHPassPreflight(t *testing.T, output string, runErr error) *[]string {
+	t.Helper()
+
+	bashPath := filepath.Join(t.TempDir(), "bash.exe")
+	if err := os.WriteFile(bashPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("failed to create fake bash executable: %v", err)
+	}
+	t.Setenv("CYGWIN_BASH_PATH", bashPath)
+	t.Setenv("CYGWIN_TERMINAL_PATH", "")
+
+	previousGOOS := runtimeGOOS
+	previousLookPath := lookPathProvisionCommand
+	previousRunner := runProvisionCommandWithCombinedOutputWithEnv
+	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
+		lookPathProvisionCommand = previousLookPath
+		runProvisionCommandWithCombinedOutputWithEnv = previousRunner
+	})
+
+	runtimeGOOS = "windows"
+	lookPathProvisionCommand = func(file string) (string, error) {
+		t.Fatalf("did not expect Windows PATH lookup for %s", file)
+		return "", nil
+	}
+
+	var invocation []string
+	runProvisionCommandWithCombinedOutputWithEnv = func(_ string, _ time.Duration, executable string, args []string, _ []string) (string, error) {
+		invocation = append([]string{executable}, args...)
+		return output, runErr
+	}
+
+	return &invocation
+}
+
+func TestEnsureSSHPasswordAuthDependenciesUsesCygwinOnWindows(t *testing.T) {
+	invocation := stubWindowsCygwinSSHPassPreflight(t, "/usr/bin/sshpass\n", nil)
+
+	err := ensureSSHPasswordAuthDependencies(sshAnsibleConnectionConfig{
+		Connection: "ssh",
+		Password:   "P@ssw0rd!",
+	})
+	if err != nil {
+		t.Fatalf("expected cygwin sshpass to satisfy preflight, got %v", err)
+	}
+	if got := strings.Join((*invocation)[1:], " "); got != "-l -c command -v sshpass" {
+		t.Fatalf("expected cygwin login shell sshpass lookup, got %q", got)
+	}
+	if !strings.HasSuffix((*invocation)[0], "bash.exe") {
+		t.Fatalf("expected cygwin bash executable, got %q", (*invocation)[0])
+	}
+}
+
+func TestEnsureSSHPasswordAuthDependenciesReportsMissingCygwinSSHPass(t *testing.T) {
+	stubWindowsCygwinSSHPassPreflight(t, "", errors.New("exit status 1"))
+
+	err := ensureSSHPasswordAuthDependencies(sshAnsibleConnectionConfig{
+		Connection: "ssh",
+		Password:   "P@ssw0rd!",
+	})
+	if err == nil {
+		t.Fatal("expected missing cygwin sshpass error")
+	}
+	if !strings.Contains(err.Error(), "Cygwin sshpass package") {
+		t.Fatalf("expected cygwin install hint in error, got %v", err)
 	}
 }
 
