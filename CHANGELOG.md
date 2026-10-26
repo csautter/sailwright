@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0](https://github.com/csautter/sailwright/compare/v0.20.0...v0.21.0) (2026-10-26)
+
+
+### Added
+
+* install scripts ([c85a231](https://github.com/csautter/sailwright/commit/c85a231eedfb81bbcefed9c9db07ac1033562b51))
+* **install:** add one-line install scripts for macOS, Linux and Windows ([99d8a23](https://github.com/csautter/sailwright/commit/99d8a232b44629364a76d5c5ed969dae3d9cac43))
+
+
+### Fixed
+
+* **install:** guard install.sh against truncated pipes ([ff356ce](https://github.com/csautter/sailwright/commit/ff356ce7b401442772dd24cd6005d41628a36510))
+* **install:** keep install.ps1 from changing the caller's session ([399eede](https://github.com/csautter/sailwright/commit/399eede79245cb27720c1270b423d8c794abf8a0))
+* **install:** keep install.ps1 parameters out of the caller's session ([be1d30e](https://github.com/csautter/sailwright/commit/be1d30e130f38231fc3fce7cc1371c1879f5bcaf))
+* **install:** keep the CLI and gateway on one version after failed updates ([eb878f8](https://github.com/csautter/sailwright/commit/eb878f8a44974d34fe534bc8ae5cb7756822848d))
+* **install:** preserve existing binaries during updates ([89e3945](https://github.com/csautter/sailwright/commit/89e39453a7582e8e6cf215f42683c952c49b5d56))
+
+
+### CI
+
+* **install:** broaden install script tests and lint install.ps1 ([4691828](https://github.com/csautter/sailwright/commit/4691828ffa6602f052a17e32fa83eb8755cb5ba5))
+* **release:** check the install scripts against each PR's archives ([b88d3b1](https://github.com/csautter/sailwright/commit/b88d3b1db2cae070f940eb4c29da1eb8db17dae6))
+* **release:** publish from main only and verify the install scripts ([e9dbc85](https://github.com/csautter/sailwright/commit/e9dbc85b0b5191f4607b6c2e948162356118c07a))
+
 ## [0.20.0](https://github.com/csautter/sailwright/compare/v0.19.1...v0.20.0) (2026-10-26)
 
 
