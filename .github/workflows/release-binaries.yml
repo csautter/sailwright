@@ -86,11 +86,22 @@ jobs:
       VERSION: ${{ inputs.version }}
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Download packaged artifacts
         uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
+
+      # Published on every release so that
+      # https://github.com/csautter/sailwright/releases/latest/download/install.{sh,ps1}
+      # stays a stable URL.
+      - name: Add install scripts
+        run: cp scripts/install.sh scripts/install.ps1 dist/
 
       - name: Generate checksums
         run: |

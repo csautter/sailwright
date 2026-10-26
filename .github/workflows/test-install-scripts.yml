@@ -1,0 +1,153 @@
+name: Test Install Scripts
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "scripts/install.sh"
+      - "scripts/install.ps1"
+      - ".github/workflows/test-install-scripts.yml"
+
+jobs:
+  unix:
+    name: install.sh (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install the latest release without cosign
+        run: |
+          sh scripts/install.sh --install-dir "${RUNNER_TEMP}/plain"
+          "${RUNNER_TEMP}/plain/sailwright" --help | grep -q "Usage:"
+          "${RUNNER_TEMP}/plain/sailwright-gateway" --help | grep -q "Usage:"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install the latest release with cosign verification
+        run: |
+          sh scripts/install.sh --install-dir "${RUNNER_TEMP}/signed" --no-gateway | tee install.log
+          grep -q "Verifying the checksums signature with cosign" install.log
+          "${RUNNER_TEMP}/signed/sailwright" --help | grep -q "Usage:"
+          test ! -e "${RUNNER_TEMP}/signed/sailwright-gateway"
+
+      - name: Abort on a checksum mismatch
+        run: |
+          version="$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/csautter/sailwright/releases/latest)"
+          version="${version##*/}"
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          arch="$(uname -m)"
+          case "${arch}" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
+
+          serve_dir="${RUNNER_TEMP}/serve/${version}"
+          mkdir -p "${serve_dir}"
+          for file in checksums.txt checksums.txt.sig checksums.txt.pem "${os}_${arch}.tar.gz"; do
+            curl -fsSL -o "${serve_dir}/sailwright_${version#v}_${file}" \
+              "https://github.com/csautter/sailwright/releases/download/${version}/sailwright_${version#v}_${file}"
+          done
+          echo tampered >> "${serve_dir}/sailwright_${version#v}_${os}_${arch}.tar.gz"
+
+          python3 -m http.server 8765 --directory "${RUNNER_TEMP}/serve" >/dev/null 2>&1 &
+          sleep 2
+
+          if SAILWRIGHT_DOWNLOAD_URL=http://127.0.0.1:8765 sh scripts/install.sh \
+            --version "${version}" --install-dir "${RUNNER_TEMP}/tampered" --no-gateway; then
+            echo "install.sh accepted a tampered archive" >&2
+            exit 1
+          fi
+          test ! -e "${RUNNER_TEMP}/tampered/sailwright"
+
+  windows:
+    name: install.ps1 (${{ matrix.shell }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shell:
+          - pwsh
+          - powershell
+
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install the latest release without cosign
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-Content -Raw scripts/install.ps1 | Invoke-Expression
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\sailwright'
+          if (-not ((& sailwright --help) -match 'Usage:')) { throw 'sailwright --help failed' }
+          if (-not ((& sailwright-gateway --help) -match 'Usage:')) { throw 'sailwright-gateway --help failed' }
+          $userPath = (Get-Item 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+          if (($userPath -split ';') -notcontains $installDir) { throw "$installDir was not added to the user PATH" }
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install the latest release with cosign verification
+        env:
+          SAILWRIGHT_NO_GATEWAY: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installDir = Join-Path $env:RUNNER_TEMP 'signed'
+          $output = & ./scripts/install.ps1 -InstallDir $installDir 6>&1 | Out-String
+          Write-Output $output
+          if ($output -notmatch 'Verifying the checksums signature with cosign') { throw 'cosign verification did not run' }
+          if (-not ((& (Join-Path $installDir 'sailwright.exe') --help) -match 'Usage:')) { throw 'sailwright --help failed' }
+          if (Test-Path (Join-Path $installDir 'sailwright-gateway.exe')) { throw 'gateway installed despite SAILWRIGHT_NO_GATEWAY' }
+
+      - name: Abort on a checksum mismatch
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $request = [System.Net.HttpWebRequest]::Create('https://github.com/csautter/sailwright/releases/latest')
+          $request.AllowAutoRedirect = $false
+          $response = $request.GetResponse()
+          $version = ($response.Headers['Location'] -split '/')[-1]
+          $response.Close()
+          $plain = $version.Substring(1)
+
+          $serveDir = Join-Path $env:RUNNER_TEMP "serve\$version"
+          New-Item -ItemType Directory -Path $serveDir -Force | Out-Null
+          foreach ($file in 'checksums.txt', 'checksums.txt.sig', 'checksums.txt.pem', 'windows_amd64.zip') {
+            $name = "sailwright_${plain}_$file"
+            Invoke-WebRequest -UseBasicParsing -OutFile (Join-Path $serveDir $name) `
+              -Uri "https://github.com/csautter/sailwright/releases/download/$version/$name"
+          }
+          Add-Content -Path (Join-Path $serveDir "sailwright_${plain}_windows_amd64.zip") -Value 'tampered'
+
+          $server = Start-Process python -ArgumentList '-m', 'http.server', '8765', '--directory', (Join-Path $env:RUNNER_TEMP 'serve') -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 2
+          try {
+            $env:SAILWRIGHT_DOWNLOAD_URL = 'http://127.0.0.1:8765'
+            $installDir = Join-Path $env:RUNNER_TEMP 'tampered'
+            $failed = $false
+            try {
+              & ./scripts/install.ps1 -Version $version -InstallDir $installDir -NoGateway
+            } catch {
+              Write-Output "Install failed as expected: $_"
+              $failed = $true
+            }
+            if (-not $failed) { throw 'install.ps1 accepted a tampered archive' }
+            if (Test-Path (Join-Path $installDir 'sailwright.exe')) { throw 'tampered binary was installed' }
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
