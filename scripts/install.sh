@@ -103,6 +103,23 @@ expected_sha256() {
 	awk -v asset="$1" '{ file = $2; sub(/^\*/, "", file); sub(/.*\//, "", file); if (file == asset) { print $1; exit } }' "$2"
 }
 
+# restore_previous <names>: undo the renames of a failed update. Put back each
+# previous binary kept in the staging directory, or remove the new binary if
+# there was none, so the CLI and the gateway never end up on mixed versions.
+restore_previous() {
+	for restored in $1; do
+		if [ -e "${stage_dir}/${restored}.old" ]; then
+			mv -f "${stage_dir}/${restored}.old" "${install_dir}/${restored}" || {
+				printf 'warning: could not restore %s; the previous binary is kept at %s\n' \
+					"${install_dir}/${restored}" "${stage_dir}/${restored}.old" >&2
+				keep_stage_dir=1
+			}
+		else
+			rm -f "${install_dir}/${restored}"
+		fi
+	done
+}
+
 # Everything runs from main, called on the last line, so that a download cut
 # off while piping into sh runs nothing.
 main() {
@@ -168,8 +185,9 @@ main() {
 	esac
 
 	tmp_dir="$(mktemp -d)"
-	staged_file=''
-	trap 'if [ -n "$staged_file" ]; then rm -f "$staged_file"; fi; rm -rf "$tmp_dir"' EXIT
+	stage_dir=''
+	keep_stage_dir=0
+	trap 'if [ -n "$stage_dir" ] && [ "$keep_stage_dir" != 1 ]; then rm -rf "$stage_dir"; fi; rm -rf "$tmp_dir"' EXIT
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
 
@@ -217,15 +235,34 @@ main() {
 	done
 
 	mkdir -p "$install_dir"
+	# Stage every binary next to its target before replacing any, so a full
+	# disk or a failed copy leaves the existing install untouched. The staging
+	# directory is created exclusively, so stale symlinks and other installers
+	# cannot redirect the copies or share their paths.
+	stage_dir="$(mktemp -d "${install_dir}/.sailwright-install.XXXXXX")"
 	for name in $binaries; do
-		# Copy next to the target and rename so a running binary is replaced atomically.
-		# Exclusively create a unique file so stale symlinks and other installers
-		# cannot redirect the copy or share its staging path.
-		staged_file="$(mktemp "${install_dir}/.${name}.XXXXXX")"
-		cp "${tmp_dir}/${name}/${name}" "$staged_file"
-		chmod 0755 "$staged_file"
-		mv -f "$staged_file" "${install_dir}/${name}"
-		staged_file=''
+		cp "${tmp_dir}/${name}/${name}" "${stage_dir}/${name}"
+		chmod 0755 "${stage_dir}/${name}"
+		# Keep the previous binary until every rename succeeds. A hard link
+		# needs no space; copy where the file system has no hard links.
+		if [ -e "${install_dir}/${name}" ]; then
+			ln "${install_dir}/${name}" "${stage_dir}/${name}.old" 2>/dev/null ||
+				cp -p "${install_dir}/${name}" "${stage_dir}/${name}.old"
+		fi
+	done
+
+	# Rename into place so a running binary is replaced atomically.
+	promoted=''
+	for name in $binaries; do
+		if ! mv -f "${stage_dir}/${name}" "${install_dir}/${name}"; then
+			restore_previous "$promoted"
+			[ "$keep_stage_dir" = 1 ] ||
+				fail "could not replace ${install_dir}/${name}; restored the previous install"
+			fail "could not replace ${install_dir}/${name}; see the warnings above"
+		fi
+		promoted="${promoted} ${name}"
+	done
+	for name in $binaries; do
 		info "Installed ${install_dir}/${name}"
 	done
 

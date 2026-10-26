@@ -82,11 +82,31 @@ class InstallerTest(unittest.TestCase):
         path.write_text(content)
         path.chmod(0o755)
 
-    def install(self, **kwargs):
-        return subprocess.run(
-            ["sh", str(REPO / "scripts/install.sh"), "--install-dir", str(self.target), "--no-gateway"],
-            env=self.env, capture_output=True, text=True, timeout=15, **kwargs,
-        )
+    def fail_for_target(self, command, target, message):
+        """Replace command with one that fails only when its last argument is target."""
+        real = shutil.which(command)
+        self.tool(command, f'''#!/bin/sh
+for last; do :; done
+case "$last" in
+*/{target}) echo '{message}' >&2; exit 1 ;;
+esac
+exec {real} "$@"
+''')
+
+    def install(self, gateway=False):
+        args = ["sh", str(REPO / "scripts/install.sh"), "--install-dir", str(self.target)]
+        if not gateway:
+            args.append("--no-gateway")
+        return subprocess.run(args, env=self.env, capture_output=True, text=True, timeout=15)
+
+    def write_originals(self):
+        for name in ("sailwright", "sailwright-gateway"):
+            (self.target / name).write_text(f"old-{name}")
+
+    def assert_originals(self):
+        for name in ("sailwright", "sailwright-gateway"):
+            self.assertEqual((self.target / name).read_text(), f"old-{name}")
+        self.assertEqual(sorted(p.name for p in self.target.iterdir()), ["sailwright", "sailwright-gateway"])
 
     def test_existing_staging_symlink_does_not_overwrite_another_file(self):
         victim = self.root / "unrelated-file"
@@ -125,6 +145,66 @@ class InstallerTest(unittest.TestCase):
         self.assertIn("simulated promotion failure", result.stderr)
         self.assertEqual((self.target / "sailwright").read_text(), "old working binary")
         self.assertEqual([p.name for p in self.target.iterdir()], ["sailwright"])
+
+    def test_update_replaces_both_binaries_and_cleans_staging(self):
+        self.write_originals()
+
+        result = self.install(gateway=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for name in ("sailwright", "sailwright-gateway"):
+            self.assertEqual(subprocess.check_output([str(self.target / name)], text=True).strip(), f"new-{name}")
+        self.assertEqual(sorted(p.name for p in self.target.iterdir()), ["sailwright", "sailwright-gateway"])
+
+    def test_failed_gateway_staging_preserves_both_originals(self):
+        self.write_originals()
+        self.fail_for_target("cp", "sailwright-gateway", "simulated full disk")
+
+        result = self.install(gateway=True)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("simulated full disk", result.stderr)
+        self.assert_originals()
+
+    def test_failed_gateway_promotion_restores_both_originals(self):
+        self.write_originals()
+        self.fail_for_target("mv", "sailwright-gateway", "simulated gateway promotion failure")
+
+        result = self.install(gateway=True)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("simulated gateway promotion failure", result.stderr)
+        self.assertIn("restored the previous install", result.stderr)
+        self.assert_originals()
+
+    def test_failed_first_install_promotion_removes_new_binaries(self):
+        self.fail_for_target("mv", "sailwright-gateway", "simulated gateway promotion failure")
+
+        result = self.install(gateway=True)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restored the previous install", result.stderr)
+        self.assertEqual(list(self.target.iterdir()), [])
+
+    def test_unrestorable_backup_is_kept(self):
+        self.write_originals()
+        # Fail the gateway promotion and the restore of the CLI that follows it.
+        real = shutil.which("mv")
+        self.tool("mv", f'''#!/bin/sh
+for last; do :; done
+case "$last" in */sailwright-gateway) echo 'simulated failure' >&2; exit 1 ;; esac
+case "$*" in *.old\\ *) echo 'simulated failure' >&2; exit 1 ;; esac
+exec {real} "$@"
+''')
+
+        result = self.install(gateway=True)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("warning: could not restore", result.stderr)
+        self.assertIn("see the warnings above", result.stderr)
+        backups = list(self.target.glob(".sailwright-install.*/sailwright.old"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(), "old-sailwright")
 
     def test_concurrent_installs_use_independent_staging_files(self):
         copy = shutil.which("cp")
