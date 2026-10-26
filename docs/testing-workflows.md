@@ -216,8 +216,15 @@ qcow2 image.
 Because local VM builds take a long time, an interactive
 `sailwright build ubuntu ...` on Linux and macOS hosts offers to pull the
 matching published artifact instead. The default answer is no, which builds
-locally. The offer is skipped when the artifact already exists, with
-`--no-cache`, for `build all`, and when stdin is not a terminal.
+locally; a failed pull also falls back to the local build, while Ctrl+C during
+the pull stops the command. The pull is anonymous and ignores Docker
+credentials, because the images are public. The offer is skipped when the
+artifact already exists, with `--no-cache` or `--no-prebuilt`, when
+`SAILWRIGHT_NO_PREBUILT_OFFER` is set to a non-empty value, for `build all`,
+and when stdin is not a terminal (including `/dev/null` and agent gateway
+jobs). `scripts/quickstart.sh` sets `SAILWRIGHT_NO_PREBUILT_OFFER=1` when it
+records a session without a terminal on stdin, because the recorder would
+otherwise give the build a terminal nobody can answer.
 
 For HTTPS registries with an internal or self-signed certificate, prefer adding
 the registry CA with `--ca-file /path/to/ca.pem`. For short-lived testing
