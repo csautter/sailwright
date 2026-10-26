@@ -59,7 +59,9 @@ func manifestAnnotations(vm alchemy_build.VirtualMachineConfig, reference string
 }
 
 // manifestDescription is shown on registry pages such as GHCR, which also
-// advertise a docker pull command that cannot work for these artifacts.
+// advertise a docker pull command that cannot work for these artifacts. The
+// pull command names the push reference, so it goes stale if the artifact is
+// later copied to another repository.
 func manifestDescription(vm alchemy_build.VirtualMachineConfig, reference string) string {
 	pull := "sailwright pull " + reference + " --os " + vm.OS
 	if strings.EqualFold(vm.OS, "ubuntu") {
@@ -67,15 +69,33 @@ func manifestDescription(vm alchemy_build.VirtualMachineConfig, reference string
 	}
 	pull += " --arch " + vm.Arch
 
-	var hosts string
-	switch vm.HostOs {
-	case alchemy_build.HostOsLinux, alchemy_build.HostOsDarwin:
-		hosts = fmt.Sprintf("Built on a %s host with %s; usable on Linux (QEMU) and macOS (UTM) hosts, not on Windows hosts.", vm.HostOs, vm.VirtualizationEngine)
-	default:
-		hosts = fmt.Sprintf("Built on a %s host with %s; usable on %s hosts only.", vm.HostOs, vm.VirtualizationEngine, vm.HostOs)
+	hosts := fmt.Sprintf("Built on a %s host with %s; usable on %s hosts with %s", vm.HostOs, vm.VirtualizationEngine, vm.HostOs, vm.VirtualizationEngine)
+	for _, target := range foreignPullTargets(vm) {
+		hosts += fmt.Sprintf(" and %s hosts with %s", target.HostOs, target.VirtualizationEngine)
 	}
+	hosts += " only."
 
+	// The host sentence goes last so GHCR's 512-character truncation cuts it
+	// before the pull command.
 	return "Sailwright VM disk image, not a Docker image: docker pull does not work. Install with: " + pull + ". " + hosts
+}
+
+// foreignPullTargets returns the configs on other hosts that accept vm's
+// artifact as a compatible foreign artifact on pull.
+func foreignPullTargets(vm alchemy_build.VirtualMachineConfig) []alchemy_build.VirtualMachineConfig {
+	if !isForeignArtifactGuestOS(vm.OS) {
+		return nil
+	}
+	var targets []alchemy_build.VirtualMachineConfig
+	for _, target := range alchemy_build.AvailableVirtualMachineConfigs() {
+		if !isDarwinLinuxHostPair(vm.HostOs, target.HostOs) {
+			continue
+		}
+		if target.OS == vm.OS && target.UbuntuType == vm.UbuntuType && target.Arch == vm.Arch {
+			targets = append(targets, target)
+		}
+	}
+	return targets
 }
 
 func validateRemoteManifest(ctx context.Context, repo *remote.Repository, ref string, vm alchemy_build.VirtualMachineConfig, expected []ArtifactFile, opts PullOptions) (remoteManifest, error) {

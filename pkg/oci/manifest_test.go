@@ -2,6 +2,7 @@ package oci
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -237,7 +238,7 @@ func TestManifestDescriptionExplainsSailwrightPull(t *testing.T) {
 	for _, want := range []string{
 		"not a Docker image",
 		"sailwright pull " + ref + " --os ubuntu --type server --arch arm64",
-		"usable on Linux (QEMU) and macOS (UTM) hosts, not on Windows hosts",
+		"usable on debian hosts with qemu and darwin hosts with utm only.",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("description %q does not contain %q", got, want)
@@ -261,7 +262,47 @@ func TestManifestDescriptionLimitsWindowsHostArtifacts(t *testing.T) {
 	if !strings.Contains(got, "sailwright pull ghcr.io/example/windows11:hyperv --os windows11 --arch amd64.") {
 		t.Errorf("description %q has unexpected pull command", got)
 	}
-	if !strings.Contains(got, "usable on windows hosts only") {
+	if !strings.Contains(got, "usable on windows hosts with hyperv only.") {
 		t.Errorf("description %q does not restrict to windows hosts", got)
+	}
+}
+
+func TestManifestDescriptionMatchesForeignArtifactCompatibility(t *testing.T) {
+	configs := alchemy_build.AvailableVirtualMachineConfigs()
+	for _, vm := range configs {
+		t.Run(alchemy_build.GenerateVirtualMachineSlug(&vm)+"-"+string(vm.HostOs), func(t *testing.T) {
+			got := manifestDescription(vm, "ghcr.io/example/sailwright:test")
+			manifest := testOCIManifest(vm, "artifact.qcow2")
+
+			compatible := map[string]bool{}
+			for _, target := range configs {
+				if _, ok := compatibleForeignArtifact(manifest, target); ok {
+					compatible[fmt.Sprintf(" %s hosts with %s", target.HostOs, target.VirtualizationEngine)] = true
+				}
+			}
+			for _, target := range configs {
+				if target.HostOs == vm.HostOs {
+					continue
+				}
+				claim := fmt.Sprintf(" %s hosts with %s", target.HostOs, target.VirtualizationEngine)
+				if claimed := strings.Contains(got, claim); claimed != compatible[claim] {
+					t.Errorf("description %q: claims%s = %t, compatible = %t", got, claim, claimed, compatible[claim])
+				}
+			}
+		})
+	}
+}
+
+func TestManifestDescriptionKeepsMacOSArtifactsOnTart(t *testing.T) {
+	vm := alchemy_build.VirtualMachineConfig{
+		OS:                   "macos",
+		Arch:                 "arm64",
+		HostOs:               alchemy_build.HostOsDarwin,
+		VirtualizationEngine: alchemy_build.VirtualizationEngineTart,
+	}
+	got := manifestDescription(vm, "ghcr.io/example/macos:tart")
+
+	if !strings.HasSuffix(got, "usable on darwin hosts with tart only.") {
+		t.Errorf("description %q should restrict macOS artifacts to darwin hosts with tart", got)
 	}
 }

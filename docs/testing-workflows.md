@@ -217,9 +217,8 @@ sailwright pull ghcr.io/csautter/ubuntu-24:server-arm64-linux-build \
 The artifacts are built on Linux with QEMU and work on Linux and macOS hosts.
 On macOS, `sailwright pull` asks before using a Linux-built artifact for UTM;
 pass `--yes` to accept it without prompting. Pick the arch that matches the
-host CPU. Windows
-hosts use Hyper-V and cannot use these artifacts, and Windows VM build
-artifacts are intentionally not published.
+host CPU. Windows hosts use Hyper-V and cannot use these artifacts, and Windows
+VM build artifacts are intentionally not published.
 
 For HTTPS registries with an internal or self-signed certificate, prefer adding
 the registry CA with `--ca-file /path/to/ca.pem`. For short-lived testing
