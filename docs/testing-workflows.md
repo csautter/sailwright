@@ -204,7 +204,22 @@ ghcr.io/csautter/ubuntu-24:server-amd64-linux-build
 ghcr.io/csautter/ubuntu-24:desktop-arm64-linux-build
 ```
 
-Windows VM build artifacts are intentionally not published.
+These are Sailwright VM disk artifacts, not Docker images, so `docker pull`
+(which the GHCR package page suggests) does not work. Use `sailwright pull`:
+
+```bash
+sailwright pull ghcr.io/csautter/ubuntu-24:server-arm64-linux-build \
+  --os ubuntu \
+  --type server \
+  --arch arm64
+```
+
+The artifacts are built on Linux with QEMU and work on Linux and macOS hosts.
+On macOS, `sailwright pull` asks before using a Linux-built artifact for UTM;
+pass `--yes` to accept it without prompting. Pick the arch that matches the
+host CPU. Windows
+hosts use Hyper-V and cannot use these artifacts, and Windows VM build
+artifacts are intentionally not published.
 
 For HTTPS registries with an internal or self-signed certificate, prefer adding
 the registry CA with `--ca-file /path/to/ca.pem`. For short-lived testing

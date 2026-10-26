@@ -218,7 +218,7 @@ func darwinUtmOCIConfig(osName string, ubuntuType string, arch string) alchemy_b
 func testOCIManifest(vm alchemy_build.VirtualMachineConfig, layerName string) ocispec.Manifest {
 	return ocispec.Manifest{
 		ArtifactType: ArtifactType,
-		Annotations:  manifestAnnotations(vm),
+		Annotations:  manifestAnnotations(vm, "registry.example/sailwright:test"),
 		Layers: []ocispec.Descriptor{
 			{
 				MediaType: MediaTypeQCOW2,
@@ -227,5 +227,41 @@ func testOCIManifest(vm alchemy_build.VirtualMachineConfig, layerName string) oc
 				},
 			},
 		},
+	}
+}
+
+func TestManifestDescriptionExplainsSailwrightPull(t *testing.T) {
+	const ref = "ghcr.io/csautter/ubuntu-24:server-arm64-linux-build"
+	got := manifestDescription(linuxQemuOCIConfig("ubuntu", "server", "arm64"), ref)
+
+	for _, want := range []string{
+		"not a Docker image",
+		"sailwright pull " + ref + " --os ubuntu --type server --arch arm64",
+		"usable on Linux (QEMU) and macOS (UTM) hosts, not on Windows hosts",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("description %q does not contain %q", got, want)
+		}
+	}
+	// GHCR truncates package descriptions longer than 512 characters.
+	if len(got) > 512 {
+		t.Errorf("description is %d characters, want at most 512", len(got))
+	}
+}
+
+func TestManifestDescriptionLimitsWindowsHostArtifacts(t *testing.T) {
+	vm := alchemy_build.VirtualMachineConfig{
+		OS:                   "windows11",
+		Arch:                 "amd64",
+		HostOs:               alchemy_build.HostOsWindows,
+		VirtualizationEngine: alchemy_build.VirtualizationEngineHyperv,
+	}
+	got := manifestDescription(vm, "ghcr.io/example/windows11:hyperv")
+
+	if !strings.Contains(got, "sailwright pull ghcr.io/example/windows11:hyperv --os windows11 --arch amd64.") {
+		t.Errorf("description %q has unexpected pull command", got)
+	}
+	if !strings.Contains(got, "usable on windows hosts only") {
+		t.Errorf("description %q does not restrict to windows hosts", got)
 	}
 }

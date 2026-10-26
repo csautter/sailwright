@@ -36,14 +36,14 @@ type remoteManifest struct {
 	layers     []ocispec.Descriptor
 }
 
-func manifestAnnotations(vm alchemy_build.VirtualMachineConfig) map[string]string {
+func manifestAnnotations(vm alchemy_build.VirtualMachineConfig, reference string) map[string]string {
 	slugVM := vm
 	slug := alchemy_build.GenerateVirtualMachineSlug(&slugVM)
 	return map[string]string{
 		ocispec.AnnotationTitle:              "dev-alchemy-" + slug,
 		ocispec.AnnotationCreated:            time.Now().UTC().Format(time.RFC3339),
 		ocispec.AnnotationVendor:             "dev-alchemy",
-		ocispec.AnnotationDescription:        "Sailwright VM build artifacts",
+		ocispec.AnnotationDescription:        manifestDescription(vm, reference),
 		ocispec.AnnotationDocumentation:      "https://github.com/csautter/dev-alchemy",
 		ocispec.AnnotationSource:             "https://github.com/csautter/dev-alchemy",
 		ocispec.AnnotationAuthors:            "Sailwright",
@@ -56,6 +56,26 @@ func manifestAnnotations(vm alchemy_build.VirtualMachineConfig) map[string]strin
 		AnnotationVMSlug:                     slug,
 		"org.opencontainers.image.component": "vm-build-artifact",
 	}
+}
+
+// manifestDescription is shown on registry pages such as GHCR, which also
+// advertise a docker pull command that cannot work for these artifacts.
+func manifestDescription(vm alchemy_build.VirtualMachineConfig, reference string) string {
+	pull := "sailwright pull " + reference + " --os " + vm.OS
+	if strings.EqualFold(vm.OS, "ubuntu") {
+		pull += " --type " + vm.UbuntuType
+	}
+	pull += " --arch " + vm.Arch
+
+	var hosts string
+	switch vm.HostOs {
+	case alchemy_build.HostOsLinux, alchemy_build.HostOsDarwin:
+		hosts = fmt.Sprintf("Built on a %s host with %s; usable on Linux (QEMU) and macOS (UTM) hosts, not on Windows hosts.", vm.HostOs, vm.VirtualizationEngine)
+	default:
+		hosts = fmt.Sprintf("Built on a %s host with %s; usable on %s hosts only.", vm.HostOs, vm.VirtualizationEngine, vm.HostOs)
+	}
+
+	return "Sailwright VM disk image, not a Docker image: docker pull does not work. Install with: " + pull + ". " + hosts
 }
 
 func validateRemoteManifest(ctx context.Context, repo *remote.Repository, ref string, vm alchemy_build.VirtualMachineConfig, expected []ArtifactFile, opts PullOptions) (remoteManifest, error) {
