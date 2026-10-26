@@ -1,0 +1,138 @@
+name: Test Pull of Published OCI Images
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    # Weekly check that the images published by test-build-linux.yml stay pullable.
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "pkg/oci/**"
+      - "cmd/cmd/oci.go"
+      - ".github/workflows/test-pull-published-images.yml"
+  pull_request:
+    paths:
+      - "pkg/oci/**"
+      - "cmd/cmd/oci.go"
+      - ".github/workflows/test-pull-published-images.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'schedule' || github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  OCI_UBUNTU_REPOSITORY: ${{ github.repository_owner }}/ubuntu-24
+
+jobs:
+  # Cheap check that every published tag resolves to a Sailwright VM build
+  # artifact with matching annotations. Downloads manifests only.
+  published-manifests:
+    name: Check published manifests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch and validate manifests anonymously
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(curl -fsS "https://ghcr.io/token?scope=repository:${OCI_UBUNTU_REPOSITORY}:pull" | jq -r .token)"
+          for type in server desktop; do
+            for arch in amd64 arm64; do
+              tag="${type}-${arch}-linux-build"
+              echo "Checking ghcr.io/${OCI_UBUNTU_REPOSITORY}:${tag}"
+              manifest="$(curl -fsS \
+                -H "Authorization: Bearer ${token}" \
+                -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+                "https://ghcr.io/v2/${OCI_UBUNTU_REPOSITORY}/manifests/${tag}")"
+              jq -e \
+                --arg type "$type" --arg arch "$arch" \
+                '.artifactType == "application/vnd.dev-alchemy.vm-build.v1"
+                  and .annotations["dev.alchemy.vm.os"] == "ubuntu"
+                  and .annotations["dev.alchemy.vm.type"] == $type
+                  and .annotations["dev.alchemy.vm.arch"] == $arch
+                  and (.layers | length) > 0' <<<"$manifest" >/dev/null
+              echo "  created: $(jq -r '.annotations["org.opencontainers.image.created"]' <<<"$manifest")"
+            done
+          done
+
+  # Full download through the sailwright CLI, once anonymously (what the
+  # interactive prebuilt offer relies on) and once with registry credentials.
+  pull:
+    name: Pull ${{ matrix.type }}-${{ matrix.arch }} (${{ matrix.auth }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - type: server
+            arch: amd64
+            auth: anonymous
+          - type: server
+            arch: arm64
+            auth: token
+    env:
+      DEV_ALCHEMY_APP_DATA_DIR: ${{ github.workspace }}/.dev-alchemy
+      DEV_ALCHEMY_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/cache
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build sailwright
+        run: go build -o "$RUNNER_TEMP/sailwright" ./cmd/main.go
+
+      - name: Pull published artifact
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          args=(
+            "ghcr.io/${OCI_UBUNTU_REPOSITORY}:${{ matrix.type }}-${{ matrix.arch }}-linux-build"
+            --os ubuntu
+            --type "${{ matrix.type }}"
+            --arch "${{ matrix.arch }}"
+            --host-os linux
+            --no-docker-credentials
+          )
+          if [[ "${{ matrix.auth }}" == "token" ]]; then
+            printf '%s' "${GHCR_TOKEN}" | "$RUNNER_TEMP/sailwright" pull "${args[@]}" \
+              --username "${GITHUB_ACTOR}" \
+              --password-stdin
+          else
+            "$RUNNER_TEMP/sailwright" pull "${args[@]}"
+          fi
+
+      - name: Verify pulled artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/sailwright" pull list --json --host-os linux \
+            | jq -e --arg type "${{ matrix.type }}" --arg arch "${{ matrix.arch }}" \
+              '.targets[] | select(.os == "ubuntu" and .type == $type and .arch == $arch) | .fields.artifact == "exists"'
+
+          mapfile -t images < <(find "$DEV_ALCHEMY_CACHE_DIR" -name '*.qcow2' -type f)
+          if [[ ${#images[@]} -eq 0 ]]; then
+            echo "no qcow2 image found under $DEV_ALCHEMY_CACHE_DIR" >&2
+            exit 1
+          fi
+          for image in "${images[@]}"; do
+            magic="$(head -c 4 "$image" | od -An -tx1 | tr -d ' \n')"
+            if [[ "$magic" != "514649fb" ]]; then
+              echo "$image is not a qcow2 image (magic: $magic)" >&2
+              exit 1
+            fi
+            ls -lh "$image"
+          done
