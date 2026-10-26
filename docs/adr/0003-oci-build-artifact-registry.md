@@ -69,6 +69,16 @@ artifacts produced by the Linux build workflow. Published references live under
 `ghcr.io/<owner>/ubuntu-24` and use tags shaped as
 `<type>-<arch>-linux-build`. Windows VM artifacts are not published to GHCR.
 
+`sailwright build` may offer, interactively and with a default of "no", to
+pull the published artifact matching the requested Ubuntu target on Linux and
+Darwin hosts. Accepting that prompt counts as the confirmation for a compatible
+foreign Darwin/Linux artifact, and the prompt says so on Darwin. This built-in
+pull is anonymous and does not read Docker credentials. Because released CLIs
+resolve `ghcr.io/csautter/ubuntu-24:<type>-<arch>-linux-build`, changing the
+repository or tag shape is a breaking change for the offer: keep the old tags,
+or ship a CLI update first. `test/workflowcheck` pins the publish job to the
+CLI's reference format.
+
 Registry authentication uses Docker credentials by default so `docker login`
 works for authenticated registries. Command-specific credentials may override
 that behavior, and callers may opt out of Docker credential lookup. For
