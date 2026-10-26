@@ -47,6 +47,7 @@ Linux:
 
 ```bash
 curl -fsSL https://github.com/csautter/sailwright/releases/latest/download/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 sailwright install && sailwright build list
 ```
 

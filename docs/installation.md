@@ -41,8 +41,8 @@ irm https://github.com/csautter/sailwright/releases/latest/download/install.ps1 
 The URLs always serve the scripts from the latest release. The scripts:
 
 1. detect the OS and architecture (`amd64` or `arm64`),
-2. resolve the latest release tag from the GitHub releases page (no GitHub
-   API call, so no rate limit),
+2. resolve the latest release tag from the GitHub releases page (avoiding the
+   GitHub REST API rate limit),
 3. download `sailwright_<version>_checksums.txt` and, if `cosign` is on your
    `PATH`, verify its keyless signature against the release workflow identity,
 4. download the archives, check each SHA-256 against the checksums file and
@@ -85,7 +85,7 @@ To read the script before running it, download it first:
 ```bash
 curl -fsSLO https://github.com/csautter/sailwright/releases/latest/download/install.sh
 less install.sh
-sh install.sh --install-dir /opt/sailwright/bin
+sh install.sh --install-dir "$HOME/.local/bin"
 ```
 
 ### Uninstall
@@ -101,26 +101,36 @@ on Windows) and `sailwright_<version>_checksums.txt` from the release, verify
 the archive, and extract it:
 
 ```bash
-TAG="$(curl -fsSL https://api.github.com/repos/csautter/sailwright/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
-VERSION="${TAG#v}"
-curl -fLO "https://github.com/csautter/sailwright/releases/download/${TAG}/sailwright_${VERSION}_linux_amd64.tar.gz"
-curl -fLO "https://github.com/csautter/sailwright/releases/download/${TAG}/sailwright_${VERSION}_checksums.txt"
-grep "sailwright_${VERSION}_linux_amd64.tar.gz" "sailwright_${VERSION}_checksums.txt" | sed 's| dist/| |' | sha256sum -c -
-tar -xzf "sailwright_${VERSION}_linux_amd64.tar.gz"
-./sailwright --help
+(
+  set -euo pipefail
+  TAG="$(curl -fsSL https://api.github.com/repos/csautter/sailwright/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
+  test -n "$TAG"
+  VERSION="${TAG#v}"
+  curl -fLO "https://github.com/csautter/sailwright/releases/download/${TAG}/sailwright_${VERSION}_linux_amd64.tar.gz"
+  curl -fLO "https://github.com/csautter/sailwright/releases/download/${TAG}/sailwright_${VERSION}_checksums.txt"
+
+  if command -v cosign >/dev/null 2>&1; then
+    curl -fLO "https://github.com/csautter/sailwright/releases/download/${TAG}/sailwright_${VERSION}_checksums.txt.sig"
+    curl -fLO "https://github.com/csautter/sailwright/releases/download/${TAG}/sailwright_${VERSION}_checksums.txt.pem"
+    cosign verify-blob \
+      --certificate "sailwright_${VERSION}_checksums.txt.pem" \
+      --signature "sailwright_${VERSION}_checksums.txt.sig" \
+      --certificate-identity "https://github.com/csautter/sailwright/.github/workflows/release-binaries.yml@refs/heads/main" \
+      --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+      "sailwright_${VERSION}_checksums.txt"
+  fi
+
+  grep "sailwright_${VERSION}_linux_amd64.tar.gz" "sailwright_${VERSION}_checksums.txt" | sed 's| dist/| |' | sha256sum -c -
+  tar -xzf "sailwright_${VERSION}_linux_amd64.tar.gz"
+  ./sailwright --help
+)
 ```
 
-To verify the checksums file itself with cosign (see
-[SECURITY.md](../SECURITY.md#signature-verification) for details):
-
-```bash
-cosign verify-blob \
-  --certificate "sailwright_${VERSION}_checksums.txt.pem" \
-  --signature "sailwright_${VERSION}_checksums.txt.sig" \
-  --certificate-identity "https://github.com/csautter/sailwright/.github/workflows/release-binaries.yml@refs/heads/main" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  "sailwright_${VERSION}_checksums.txt"
-```
+The example stops on download or verification failure. When `cosign` is on
+your `PATH`, it downloads the signature and certificate and verifies the
+checksums file before extracting or running the binary. See
+[SECURITY.md](../SECURITY.md#signature-verification) for details. The subshell
+keeps the error-handling settings local to the example.
 
 The README's [Manual install](../README.md#manual-install) section has a
 Windows example as well.
