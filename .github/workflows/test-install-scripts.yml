@@ -113,13 +113,15 @@ jobs:
 
       - name: Install the latest release without cosign
         run: |
-          # The script must not leak its preferences into the caller's
-          # session, so start from values it does not set itself.
+          # The script must not leak its parameters or preferences into the
+          # caller's session, so start from values it does not set itself.
           $ErrorActionPreference = 'Continue'
           $ProgressPreference = 'Continue'
+          $Version = 'caller'
           Get-Content -Raw scripts/install.ps1 | Invoke-Expression
           if ($ErrorActionPreference -ne 'Continue') { throw 'iex leaked ErrorActionPreference' }
           if ($ProgressPreference -ne 'Continue') { throw 'iex leaked ProgressPreference' }
+          if ($Version -ne 'caller') { throw 'iex overwrote the caller''s $Version' }
           $ErrorActionPreference = 'Stop'
           $installDir = Join-Path $env:LOCALAPPDATA 'Programs\sailwright'
           if (-not ((& sailwright --help) -match 'Usage:')) { throw 'sailwright --help failed' }

@@ -11,17 +11,21 @@
 # $env:SAILWRIGHT_INSTALL_DIR and $env:SAILWRIGHT_NO_GATEWAY = '1'. When
 # running the downloaded file, use -Version, -InstallDir and -NoGateway.
 
-[CmdletBinding()]
-param(
-    [string]$Version = $env:SAILWRIGHT_VERSION,
-    [string]$InstallDir = $env:SAILWRIGHT_INSTALL_DIR,
-    [switch]$NoGateway = ($env:SAILWRIGHT_NO_GATEWAY -eq '1')
-)
+# iex runs this file in the caller's scope, where a script-level param block
+# would overwrite the caller's $Version, $InstallDir and $NoGateway.
+# Everything, the parameters included, lives in a script block so that
+# variables, preferences and helpers stay out of the user's session. @args
+# forwards the parameters when the downloaded file is run directly.
+& {
+    # @args passes -NoGateway:$false as two arguments; without positional
+    # binding the stray value fails instead of setting another parameter.
+    [CmdletBinding(PositionalBinding = $false)]
+    param(
+        [string]$Version = $env:SAILWRIGHT_VERSION,
+        [string]$InstallDir = $env:SAILWRIGHT_INSTALL_DIR,
+        [switch]$NoGateway = ($env:SAILWRIGHT_NO_GATEWAY -eq '1')
+    )
 
-# iex runs this file in the caller's scope. Everything happens inside a
-# function so that preferences, variables and helpers stay out of the user's
-# session.
-function Install-Sailwright([string]$Version, [string]$InstallDir, [switch]$NoGateway) {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
 
@@ -250,6 +254,4 @@ function Install-Sailwright([string]$Version, [string]$InstallDir, [switch]$NoGa
 
     Write-Host ''
     Write-Host 'Next: sailwright install; sailwright build list'
-}
-
-Install-Sailwright -Version $Version -InstallDir $InstallDir -NoGateway:$NoGateway
+} @args

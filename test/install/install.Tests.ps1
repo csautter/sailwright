@@ -151,3 +151,64 @@ Describe 'Installer binary replacement' {
         @(Get-ChildItem -LiteralPath $destinationDir).Count | Should -Be 0
     }
 }
+
+Describe 'Installer entry point' {
+    BeforeEach {
+        # Fail at the first download instead of reaching GitHub. Off Windows
+        # the script stops even earlier, after binding its parameters.
+        $env:SAILWRIGHT_DOWNLOAD_URL = 'http://127.0.0.1:9'
+        $env:SAILWRIGHT_INSTALL_DIR = Join-Path $TestDrive 'bin'
+    }
+
+    AfterEach {
+        Remove-Item -Path Env:SAILWRIGHT_DOWNLOAD_URL, Env:SAILWRIGHT_INSTALL_DIR, Env:SAILWRIGHT_VERSION -ErrorAction SilentlyContinue
+    }
+
+    It 'leaves the caller''s variables, preferences and functions alone under iex' {
+        $env:SAILWRIGHT_VERSION = 'v0.0.0'
+        $Version = 'caller'
+        $InstallDir = 'caller'
+        $NoGateway = 'caller'
+        $ErrorActionPreference = 'Continue'
+        $ProgressPreference = 'Continue'
+        $functions = @(Get-ChildItem -Path Function:).Name
+
+        # Run iex inline: Should -Throw would invoke it in a child scope and
+        # hide anything leaked into this one.
+        $failed = $false
+        try {
+            Get-Content -Raw -LiteralPath $installer | Invoke-Expression
+        } catch {
+            $failed = $true
+        }
+
+        $failed | Should -BeTrue
+        $Version | Should -Be 'caller'
+        $InstallDir | Should -Be 'caller'
+        $NoGateway | Should -Be 'caller'
+        $ErrorActionPreference | Should -Be 'Continue'
+        $ProgressPreference | Should -Be 'Continue'
+        @(Get-ChildItem -Path Function: | Where-Object { $_.Name -notin $functions }) | Should -BeNullOrEmpty
+    }
+
+    It 'binds named parameters when the file is run directly' {
+        $message = $null
+        try {
+            & $installer -Version v0.0.0 -InstallDir (Join-Path $TestDrive 'bin') -NoGateway
+        } catch {
+            $message = "$_"
+        }
+
+        # Off Windows the platform check fails; on Windows the download of the
+        # requested release does.
+        $message | Should -Match 'install\.ps1 is for Windows|release v0\.0\.0'
+    }
+
+    It 'rejects unknown parameters' {
+        { & $installer -Bogus } | Should -Throw '*cannot be found that matches parameter name*'
+    }
+
+    It 'rejects a switch value that @args splits off' {
+        { & $installer -NoGateway:$false } | Should -Throw '*positional parameter cannot be found*'
+    }
+}
