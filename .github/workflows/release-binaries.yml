@@ -6,6 +6,9 @@ on:
       version:
         required: true
         type: string
+    secrets:
+      HOMEBREW_TAP_TOKEN:
+        required: false
   pull_request:
   workflow_dispatch:
     inputs:
@@ -109,3 +112,168 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload --repo "${GITHUB_REPOSITORY}" "${VERSION}" dist/* --clobber
+
+  homebrew-formula-check:
+    name: Check Homebrew formulae
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'pull_request' }}
+    needs:
+      - build
+    permissions:
+      contents: read
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Test formula renderer
+        run: scripts/homebrew/render-formula_test.sh
+
+      - name: Render and syntax-check formulae
+        run: |
+          # PR builds are packaged as pr-<number>; rename them to a semver
+          # version so they render like a real release.
+          VERSION="0.0.0-pr.${PR_NUMBER}"
+          for asset in dist/*_pr-"${PR_NUMBER}"_*; do
+            mv "${asset}" "${asset/_pr-${PR_NUMBER}_/_${VERSION}_}"
+          done
+          sha256sum dist/* > checksums.txt
+          for formula in sailwright sailwright-gateway; do
+            scripts/homebrew/render-formula.sh "${formula}" "${VERSION}" checksums.txt > "${formula}.rb"
+            ruby -c "${formula}.rb"
+          done
+
+      - name: Lint formulae with Homebrew
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew tap-new --no-git local/check
+          tap_dir="$(brew --repository local/check)"
+          cp sailwright.rb sailwright-gateway.rb "${tap_dir}/Formula/"
+          brew style local/check/sailwright local/check/sailwright-gateway
+          brew audit --strict local/check/sailwright local/check/sailwright-gateway
+
+  homebrew-tap:
+    name: Update Homebrew tap
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' }}
+    needs:
+      - publish
+    permissions:
+      contents: read
+    outputs:
+      updated: ${{ steps.token.outputs.present }}
+    env:
+      VERSION: ${{ inputs.version }}
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+    steps:
+      - name: Check tap token
+        id: token
+        run: |
+          if [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set; skipping the Homebrew tap update."
+            echo "present=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "present=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout
+        if: ${{ steps.token.outputs.present == 'true' }}
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Checkout tap
+        if: ${{ steps.token.outputs.present == 'true' }}
+        uses: actions/checkout@v7
+        with:
+          repository: csautter/homebrew-sailwright
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Guard against pre-releases and downgrades
+        id: guard
+        if: ${{ steps.token.outputs.present == 'true' }}
+        run: |
+          new="${VERSION#v}"
+          if [[ "${new}" == *-* ]]; then
+            echo "::error::${VERSION} is a pre-release; refusing to publish it to the tap."
+            exit 1
+          fi
+          current=""
+          if [ -f homebrew-tap/Formula/sailwright.rb ]; then
+            current="$(sed -n 's|.*/releases/download/v\([^/]*\)/.*|\1|p' homebrew-tap/Formula/sailwright.rb | head -n1)"
+          fi
+          if [ -n "${current}" ] && [ "${new}" != "${current}" ] \
+            && [ "$(printf '%s\n%s\n' "${current}" "${new}" | sort -V | tail -n1)" = "${current}" ]; then
+            echo "::error::Tap already has ${current}; refusing to downgrade to ${new}."
+            exit 1
+          fi
+
+      - name: Download release checksums
+        if: ${{ steps.token.outputs.present == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${VERSION}" --repo "${GITHUB_REPOSITORY}" --pattern "sailwright_${VERSION#v}_checksums.txt" --output checksums.txt
+
+      - name: Render formulae
+        if: ${{ steps.token.outputs.present == 'true' }}
+        run: |
+          mkdir -p homebrew-tap/Formula
+          for formula in sailwright sailwright-gateway; do
+            scripts/homebrew/render-formula.sh "${formula}" "${VERSION}" checksums.txt > "homebrew-tap/Formula/${formula}.rb"
+            ruby -c "homebrew-tap/Formula/${formula}.rb"
+          done
+
+      - name: Push formulae
+        if: ${{ steps.token.outputs.present == 'true' }}
+        working-directory: homebrew-tap
+        run: |
+          git add Formula
+          if git diff --cached --quiet; then
+            echo "Formulae already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "sailwright ${VERSION}"
+          git pull --rebase origin HEAD
+          git push
+          {
+            echo "### Homebrew tap"
+            echo "Published sailwright ${VERSION} to csautter/homebrew-sailwright."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  homebrew-verify:
+    name: Verify Homebrew install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    if: ${{ needs.homebrew-tap.outputs.updated == 'true' }}
+    needs:
+      - homebrew-tap
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-latest
+
+    steps:
+      - name: Install and test from the tap
+        run: |
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          fi
+          brew install csautter/sailwright/sailwright csautter/sailwright/sailwright-gateway
+          brew test csautter/sailwright/sailwright csautter/sailwright/sailwright-gateway

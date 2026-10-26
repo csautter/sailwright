@@ -13,6 +13,7 @@ RELEASE_GOARCH ?= amd64 arm64
 PACKAGE_VERSION = $(patsubst v%,%,$(VERSION))
 TARGET_BINARY_NAME = $(BINARY_NAME)$(if $(filter windows,$(GOOS)),.exe,)
 TARGET_DIST_DIR = $(DIST_DIR)/$(GOOS)-$(GOARCH)
+# The Homebrew formulae (scripts/homebrew/render-formula.sh) depend on this naming.
 RELEASE_ASSET_BASENAME = sailwright_$(PACKAGE_VERSION)_$(GOOS)_$(GOARCH)
 TARGET_GATEWAY_BINARY_NAME = $(GATEWAY_BINARY_NAME)$(if $(filter windows,$(GOOS)),.exe,)
 GATEWAY_RELEASE_ASSET_BASENAME = $(GATEWAY_BINARY_NAME)_$(PACKAGE_VERSION)_$(GOOS)_$(GOARCH)
