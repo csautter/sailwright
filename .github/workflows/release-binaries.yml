@@ -10,6 +10,8 @@ on:
       HOMEBREW_TAP_TOKEN:
         required: false
   pull_request:
+  # Run from main only: install.sh and install.ps1 verify the checksums
+  # signature against release-binaries.yml@refs/heads/main.
   workflow_dispatch:
     inputs:
       version:
@@ -86,6 +88,12 @@ jobs:
       VERSION: ${{ inputs.version }}
 
     steps:
+      - name: Require main
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::Publish from main only; the install scripts reject signatures from ${GITHUB_REF}."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -123,6 +131,47 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload --repo "${GITHUB_REPOSITORY}" "${VERSION}" dist/* --clobber
+
+  install-script-verify:
+    name: Verify install script (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    if: ${{ github.event_name != 'pull_request' }}
+    needs:
+      - publish
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    env:
+      VERSION: ${{ inputs.version }}
+
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install with the published install.sh
+        if: ${{ runner.os != 'Windows' }}
+        run: |
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}/install.sh" |
+            sh -s -- --version "${VERSION}" --install-dir "${RUNNER_TEMP}/bin" | tee install.log
+          grep -q "Verifying the checksums signature with cosign" install.log
+          "${RUNNER_TEMP}/bin/sailwright" --help | grep -q "Usage:"
+          "${RUNNER_TEMP}/bin/sailwright-gateway" --help | grep -q "Usage:"
+
+      - name: Install with the published install.ps1
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $env:SAILWRIGHT_VERSION = $env:VERSION
+          $env:SAILWRIGHT_INSTALL_DIR = Join-Path $env:RUNNER_TEMP 'bin'
+          irm "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:VERSION/install.ps1" | iex
+          if (-not ((& sailwright --help) -match 'Usage:')) { throw 'sailwright --help failed' }
+          if (-not ((& sailwright-gateway --help) -match 'Usage:')) { throw 'sailwright-gateway --help failed' }
 
   homebrew-formula-check:
     name: Check Homebrew formulae
