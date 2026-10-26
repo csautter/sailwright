@@ -30,8 +30,14 @@ The formulae are generated, never edited by hand:
 3. The `homebrew-verify` job installs both formulae from the tap on macOS and
    Linux runners and runs `brew test`.
 
-On pull requests, `homebrew-formula-check` renders the formulae from the PR
-build artifacts and checks their Ruby syntax.
+The `homebrew-tap` job refuses to publish a pre-release version or to move the
+tap to a lower version than the one it already contains, so re-running an old
+release does not downgrade users.
+
+On pull requests, `homebrew-formula-check` runs the renderer's tests
+(`scripts/homebrew/render-formula_test.sh`), renders the formulae from the PR
+build artifacts, and checks them with `ruby -c`, `brew style`, and
+`brew audit --strict`.
 
 To render a formula locally from a published release:
 
@@ -58,8 +64,9 @@ and skips the update.
       `csautter/sailwright` (Settings, Secrets and variables, Actions).
 - [ ] Publish the formulae: merge the next release PR, or run the
       **Release Binaries** workflow manually with the latest existing version
-      (for example `v0.17.0`). The manual run rebuilds and re-uploads that
-      release's assets and checksums.
+      (for example `v0.17.0`). The manual run rebuilds, re-uploads, and
+      re-signs that release's assets and checksums, so the archives may differ
+      from the originals.
 - [ ] Check that the `homebrew-tap` job pushed a `sailwright <version>`
       commit to the tap and that both `homebrew-verify` jobs (macOS and
       Linux) are green.

@@ -60,6 +60,8 @@ asset_sha256() {
 asset_block() {
   local os="$1" arch="$2" asset sha
   asset="${name}_${version}_${os}_${arch}.tar.gz"
+  # `exit` here only leaves the command substitution; the caller runs under
+  # set -e, so the failed assignment aborts the script.
   sha="$(asset_sha256 "$asset")" || exit 1
   printf '      url "%s/releases/download/v%s/%s"\n' "$repo_url" "$version" "$asset"
   printf '      sha256 "%s"' "$sha"
@@ -82,7 +84,6 @@ class ${class_name} < Formula
   desc "${desc}"
   homepage "${repo_url}"
   license "AGPL-3.0-only"
-  version "${version}"
 
   on_macos do
     on_arm do

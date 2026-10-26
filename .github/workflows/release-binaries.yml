@@ -127,12 +127,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Download packaged artifacts
         uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
+
+      - name: Test formula renderer
+        run: scripts/homebrew/render-formula_test.sh
 
       - name: Render and syntax-check formulae
         run: |
@@ -147,6 +152,15 @@ jobs:
             scripts/homebrew/render-formula.sh "${formula}" "${VERSION}" checksums.txt > "${formula}.rb"
             ruby -c "${formula}.rb"
           done
+
+      - name: Lint formulae with Homebrew
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew tap-new --no-git local/check
+          tap_dir="$(brew --repository local/check)"
+          cp sailwright.rb sailwright-gateway.rb "${tap_dir}/Formula/"
+          brew style local/check/sailwright local/check/sailwright-gateway
+          brew audit --strict local/check/sailwright local/check/sailwright-gateway
 
   homebrew-tap:
     name: Update Homebrew tap
@@ -176,6 +190,8 @@ jobs:
       - name: Checkout
         if: ${{ steps.token.outputs.present == 'true' }}
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Checkout tap
         if: ${{ steps.token.outputs.present == 'true' }}
@@ -184,6 +200,25 @@ jobs:
           repository: csautter/homebrew-sailwright
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
+
+      - name: Guard against pre-releases and downgrades
+        id: guard
+        if: ${{ steps.token.outputs.present == 'true' }}
+        run: |
+          new="${VERSION#v}"
+          if [[ "${new}" == *-* ]]; then
+            echo "::error::${VERSION} is a pre-release; refusing to publish it to the tap."
+            exit 1
+          fi
+          current=""
+          if [ -f homebrew-tap/Formula/sailwright.rb ]; then
+            current="$(sed -n 's|.*/releases/download/v\([^/]*\)/.*|\1|p' homebrew-tap/Formula/sailwright.rb | head -n1)"
+          fi
+          if [ -n "${current}" ] && [ "${new}" != "${current}" ] \
+            && [ "$(printf '%s\n%s\n' "${current}" "${new}" | sort -V | tail -n1)" = "${current}" ]; then
+            echo "::error::Tap already has ${current}; refusing to downgrade to ${new}."
+            exit 1
+          fi
 
       - name: Download release checksums
         if: ${{ steps.token.outputs.present == 'true' }}
@@ -212,7 +247,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "sailwright ${VERSION}"
+          git pull --rebase origin HEAD
           git push
+          {
+            echo "### Homebrew tap"
+            echo "Published sailwright ${VERSION} to csautter/homebrew-sailwright."
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   homebrew-verify:
     name: Verify Homebrew install (${{ matrix.os }})
