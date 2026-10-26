@@ -12,10 +12,8 @@ on:
       - "test/install/**"
       - "docs/installation.md"
       - ".github/workflows/test-install-scripts.yml"
-      # The scripts depend on the archive names and layout and on the
-      # checksums and signing set up by the release workflow.
-      - "Makefile"
-      - ".github/workflows/release-binaries.yml"
+  # Archive names and layout are checked against each PR's own build by the
+  # install-script-check job in release-binaries.yml.
 
 jobs:
   unix:
