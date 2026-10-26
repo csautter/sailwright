@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0](https://github.com/csautter/sailwright/compare/v0.19.1...v0.20.0) (2026-10-26)
+
+
+### Added
+
+* **release:** publish homebrew formulae to a tap on every release ([5916183](https://github.com/csautter/sailwright/commit/5916183d2ba403019592504426083a9008cb4518))
+* **release:** publish Homebrew formulae to a tap on every release ([66f894b](https://github.com/csautter/sailwright/commit/66f894b7491a4dd617944803b26bf4cf2f2984e2))
+
+
+### Fixed
+
+* **build:** preserve windows iso identity and object immutability ([6cab5e5](https://github.com/csautter/sailwright/commit/6cab5e5110f6c9f223502002f198d4b05f00d9a0))
+* **build:** recognize windows11_client iso names ([3af8ef6](https://github.com/csautter/sailwright/commit/3af8ef625271e29aee515c7e821133c5c45c7e91))
+* **build:** recreate unusable windows 11 download venv ([7a58c18](https://github.com/csautter/sailwright/commit/7a58c185cf41c51f4360725b2d3a9651ebde0c41))
+* **build:** require packer 1.14 for official plugin installs ([a369f7e](https://github.com/csautter/sailwright/commit/a369f7ed91ea6a17e5f05491fd670c937d5a2dc8))
+* **build:** restrict windows iso checksum lookup to the us row ([2227ed0](https://github.com/csautter/sailwright/commit/2227ed0b2897efd35b0e0889c361bba88bc1358d))
+* **build:** run packer init once and retry network errors ([5a1de41](https://github.com/csautter/sailwright/commit/5a1de41917c9c20e7409bddeefe9272cf634dd8f))
+* **cache:** annotate manifest references to missing iso objects ([93760cb](https://github.com/csautter/sailwright/commit/93760cb802fa5d56e8fbea9a152975790f83b876))
+* **cache:** enforce manifest authority and repair missing iso objects ([38f458d](https://github.com/csautter/sailwright/commit/38f458dcb106b757798713d3074ffcf9c08dc134))
+* **cache:** reset exit code after tolerated ftp cache misses ([43b4f96](https://github.com/csautter/sailwright/commit/43b4f96ecefba62c566e47b96d3deb3337632778))
+* **cache:** treat missing ftp directories as cache misses ([2fc4a4f](https://github.com/csautter/sailwright/commit/2fc4a4fbe307c25a8767600aa6479c2e2b3d4c85))
+* **deploy:** wait longer for hyper-v guest ip ([05d86b4](https://github.com/csautter/sailwright/commit/05d86b4d185dfd7e3e54d060ac7482043cf27393))
+* **devcontainer:** support WSL bash on Windows hosts ([c3f4353](https://github.com/csautter/sailwright/commit/c3f435385c58033f96cd9128c33c9cdb37cfe430))
+* **gateway:** pass COMPUTERNAME to windows child processes ([b0d93dd](https://github.com/csautter/sailwright/commit/b0d93dd4387b3e25592fcb8e78a64f53b069ed60))
+* linux ubuntu hyperv vagrant ([c5af237](https://github.com/csautter/sailwright/commit/c5af2371713f5ab414802e6f04df8b08ef6605d0))
+* **provision:** check sshpass in cygwin on windows hosts ([0fe58bf](https://github.com/csautter/sailwright/commit/0fe58bff5f814484de4d67f68bc0ffdea2d5d742))
+* **provision:** default windows guest winrm credentials ([167e7bc](https://github.com/csautter/sailwright/commit/167e7bca188e5ad4603ab5d01d53768050705ecb))
+* **release:** harden homebrew tap publishing ([377f786](https://github.com/csautter/sailwright/commit/377f7864a01ecc3c86c6a8adb8a93209d832d665))
+
+
+### Build
+
+* **devcontainer:** color each clone's vs code window by its name suffix ([cf1855b](https://github.com/csautter/sailwright/commit/cf1855ba42349de1f7534391407fd2c30b5815f1))
+* **devcontainer:** install codex cli and cache its plugin dir in a volume ([34c3e5a](https://github.com/csautter/sailwright/commit/34c3e5acc1d83fa15738e84d23429ca0bf67be75))
+* **devcontainer:** keep codex runtime tmp dir in a docker volume ([43cd172](https://github.com/csautter/sailwright/commit/43cd17269205d42350c7678a9fefda251bde2b85))
+* **devcontainer:** persist codex and claude code state across rebuilds ([c19a6db](https://github.com/csautter/sailwright/commit/c19a6db188013a9fe9c84102f69b5cff96db56d7))
+* **devcontainer:** reinstall sailwright-gateway on every start ([0a73172](https://github.com/csautter/sailwright/commit/0a7317229d01b535ec748a5149af30a56c09d8a0))
+
+
+### CI
+
+* **e2e:** remove lifecycle runs from build workflows ([c409b86](https://github.com/csautter/sailwright/commit/c409b86ca79224bf830941471caf60924dc337ff))
+* **e2e:** run lifecycle scenarios using built images ([911b85b](https://github.com/csautter/sailwright/commit/911b85b017d6dbcb2aaecdec7dc422504081bf34))
+
 ## [0.19.1](https://github.com/csautter/sailwright/compare/v0.19.0...v0.19.1) (2026-10-23)
 
 
