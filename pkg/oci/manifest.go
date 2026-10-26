@@ -69,15 +69,36 @@ func manifestDescription(vm alchemy_build.VirtualMachineConfig, reference string
 	}
 	pull += " --arch " + vm.Arch
 
-	hosts := fmt.Sprintf("Built on a %s host with %s; usable on %s hosts with %s", vm.HostOs, vm.VirtualizationEngine, vm.HostOs, vm.VirtualizationEngine)
-	for _, target := range foreignPullTargets(vm) {
-		hosts += fmt.Sprintf(" and %s hosts with %s", target.HostOs, target.VirtualizationEngine)
+	foreignTargets := foreignPullTargets(vm)
+	// Pin the engine for host-specific artifacts, including ambiguous Windows
+	// targets. Foreign pulls must select the target host's engine instead.
+	if len(foreignTargets) == 0 && vm.VirtualizationEngine != "" {
+		pull += " --engine " + string(vm.VirtualizationEngine)
+	}
+
+	host := artifactHostDisplayName(vm.HostOs)
+	hosts := fmt.Sprintf("Built on a %s host with %s; usable on %s hosts with %s", host, vm.VirtualizationEngine, host, vm.VirtualizationEngine)
+	for _, target := range foreignTargets {
+		hosts += fmt.Sprintf(" and %s hosts with %s", artifactHostDisplayName(target.HostOs), target.VirtualizationEngine)
 	}
 	hosts += " only."
 
 	// The host sentence goes last so GHCR's 512-character truncation cuts it
 	// before the pull command.
 	return "Sailwright VM disk image, not a Docker image: docker pull does not work. Install with: " + pull + ". " + hosts
+}
+
+func artifactHostDisplayName(host alchemy_build.HostOsType) string {
+	switch host {
+	case alchemy_build.HostOsLinux:
+		return "Linux"
+	case alchemy_build.HostOsDarwin:
+		return "macOS"
+	case alchemy_build.HostOsWindows:
+		return "Windows"
+	default:
+		return string(host)
+	}
 }
 
 // foreignPullTargets returns the configs on other hosts that accept vm's
