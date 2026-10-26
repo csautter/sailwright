@@ -49,8 +49,9 @@ The URLs always serve the scripts from the latest release. The scripts:
    **abort without installing anything** on a mismatch,
 5. copy the binaries into the install directory.
 
-Nothing runs with `sudo` or admin rights, and no data is sent anywhere apart
-from the downloads from `github.com`.
+Nothing runs with `sudo` or admin rights. The scripts only download from
+GitHub Releases; when `cosign` is installed, it also contacts the public
+Sigstore services to verify the signature.
 
 | | macOS / Linux | Windows |
 | --- | --- | --- |
@@ -89,8 +90,8 @@ sh install.sh --install-dir /opt/sailwright/bin
 
 ### Uninstall
 
-Delete the two binaries from the install directory. On Windows, also remove
-the directory from your user `PATH` (Settings → System → About → Advanced
+Delete the two binaries from the install directory. On Windows, stop
+`sailwright-gateway.exe` first, and also remove the directory from your user `PATH` (Settings → System → About → Advanced
 system settings → Environment Variables).
 
 ## Manual install
@@ -109,7 +110,8 @@ tar -xzf "sailwright_${VERSION}_linux_amd64.tar.gz"
 ./sailwright --help
 ```
 
-To verify the checksums file itself with cosign:
+To verify the checksums file itself with cosign (see
+[SECURITY.md](../SECURITY.md#signature-verification) for details):
 
 ```bash
 cosign verify-blob \

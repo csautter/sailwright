@@ -51,7 +51,7 @@ workflow rather than trusting the download alone:
 
 ```bash
 cosign verify-blob \
-  --certificate-identity-regexp "^https://github.com/csautter/sailwright/.github/workflows/release-binaries.yml@.*" \
+  --certificate-identity "https://github.com/csautter/sailwright/.github/workflows/release-binaries.yml@refs/heads/main" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   --signature "sailwright_0.17.0_checksums.txt.sig" \
   --certificate "sailwright_0.17.0_checksums.txt.pem" \

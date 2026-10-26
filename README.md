@@ -382,6 +382,8 @@ next level of detail:
   and SSH setup on Windows targets plus OpenSSH rollback notes
 - [Example Ansible Roles](./docs/example-roles.md) for the current sample role
   catalog and repository layout
+- [Installation](./docs/installation.md) for the install scripts, options,
+  manual install and uninstall
 - [Homebrew Tap](./docs/homebrew-tap.md) for how release formulae are
   generated and published
 - [Troubleshooting Guide](./docs/troubleshooting.md) for rare host-specific
