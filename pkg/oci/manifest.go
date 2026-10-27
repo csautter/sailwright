@@ -36,14 +36,14 @@ type remoteManifest struct {
 	layers     []ocispec.Descriptor
 }
 
-func manifestAnnotations(vm alchemy_build.VirtualMachineConfig) map[string]string {
+func manifestAnnotations(vm alchemy_build.VirtualMachineConfig, reference string) map[string]string {
 	slugVM := vm
 	slug := alchemy_build.GenerateVirtualMachineSlug(&slugVM)
 	return map[string]string{
 		ocispec.AnnotationTitle:              "dev-alchemy-" + slug,
 		ocispec.AnnotationCreated:            time.Now().UTC().Format(time.RFC3339),
 		ocispec.AnnotationVendor:             "dev-alchemy",
-		ocispec.AnnotationDescription:        "Sailwright VM build artifacts",
+		ocispec.AnnotationDescription:        manifestDescription(vm, reference),
 		ocispec.AnnotationDocumentation:      "https://github.com/csautter/dev-alchemy",
 		ocispec.AnnotationSource:             "https://github.com/csautter/dev-alchemy",
 		ocispec.AnnotationAuthors:            "Sailwright",
@@ -56,6 +56,67 @@ func manifestAnnotations(vm alchemy_build.VirtualMachineConfig) map[string]strin
 		AnnotationVMSlug:                     slug,
 		"org.opencontainers.image.component": "vm-build-artifact",
 	}
+}
+
+// manifestDescription is shown on registry pages such as GHCR, which also
+// advertise a docker pull command that cannot work for these artifacts. The
+// pull command names the push reference, so it goes stale if the artifact is
+// later copied to another repository.
+func manifestDescription(vm alchemy_build.VirtualMachineConfig, reference string) string {
+	pull := "sailwright pull " + reference + " --os " + vm.OS
+	if strings.EqualFold(vm.OS, "ubuntu") {
+		pull += " --type " + vm.UbuntuType
+	}
+	pull += " --arch " + vm.Arch
+
+	foreignTargets := foreignPullTargets(vm)
+	// Pin the engine for host-specific artifacts, including ambiguous Windows
+	// targets. Foreign pulls must select the target host's engine instead.
+	if len(foreignTargets) == 0 && vm.VirtualizationEngine != "" {
+		pull += " --engine " + string(vm.VirtualizationEngine)
+	}
+
+	host := artifactHostDisplayName(vm.HostOs)
+	hosts := fmt.Sprintf("Built on a %s host with %s; usable on %s hosts with %s", host, vm.VirtualizationEngine, host, vm.VirtualizationEngine)
+	for _, target := range foreignTargets {
+		hosts += fmt.Sprintf(" and %s hosts with %s", artifactHostDisplayName(target.HostOs), target.VirtualizationEngine)
+	}
+	hosts += " only."
+
+	// The host sentence goes last so GHCR's 512-character truncation cuts it
+	// before the pull command.
+	return "Sailwright VM disk image, not a Docker image: docker pull does not work. Install with: " + pull + ". " + hosts
+}
+
+func artifactHostDisplayName(host alchemy_build.HostOsType) string {
+	switch host {
+	case alchemy_build.HostOsLinux:
+		return "Linux"
+	case alchemy_build.HostOsDarwin:
+		return "macOS"
+	case alchemy_build.HostOsWindows:
+		return "Windows"
+	default:
+		return string(host)
+	}
+}
+
+// foreignPullTargets returns the configs on other hosts that accept vm's
+// artifact as a compatible foreign artifact on pull.
+func foreignPullTargets(vm alchemy_build.VirtualMachineConfig) []alchemy_build.VirtualMachineConfig {
+	if !isForeignArtifactGuestOS(vm.OS) {
+		return nil
+	}
+	var targets []alchemy_build.VirtualMachineConfig
+	for _, target := range alchemy_build.AvailableVirtualMachineConfigs() {
+		if !isDarwinLinuxHostPair(vm.HostOs, target.HostOs) {
+			continue
+		}
+		if target.OS == vm.OS && target.UbuntuType == vm.UbuntuType && target.Arch == vm.Arch {
+			targets = append(targets, target)
+		}
+	}
+	return targets
 }
 
 func validateRemoteManifest(ctx context.Context, repo *remote.Repository, ref string, vm alchemy_build.VirtualMachineConfig, expected []ArtifactFile, opts PullOptions) (remoteManifest, error) {

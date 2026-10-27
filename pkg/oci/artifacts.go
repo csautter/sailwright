@@ -91,7 +91,7 @@ func Push(ctx context.Context, vm alchemy_build.VirtualMachineConfig, reference 
 	reportTransferStatus(opts.Progress, "Packing OCI artifact manifest")
 	manifestDesc, err := oras.PackManifest(ctx, fs, oras.PackManifestVersion1_1, ArtifactType, oras.PackManifestOptions{
 		Layers:              layers,
-		ManifestAnnotations: manifestAnnotations(vm),
+		ManifestAnnotations: manifestAnnotations(vm, reference),
 	})
 	if err != nil {
 		return TransferResult{}, fmt.Errorf("pack OCI artifact manifest: %w", err)
