@@ -87,7 +87,7 @@ jobs:
         if: runner.os == 'Windows'
 
       - name: Windows install cygwin
-        uses: cygwin/cygwin-install-action@v6
+        uses: cygwin/cygwin-install-action@v7
         if: runner.os == 'Windows'
         with:
           packages: python39,python39-pip,python39-cryptography,openssh,git,make,gcc-core,gcc-g++,libffi-devel,sshpass
