@@ -55,14 +55,21 @@ lines. Then rebuild the container.
 ## Local hooks (optional)
 
 For machine-specific setup that must not be committed, such as trusting the
-CA of a TLS-inspecting proxy, put files in `.devcontainer/local/` (gitignored).
-Each one is used only if it exists:
+CA of a TLS-inspecting proxy, use these optional files. Each one is used only
+if it exists:
 
 | File | Runs | Use |
 |---|---|---|
-| `initialize-host.sh` | On the host, before each start, from `initialize-host.sh` | Export files the container needs. `REPO_ROOT`, `REPO_NAME` and `USER_HOME` are set. The workspace is mounted, so files written below `REPO_ROOT` show up at `/workspaces/$REPO_NAME`. A failing hook only prints a warning. |
-| `container.env` | Loaded as a Compose `env_file` | `KEY=value` lines for the container environment. Applied when the container is created, so rebuild after a change. The host hook may write it. |
-| `post-start.sh` | In the container, first in `postStartCommand` | Container setup that has to happen before `go mod vendor` and the other start commands reach the network. |
+| `~/.config/sailwright/devcontainer/initialize-host.sh` (`$XDG_CONFIG_HOME` is honored) | On the host, before each start, from `initialize-host.sh` | Export files the container needs. `REPO_ROOT`, `REPO_NAME` and `USER_HOME` are set. The workspace is mounted, so files written below `REPO_ROOT` show up at `/workspaces/$REPO_NAME`. A failing hook only prints a warning. |
+| `.devcontainer/local/container.env` (gitignored) | Loaded as a Compose `env_file` | `KEY=value` lines for the container environment. Applied when the container is created, so rebuild after a change. The host hook may write it. |
+| `.devcontainer/local/post-start.sh` (gitignored) | In the container, first in `postStartCommand` | Container setup that has to happen before `go mod vendor` and the other start commands reach the network. |
+
+The host hook is deliberately kept outside the workspace. The container mounts
+the workspace read-write, so a host hook stored there could be created or
+changed from inside the container, for example by a coding agent, and would
+then run on the host at the next start without showing up in `git status`.
+`initialize-host.sh` ignores `.devcontainer/local/initialize-host.sh` and
+prints the command to move it.
 
 ## Host prerequisites
 

@@ -46,15 +46,28 @@ OUT_FILE="$GENERATED_DIR/compose.local.yaml"
 LOCAL_FILE="$SCRIPT_DIR/mounts.local"
 LOCAL_HOOK_DIR="$SCRIPT_DIR/local"
 LOCAL_ENV_FILE="$LOCAL_HOOK_DIR/container.env"
+# The host hook lives outside the workspace: the container mounts the workspace
+# read-write, so a hook stored there could be planted from inside the container
+# and would run on the host at the next start.
+CONFIG_HOME="$USER_HOME/.config"
+if ! $WSL_WINDOWS && [ -n "${XDG_CONFIG_HOME:-}" ]; then
+  CONFIG_HOME="$XDG_CONFIG_HOME"
+fi
+HOST_HOOK="$CONFIG_HOME/sailwright/devcontainer/initialize-host.sh"
 
-# Optional personal host hook (gitignored), e.g. to export a proxy CA. It runs
-# before the compose override is written, so it can still create container.env.
-# A failing hook only warns: it must never stop the container from starting.
 if [ -f "$LOCAL_HOOK_DIR/initialize-host.sh" ]; then
-  echo "running local hook ${LOCAL_HOOK_DIR#"$REPO_ROOT"/}/initialize-host.sh"
+  echo "Warning: ignoring ${LOCAL_HOOK_DIR#"$REPO_ROOT"/}/initialize-host.sh; host hooks must live outside the workspace. Move it with:" >&2
+  echo "  mkdir -p '$(dirname "$HOST_HOOK")' && mv '$LOCAL_HOOK_DIR/initialize-host.sh' '$HOST_HOOK'" >&2
+fi
+
+# Optional personal host hook, e.g. to export a proxy CA. It runs before the
+# compose override is written, so it can still create container.env.
+# A failing hook only warns: it must never stop the container from starting.
+if [ -f "$HOST_HOOK" ]; then
+  echo "running host hook $HOST_HOOK"
   REPO_ROOT="$REPO_ROOT" REPO_NAME="$REPO_NAME" USER_HOME="$USER_HOME" \
-    bash "$LOCAL_HOOK_DIR/initialize-host.sh" ||
-    echo "Warning: local initialize-host.sh hook failed; continuing" >&2
+    bash "$HOST_HOOK" ||
+    echo "Warning: host hook $HOST_HOOK failed; continuing" >&2
 fi
 
 mkdir -p "$GENERATED_DIR"
