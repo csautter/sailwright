@@ -1,6 +1,7 @@
 package build
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -148,6 +149,23 @@ func TestLinuxDependencyInstallerIncludesWindowsIsoExtractionTools(t *testing.T)
 		`libarchive-tools`,
 		`xorriso`,
 	)
+}
+
+// The shell fallback must pick the same Python as resolvePythonVenvCommand,
+// or it fails in pip on macOS where /usr/bin/python3 is 3.9.
+func TestWindowsQemuScriptRequiresSupportedPython(t *testing.T) {
+	t.Parallel()
+
+	got := readRepoFile(t, windowsQemuScriptPath)
+	assertContainsAll(t, windowsQemuScriptPath, got,
+		fmt.Sprintf(`sys.version_info < (3, %d)`, minPythonMinor),
+		`for candidate in python3 python3.14 python3.13 python3.12 python3.11 python3.10 python; do`,
+		`python_is_supported .venv/bin/python3`,
+		`"$python_bin" -m venv .venv`,
+	)
+	if strings.Contains(got, "python3 -m venv") {
+		t.Errorf("expected %q to create the venv with the resolved interpreter, not python3", windowsQemuScriptPath)
+	}
 }
 
 func TestArm64UefiDownloadScriptUsesSamePinAsGo(t *testing.T) {
