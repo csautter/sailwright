@@ -72,6 +72,7 @@
         "/(^|/)pkg/build/dependencies\\.go$/",
         "/(^|/)build/packer/linux/ubuntu/linux-ubuntu-(on-macos|qemu)\\.sh$/",
         "/(^|/)scripts/macos/download-virtio-win-iso\\.sh$/",
+        "/(^|/)scripts/macos/download-arm64-uefi\\.sh$/",
         "/(^|/)scripts/windows/sailwright-self-setup\\.ps1$/"
       ],
       "matchStrings": [

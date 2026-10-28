@@ -280,61 +280,73 @@ func TestGetWindows11DownloadArm64(t *testing.T) {
 	}
 }
 
-func TestResolveDebianPackageURL(t *testing.T) {
-	if os.Getenv("RUN_INTEGRATION_TESTS") == "" {
-		t.Skip("skipping integration test; set RUN_INTEGRATION_TESTS=1 to run")
+func TestQemuEfiAarch64URLsUsePinnedDebianPoolAndSnapshot(t *testing.T) {
+	urls := qemuEfiAarch64URLs("2025.02-8+deb13u1")
+	want := []string{
+		"https://deb.debian.org/debian/pool/main/e/edk2/qemu-efi-aarch64_2025.02-8+deb13u1_all.deb",
+		"https://snapshot.debian.org/archive/debian/" + qemuEfiAarch64SnapshotTimestamp + "/pool/main/e/edk2/qemu-efi-aarch64_2025.02-8+deb13u1_all.deb",
 	}
-	url, err := resolveDebianPackageURL("trixie", "qemu-efi-aarch64")
-	if err != nil {
-		t.Fatalf("resolveDebianPackageURL returned error: %v", err)
+	if strings.Join(urls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected qemu-efi-aarch64 URLs:\ngot  %v\nwant %v", urls, want)
 	}
-	if !strings.HasPrefix(url, "https://deb.debian.org/debian/pool/") {
-		t.Errorf("unexpected URL prefix: %s", url)
-	}
-	if !strings.Contains(url, "qemu-efi-aarch64") {
-		t.Errorf("URL does not contain package name: %s", url)
-	}
-	t.Logf("Resolved URL: %s", url)
-
-	// Verify the resolved URL is actually reachable
-	resp, err := http.Head(url)
-	if err != nil {
-		t.Fatalf("HTTP HEAD request to resolved URL failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("resolved URL returned HTTP %d: %s", resp.StatusCode, url)
-	}
-	t.Logf("HTTP HEAD status: %d", resp.StatusCode)
 }
 
-func TestResolveAndDownloadQemuEfiAarch64(t *testing.T) {
+// The ARM64 firmware must not follow "latest in trixie": a firmware update
+// together with a new QEMU already left ARM64 builds hanging in UEFI on macOS.
+func TestArm64DependencyReconciliationPinsQemuEfiAarch64(t *testing.T) {
+	dirs := GetDirectoriesInstance()
+	originalCacheDir := dirs.CacheDir
+	dirs.CacheDir = t.TempDir()
+	defer func() {
+		dirs.CacheDir = originalCacheDir
+	}()
+
+	wantPath := filepath.Join(dirs.CacheDir, "qemu-efi-aarch64_all.deb")
+	for _, vmconfig := range []VirtualMachineConfig{
+		{OS: "ubuntu", UbuntuType: "server", Arch: "arm64", HostOs: HostOsDarwin, VirtualizationEngine: VirtualizationEngineUtm},
+		{OS: "ubuntu", UbuntuType: "desktop", Arch: "arm64", HostOs: HostOsDarwin, VirtualizationEngine: VirtualizationEngineUtm},
+		{OS: "windows11", Arch: "arm64", HostOs: HostOsDarwin, VirtualizationEngine: VirtualizationEngineUtm},
+		{OS: "windows11", Arch: "arm64", HostOs: HostOsLinux, VirtualizationEngine: VirtualizationEngineQemu},
+	} {
+		found := false
+		for _, dep := range webFileDependenciesForVMConfig(vmconfig) {
+			if dep.LocalPath != wantPath {
+				continue
+			}
+			found = true
+			if dep.Checksum != "sha256:"+qemuEfiAarch64SHA256 {
+				t.Errorf("%+v: expected pinned qemu-efi-aarch64 checksum, got %q", vmconfig, dep.Checksum)
+			}
+			if dep.BeforeHook != nil {
+				t.Errorf("%+v: qemu-efi-aarch64 must not resolve its URL at download time", vmconfig)
+			}
+			urls := qemuEfiAarch64URLs(qemuEfiAarch64Version)
+			if dep.Source != urls[0] || strings.Join(dep.FallbackSources, " ") != strings.Join(urls[1:], " ") {
+				t.Errorf("%+v: unexpected qemu-efi-aarch64 sources %q %v", vmconfig, dep.Source, dep.FallbackSources)
+			}
+		}
+		if !found {
+			t.Errorf("%+v: expected dependency reconciliation to include %s", vmconfig, wantPath)
+		}
+	}
+}
+
+func TestDownloadPinnedQemuEfiAarch64(t *testing.T) {
 	if os.Getenv("RUN_INTEGRATION_TESTS") == "" {
 		t.Skip("skipping integration test; set RUN_INTEGRATION_TESTS=1 to run")
 	}
-	url, err := resolveDebianPackageURL("trixie", "qemu-efi-aarch64")
-	if err != nil {
-		t.Fatalf("resolveDebianPackageURL returned error: %v", err)
+	for _, url := range qemuEfiAarch64URLs(qemuEfiAarch64Version) {
+		t.Run(url, func(t *testing.T) {
+			dep := WebFileDependency{
+				LocalPath: filepath.Join(t.TempDir(), "qemu-efi-aarch64_all.deb"),
+				Checksum:  "sha256:" + qemuEfiAarch64SHA256,
+				Source:    url,
+			}
+			if err := downloadWebFileDependency(nil, dep); err != nil {
+				t.Fatalf("downloadWebFileDependency failed: %v", err)
+			}
+		})
 	}
-	t.Logf("Resolved URL: %s", url)
-
-	destPath := filepath.Join(t.TempDir(), "qemu-efi-aarch64_all.deb")
-	dep := WebFileDependency{
-		LocalPath: destPath,
-		Source:    url,
-	}
-	if err := downloadWebFileDependency(nil, dep); err != nil {
-		t.Fatalf("downloadWebFileDependency failed: %v", err)
-	}
-
-	info, err := os.Stat(destPath)
-	if err != nil {
-		t.Fatalf("downloaded file not found at %s: %v", destPath, err)
-	}
-	if info.Size() == 0 {
-		t.Errorf("downloaded file is empty: %s", destPath)
-	}
-	t.Logf("Downloaded %s (%d bytes)", destPath, info.Size())
 }
 
 func TestDownloadWebFileDependencyWithoutProgressBar(t *testing.T) {

@@ -14,31 +14,58 @@ cache_dir="${DEV_ALCHEMY_CACHE_DIR:-$app_data_dir/cache}"
 export DEV_ALCHEMY_APP_DATA_DIR="$app_data_dir"
 export DEV_ALCHEMY_CACHE_DIR="$cache_dir"
 
+# Keep in sync with pkg/build/dependencies.go. The firmware is pinned because a
+# new edk2 or QEMU release can leave ARM64 guests hanging in UEFI.
+# renovate: datasource=deb depName=qemu-efi-aarch64 versioning=deb registryUrl=https://deb.debian.org/debian?suite=trixie&components=main&binaryArch=all
+QEMU_EFI_AARCH64_VERSION="2025.02-8+deb13u1"
+# Not managed by Renovate: update together with QEMU_EFI_AARCH64_VERSION.
+QEMU_EFI_AARCH64_SHA256="a00b2411a79c8aeafd95a7c868ac3cd1aab592f1af9fff965f02d81a625276ed"
+QEMU_EFI_AARCH64_SNAPSHOT_TIMESTAMP="20260601T000000Z"
+QEMU_EFI_AARCH64_POOL_PATH="pool/main/e/edk2/qemu-efi-aarch64_${QEMU_EFI_AARCH64_VERSION}_all.deb"
+
 DEB_PATH="${cache_dir}/qemu-efi-aarch64_all.deb"
 UEFI_DIR="${cache_dir}/qemu-uefi"
+UEFI_STAMP_PATH="${UEFI_DIR}/.qemu-efi-aarch64.sha256"
 UEFI_FIRMWARE_PATH="${UEFI_DIR}/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
 AAVMF_CODE_PATH="${UEFI_DIR}/usr/share/AAVMF/AAVMF_CODE.no-secboot.fd"
 AAVMF_VARS_PATH="${UEFI_DIR}/usr/share/AAVMF/AAVMF_VARS.fd"
 
+sha256_of() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | awk '{print $1}'
+	else
+		shasum -a 256 "$1" | awk '{print $1}'
+	fi
+}
+
 # Ensure cache directory exists before downloading
 mkdir -p "${cache_dir}"
 
-if [ ! -f "${DEB_PATH}" ]; then
-	echo "Resolving latest qemu-efi-aarch64 download URL from Debian trixie package index"
-	PACKAGES_GZ_URL="https://deb.debian.org/debian/dists/trixie/main/binary-all/Packages.gz"
-	FILENAME=$(curl -sL "${PACKAGES_GZ_URL}" | gunzip | awk '/^Package: qemu-efi-aarch64$/{found=1} found && /^Filename:/{print $2; exit}')
-	if [ -z "${FILENAME}" ]; then
-		echo "Failed to resolve qemu-efi-aarch64 package URL from Debian index" >&2
+if [ -f "${DEB_PATH}" ] && [ "$(sha256_of "${DEB_PATH}")" = "${QEMU_EFI_AARCH64_SHA256}" ]; then
+	echo "qemu-efi-aarch64 ${QEMU_EFI_AARCH64_VERSION} already exists, skipping download"
+else
+	downloaded="false"
+	for download_url in \
+		"https://deb.debian.org/debian/${QEMU_EFI_AARCH64_POOL_PATH}" \
+		"https://snapshot.debian.org/archive/debian/${QEMU_EFI_AARCH64_SNAPSHOT_TIMESTAMP}/${QEMU_EFI_AARCH64_POOL_PATH}"; do
+		echo "Downloading ${download_url}"
+		if curl -fL -o "${DEB_PATH}.tmp" "${download_url}" &&
+			[ "$(sha256_of "${DEB_PATH}.tmp")" = "${QEMU_EFI_AARCH64_SHA256}" ]; then
+			mv "${DEB_PATH}.tmp" "${DEB_PATH}"
+			downloaded="true"
+			break
+		fi
+		echo "Download from ${download_url} failed or did not match the pinned SHA-256" >&2
+	done
+	rm -f "${DEB_PATH}.tmp"
+	if [ "${downloaded}" != "true" ]; then
+		echo "Failed to download qemu-efi-aarch64 ${QEMU_EFI_AARCH64_VERSION}" >&2
 		exit 1
 	fi
-	DOWNLOAD_URL="https://deb.debian.org/debian/${FILENAME}"
-	echo "Downloading ${DOWNLOAD_URL}"
-	curl -fL -o "${DEB_PATH}" "${DOWNLOAD_URL}"
-else
-	echo "qemu-efi-aarch64_all.deb already exists, skipping download"
 fi
 
-if [ ! -f "${UEFI_FIRMWARE_PATH}" ] || [ ! -f "${AAVMF_CODE_PATH}" ] || [ ! -f "${AAVMF_VARS_PATH}" ]; then
+if [ ! -f "${UEFI_FIRMWARE_PATH}" ] || [ ! -f "${AAVMF_CODE_PATH}" ] || [ ! -f "${AAVMF_VARS_PATH}" ] ||
+	[ "$(cat "${UEFI_STAMP_PATH}" 2>/dev/null)" != "${QEMU_EFI_AARCH64_SHA256}" ]; then
 	echo "Extracting qemu-efi-aarch64 package contents"
 	tmp_extract_dir="$(mktemp -d "${cache_dir}/qemu-uefi.tmp.XXXXXX")"
 	tmp_rootfs_dir="${tmp_extract_dir}/rootfs"
@@ -63,6 +90,7 @@ if [ ! -f "${UEFI_FIRMWARE_PATH}" ] || [ ! -f "${AAVMF_CODE_PATH}" ] || [ ! -f "
 		tar -xf "${data_archive}" -C "${tmp_rootfs_dir}"
 	fi
 
+	printf '%s\n' "${QEMU_EFI_AARCH64_SHA256}" >"${tmp_rootfs_dir}/.qemu-efi-aarch64.sha256"
 	rm -rf "${UEFI_DIR}"
 	mv "${tmp_rootfs_dir}" "${UEFI_DIR}"
 	rm -rf "${tmp_extract_dir}"

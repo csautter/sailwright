@@ -168,7 +168,7 @@ jobs:
         env:
           RUN_INTEGRATION_TESTS: "1"
         run: |
-          go test -timeout 45m -v ./pkg/build -run '^(TestIntegrationBootstrapWindows11DownloadEnv|TestResolveDebianPackageURL|TestResolveAndDownloadQemuEfiAarch64)$'
+          go test -timeout 45m -v ./pkg/build -run '^(TestIntegrationBootstrapWindows11DownloadEnv|TestDownloadPinnedQemuEfiAarch64)$'
 
       - name: Upload Playwright diagnostics
         if: failure()

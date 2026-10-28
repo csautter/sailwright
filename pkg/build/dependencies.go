@@ -1,8 +1,6 @@
 package build
 
 import (
-	"bufio"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -161,6 +159,17 @@ const (
 	// virtioWinSHA256 is not managed by Renovate: no datasource publishes ISO digests.
 	// The "Sync virtio-win checksum" workflow updates it via scripts/update-virtio-win-checksum.sh.
 	virtioWinSHA256 = "303f7ae40dad495d6ae474fdc571df58958a4dbc5c37a522d80f9a203867949d"
+
+	// renovate: datasource=deb depName=qemu-efi-aarch64 versioning=deb registryUrl=https://deb.debian.org/debian?suite=trixie&components=main&binaryArch=all
+	qemuEfiAarch64Version = "2025.02-8+deb13u1"
+
+	// qemuEfiAarch64SHA256 and qemuEfiAarch64SnapshotTimestamp are not managed by Renovate:
+	// the deb datasource publishes no digests. Update both together with qemuEfiAarch64Version;
+	// a stale checksum fails the download instead of silently changing the ARM64 firmware.
+	qemuEfiAarch64SHA256 = "a00b2411a79c8aeafd95a7c868ac3cd1aab592f1af9fff965f02d81a625276ed"
+	// Any snapshot.debian.org timestamp at which qemuEfiAarch64Version was current in trixie.
+	// deb.debian.org drops superseded versions at point releases; the snapshot keeps them.
+	qemuEfiAarch64SnapshotTimestamp = "20260601T000000Z"
 
 	virtioWinFedoraArchiveURL = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio"
 	virtioWinMirrorArchiveURL = "https://fedora-virt.repo.nfrance.com/virtio-win/direct-downloads/archive-virtio"
@@ -328,62 +337,14 @@ func probeDownloadURL(ctx context.Context, client *http.Client, candidate string
 	return downloadProbeResult{URL: candidate, Bytes: bytesRead, Duration: duration}
 }
 
-// resolveDebianPackageURL fetches the current download URL for an architecture-independent
-// Debian package by querying the official Packages index for the given suite.
-// This avoids hardcoding version strings that change frequently and are purged quickly.
-func resolveDebianPackageURL(suite, packageName string) (string, error) {
-	if !isSafeDebianPackageSegment(suite) || !isSafeDebianPackageSegment(packageName) {
-		return "", fmt.Errorf("invalid Debian package lookup: suite=%q package=%q", suite, packageName)
+// qemuEfiAarch64URLs returns the pinned Debian qemu-efi-aarch64 package on the
+// Debian mirror first and on snapshot.debian.org as a fallback.
+func qemuEfiAarch64URLs(version string) []string {
+	poolPath := "pool/main/e/edk2/qemu-efi-aarch64_" + version + "_all.deb"
+	return []string{
+		"https://deb.debian.org/debian/" + poolPath,
+		"https://snapshot.debian.org/archive/debian/" + qemuEfiAarch64SnapshotTimestamp + "/" + poolPath,
 	}
-
-	packagesURL := fmt.Sprintf("https://deb.debian.org/debian/dists/%s/main/binary-all/Packages.gz", suite)
-	log.Printf("Resolving latest Debian package URL for %s from %s", packageName, packagesURL)
-
-	// #nosec G107 -- the host is fixed to deb.debian.org and the path segments are validated above.
-	resp, err := http.Get(packagesURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch Debian package index: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected HTTP status %d fetching %s", resp.StatusCode, packagesURL)
-	}
-
-	gz, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to decompress Debian package index: %w", err)
-	}
-	defer gz.Close()
-
-	scanner := bufio.NewScanner(gz)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
-	var filename string
-	inTarget := false
-
-outer:
-	for scanner.Scan() {
-		line := scanner.Text()
-		switch {
-		case line == "Package: "+packageName:
-			inTarget = true
-		case inTarget && strings.HasPrefix(line, "Filename: "):
-			filename = strings.TrimPrefix(line, "Filename: ")
-		case inTarget && filename != "" && line == "":
-			break outer
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("error reading Debian package index: %w", err)
-	}
-	if filename == "" {
-		return "", fmt.Errorf("package %q not found in Debian suite %q (binary-all)", packageName, suite)
-	}
-
-	url := "https://deb.debian.org/debian/" + filename
-	log.Printf("Resolved %s to %s", packageName, url)
-	return url, nil
 }
 
 func DependencyReconciliation(vmconfig VirtualMachineConfig) {
@@ -659,23 +620,6 @@ func getWindows11Download(arch string, savePath string, download bool) (string, 
 	return url, nil
 }
 
-func isSafeDebianPackageSegment(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z':
-		case r >= 'A' && r <= 'Z':
-		case r >= '0' && r <= '9':
-		case r == '.', r == '-', r == '_':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
 func getWebFileDependencies() []WebFileDependency {
 	return []WebFileDependency{
 		{
@@ -776,11 +720,10 @@ func getWebFileDependencies() []WebFileDependency {
 			},
 		},
 		{
-			LocalPath: GetDirectoriesInstance().CachePath("qemu-efi-aarch64_all.deb"),
-			Checksum:  "",
-			BeforeHook: func() (string, error) {
-				return resolveDebianPackageURL("trixie", "qemu-efi-aarch64")
-			},
+			LocalPath:       GetDirectoriesInstance().CachePath("qemu-efi-aarch64_all.deb"),
+			Checksum:        "sha256:" + qemuEfiAarch64SHA256,
+			Source:          qemuEfiAarch64URLs(qemuEfiAarch64Version)[0],
+			FallbackSources: qemuEfiAarch64URLs(qemuEfiAarch64Version)[1:],
 			RelatedVmConfigs: []VirtualMachineConfig{
 				{
 					OS:                   "windows11",
@@ -916,15 +859,21 @@ func getWebFileDependencies() []WebFileDependency {
 			},
 		},
 		{
-			LocalPath: GetDirectoriesInstance().CachePath("qemu-efi-aarch64_all.deb"),
-			Checksum:  "",
-			BeforeHook: func() (string, error) {
-				return resolveDebianPackageURL("trixie", "qemu-efi-aarch64")
-			},
+			LocalPath:       GetDirectoriesInstance().CachePath("qemu-efi-aarch64_all.deb"),
+			Checksum:        "sha256:" + qemuEfiAarch64SHA256,
+			Source:          qemuEfiAarch64URLs(qemuEfiAarch64Version)[0],
+			FallbackSources: qemuEfiAarch64URLs(qemuEfiAarch64Version)[1:],
 			RelatedVmConfigs: []VirtualMachineConfig{
 				{
 					OS:                   "ubuntu",
 					UbuntuType:           "server",
+					Arch:                 "arm64",
+					HostOs:               HostOsDarwin,
+					VirtualizationEngine: VirtualizationEngineUtm,
+				},
+				{
+					OS:                   "ubuntu",
+					UbuntuType:           "desktop",
 					Arch:                 "arm64",
 					HostOs:               HostOsDarwin,
 					VirtualizationEngine: VirtualizationEngineUtm,

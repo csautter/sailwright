@@ -12,6 +12,7 @@ const (
 	windowsQemuScriptPath        = "build/packer/windows/windows11-qemu.sh"
 	windowsAutounattendIsoPath   = "scripts/macos/create-win11-autounattend-iso.sh"
 	linuxDependencyInstallerPath = "scripts/linux/sailwright-install-dependencies.sh"
+	arm64UefiDownloadScriptPath  = "scripts/macos/download-arm64-uefi.sh"
 )
 
 func TestUbuntuQemuWrapperScriptsUseSharedTemplate(t *testing.T) {
@@ -147,4 +148,20 @@ func TestLinuxDependencyInstallerIncludesWindowsIsoExtractionTools(t *testing.T)
 		`libarchive-tools`,
 		`xorriso`,
 	)
+}
+
+func TestArm64UefiDownloadScriptUsesSamePinAsGo(t *testing.T) {
+	t.Parallel()
+
+	got := readRepoFile(t, arm64UefiDownloadScriptPath)
+	assertContainsAll(t, arm64UefiDownloadScriptPath, got,
+		`QEMU_EFI_AARCH64_VERSION="`+qemuEfiAarch64Version+`"`,
+		`QEMU_EFI_AARCH64_SHA256="`+qemuEfiAarch64SHA256+`"`,
+		`QEMU_EFI_AARCH64_SNAPSHOT_TIMESTAMP="`+qemuEfiAarch64SnapshotTimestamp+`"`,
+		`pool/main/e/edk2/qemu-efi-aarch64_${QEMU_EFI_AARCH64_VERSION}_all.deb`,
+		`.qemu-efi-aarch64.sha256`,
+	)
+	if strings.Contains(got, "Packages.gz") {
+		t.Errorf("expected %q not to resolve the latest firmware from the Debian index", arm64UefiDownloadScriptPath)
+	}
 }
