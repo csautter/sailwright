@@ -70,6 +70,29 @@ The macOS wrapper uses the shared QEMU template,
 [linux-ubuntu-qemu.pkr.hcl](linux-ubuntu-qemu.pkr.hcl), with macOS-specific
 display and acceleration settings.
 
+### ARM64 on macOS: pinned machine type and firmware
+
+ARM64 builds on Apple Silicon run Homebrew QEMU with HVF and boot the Debian
+AAVMF firmware (`qemu-efi-aarch64`). With Homebrew QEMU 11.x, the unversioned
+`virt` machine (`virt-11.x`) hangs in that firmware on the TianoCore screen
+after "Start boot option": GRUB never appears. The same command boots with
+`-machine virt-10.0`, with QEMU's own edk2 firmware, or under TCG. Cocoa,
+`ramfb`, the CPU count and `highmem` have no effect.
+
+Therefore:
+
+- On macOS the template uses `-machine virt-10.0,highmem=on`. Linux keeps
+  `virt,highmem=on`, because Ubuntu 24.04 ships QEMU 8.2 without `virt-10.0`.
+- `qemu-efi-aarch64` is pinned to a fixed Debian version and SHA-256 in
+  `pkg/build/dependencies.go` and `scripts/macos/download-arm64-uefi.sh`.
+  Renovate proposes new versions; update the SHA-256 and the snapshot
+  timestamp in the same change.
+- `sailwright build` logs the QEMU version for macOS ARM64 builds and warns
+  when the major version has not been tested.
+
+If an ARM64 build hangs on the TianoCore screen after a QEMU or firmware
+update, try a different `-machine virt-X.Y` first.
+
 ## Build Ubuntu on Linux Hosts (QEMU)
 
 Install host dependencies first:

@@ -85,6 +85,14 @@ LIBVIRT_WINDOWS_ANSIBLE_USER=Administrator
 LIBVIRT_WINDOWS_ANSIBLE_PASSWORD=P@ssw0rd!
 ```
 
+### ARM64 on macOS
+
+Windows 11 ARM64 uses the same pinned `virt-10.0` machine type on macOS and
+the same pinned Debian AAVMF firmware as the Ubuntu ARM64 builds. Without
+the pin, Homebrew QEMU 11.x hangs on the TianoCore screen before the Windows
+boot loader starts. See
+[ARM64 on macOS: pinned machine type and firmware](../linux/ubuntu/README.md#arm64-on-macos-pinned-machine-type-and-firmware).
+
 ### Security Note
 
 Current Windows templates keep WinRM provisioning reachable even when Windows reclassifies the NIC as `Public`. They do that by enabling WinRM Basic over HTTP, allowing unencrypted WSMan traffic, and creating an inbound firewall rule for TCP `5985` with `Profile Any` and `RemoteAddress Any`.
