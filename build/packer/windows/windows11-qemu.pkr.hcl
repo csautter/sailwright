@@ -130,6 +130,10 @@ locals {
   arm64_cpu_model                   = local.arm64_can_use_native_acceleration ? "host" : "max,sve=off,sme=off,pauth-impdef=on"
   arm64_install_bootindex           = local.arm64_can_use_native_acceleration ? 1 : 0
   arm64_disk_bootindex              = local.arm64_can_use_native_acceleration ? 0 : 1
+  # Homebrew QEMU 11.x with HVF hangs in the Debian AAVMF 2025.02 firmware on
+  # the unversioned virt machine (virt-11.x). Pin macOS to the machine version
+  # that firmware is built for. Linux CI uses QEMU 8.2 and has no virt-10.0.
+  arm64_machine = local.host_is_darwin ? "virt-10.0,highmem=on" : "virt,highmem=on"
 
   qemu_display = local.host_is_darwin && !var.headless ? "cocoa" : "none"
 
@@ -149,7 +153,7 @@ locals {
     ],
     "arm64" = [
       ["-accel", local.arm64_accelerator],
-      ["-machine", "virt,highmem=on"],
+      ["-machine", local.arm64_machine],
       ["-cpu", local.arm64_cpu_model],
       ["-drive", "file=${local.win11_uefi_code},if=pflash,unit=0,format=raw,readonly=on"],
       ["-drive", "file={{ .OutputDir }}/efivars.fd,if=pflash,unit=1,format=raw"],
