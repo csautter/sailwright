@@ -47,19 +47,24 @@ if [ -f "${DEB_PATH}" ] && [ "$(sha256_of "${DEB_PATH}")" = "${QEMU_EFI_AARCH64_
 	echo "qemu-efi-aarch64 ${QEMU_EFI_AARCH64_VERSION} already exists, skipping download"
 else
 	downloaded="false"
+	# A unique temp file keeps builds that share the cache from truncating each other's download.
+	tmp_deb="$(mktemp "${DEB_PATH}.XXXXXX")"
+	trap 'rm -f "${tmp_deb}"' EXIT
 	for download_url in \
 		"https://deb.debian.org/debian/${QEMU_EFI_AARCH64_POOL_PATH}" \
 		"https://snapshot.debian.org/archive/debian/${QEMU_EFI_AARCH64_SNAPSHOT_TIMESTAMP}/${QEMU_EFI_AARCH64_POOL_PATH}"; do
 		echo "Downloading ${download_url}"
-		if curl -fL -o "${DEB_PATH}.tmp" "${download_url}" &&
-			[ "$(sha256_of "${DEB_PATH}.tmp")" = "${QEMU_EFI_AARCH64_SHA256}" ]; then
-			mv "${DEB_PATH}.tmp" "${DEB_PATH}"
+		if curl -fL -o "${tmp_deb}" "${download_url}" &&
+			[ "$(sha256_of "${tmp_deb}")" = "${QEMU_EFI_AARCH64_SHA256}" ]; then
+			chmod 644 "${tmp_deb}"
+			mv "${tmp_deb}" "${DEB_PATH}"
 			downloaded="true"
 			break
 		fi
 		echo "Download from ${download_url} failed or did not match the pinned SHA-256" >&2
 	done
-	rm -f "${DEB_PATH}.tmp"
+	rm -f "${tmp_deb}"
+	trap - EXIT
 	if [ "${downloaded}" != "true" ]; then
 		echo "Failed to download qemu-efi-aarch64 ${QEMU_EFI_AARCH64_VERSION}; if every source failed the SHA-256 check, the pin is probably stale (see build/packer/linux/ubuntu/README.md)" >&2
 		exit 1

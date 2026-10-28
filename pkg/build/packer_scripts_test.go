@@ -178,6 +178,7 @@ func TestArm64UefiDownloadScriptUsesSamePinAsGo(t *testing.T) {
 		`QEMU_EFI_AARCH64_SNAPSHOT_TIMESTAMP="`+qemuEfiAarch64SnapshotTimestamp+`"`,
 		`pool/main/e/edk2/qemu-efi-aarch64_${QEMU_EFI_AARCH64_VERSION}_all.deb`,
 		`.qemu-efi-aarch64.sha256`,
+		`tmp_deb="$(mktemp "${DEB_PATH}.XXXXXX")"`,
 	)
 	if strings.Contains(got, "Packages.gz") {
 		t.Errorf("expected %q not to resolve the latest firmware from the Debian index", arm64UefiDownloadScriptPath)
