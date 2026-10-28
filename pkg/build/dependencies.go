@@ -467,12 +467,22 @@ func resolvePythonVenvCommandForOS(goos string, lookPath func(string) (string, e
 	}
 
 	checked := make([]string, 0, len(candidates))
+	// python3 and python3.13 are often links to the same interpreter: probe and report it once.
+	seen := make(map[string]bool, len(candidates))
 	for _, candidate := range candidates {
 		resolvedPath, err := lookPath(candidate.executable)
 		if err != nil {
 			checked = append(checked, candidate.displayName())
 			continue
 		}
+		target := resolvedPath
+		if realPath, err := filepath.EvalSymlinks(resolvedPath); err == nil {
+			target = realPath
+		}
+		if seen[target] {
+			continue
+		}
+		seen[target] = true
 		candidate.executable = resolvedPath
 		major, minor, err := probeVersion(candidate)
 		if err != nil {

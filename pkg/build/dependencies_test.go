@@ -210,6 +210,29 @@ func TestResolvePythonVenvCommandReportsTooOldVersions(t *testing.T) {
 	}
 }
 
+// An interpreter reachable under several names is probed and reported once.
+func TestResolvePythonVenvCommandProbesEachInterpreterOnce(t *testing.T) {
+	probes := 0
+	_, err := resolvePythonVenvCommandForOS("linux", func(name string) (string, error) {
+		if name == "python3" || name == "python" {
+			return "/usr/bin/python3", nil
+		}
+		return "", fmt.Errorf("%s not found", name)
+	}, func(command pythonVenvCommand) (int, int, error) {
+		probes++
+		return 3, 9, nil
+	})
+	if err == nil {
+		t.Fatal("expected error when only Python 3.9 is available, got nil")
+	}
+	if probes != 1 {
+		t.Errorf("expected one probe of /usr/bin/python3, got %d", probes)
+	}
+	if got := strings.Count(err.Error(), "/usr/bin/python3 (Python 3.9)"); got != 1 {
+		t.Errorf("expected /usr/bin/python3 once in %q, got %d", err.Error(), got)
+	}
+}
+
 // Homebrew's python3 is found even when /usr/bin comes first on PATH.
 func TestResolvePythonVenvCommandProbesHomebrewOnDarwin(t *testing.T) {
 	command, err := resolvePythonVenvCommandForOS("darwin", func(name string) (string, error) {
