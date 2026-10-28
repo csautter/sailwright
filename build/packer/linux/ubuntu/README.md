@@ -110,8 +110,9 @@ update, try a different `-machine virt-X.Y` first.
 
 3. Set `qemuEfiAarch64SnapshotTimestamp` and
    `QEMU_EFI_AARCH64_SNAPSHOT_TIMESTAMP` to a snapshot.debian.org timestamp
-   at or after the version reached the archive. A timestamp from before that
-   returns 404. Look up when the file was first seen:
+   at which the version was in the archive. Use its `first_seen` value:
+   earlier timestamps return 404, and so can timestamps after the version was
+   removed. Look it up with:
 
    ```bash
    encoded="${version//+/%2B}"

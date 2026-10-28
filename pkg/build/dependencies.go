@@ -172,9 +172,10 @@ const (
 	// Keep this comment directly below the Renovate-managed version: it also stops the
 	// shared Renovate regex from capturing the checksum as a digest of the version.
 	qemuEfiAarch64SHA256 = "a00b2411a79c8aeafd95a7c868ac3cd1aab592f1af9fff965f02d81a625276ed"
-	// Any snapshot.debian.org timestamp at which qemuEfiAarch64Version was current in trixie.
-	// deb.debian.org drops superseded versions at point releases; the snapshot keeps them.
-	qemuEfiAarch64SnapshotTimestamp = "20260601T000000Z"
+	// A snapshot.debian.org timestamp at which qemuEfiAarch64Version was in the archive; use
+	// the file's first_seen. Earlier timestamps return 404, and so can timestamps after the
+	// version was removed. deb.debian.org drops superseded versions at point releases.
+	qemuEfiAarch64SnapshotTimestamp = "20260104T203950Z"
 	// The qemuEfiAarch64Version that qemuEfiAarch64SHA256 and qemuEfiAarch64SnapshotTimestamp
 	// were taken for. Renovate does not touch it, so a version-only bump fails
 	// TestQemuEfiAarch64PinIsConsistent instead of passing CI with a cached deb.
