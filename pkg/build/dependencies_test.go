@@ -203,10 +203,105 @@ func TestResolvePythonVenvCommandReportsTooOldVersions(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when only Python 3.9 is available, got nil")
 	}
-	for _, want := range []string{"Python 3.10 or newer", "/usr/bin/python3 (Python 3.9)", "python3.13"} {
+	for _, want := range []string{"Python 3.10 or newer", "/usr/bin/python3 (Python 3.9)", "python3.13", "/opt/homebrew/bin/python3", "brew install python@3.13"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("expected error %q to contain %q", err.Error(), want)
 		}
+	}
+}
+
+// Homebrew's python3 is found even when /usr/bin comes first on PATH.
+func TestResolvePythonVenvCommandProbesHomebrewOnDarwin(t *testing.T) {
+	command, err := resolvePythonVenvCommandForOS("darwin", func(name string) (string, error) {
+		switch name {
+		case "python3":
+			return "/usr/bin/python3", nil
+		case "/opt/homebrew/bin/python3":
+			return name, nil
+		}
+		return "", fmt.Errorf("%s not found", name)
+	}, fixedPythonVersions(map[string][2]int{"/usr/bin/python3": {3, 9}, "/opt/homebrew/bin/python3": {3, 14}}))
+	if err != nil {
+		t.Fatalf("resolvePythonVenvCommandForOS returned error: %v", err)
+	}
+	if command.executable != "/opt/homebrew/bin/python3" {
+		t.Fatalf("expected Homebrew python3, got %q", command.executable)
+	}
+}
+
+func TestResolvePythonVenvCommandHasNoBrewHintOutsideDarwin(t *testing.T) {
+	_, err := resolvePythonVenvCommandForOS("linux", func(name string) (string, error) {
+		return "", fmt.Errorf("%s not found", name)
+	}, fixedPythonVersions(nil))
+	if err == nil {
+		t.Fatal("expected error when no Python command is found, got nil")
+	}
+	if strings.Contains(err.Error(), "brew") || strings.Contains(err.Error(), "/opt/homebrew") {
+		t.Fatalf("expected no Homebrew details on linux, got %q", err.Error())
+	}
+}
+
+func TestProbePythonVersionReportsFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell scripts as fake interpreters")
+	}
+	for _, tc := range []struct {
+		name    string
+		script  string
+		wantErr string
+	}{
+		{name: "non-zero exit", script: "#!/bin/sh\nexit 3\n", wantErr: "failed to query Python version"},
+		{name: "unexpected output", script: "#!/bin/sh\necho 'Python 3.13'\n", wantErr: "unexpected Python version"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := filepath.Join(t.TempDir(), "python3")
+			if err := os.WriteFile(fake, []byte(tc.script), 0o755); err != nil { // #nosec G306 -- test needs an executable fake interpreter.
+				t.Fatal(err)
+			}
+			_, _, err := probePythonVersion(pythonVenvCommand{executable: fake})
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// A venv created by Python 3.9 is removed and rebuilt with the resolved interpreter.
+func TestEnsurePythonVenvRecreatesTooOldVenv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell scripts as fake interpreters")
+	}
+	workdir := t.TempDir()
+	venvPython, pipPath := pythonVenvExecutablePaths(workdir)
+	if err := os.MkdirAll(filepath.Dir(venvPython), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPython := "#!/bin/sh\nif [ \"$1\" = -c ]; then echo 3.9; fi\n"
+	for path, content := range map[string]string{venvPython: oldPython, pipPath: "#!/bin/sh\n"} {
+		if err := os.WriteFile(path, []byte(content), 0o755); err != nil { // #nosec G306 -- test needs executable fakes.
+			t.Fatal(err)
+		}
+	}
+	marker := filepath.Join(workdir, ".venv", "old-venv")
+	if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	basePython := filepath.Join(t.TempDir(), "python3.13")
+	createVenv := "#!/bin/sh\nmkdir -p .venv/bin\n" +
+		"printf '#!/bin/sh\\nif [ \"$1\" = -c ]; then echo 3.13; fi\\n' > .venv/bin/python3\n" +
+		"printf '#!/bin/sh\\n' > .venv/bin/pip\nchmod +x .venv/bin/python3 .venv/bin/pip\n"
+	if err := os.WriteFile(basePython, []byte(createVenv), 0o755); err != nil { // #nosec G306 -- test needs an executable fake interpreter.
+		t.Fatal(err)
+	}
+
+	if err := ensurePythonVenvWithCommand(workdir, pythonVenvCommand{executable: basePython}); err != nil {
+		t.Fatalf("ensurePythonVenvWithCommand returned error: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("expected the old venv to be removed, stat err: %v", err)
+	}
+	if err := checkPythonVenvUsable(workdir); err != nil {
+		t.Fatalf("expected the recreated venv to be usable, got %v", err)
 	}
 }
 

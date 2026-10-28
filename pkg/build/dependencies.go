@@ -431,6 +431,8 @@ func (command pythonVenvCommand) displayName() string {
 // as /usr/bin/python3.
 const minPythonMinor = 10
 
+const pythonVersionProbeTimeout = 10 * time.Second
+
 // pythonVersionProbe reports the major and minor version of a Python command.
 type pythonVersionProbe func(command pythonVenvCommand) (major, minor int, err error)
 
@@ -447,6 +449,13 @@ func resolvePythonVenvCommandForOS(goos string, lookPath func(string) (string, e
 		{executable: "python3.11"},
 		{executable: "python3.10"},
 		{executable: "python"},
+	}
+	if goos == "darwin" {
+		// /usr/bin often comes before Homebrew on PATH and holds Python 3.9.
+		candidates = append(candidates,
+			pythonVenvCommand{executable: "/opt/homebrew/bin/python3"},
+			pythonVenvCommand{executable: "/usr/local/bin/python3"},
+		)
 	}
 	if goos == "windows" {
 		candidates = []pythonVenvCommand{
@@ -476,7 +485,11 @@ func resolvePythonVenvCommandForOS(goos string, lookPath func(string) (string, e
 		return candidate, nil
 	}
 
-	return pythonVenvCommand{}, fmt.Errorf("Python 3.%d or newer not found on PATH; checked %s", minPythonMinor, strings.Join(checked, ", "))
+	hint := ""
+	if goos == "darwin" {
+		hint = "; install one with: brew install python@3.13"
+	}
+	return pythonVenvCommand{}, fmt.Errorf("Python 3.%d or newer not found on PATH; checked %s%s", minPythonMinor, strings.Join(checked, ", "), hint)
 }
 
 func isSupportedPythonVersion(major, minor int) bool {
@@ -484,8 +497,11 @@ func isSupportedPythonVersion(major, minor int) bool {
 }
 
 func probePythonVersion(command pythonVenvCommand) (int, int, error) {
+	// A broken interpreter, such as a stale Windows Store alias, must not block the bootstrap.
+	ctx, cancel := context.WithTimeout(context.Background(), pythonVersionProbeTimeout)
+	defer cancel()
 	// #nosec G204 -- the executable is a resolved Python interpreter and the argv is fixed.
-	output, err := exec.Command(command.executable, command.args("-c", "import sys; print('%d.%d' % sys.version_info[:2])")...).Output()
+	output, err := exec.CommandContext(ctx, command.executable, command.args("-c", "import sys; print('%d.%d' % sys.version_info[:2])")...).Output()
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to query Python version: %w", err)
 	}
