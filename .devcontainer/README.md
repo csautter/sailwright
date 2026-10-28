@@ -52,6 +52,18 @@ to change them.
 Copy `mounts.local.example` to `mounts.local` and add `source:target[:ro]`
 lines. Then rebuild the container.
 
+## Local hooks (optional)
+
+For machine-specific setup that must not be committed, such as trusting the
+CA of a TLS-inspecting proxy, put files in `.devcontainer/local/` (gitignored).
+Each one is used only if it exists:
+
+| File | Runs | Use |
+|---|---|---|
+| `initialize-host.sh` | On the host, before each start, from `initialize-host.sh` | Export files the container needs. `REPO_ROOT`, `REPO_NAME` and `USER_HOME` are set. The workspace is mounted, so files written below `REPO_ROOT` show up at `/workspaces/$REPO_NAME`. A failing hook only prints a warning. |
+| `container.env` | Loaded as a Compose `env_file` | `KEY=value` lines for the container environment. Applied when the container is created, so rebuild after a change. The host hook may write it. |
+| `post-start.sh` | In the container, first in `postStartCommand` | Container setup that has to happen before `go mod vendor` and the other start commands reach the network. |
+
 ## Host prerequisites
 
 - `initializeCommand` runs `bash .devcontainer/initialize-host.sh` on the host.
