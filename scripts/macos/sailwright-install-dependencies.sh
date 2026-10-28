@@ -256,7 +256,11 @@ brew_install() {
 		exit 1
 	fi
 
-	if [[ " ${flags} " != *" --cask "* ]]; then
+	if [[ " ${flags} " == *" --no-pin "* ]]; then
+		# Shared runtimes stay unpinned so brew upgrade keeps applying security fixes.
+		brew unpin "${list_pkg}" 2>/dev/null || true
+		echo "${label} ${installed_version:-<unknown>} installed; left unpinned."
+	elif [[ " ${flags} " != *" --cask "* ]]; then
 		if [[ "${version_satisfied}" == "true" ]]; then
 			brew pin "${list_pkg}" || true
 			echo "${label} ${installed_version} installed and pinned (satisfies ${version})."
@@ -281,7 +285,7 @@ brew_install "FFmpeg"      ffmpeg                    ffmpeg                "${FF
 brew_install "vncsnapshot" vncsnapshot               vncsnapshot           "${VNCSNAPSHOT_VERSION}"
 brew_install "xorriso"     xorriso                   xorriso               "${XORRISO_VERSION}"
 brew_install "Ansible"     ansible                   ansible               "${ANSIBLE_VERSION}"
-brew_install "Python 3.13" python3.13                python@3.13           "${PYTHON_VERSION}"
+brew_install "Python 3.13" python3.13                python@3.13           "${PYTHON_VERSION}"       ""  --no-pin
 
 if [[ "${install_go}" == "true" ]]; then
 	brew_install "Go" go go "${GO_VERSION}"
