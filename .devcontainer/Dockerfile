@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/go:2.3-1.27-trixie
+FROM mcr.microsoft.com/devcontainers/go:2.3.3-1.27-trixie
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_VERSION=24.22.0
