@@ -9,6 +9,7 @@ This directory contains the Packer templates for building Windows 11 images on W
 - [Packer](https://www.packer.io/downloads) installed
 - Windows, macOS, or Linux host with a compatible virtualization backend
 - For repository-managed host dependencies, run `sailwright install` on macOS/Linux or `sailwright.exe install` on Windows from repo root before building.
+- The automatic Windows 11 ISO download needs Python 3.10 or newer. macOS ships Python 3.9 as `/usr/bin/python3`; install a newer one with `brew install python@3.13`. See [scripts/macos/README.md](../../../scripts/macos/README.md).
 
 ### Usage
 

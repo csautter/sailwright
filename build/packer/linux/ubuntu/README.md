@@ -85,13 +85,52 @@ Therefore:
   `virt,highmem=on`, because Ubuntu 24.04 ships QEMU 8.2 without `virt-10.0`.
 - `qemu-efi-aarch64` is pinned to a fixed Debian version and SHA-256 in
   `pkg/build/dependencies.go` and `scripts/macos/download-arm64-uefi.sh`.
-  Renovate proposes new versions; update the SHA-256 and the snapshot
-  timestamp in the same change.
-- `sailwright build` logs the QEMU version for macOS ARM64 builds and warns
-  when the major version has not been tested.
+  Renovate proposes new versions, but only bumps the version. Follow the
+  checklist below before merging such a PR.
+- `sailwright build` logs the QEMU version for macOS ARM64 builds, warns
+  when the major version has not been tested, and stops when QEMU is older
+  than 10.0 (`brew upgrade qemu`).
 
 If an ARM64 build hangs on the TianoCore screen after a QEMU or firmware
 update, try a different `-machine virt-X.Y` first.
+
+#### Updating the firmware pin
+
+`TestQemuEfiAarch64PinIsConsistent` fails until steps 1 to 4 are done.
+
+1. Set the new version in `qemuEfiAarch64Version` (Go) and
+   `QEMU_EFI_AARCH64_VERSION` (shell). Renovate does this step.
+2. Compute the SHA-256 and set `qemuEfiAarch64SHA256` and
+   `QEMU_EFI_AARCH64_SHA256`:
+
+   ```bash
+   version=2025.02-8+deb13u1
+   curl -fsSL "https://deb.debian.org/debian/pool/main/e/edk2/qemu-efi-aarch64_${version}_all.deb" | sha256sum
+   ```
+
+3. Set `qemuEfiAarch64SnapshotTimestamp` and
+   `QEMU_EFI_AARCH64_SNAPSHOT_TIMESTAMP` to a snapshot.debian.org timestamp
+   at or after the version reached the archive. A timestamp from before that
+   returns 404. Look up when the file was first seen:
+
+   ```bash
+   encoded="${version//+/%2B}"
+   curl -s "https://snapshot.debian.org/mr/package/edk2/${encoded}/binfiles/qemu-efi-aarch64/${encoded}?fileinfo=1" |
+     jq -r '.fileinfo[][] | select(.archive_name == "debian") | .first_seen'
+   ```
+
+4. Set `qemuEfiAarch64PinnedFor` to the new version.
+5. If the upstream edk2 release changed (for example from 2025.02), update
+   "Debian AAVMF 2025.02" in the `arm64_machine` comments of
+   [linux-ubuntu-qemu.pkr.hcl](linux-ubuntu-qemu.pkr.hcl) and
+   [windows11-qemu.pkr.hcl](../../windows/windows11-qemu.pkr.hcl), and in this
+   section.
+6. Check both download sources and boot an ARM64 VM on an Apple Silicon Mac:
+
+   ```bash
+   RUN_INTEGRATION_TESTS=1 go test ./pkg/build -run '^TestDownloadPinnedQemuEfiAarch64$'
+   sailwright build ubuntu --type server --arch arm64
+   ```
 
 ## Build Ubuntu on Linux Hosts (QEMU)
 

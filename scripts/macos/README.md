@@ -7,7 +7,7 @@ This script uses Playwright to fetch the latest Windows 11 ISO download link fro
 ### Installation
 1. **Install Python**: Ensure you have Python 3.10 or higher installed. You can install it via Homebrew:
    ```bash
-   brew install python
+   brew install python@3.13
    ```
 2. **Set Up a Virtual Environment** (optional but recommended):
    ```bash
