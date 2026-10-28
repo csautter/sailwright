@@ -1,0 +1,113 @@
+name: Refresh Windows 11 ISO (one architecture)
+
+# Called by refresh-windows-iso.yml once per architecture and runner, so amd64 and arm64 never
+# contact Microsoft one after the other from the same runner. No concurrency group here: the
+# caller's group already serializes refreshes, and a matching group would deadlock.
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        description: "amd64 or arm64"
+        required: true
+        type: string
+      runs-on:
+        description: "Runner label"
+        required: true
+        type: string
+      runner-kind:
+        description: "hosted or tart; selects the download directory and names the diagnostics artifact"
+        required: true
+        type: string
+      mode:
+        description: "refresh, resolve-only or adopt (see .github/actions/refresh-windows-iso)"
+        required: true
+        type: string
+      force:
+        description: "Treat the refresh as due regardless of the due rule"
+        required: false
+        default: "false"
+        type: string
+    # Optional: pull requests without access to secrets still run in resolve-only mode.
+    secrets:
+      BUILD_CACHE_FTP_USERNAME:
+        required: false
+      BUILD_CACHE_FTP_PASSWORD:
+        required: false
+    outputs:
+      outcome:
+        description: "skipped, refused, unchanged, new, or adopted"
+        value: ${{ jobs.refresh.outputs.outcome }}
+      age_days:
+        description: "Days since the manifest was last checked before this run (9999 without manifest)"
+        value: ${{ jobs.refresh.outputs.age_days }}
+
+jobs:
+  refresh:
+    name: refresh ${{ inputs.arch }}
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 120
+    outputs:
+      outcome: ${{ steps.refresh.outputs.outcome }}
+      age_days: ${{ steps.refresh.outputs.age_days }}
+    env:
+      DEV_ALCHEMY_APP_DATA_DIR: ${{ github.workspace }}/.dev-alchemy
+      DEV_ALCHEMY_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/cache
+      DEV_ALCHEMY_VAGRANT_DIR: ${{ github.workspace }}/.dev-alchemy/.vagrant
+      DEV_ALCHEMY_PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
+      PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+      # Hosted runners have the free space on /mnt; the Tart runner downloads into the workspace.
+      DOWNLOAD_DIR: ${{ inputs.runner-kind == 'hosted' && '/mnt/win11iso' || format('{0}/.win11iso', github.workspace) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        if: inputs.mode != 'adopt'
+        run: |
+          go run cmd/main.go install
+
+      - name: Prepare download directory on /mnt
+        if: inputs.runner-kind == 'hosted'
+        run: |
+          sudo mkdir -p "$DOWNLOAD_DIR"
+          sudo chown "$(id -u):$(id -g)" "$DOWNLOAD_DIR"
+
+      - name: Refresh ${{ inputs.arch }}
+        id: refresh
+        uses: ./.github/actions/refresh-windows-iso
+        with:
+          arch: ${{ inputs.arch }}
+          mode: ${{ inputs.mode }}
+          force: ${{ inputs.force }}
+          download-dir: ${{ env.DOWNLOAD_DIR }}
+          ftp-server: ${{ vars.BUILD_CACHE_FTP_SERVER }}
+          ftp-port: ${{ vars.BUILD_CACHE_FTP_PORT }}
+          ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
+          ftp-password: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
+          ftp-base-dir: /private
+
+      - name: Upload Playwright diagnostics
+        if: failure() || (success() && steps.refresh.outputs.outcome == 'refused')
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-diagnostics-refresh-${{ inputs.runner-kind }}-${{ inputs.arch }}
+          path: ${{ env.DEV_ALCHEMY_CACHE_DIR }}/windows/playwright-diagnostics
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 7

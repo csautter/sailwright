@@ -45,6 +45,7 @@ on:
       - "pkg/build/testdata/win11_release_notes.html"
       - ".github/actions/refresh-windows-iso/**"
       - ".github/workflows/refresh-windows-iso.yml"
+      - ".github/workflows/refresh-windows-iso-arch.yml"
 
 concurrency:
   # Never cancel a running refresh: two refreshes must not race on the manifest.
@@ -52,190 +53,96 @@ concurrency:
   group: ${{ github.event_name == 'pull_request' && format('refresh-windows-iso-pr-{0}', github.event.pull_request.number) || 'refresh-windows-iso' }}
   cancel-in-progress: false
 
-env:
-  # PR runs only resolve the link: no download, no upload, and a refusal is just a warning.
-  REFRESH_MODE: ${{ github.event_name == 'pull_request' && 'resolve-only' || (inputs.adopt_legacy && 'adopt' || 'refresh') }}
-  REFRESH_FORCE: ${{ inputs.force && 'true' || 'false' }}
-  REFRESH_ARCH: ${{ inputs.arch || 'both' }}
-
+# PR runs only resolve the link (mode resolve-only): no download, no upload, and a refusal is
+# just a warning. inputs.* are empty outside workflow_dispatch, so scheduled runs refresh both.
 jobs:
-  refresh-hosted:
-    name: refresh on GitHub-hosted runner
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    outputs:
-      outcome_amd64: ${{ steps.amd64.outputs.outcome }}
-      outcome_arm64: ${{ steps.arm64.outputs.outcome }}
-      age_days_amd64: ${{ steps.amd64.outputs.age_days }}
-      age_days_arm64: ${{ steps.arm64.outputs.age_days }}
-    env:
-      DEV_ALCHEMY_APP_DATA_DIR: ${{ github.workspace }}/.dev-alchemy
-      DEV_ALCHEMY_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/cache
-      DEV_ALCHEMY_VAGRANT_DIR: ${{ github.workspace }}/.dev-alchemy/.vagrant
-      DEV_ALCHEMY_PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
-      PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
-      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
+  # One job per architecture, each on its own runner, so amd64 and arm64 never contact Microsoft
+  # one after the other from the same runner.
+  refresh-hosted-amd64:
+    name: refresh amd64 on GitHub-hosted runner
+    if: inputs.arch != 'arm64'
+    uses: ./.github/workflows/refresh-windows-iso-arch.yml
+    with:
+      arch: amd64
+      runs-on: ubuntu-24.04
+      runner-kind: hosted
+      mode: ${{ github.event_name == 'pull_request' && 'resolve-only' || (inputs.adopt_legacy && 'adopt' || 'refresh') }}
+      force: ${{ inputs.force && 'true' || 'false' }}
+    secrets:
+      BUILD_CACHE_FTP_USERNAME: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
+      BUILD_CACHE_FTP_PASSWORD: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
 
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
+  refresh-hosted-arm64:
+    name: refresh arm64 on GitHub-hosted runner
+    if: inputs.arch != 'amd64'
+    uses: ./.github/workflows/refresh-windows-iso-arch.yml
+    with:
+      arch: arm64
+      runs-on: ubuntu-24.04
+      runner-kind: hosted
+      mode: ${{ github.event_name == 'pull_request' && 'resolve-only' || (inputs.adopt_legacy && 'adopt' || 'refresh') }}
+      force: ${{ inputs.force && 'true' || 'false' }}
+    secrets:
+      BUILD_CACHE_FTP_USERNAME: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
+      BUILD_CACHE_FTP_PASSWORD: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
-
-      - name: Install dependencies linux
-        if: env.REFRESH_MODE != 'adopt'
-        run: |
-          go run cmd/main.go install
-
-      - name: Prepare download directory on /mnt
-        run: |
-          sudo mkdir -p /mnt/win11iso
-          sudo chown "$(id -u):$(id -g)" /mnt/win11iso
-
-      - name: Refresh amd64
-        id: amd64
-        if: env.REFRESH_ARCH == 'both' || env.REFRESH_ARCH == 'amd64'
-        uses: ./.github/actions/refresh-windows-iso
-        with:
-          arch: amd64
-          mode: ${{ env.REFRESH_MODE }}
-          force: ${{ env.REFRESH_FORCE }}
-          download-dir: /mnt/win11iso
-          ftp-server: ${{ vars.BUILD_CACHE_FTP_SERVER }}
-          ftp-port: ${{ vars.BUILD_CACHE_FTP_PORT }}
-          ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
-          ftp-password: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
-          ftp-base-dir: /private
-
-      - name: Refresh arm64
-        id: arm64
-        if: env.REFRESH_ARCH == 'both' || env.REFRESH_ARCH == 'arm64'
-        uses: ./.github/actions/refresh-windows-iso
-        with:
-          arch: arm64
-          mode: ${{ env.REFRESH_MODE }}
-          force: ${{ env.REFRESH_FORCE }}
-          download-dir: /mnt/win11iso
-          ftp-server: ${{ vars.BUILD_CACHE_FTP_SERVER }}
-          ftp-port: ${{ vars.BUILD_CACHE_FTP_PORT }}
-          ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
-          ftp-password: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
-          ftp-base-dir: /private
-
-      - name: Upload Playwright diagnostics
-        if: failure() || (success() && (steps.amd64.outputs.outcome == 'refused' || steps.arm64.outputs.outcome == 'refused'))
-        uses: actions/upload-artifact@v7
-        with:
-          name: playwright-diagnostics-refresh-hosted
-          path: ${{ env.DEV_ALCHEMY_CACHE_DIR }}/windows/playwright-diagnostics
-          if-no-files-found: ignore
-          include-hidden-files: true
-          retention-days: 7
-
-  # Second attempt for architectures Microsoft refused on the hosted runner: the self-hosted
+  # Second attempt for an architecture Microsoft refused on the hosted runner: the self-hosted
   # Tart runner has a residential/office IP that Microsoft usually accepts.
-  refresh-tart:
-    name: refresh on self-hosted Tart runner
-    needs: [refresh-hosted]
+  refresh-tart-amd64:
+    name: refresh amd64 on self-hosted Tart runner
+    needs: [refresh-hosted-amd64]
     if: >-
       github.event_name != 'pull_request' &&
       vars.USE_TART_MACOS_RUNNERS == 'true' &&
-      (needs.refresh-hosted.outputs.outcome_amd64 == 'refused' || needs.refresh-hosted.outputs.outcome_arm64 == 'refused')
-    runs-on: macos-26-tart
-    timeout-minutes: 120
-    outputs:
-      outcome_amd64: ${{ steps.amd64.outputs.outcome }}
-      outcome_arm64: ${{ steps.arm64.outputs.outcome }}
-    env:
-      DEV_ALCHEMY_APP_DATA_DIR: ${{ github.workspace }}/.dev-alchemy
-      DEV_ALCHEMY_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/cache
-      DEV_ALCHEMY_VAGRANT_DIR: ${{ github.workspace }}/.dev-alchemy/.vagrant
-      DEV_ALCHEMY_PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
-      PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
+      needs.refresh-hosted-amd64.outputs.outcome == 'refused'
+    uses: ./.github/workflows/refresh-windows-iso-arch.yml
+    with:
+      arch: amd64
+      runs-on: macos-26-tart
+      runner-kind: tart
+      mode: refresh
+      force: ${{ inputs.force && 'true' || 'false' }}
+    secrets:
+      BUILD_CACHE_FTP_USERNAME: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
+      BUILD_CACHE_FTP_PASSWORD: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
 
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
-
-      - name: Install dependencies macos
-        run: |
-          go run cmd/main.go install
-
-      - name: Refresh amd64
-        id: amd64
-        if: needs.refresh-hosted.outputs.outcome_amd64 == 'refused'
-        uses: ./.github/actions/refresh-windows-iso
-        with:
-          arch: amd64
-          mode: refresh
-          force: ${{ env.REFRESH_FORCE }}
-          download-dir: ${{ github.workspace }}/.win11iso
-          ftp-server: ${{ vars.BUILD_CACHE_FTP_SERVER }}
-          ftp-port: ${{ vars.BUILD_CACHE_FTP_PORT }}
-          ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
-          ftp-password: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
-          ftp-base-dir: /private
-
-      - name: Refresh arm64
-        id: arm64
-        if: needs.refresh-hosted.outputs.outcome_arm64 == 'refused'
-        uses: ./.github/actions/refresh-windows-iso
-        with:
-          arch: arm64
-          mode: refresh
-          force: ${{ env.REFRESH_FORCE }}
-          download-dir: ${{ github.workspace }}/.win11iso
-          ftp-server: ${{ vars.BUILD_CACHE_FTP_SERVER }}
-          ftp-port: ${{ vars.BUILD_CACHE_FTP_PORT }}
-          ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
-          ftp-password: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
-          ftp-base-dir: /private
-
-      - name: Upload Playwright diagnostics
-        if: failure() || (success() && (steps.amd64.outputs.outcome == 'refused' || steps.arm64.outputs.outcome == 'refused'))
-        uses: actions/upload-artifact@v7
-        with:
-          name: playwright-diagnostics-refresh-tart
-          path: ${{ env.DEV_ALCHEMY_CACHE_DIR }}/windows/playwright-diagnostics
-          if-no-files-found: ignore
-          include-hidden-files: true
-          retention-days: 7
+  refresh-tart-arm64:
+    name: refresh arm64 on self-hosted Tart runner
+    needs: [refresh-hosted-arm64]
+    if: >-
+      github.event_name != 'pull_request' &&
+      vars.USE_TART_MACOS_RUNNERS == 'true' &&
+      needs.refresh-hosted-arm64.outputs.outcome == 'refused'
+    uses: ./.github/workflows/refresh-windows-iso-arch.yml
+    with:
+      arch: arm64
+      runs-on: macos-26-tart
+      runner-kind: tart
+      mode: refresh
+      force: ${{ inputs.force && 'true' || 'false' }}
+    secrets:
+      BUILD_CACHE_FTP_USERNAME: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
+      BUILD_CACHE_FTP_PASSWORD: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
 
   # A single refusal is harmless. A manifest that nobody could refresh for 90 days is not:
   # fail loudly so a human publishes an ISO manually (docs/windows-iso-cache.md).
   staleness-guard:
     name: staleness guard
-    needs: [refresh-hosted, refresh-tart]
-    if: always() && github.event_name != 'pull_request' && needs.refresh-hosted.result == 'success'
+    needs: [refresh-hosted-amd64, refresh-hosted-arm64, refresh-tart-amd64, refresh-tart-arm64]
+    if: >-
+      always() && github.event_name != 'pull_request' &&
+      (needs.refresh-hosted-amd64.result == 'success' || needs.refresh-hosted-arm64.result == 'success')
     runs-on: ubuntu-24.04
     steps:
       - name: Fail when both runners are blocked and the manifest is stale
         shell: bash
         env:
-          HOSTED_AMD64: ${{ needs.refresh-hosted.outputs.outcome_amd64 }}
-          HOSTED_ARM64: ${{ needs.refresh-hosted.outputs.outcome_arm64 }}
-          TART_AMD64: ${{ needs.refresh-tart.outputs.outcome_amd64 }}
-          TART_ARM64: ${{ needs.refresh-tart.outputs.outcome_arm64 }}
-          AGE_AMD64: ${{ needs.refresh-hosted.outputs.age_days_amd64 }}
-          AGE_ARM64: ${{ needs.refresh-hosted.outputs.age_days_arm64 }}
+          HOSTED_AMD64: ${{ needs.refresh-hosted-amd64.outputs.outcome }}
+          HOSTED_ARM64: ${{ needs.refresh-hosted-arm64.outputs.outcome }}
+          TART_AMD64: ${{ needs.refresh-tart-amd64.outputs.outcome }}
+          TART_ARM64: ${{ needs.refresh-tart-arm64.outputs.outcome }}
+          AGE_AMD64: ${{ needs.refresh-hosted-amd64.outputs.age_days }}
+          AGE_ARM64: ${{ needs.refresh-hosted-arm64.outputs.age_days }}
           # Staleness limit (docs/adr/0006-versioned-windows-iso-cache.md); the Go due rule only
           # knows the 28-day re-check age.
           MAX_AGE_DAYS: "90"

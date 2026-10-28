@@ -162,8 +162,10 @@ to the legacy object.
 
 ### Fallback and staleness guard
 
-If the hosted runner is refused for an architecture, the `refresh-tart` job retries on the
-self-hosted `macos-26-tart` runner (requires `vars.USE_TART_MACOS_RUNNERS == 'true'`). If both are
+Each architecture is refreshed in its own job on its own runner (`refresh-hosted-amd64`,
+`refresh-hosted-arm64`, both calling `refresh-windows-iso-arch.yml`), so the two never contact
+Microsoft one after the other from the same runner. If the hosted runner is refused for an
+architecture, the matching `refresh-tart-<arch>` job retries on the self-hosted `macos-26-tart` runner (requires `vars.USE_TART_MACOS_RUNNERS == 'true'`). If both are
 refused, the run stays green with a warning, **unless** `checked_at` is older than 90 days, in which
 case `staleness-guard` fails the run so a human publishes an ISO manually.
 
