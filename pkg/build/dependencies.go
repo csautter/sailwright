@@ -349,8 +349,8 @@ func probeDownloadURL(ctx context.Context, client *http.Client, candidate string
 
 // qemuEfiAarch64URLs returns the pinned Debian qemu-efi-aarch64 package on the
 // Debian mirror first and on snapshot.debian.org as a fallback.
-func qemuEfiAarch64URLs(version string) []string {
-	poolPath := "pool/main/e/edk2/qemu-efi-aarch64_" + version + "_all.deb"
+func qemuEfiAarch64URLs() []string {
+	poolPath := "pool/main/e/edk2/qemu-efi-aarch64_" + qemuEfiAarch64Version + "_all.deb"
 	return []string{
 		"https://deb.debian.org/debian/" + poolPath,
 		"https://snapshot.debian.org/archive/debian/" + qemuEfiAarch64SnapshotTimestamp + "/" + poolPath,
@@ -359,7 +359,7 @@ func qemuEfiAarch64URLs(version string) []string {
 
 // qemuEfiAarch64Dependency returns the pinned ARM64 UEFI firmware package for the given VM configs.
 func qemuEfiAarch64Dependency(related ...VirtualMachineConfig) WebFileDependency {
-	urls := qemuEfiAarch64URLs(qemuEfiAarch64Version)
+	urls := qemuEfiAarch64URLs()
 	return WebFileDependency{
 		LocalPath:        GetDirectoriesInstance().CachePath("qemu-efi-aarch64_all.deb"),
 		Checksum:         "sha256:" + qemuEfiAarch64SHA256,

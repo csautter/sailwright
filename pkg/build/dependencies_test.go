@@ -469,10 +469,10 @@ func TestGetWindows11DownloadArm64(t *testing.T) {
 }
 
 func TestQemuEfiAarch64URLsUsePinnedDebianPoolAndSnapshot(t *testing.T) {
-	urls := qemuEfiAarch64URLs("2025.02-8+deb13u1")
+	urls := qemuEfiAarch64URLs()
 	want := []string{
-		"https://deb.debian.org/debian/pool/main/e/edk2/qemu-efi-aarch64_2025.02-8+deb13u1_all.deb",
-		"https://snapshot.debian.org/archive/debian/" + qemuEfiAarch64SnapshotTimestamp + "/pool/main/e/edk2/qemu-efi-aarch64_2025.02-8+deb13u1_all.deb",
+		"https://deb.debian.org/debian/pool/main/e/edk2/qemu-efi-aarch64_" + qemuEfiAarch64Version + "_all.deb",
+		"https://snapshot.debian.org/archive/debian/" + qemuEfiAarch64SnapshotTimestamp + "/pool/main/e/edk2/qemu-efi-aarch64_" + qemuEfiAarch64Version + "_all.deb",
 	}
 	if strings.Join(urls, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("unexpected qemu-efi-aarch64 URLs:\ngot  %v\nwant %v", urls, want)
@@ -519,7 +519,7 @@ func TestArm64DependencyReconciliationPinsQemuEfiAarch64(t *testing.T) {
 			if dep.BeforeHook != nil {
 				t.Errorf("%+v: qemu-efi-aarch64 must not resolve its URL at download time", vmconfig)
 			}
-			urls := qemuEfiAarch64URLs(qemuEfiAarch64Version)
+			urls := qemuEfiAarch64URLs()
 			if dep.Source != urls[0] || strings.Join(dep.FallbackSources, " ") != strings.Join(urls[1:], " ") {
 				t.Errorf("%+v: unexpected qemu-efi-aarch64 sources %q %v", vmconfig, dep.Source, dep.FallbackSources)
 			}
@@ -534,7 +534,7 @@ func TestDownloadPinnedQemuEfiAarch64(t *testing.T) {
 	if os.Getenv("RUN_INTEGRATION_TESTS") == "" {
 		t.Skip("skipping integration test; set RUN_INTEGRATION_TESTS=1 to run")
 	}
-	for _, url := range qemuEfiAarch64URLs(qemuEfiAarch64Version) {
+	for _, url := range qemuEfiAarch64URLs() {
 		t.Run(url, func(t *testing.T) {
 			dep := WebFileDependency{
 				LocalPath: filepath.Join(t.TempDir(), "qemu-efi-aarch64_all.deb"),
