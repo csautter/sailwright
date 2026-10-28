@@ -384,6 +384,17 @@ func TestQemuEfiAarch64URLsUsePinnedDebianPoolAndSnapshot(t *testing.T) {
 	}
 }
 
+// Renovate bumps only the version. A cached deb that still matches the old
+// checksum lets the build jobs pass, so catch the stale pin here instead.
+func TestQemuEfiAarch64PinIsConsistent(t *testing.T) {
+	if qemuEfiAarch64PinnedFor != qemuEfiAarch64Version {
+		t.Fatalf("qemuEfiAarch64Version is %s but the SHA-256 and snapshot timestamp were pinned for %s; "+
+			"update qemuEfiAarch64SHA256, qemuEfiAarch64SnapshotTimestamp and qemuEfiAarch64PinnedFor "+
+			"together with scripts/macos/download-arm64-uefi.sh (see build/packer/linux/ubuntu/README.md)",
+			qemuEfiAarch64Version, qemuEfiAarch64PinnedFor)
+	}
+}
+
 // The ARM64 firmware must not follow "latest in trixie": a firmware update
 // together with a new QEMU already left ARM64 builds hanging in UEFI on macOS.
 func TestArm64DependencyReconciliationPinsQemuEfiAarch64(t *testing.T) {
@@ -658,13 +669,18 @@ func TestDownloadWebFileDependencyRejectsChecksumMismatch(t *testing.T) {
 
 	destPath := filepath.Join(t.TempDir(), "artifact.iso")
 	dep := WebFileDependency{
-		LocalPath: destPath,
-		Source:    server.URL + "/artifact.iso",
-		Checksum:  "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		LocalPath:   destPath,
+		Source:      server.URL + "/artifact.iso",
+		Checksum:    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		FailureHint: "the pin is probably stale",
 	}
 
-	if err := downloadWebFileDependency(nil, dep); err == nil {
+	err := downloadWebFileDependency(nil, dep)
+	if err == nil {
 		t.Fatal("expected downloadWebFileDependency to reject checksum mismatch")
+	}
+	if !strings.HasSuffix(err.Error(), "; the pin is probably stale") {
+		t.Fatalf("expected the failure hint at the end of the error, got %v", err)
 	}
 	if _, err := os.Stat(destPath); !os.IsNotExist(err) {
 		t.Fatalf("expected checksum-mismatched download to be removed, stat err: %v", err)

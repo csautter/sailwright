@@ -297,6 +297,20 @@
       "extractVersion": "^virtio-win-(?<version>0\\.1\\.\\d+-\\d+)/$"
     },
     {
+      "description": "qemu-efi-aarch64 also pins a SHA-256 and a snapshot timestamp that Renovate cannot update",
+      "matchDatasources": [
+        "deb"
+      ],
+      "matchPackageNames": [
+        "qemu-efi-aarch64"
+      ],
+      "groupName": "qemu-efi-aarch64 ARM64 firmware",
+      "automerge": false,
+      "prBodyNotes": [
+        "**Manual steps required:** this PR only bumps the version. Before merging, update `qemuEfiAarch64SHA256`, `qemuEfiAarch64SnapshotTimestamp` and `qemuEfiAarch64PinnedFor` in `pkg/build/dependencies.go` and the matching variables in `scripts/macos/download-arm64-uefi.sh`, then follow the pin-update checklist in `build/packer/linux/ubuntu/README.md`. `TestQemuEfiAarch64PinIsConsistent` fails until this is done."
+      ]
+    },
+    {
       "matchPackageNames": [
         "ubuntu-live-server-amd64",
         "ubuntu-live-server-arm64"

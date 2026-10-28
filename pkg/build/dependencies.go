@@ -143,6 +143,8 @@ type WebFileDependency struct {
 	RelatedVmConfigs []VirtualMachineConfig
 	// BeforeHook is a function that is called before downloading the dependency. It can be used to modify the Source URL dynamically.
 	BeforeHook func() (string, error)
+	// FailureHint is appended to the error when every source fails.
+	FailureHint string
 }
 
 const (
@@ -167,10 +169,16 @@ const (
 	// qemuEfiAarch64SHA256 and qemuEfiAarch64SnapshotTimestamp are not managed by Renovate:
 	// the deb datasource publishes no digests. Update both together with qemuEfiAarch64Version;
 	// a stale checksum fails the download instead of silently changing the ARM64 firmware.
+	// Keep this comment directly below the Renovate-managed version: it also stops the
+	// shared Renovate regex from capturing the checksum as a digest of the version.
 	qemuEfiAarch64SHA256 = "a00b2411a79c8aeafd95a7c868ac3cd1aab592f1af9fff965f02d81a625276ed"
 	// Any snapshot.debian.org timestamp at which qemuEfiAarch64Version was current in trixie.
 	// deb.debian.org drops superseded versions at point releases; the snapshot keeps them.
 	qemuEfiAarch64SnapshotTimestamp = "20260601T000000Z"
+	// The qemuEfiAarch64Version that qemuEfiAarch64SHA256 and qemuEfiAarch64SnapshotTimestamp
+	// were taken for. Renovate does not touch it, so a version-only bump fails
+	// TestQemuEfiAarch64PinIsConsistent instead of passing CI with a cached deb.
+	qemuEfiAarch64PinnedFor = "2025.02-8+deb13u1"
 
 	virtioWinFedoraArchiveURL = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio"
 	virtioWinMirrorArchiveURL = "https://fedora-virt.repo.nfrance.com/virtio-win/direct-downloads/archive-virtio"
@@ -357,6 +365,8 @@ func qemuEfiAarch64Dependency(related ...VirtualMachineConfig) WebFileDependency
 		Source:           urls[0],
 		FallbackSources:  urls[1:],
 		RelatedVmConfigs: related,
+		FailureHint: fmt.Sprintf("if every source failed the checksum, the qemu-efi-aarch64 %s pin is probably stale (see build/packer/linux/ubuntu/README.md)",
+			qemuEfiAarch64Version),
 	}
 }
 
@@ -1005,7 +1015,11 @@ func downloadWebFileDependency(p *mpb.Progress, dep WebFileDependency) error {
 		}
 	}
 
-	return fmt.Errorf("failed to download web file dependency from all sources: %s", strings.Join(failures, "; "))
+	err := fmt.Errorf("failed to download web file dependency from all sources: %s", strings.Join(failures, "; "))
+	if dep.FailureHint != "" {
+		return fmt.Errorf("%w; %s", err, dep.FailureHint)
+	}
+	return err
 }
 
 func downloadWebFileDependencyFromSource(p *mpb.Progress, dep WebFileDependency, source string) error {

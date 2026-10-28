@@ -19,6 +19,8 @@ export DEV_ALCHEMY_CACHE_DIR="$cache_dir"
 # renovate: datasource=deb depName=qemu-efi-aarch64 versioning=deb registryUrl=https://deb.debian.org/debian?suite=trixie&components=main&binaryArch=all
 QEMU_EFI_AARCH64_VERSION="2025.02-8+deb13u1"
 # Not managed by Renovate: update together with QEMU_EFI_AARCH64_VERSION.
+# Keep this comment directly below the version: it also stops the shared Renovate
+# regex from capturing the SHA-256 as a digest of the version.
 QEMU_EFI_AARCH64_SHA256="a00b2411a79c8aeafd95a7c868ac3cd1aab592f1af9fff965f02d81a625276ed"
 QEMU_EFI_AARCH64_SNAPSHOT_TIMESTAMP="20260601T000000Z"
 QEMU_EFI_AARCH64_POOL_PATH="pool/main/e/edk2/qemu-efi-aarch64_${QEMU_EFI_AARCH64_VERSION}_all.deb"
@@ -59,7 +61,7 @@ else
 	done
 	rm -f "${DEB_PATH}.tmp"
 	if [ "${downloaded}" != "true" ]; then
-		echo "Failed to download qemu-efi-aarch64 ${QEMU_EFI_AARCH64_VERSION}" >&2
+		echo "Failed to download qemu-efi-aarch64 ${QEMU_EFI_AARCH64_VERSION}; if every source failed the SHA-256 check, the pin is probably stale (see build/packer/linux/ubuntu/README.md)" >&2
 		exit 1
 	fi
 fi
