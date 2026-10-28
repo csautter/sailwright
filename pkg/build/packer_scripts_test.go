@@ -161,7 +161,8 @@ func TestWindowsQemuScriptRequiresSupportedPython(t *testing.T) {
 	got := readRepoFile(t, windowsQemuScriptPath)
 	assertContainsAll(t, windowsQemuScriptPath, got,
 		fmt.Sprintf(`sys.version_info < (3, %d)`, minPythonMinor),
-		`for candidate in python3 python3.14 python3.13 python3.12 python3.11 python3.10 python; do`,
+		`candidates=(python3 python3.14 python3.13 python3.12 python3.11 python3.10 python)`,
+		`candidates+=(/opt/homebrew/bin/python3 /usr/local/bin/python3)`,
 		`python_is_supported .venv/bin/python3`,
 		`"$python_bin" -m venv .venv`,
 	)

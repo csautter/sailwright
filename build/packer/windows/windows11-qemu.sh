@@ -214,15 +214,21 @@ python_is_supported() {
 
 resolve_python_for_venv() {
 	local candidate
+	local -a candidates=(python3 python3.14 python3.13 python3.12 python3.11 python3.10 python)
 
-	for candidate in python3 python3.14 python3.13 python3.12 python3.11 python3.10 python; do
+	if [[ "$(uname -s)" == "Darwin" ]]; then
+		# /usr/bin often comes before Homebrew on PATH and holds Python 3.9.
+		candidates+=(/opt/homebrew/bin/python3 /usr/local/bin/python3)
+	fi
+
+	for candidate in "${candidates[@]}"; do
 		if command -v "$candidate" >/dev/null 2>&1 && python_is_supported "$candidate"; then
 			echo "$candidate"
 			return 0
 		fi
 	done
 
-	echo "Python 3.10 or newer not found on PATH; install one (on macOS: brew install python@3.13)" >&2
+	echo "Python 3.10 or newer not found; checked ${candidates[*]}; install one (on macOS: brew install python@3.13)" >&2
 	return 1
 }
 
