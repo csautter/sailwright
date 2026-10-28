@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -403,13 +404,26 @@ func (command pythonVenvCommand) displayName() string {
 	return command.executable + " " + strings.Join(command.argsPrefix, " ")
 }
 
+// minPythonMinor is the oldest Python 3 minor version the Windows 11 download
+// script supports. Playwright 1.61 dropped Python 3.9, which macOS still ships
+// as /usr/bin/python3.
+const minPythonMinor = 10
+
+// pythonVersionProbe reports the major and minor version of a Python command.
+type pythonVersionProbe func(command pythonVenvCommand) (major, minor int, err error)
+
 func resolvePythonVenvCommand() (pythonVenvCommand, error) {
-	return resolvePythonVenvCommandForOS(runtime.GOOS, exec.LookPath)
+	return resolvePythonVenvCommandForOS(runtime.GOOS, exec.LookPath, probePythonVersion)
 }
 
-func resolvePythonVenvCommandForOS(goos string, lookPath func(string) (string, error)) (pythonVenvCommand, error) {
+func resolvePythonVenvCommandForOS(goos string, lookPath func(string) (string, error), probeVersion pythonVersionProbe) (pythonVenvCommand, error) {
 	candidates := []pythonVenvCommand{
 		{executable: "python3"},
+		{executable: "python3.14"},
+		{executable: "python3.13"},
+		{executable: "python3.12"},
+		{executable: "python3.11"},
+		{executable: "python3.10"},
 		{executable: "python"},
 	}
 	if goos == "windows" {
@@ -423,14 +437,50 @@ func resolvePythonVenvCommandForOS(goos string, lookPath func(string) (string, e
 	checked := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		resolvedPath, err := lookPath(candidate.executable)
-		if err == nil {
-			candidate.executable = resolvedPath
-			return candidate, nil
+		if err != nil {
+			checked = append(checked, candidate.displayName())
+			continue
 		}
-		checked = append(checked, candidate.displayName())
+		candidate.executable = resolvedPath
+		major, minor, err := probeVersion(candidate)
+		if err != nil {
+			checked = append(checked, fmt.Sprintf("%s (%v)", candidate.displayName(), err))
+			continue
+		}
+		if !isSupportedPythonVersion(major, minor) {
+			checked = append(checked, fmt.Sprintf("%s (Python %d.%d)", candidate.displayName(), major, minor))
+			continue
+		}
+		return candidate, nil
 	}
 
-	return pythonVenvCommand{}, fmt.Errorf("Python 3 executable not found on PATH; checked %s", strings.Join(checked, ", "))
+	return pythonVenvCommand{}, fmt.Errorf("Python 3.%d or newer not found on PATH; checked %s", minPythonMinor, strings.Join(checked, ", "))
+}
+
+func isSupportedPythonVersion(major, minor int) bool {
+	return major == 3 && minor >= minPythonMinor
+}
+
+func probePythonVersion(command pythonVenvCommand) (int, int, error) {
+	// #nosec G204 -- the executable is a resolved Python interpreter and the argv is fixed.
+	output, err := exec.Command(command.executable, command.args("-c", "import sys; print('%d.%d' % sys.version_info[:2])")...).Output()
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to query Python version: %w", err)
+	}
+	return parsePythonVersion(string(output))
+}
+
+func parsePythonVersion(output string) (int, int, error) {
+	majorText, minorText, ok := strings.Cut(strings.TrimSpace(output), ".")
+	if !ok {
+		return 0, 0, fmt.Errorf("unexpected Python version %q", strings.TrimSpace(output))
+	}
+	major, majorErr := strconv.Atoi(majorText)
+	minor, minorErr := strconv.Atoi(minorText)
+	if majorErr != nil || minorErr != nil {
+		return 0, 0, fmt.Errorf("unexpected Python version %q", strings.TrimSpace(output))
+	}
+	return major, minor, nil
 }
 
 // bootstrapPythonEnv ensures the Python virtual environment at workdir/.venv exists
@@ -510,11 +560,21 @@ func ensurePythonVenvWithCommand(workdir string, pythonCommand pythonVenvCommand
 	return nil
 }
 
-// checkPythonVenvUsable verifies that the venv interpreter starts and can import pip.
+// checkPythonVenvUsable verifies that the venv interpreter starts, can import pip
+// and is new enough for the pinned requirements.
 func checkPythonVenvUsable(workdir string) error {
 	venvPython, _ := pythonVenvExecutablePaths(workdir)
-	_, err := RunCliCommand(workdir, venvPython, []string{"-m", "pip", "--version"})
-	return err
+	if _, err := RunCliCommand(workdir, venvPython, []string{"-m", "pip", "--version"}); err != nil {
+		return err
+	}
+	major, minor, err := probePythonVersion(pythonVenvCommand{executable: venvPython})
+	if err != nil {
+		return err
+	}
+	if !isSupportedPythonVersion(major, minor) {
+		return fmt.Errorf("Python %d.%d is older than 3.%d", major, minor, minPythonMinor)
+	}
+	return nil
 }
 
 func pythonVenvExecutablePaths(workdir string) (venvPython, pipPath string) {

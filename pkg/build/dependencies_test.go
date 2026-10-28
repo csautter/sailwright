@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -110,13 +111,25 @@ func TestMissingPythonVenvExecutables(t *testing.T) {
 	}
 }
 
+// fixedPythonVersions returns a version probe that reports the given version per
+// resolved executable path.
+func fixedPythonVersions(versions map[string][2]int) pythonVersionProbe {
+	return func(command pythonVenvCommand) (int, int, error) {
+		version, ok := versions[command.executable]
+		if !ok {
+			return 0, 0, fmt.Errorf("unexpected probe of %s", command.executable)
+		}
+		return version[0], version[1], nil
+	}
+}
+
 func TestResolvePythonVenvCommandPrefersPython3OnUnix(t *testing.T) {
 	command, err := resolvePythonVenvCommandForOS("linux", func(name string) (string, error) {
-		if name == "python3" {
-			return "/usr/bin/python3", nil
+		if name == "python3" || name == "python3.12" {
+			return "/usr/bin/" + name, nil
 		}
 		return "", fmt.Errorf("%s not found", name)
-	})
+	}, fixedPythonVersions(map[string][2]int{"/usr/bin/python3": {3, 13}, "/usr/bin/python3.12": {3, 12}}))
 	if err != nil {
 		t.Fatalf("resolvePythonVenvCommandForOS returned error: %v", err)
 	}
@@ -134,7 +147,7 @@ func TestResolvePythonVenvCommandFallsBackToPyLauncherOnWindows(t *testing.T) {
 			return `C:\Windows\py.exe`, nil
 		}
 		return "", fmt.Errorf("%s not found", name)
-	})
+	}, fixedPythonVersions(map[string][2]int{`C:\Windows\py.exe`: {3, 13}}))
 	if err != nil {
 		t.Fatalf("resolvePythonVenvCommandForOS returned error: %v", err)
 	}
@@ -149,7 +162,7 @@ func TestResolvePythonVenvCommandFallsBackToPyLauncherOnWindows(t *testing.T) {
 func TestResolvePythonVenvCommandReportsCheckedCandidates(t *testing.T) {
 	_, err := resolvePythonVenvCommandForOS("windows", func(name string) (string, error) {
 		return "", fmt.Errorf("%s not found", name)
-	})
+	}, fixedPythonVersions(nil))
 	if err == nil {
 		t.Fatal("expected error when no Python command is found, got nil")
 	}
@@ -157,6 +170,86 @@ func TestResolvePythonVenvCommandReportsCheckedCandidates(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("expected error %q to mention checked candidate %q", err.Error(), want)
 		}
+	}
+}
+
+// macOS ships Python 3.9 as /usr/bin/python3, which the pinned Playwright no
+// longer supports, so a versioned Homebrew interpreter must win.
+func TestResolvePythonVenvCommandSkipsTooOldPython3(t *testing.T) {
+	command, err := resolvePythonVenvCommandForOS("darwin", func(name string) (string, error) {
+		switch name {
+		case "python3":
+			return "/usr/bin/python3", nil
+		case "python3.13":
+			return "/opt/homebrew/bin/python3.13", nil
+		}
+		return "", fmt.Errorf("%s not found", name)
+	}, fixedPythonVersions(map[string][2]int{"/usr/bin/python3": {3, 9}, "/opt/homebrew/bin/python3.13": {3, 13}}))
+	if err != nil {
+		t.Fatalf("resolvePythonVenvCommandForOS returned error: %v", err)
+	}
+	if command.executable != "/opt/homebrew/bin/python3.13" {
+		t.Fatalf("expected Homebrew python3.13, got %q", command.executable)
+	}
+}
+
+func TestResolvePythonVenvCommandReportsTooOldVersions(t *testing.T) {
+	_, err := resolvePythonVenvCommandForOS("darwin", func(name string) (string, error) {
+		if name == "python3" {
+			return "/usr/bin/python3", nil
+		}
+		return "", fmt.Errorf("%s not found", name)
+	}, fixedPythonVersions(map[string][2]int{"/usr/bin/python3": {3, 9}}))
+	if err == nil {
+		t.Fatal("expected error when only Python 3.9 is available, got nil")
+	}
+	for _, want := range []string{"Python 3.10 or newer", "/usr/bin/python3 (Python 3.9)", "python3.13"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error %q to contain %q", err.Error(), want)
+		}
+	}
+}
+
+func TestParsePythonVersion(t *testing.T) {
+	tests := []struct {
+		output       string
+		major, minor int
+		wantErr      bool
+	}{
+		{output: "3.9\n", major: 3, minor: 9},
+		{output: "3.13", major: 3, minor: 13},
+		{output: "Python 3.13", wantErr: true},
+		{output: "", wantErr: true},
+	}
+	for _, tt := range tests {
+		major, minor, err := parsePythonVersion(tt.output)
+		if (err != nil) != tt.wantErr {
+			t.Fatalf("parsePythonVersion(%q) error = %v, wantErr %v", tt.output, err, tt.wantErr)
+		}
+		if !tt.wantErr && (major != tt.major || minor != tt.minor) {
+			t.Fatalf("parsePythonVersion(%q) = %d.%d, want %d.%d", tt.output, major, minor, tt.major, tt.minor)
+		}
+	}
+}
+
+// A venv created by an older system Python must be rebuilt instead of reused.
+func TestCheckPythonVenvUsableRejectsTooOldInterpreter(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell script as fake interpreter")
+	}
+	workdir := t.TempDir()
+	venvPython, _ := pythonVenvExecutablePaths(workdir)
+	if err := os.MkdirAll(filepath.Dir(venvPython), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fake := "#!/bin/sh\nif [ \"$1\" = -c ]; then echo 3.9; fi\n"
+	if err := os.WriteFile(venvPython, []byte(fake), 0o755); err != nil { // #nosec G306 -- test needs an executable fake interpreter.
+		t.Fatal(err)
+	}
+
+	err := checkPythonVenvUsable(workdir)
+	if err == nil || !strings.Contains(err.Error(), "Python 3.9 is older than 3.10") {
+		t.Fatalf("expected too-old venv error, got %v", err)
 	}
 }
 
