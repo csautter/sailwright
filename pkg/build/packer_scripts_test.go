@@ -1,8 +1,10 @@
 package build
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -182,5 +184,48 @@ func TestArm64UefiDownloadScriptUsesSamePinAsGo(t *testing.T) {
 	)
 	if strings.Contains(got, "Packages.gz") {
 		t.Errorf("expected %q not to resolve the latest firmware from the Debian index", arm64UefiDownloadScriptPath)
+	}
+}
+
+// Renovate's shared regex captures a quoted hex value on the line after the version as
+// its digest. The comment below each qemu-efi-aarch64 version keeps the SHA-256 out of
+// that match; reformatting or deleting it would let Renovate treat the SHA-256 as a digest.
+func TestRenovateDoesNotCaptureQemuEfiAarch64SHA256AsDigest(t *testing.T) {
+	t.Parallel()
+
+	var config struct {
+		CustomManagers []struct {
+			MatchStrings []string `json:"matchStrings"`
+		} `json:"customManagers"`
+	}
+	if err := json.Unmarshal([]byte(readRepoFile(t, "renovate.json")), &config); err != nil {
+		t.Fatalf("failed to parse renovate.json: %v", err)
+	}
+
+	for _, path := range []string{"pkg/build/dependencies.go", arm64UefiDownloadScriptPath} {
+		content := readRepoFile(t, path)
+		matched := false
+		for _, manager := range config.CustomManagers {
+			for _, matchString := range manager.MatchStrings {
+				pattern, err := regexp.Compile(matchString)
+				if err != nil {
+					continue
+				}
+				for _, match := range pattern.FindAllStringSubmatch(content, -1) {
+					depName := pattern.SubexpIndex("depName")
+					digest := pattern.SubexpIndex("currentDigest")
+					if depName < 0 || match[depName] != "qemu-efi-aarch64" {
+						continue
+					}
+					matched = true
+					if digest >= 0 && match[digest] != "" {
+						t.Errorf("%s: Renovate captures %q as the qemu-efi-aarch64 digest; keep the comment directly below the version", path, match[digest])
+					}
+				}
+			}
+		}
+		if !matched {
+			t.Errorf("%s: no Renovate matchString finds the qemu-efi-aarch64 version", path)
+		}
 	}
 }
