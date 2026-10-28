@@ -348,6 +348,18 @@ func qemuEfiAarch64URLs(version string) []string {
 	}
 }
 
+// qemuEfiAarch64Dependency returns the pinned ARM64 UEFI firmware package for the given VM configs.
+func qemuEfiAarch64Dependency(related ...VirtualMachineConfig) WebFileDependency {
+	urls := qemuEfiAarch64URLs(qemuEfiAarch64Version)
+	return WebFileDependency{
+		LocalPath:        GetDirectoriesInstance().CachePath("qemu-efi-aarch64_all.deb"),
+		Checksum:         "sha256:" + qemuEfiAarch64SHA256,
+		Source:           urls[0],
+		FallbackSources:  urls[1:],
+		RelatedVmConfigs: related,
+	}
+}
+
 func DependencyReconciliation(vmconfig VirtualMachineConfig) {
 	p := mpb.New(mpb.WithWidth(80))
 	defer p.Wait()
@@ -779,26 +791,20 @@ func getWebFileDependencies() []WebFileDependency {
 				},
 			},
 		},
-		{
-			LocalPath:       GetDirectoriesInstance().CachePath("qemu-efi-aarch64_all.deb"),
-			Checksum:        "sha256:" + qemuEfiAarch64SHA256,
-			Source:          qemuEfiAarch64URLs(qemuEfiAarch64Version)[0],
-			FallbackSources: qemuEfiAarch64URLs(qemuEfiAarch64Version)[1:],
-			RelatedVmConfigs: []VirtualMachineConfig{
-				{
-					OS:                   "windows11",
-					Arch:                 "arm64",
-					HostOs:               HostOsDarwin,
-					VirtualizationEngine: VirtualizationEngineUtm,
-				},
-				{
-					OS:                   "windows11",
-					Arch:                 "arm64",
-					HostOs:               HostOsLinux,
-					VirtualizationEngine: VirtualizationEngineQemu,
-				},
+		qemuEfiAarch64Dependency(
+			VirtualMachineConfig{
+				OS:                   "windows11",
+				Arch:                 "arm64",
+				HostOs:               HostOsDarwin,
+				VirtualizationEngine: VirtualizationEngineUtm,
 			},
-		},
+			VirtualMachineConfig{
+				OS:                   "windows11",
+				Arch:                 "arm64",
+				HostOs:               HostOsLinux,
+				VirtualizationEngine: VirtualizationEngineQemu,
+			},
+		),
 		{
 			LocalPath:       GetDirectoriesInstance().CachePath("windows", "virtio-win.iso"),
 			Checksum:        "sha256:" + virtioWinSHA256,
@@ -918,42 +924,36 @@ func getWebFileDependencies() []WebFileDependency {
 				},
 			},
 		},
-		{
-			LocalPath:       GetDirectoriesInstance().CachePath("qemu-efi-aarch64_all.deb"),
-			Checksum:        "sha256:" + qemuEfiAarch64SHA256,
-			Source:          qemuEfiAarch64URLs(qemuEfiAarch64Version)[0],
-			FallbackSources: qemuEfiAarch64URLs(qemuEfiAarch64Version)[1:],
-			RelatedVmConfigs: []VirtualMachineConfig{
-				{
-					OS:                   "ubuntu",
-					UbuntuType:           "server",
-					Arch:                 "arm64",
-					HostOs:               HostOsDarwin,
-					VirtualizationEngine: VirtualizationEngineUtm,
-				},
-				{
-					OS:                   "ubuntu",
-					UbuntuType:           "desktop",
-					Arch:                 "arm64",
-					HostOs:               HostOsDarwin,
-					VirtualizationEngine: VirtualizationEngineUtm,
-				},
-				{
-					OS:                   "ubuntu",
-					UbuntuType:           "server",
-					Arch:                 "arm64",
-					HostOs:               HostOsLinux,
-					VirtualizationEngine: VirtualizationEngineQemu,
-				},
-				{
-					OS:                   "ubuntu",
-					UbuntuType:           "desktop",
-					Arch:                 "arm64",
-					HostOs:               HostOsLinux,
-					VirtualizationEngine: VirtualizationEngineQemu,
-				},
+		qemuEfiAarch64Dependency(
+			VirtualMachineConfig{
+				OS:                   "ubuntu",
+				UbuntuType:           "server",
+				Arch:                 "arm64",
+				HostOs:               HostOsDarwin,
+				VirtualizationEngine: VirtualizationEngineUtm,
 			},
-		},
+			VirtualMachineConfig{
+				OS:                   "ubuntu",
+				UbuntuType:           "desktop",
+				Arch:                 "arm64",
+				HostOs:               HostOsDarwin,
+				VirtualizationEngine: VirtualizationEngineUtm,
+			},
+			VirtualMachineConfig{
+				OS:                   "ubuntu",
+				UbuntuType:           "server",
+				Arch:                 "arm64",
+				HostOs:               HostOsLinux,
+				VirtualizationEngine: VirtualizationEngineQemu,
+			},
+			VirtualMachineConfig{
+				OS:                   "ubuntu",
+				UbuntuType:           "desktop",
+				Arch:                 "arm64",
+				HostOs:               HostOsLinux,
+				VirtualizationEngine: VirtualizationEngineQemu,
+			},
+		),
 	}
 }
 
