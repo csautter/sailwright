@@ -85,8 +85,8 @@ Therefore:
   `virt,highmem=on`, because Ubuntu 24.04 ships QEMU 8.2 without `virt-10.0`.
 - `qemu-efi-aarch64` is pinned to a fixed Debian version and SHA-256 in
   `pkg/build/dependencies.go` and `scripts/macos/download-arm64-uefi.sh`.
-  Renovate proposes new versions, but only bumps the version. Follow the
-  checklist below before merging such a PR.
+  Renovate proposes new versions, and a workflow syncs the checksum and
+  snapshot timestamp. Follow the checklist below before merging such a PR.
 - `sailwright build` logs the QEMU version for macOS ARM64 builds, warns
   when the major version has not been tested, and stops when QEMU is older
   than 10.0 (`brew upgrade qemu`).
@@ -96,37 +96,33 @@ update, try a different `-machine virt-X.Y` first.
 
 #### Updating the firmware pin
 
-`TestQemuEfiAarch64PinIsConsistent` fails until steps 1 to 4 are done.
+`TestQemuEfiAarch64PinIsConsistent` fails until steps 1 and 2 are done.
 
 1. Set the new version in `qemuEfiAarch64Version` (Go) and
    `QEMU_EFI_AARCH64_VERSION` (shell). Renovate does this step.
-2. Compute the SHA-256 and set `qemuEfiAarch64SHA256` and
-   `QEMU_EFI_AARCH64_SHA256`:
+2. Sync the other pins. On Renovate branches the "Sync qemu-efi-aarch64 pin"
+   workflow does this; to do it by hand, run:
 
    ```bash
-   version=2025.02-8+deb13u1
-   curl -fsSL "https://deb.debian.org/debian/pool/main/e/edk2/qemu-efi-aarch64_${version}_all.deb" | sha256sum
+   scripts/update-qemu-efi-aarch64-pin.sh
    ```
 
-3. Set `qemuEfiAarch64SnapshotTimestamp` and
-   `QEMU_EFI_AARCH64_SNAPSHOT_TIMESTAMP` to a snapshot.debian.org timestamp
-   at which the version was in the archive. Use its `first_seen` value:
-   earlier timestamps return 404, and so can timestamps after the version was
-   removed. Look it up with:
-
-   ```bash
-   encoded="${version//+/%2B}"
-   curl -s "https://snapshot.debian.org/mr/package/edk2/${encoded}/binfiles/qemu-efi-aarch64/${encoded}?fileinfo=1" |
-     jq -r '.fileinfo[][] | select(.archive_name == "debian") | .first_seen'
-   ```
-
-4. Set `qemuEfiAarch64PinnedFor` to the new version.
-5. If the upstream edk2 release changed (for example from 2025.02), update
+   The script reads the version from `pkg/build/dependencies.go`, copies it to
+   the shell script, downloads the deb, and checks it against
+   snapshot.debian.org by SHA-1. It then writes the SHA-256
+   (`qemuEfiAarch64SHA256`, `QEMU_EFI_AARCH64_SHA256`), the snapshot
+   timestamp (`qemuEfiAarch64SnapshotTimestamp`,
+   `QEMU_EFI_AARCH64_SNAPSHOT_TIMESTAMP`) and `qemuEfiAarch64PinnedFor`.
+   The timestamp is the file's `first_seen` on snapshot.debian.org: earlier
+   timestamps return 404, and so can timestamps after the version was
+   removed. The script fails while snapshot.debian.org has not indexed the
+   new version yet; run it again later.
+3. If the upstream edk2 release changed (for example from 2025.02), update
    "Debian AAVMF 2025.02" in the `arm64_machine` comments of
    [linux-ubuntu-qemu.pkr.hcl](linux-ubuntu-qemu.pkr.hcl) and
    [windows11-qemu.pkr.hcl](../../windows/windows11-qemu.pkr.hcl), and in this
    section.
-6. Check both download sources and boot an ARM64 VM on an Apple Silicon Mac:
+4. Check both download sources and boot an ARM64 VM on an Apple Silicon Mac:
 
    ```bash
    RUN_INTEGRATION_TESTS=1 go test ./pkg/build -run '^TestDownloadPinnedQemuEfiAarch64$'

@@ -484,8 +484,8 @@ func TestQemuEfiAarch64URLsUsePinnedDebianPoolAndSnapshot(t *testing.T) {
 func TestQemuEfiAarch64PinIsConsistent(t *testing.T) {
 	if qemuEfiAarch64PinnedFor != qemuEfiAarch64Version {
 		t.Fatalf("qemuEfiAarch64Version is %s but the SHA-256 and snapshot timestamp were pinned for %s; "+
-			"update qemuEfiAarch64SHA256, qemuEfiAarch64SnapshotTimestamp and qemuEfiAarch64PinnedFor "+
-			"together with scripts/macos/download-arm64-uefi.sh (see build/packer/linux/ubuntu/README.md)",
+			"run scripts/update-qemu-efi-aarch64-pin.sh to update qemuEfiAarch64SHA256, qemuEfiAarch64SnapshotTimestamp, "+
+			"qemuEfiAarch64PinnedFor and scripts/macos/download-arm64-uefi.sh (see build/packer/linux/ubuntu/README.md)",
 			qemuEfiAarch64Version, qemuEfiAarch64PinnedFor)
 	}
 }

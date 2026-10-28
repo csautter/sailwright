@@ -1,0 +1,45 @@
+name: Sync qemu-efi-aarch64 pin
+
+# Renovate bumps the qemu-efi-aarch64 version but cannot compute the deb SHA-256
+# or the snapshot.debian.org timestamp. This workflow completes Renovate's PR by
+# syncing the shell pin, the checksum and the timestamp. The boot test on Apple
+# Silicon stays manual (see build/packer/linux/ubuntu/README.md).
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - "scripts/macos/download-arm64-uefi.sh"
+      - "pkg/build/dependencies.go"
+      - "scripts/update-qemu-efi-aarch64-pin.sh"
+      - ".github/workflows/sync-qemu-efi-aarch64-pin.yml"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    name: Sync qemu-efi-aarch64 pins
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'renovate/qemu-efi-aarch64')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          # RENOVATE_TOKEN (not GITHUB_TOKEN) so the pushed commit triggers the other workflows.
+          token: ${{ secrets.RENOVATE_TOKEN }}
+
+      - name: Update version, checksum and snapshot pins
+        run: scripts/update-qemu-efi-aarch64-pin.sh
+
+      - name: Commit changes
+        run: |
+          if git diff --quiet; then
+            echo "qemu-efi-aarch64 pins already in sync"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(deps): sync qemu-efi-aarch64 checksum and snapshot timestamp"
+          git push

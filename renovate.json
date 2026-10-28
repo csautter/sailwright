@@ -307,7 +307,7 @@
       "groupName": "qemu-efi-aarch64 ARM64 firmware",
       "automerge": false,
       "prBodyNotes": [
-        "**Manual steps required:** this PR only bumps the version. Before merging, update `qemuEfiAarch64SHA256`, `qemuEfiAarch64SnapshotTimestamp` and `qemuEfiAarch64PinnedFor` in `pkg/build/dependencies.go` and the matching variables in `scripts/macos/download-arm64-uefi.sh`, then follow the pin-update checklist in `build/packer/linux/ubuntu/README.md`. `TestQemuEfiAarch64PinIsConsistent` fails until this is done."
+        "**Manual steps required:** this PR only bumps the version. The \"Sync qemu-efi-aarch64 pin\" workflow then commits the SHA-256, the snapshot timestamp and `qemuEfiAarch64PinnedFor` (or run `scripts/update-qemu-efi-aarch64-pin.sh`). Before merging, follow the rest of the pin-update checklist in `build/packer/linux/ubuntu/README.md`, including the boot test on Apple Silicon. `TestQemuEfiAarch64PinIsConsistent` fails until the pins are synced."
       ]
     },
     {
