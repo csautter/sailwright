@@ -21,6 +21,7 @@ func TestMacOSQemuVersionCheck(t *testing.T) {
 		{name: "tested 10", output: "QEMU emulator version 10.0.3", want: macOSQemuVersionOK, wantMsg: "QEMU 10.0"},
 		{name: "untested major", output: "QEMU emulator version 12.0.0", want: macOSQemuVersionWarn, wantMsg: "has not been tested"},
 		{name: "too old for virt-10.0", output: "QEMU emulator version 9.2.4", want: macOSQemuVersionTooOld, wantMsg: "virt-10.0 machine needs QEMU 10.0"},
+		{name: "10.0 release candidate", output: "QEMU emulator version 9.2.90", want: macOSQemuVersionTooOld, wantMsg: "QEMU 9.2 is too old"},
 		{name: "unparsable", output: "something else", want: macOSQemuVersionWarn, wantMsg: "could not parse"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -65,5 +66,14 @@ func TestCheckMacOSArm64QemuVersion(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+// Without qemu-system-aarch64 the check only warns; Packer reports the missing binary later.
+func TestCheckMacOSArm64QemuVersionWithoutQemu(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	if err := checkMacOSArm64QemuVersion(VirtualMachineConfig{Arch: "arm64"}); err != nil {
+		t.Fatalf("expected no error without qemu-system-aarch64, got %v", err)
 	}
 }

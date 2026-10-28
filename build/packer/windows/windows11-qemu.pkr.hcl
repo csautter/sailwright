@@ -101,6 +101,12 @@ variable "is_ci" {
   default = env("CI") == "true"
 }
 
+variable "arm64_machine" {
+  type        = string
+  default     = ""
+  description = "QEMU -machine value for ARM64 guests. sailwright build sets it through PKR_VAR_arm64_machine from the machines the installed QEMU supports. Empty uses virt-10.0 on macOS and virt elsewhere."
+}
+
 locals {
   cache_directory = var.cache_dir
   host_is_linux   = var.host_os == "linux"
@@ -131,9 +137,11 @@ locals {
   arm64_install_bootindex           = local.arm64_can_use_native_acceleration ? 1 : 0
   arm64_disk_bootindex              = local.arm64_can_use_native_acceleration ? 0 : 1
   # Homebrew QEMU 11.x with HVF hangs in the Debian AAVMF 2025.02 firmware on
-  # the unversioned virt machine (virt-11.x). Pin macOS to the machine version
-  # that firmware is built for. Linux CI uses QEMU 8.2 and has no virt-10.0.
-  arm64_machine = local.host_is_darwin ? "virt-10.0,highmem=on" : "virt,highmem=on"
+  # the unversioned virt machine (virt-11.x). sailwright build passes virt-10.0
+  # whenever QEMU has it and virt otherwise (QEMU 8.2 on Ubuntu 24.04). Without
+  # that, macOS keeps the pin and other hosts use virt.
+  arm64_machine_default = local.host_is_darwin ? "virt-10.0,highmem=on" : "virt,highmem=on"
+  arm64_machine         = var.arm64_machine != "" ? var.arm64_machine : local.arm64_machine_default
 
   qemu_display = local.host_is_darwin && !var.headless ? "cocoa" : "none"
 

@@ -29,7 +29,8 @@ type buildCompletionDecision struct {
 	buildSuccess bool
 }
 
-func RunBuildScript(config VirtualMachineConfig, executable string, args []string) (err error) {
+// RunBuildScript runs a build script with the managed environment plus extraEnv.
+func RunBuildScript(config VirtualMachineConfig, executable string, args []string, extraEnv ...string) (err error) {
 	skipBuild, cleanupArtifacts, err := prepareBuildArtifactsForBuild(config)
 	if err != nil {
 		return err
@@ -82,6 +83,7 @@ func RunBuildScript(config VirtualMachineConfig, executable string, args []strin
 	defer cleanupBuildArtifacts()
 	cmd.Dir = GetDirectoriesInstance().GetDirectories().ProjectDir
 	cmd.Env = append(os.Environ(), GetDirectoriesInstance().ManagedEnv()...)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	if config.Verbose {
 		cmd.Env = append(cmd.Env, "PACKER_LOG=1")
 	}

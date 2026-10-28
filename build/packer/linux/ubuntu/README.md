@@ -81,18 +81,28 @@ after "Start boot option": GRUB never appears. The same command boots with
 
 Therefore:
 
-- On macOS the template uses `-machine virt-10.0,highmem=on`. Linux keeps
-  `virt,highmem=on`, because Ubuntu 24.04 ships QEMU 8.2 without `virt-10.0`.
+- `sailwright build` picks the ARM64 machine from what the installed QEMU
+  supports: `virt-10.0,highmem=on` when `qemu-system-aarch64 -machine help`
+  lists `virt-10.0`, and `virt,highmem=on` otherwise (Ubuntu 24.04 ships
+  QEMU 8.2 without `virt-10.0`). It passes the machine to Packer as
+  `PKR_VAR_arm64_machine`. When the scripts run without `sailwright build`,
+  the template uses `virt-10.0` on macOS and `virt` elsewhere. Linux ARM64
+  hosts with QEMU 10 or newer (KVM) get `virt-10.0` too; that combination has
+  not been tested yet.
 - `qemu-efi-aarch64` is pinned to a fixed Debian version and SHA-256 in
   `pkg/build/dependencies.go` and `scripts/macos/download-arm64-uefi.sh`.
   Renovate proposes new versions, and a workflow syncs the checksum and
   snapshot timestamp. Follow the checklist below before merging such a PR.
-- `sailwright build` logs the QEMU version for macOS ARM64 builds, warns
-  when the major version has not been tested, and stops when QEMU is older
-  than 10.0 (`brew upgrade qemu`).
+- `sailwright build` logs the QEMU version for ARM64 builds. On macOS it
+  also warns when the major version has not been tested, and stops when QEMU
+  is older than 10.0 (`brew upgrade qemu`).
 
 If an ARM64 build hangs on the TianoCore screen after a QEMU or firmware
-update, try a different `-machine virt-X.Y` first.
+update, try a different machine first, without editing the templates:
+
+```bash
+PKR_VAR_arm64_machine=virt-9.2,highmem=on sailwright build ubuntu --type server --arch arm64
+```
 
 #### Updating the firmware pin
 

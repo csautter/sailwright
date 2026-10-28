@@ -1,24 +1,16 @@
 package build
 
 import (
-	"context"
 	"fmt"
 	"log"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
-	"time"
 )
 
 // testedMacOSQemuMajors lists the Homebrew QEMU major versions the macOS ARM64
 // builds were verified with. The templates pin the virt-10.0 machine, which
 // needs QEMU 10.0 or newer, and use the pinned Debian AAVMF firmware.
 var testedMacOSQemuMajors = map[int]bool{10: true, 11: true}
-
-var qemuVersionPattern = regexp.MustCompile(`QEMU emulator version (\d+)\.(\d+)`)
-
-const qemuVersionProbeTimeout = 10 * time.Second
 
 type macOSQemuVersionStatus int
 
@@ -50,11 +42,9 @@ func checkMacOSArm64QemuVersion(config VirtualMachineConfig) error {
 	if config.Arch != "arm64" {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), qemuVersionProbeTimeout)
-	defer cancel()
-	output, err := exec.CommandContext(ctx, "qemu-system-aarch64", "--version").Output()
+	output, err := runQemuAarch64("--version")
 	if err != nil {
-		log.Printf("Warning: could not determine the QEMU version: %v", err)
+		log.Printf("Warning: could not determine the QEMU version: %v; install it with 'brew install qemu'", err)
 		return nil
 	}
 	message, status := macOSQemuVersionCheck(string(output))
@@ -112,5 +102,5 @@ func runQemuWindowsBuild(config VirtualMachineConfig, relativeScriptPath string)
 	if config.Verbose {
 		args = append(args, "--verbose")
 	}
-	return RunBuildScript(config, "bash", args)
+	return RunBuildScript(config, "bash", args, arm64QemuMachineEnv(config)...)
 }
