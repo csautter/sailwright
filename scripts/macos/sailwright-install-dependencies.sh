@@ -25,6 +25,9 @@ VNCSNAPSHOT_VERSION="1.2a"
 XORRISO_VERSION="1.5.8.pl02"
 # renovate: datasource=custom.homebrew-formula depName=ansible packageName=ansible versioning=loose
 ANSIBLE_VERSION="14.5.0"
+# Python 3.10+ for the Windows 11 ISO download; macOS ships 3.9 as /usr/bin/python3.
+# renovate: datasource=custom.homebrew-formula depName=python@3.13 packageName=python@3.13 versioning=loose
+PYTHON_VERSION="3.13.18"
 
 install_go="false"
 
@@ -278,6 +281,7 @@ brew_install "FFmpeg"      ffmpeg                    ffmpeg                "${FF
 brew_install "vncsnapshot" vncsnapshot               vncsnapshot           "${VNCSNAPSHOT_VERSION}"
 brew_install "xorriso"     xorriso                   xorriso               "${XORRISO_VERSION}"
 brew_install "Ansible"     ansible                   ansible               "${ANSIBLE_VERSION}"
+brew_install "Python 3.13" python3.13                python@3.13           "${PYTHON_VERSION}"
 
 if [[ "${install_go}" == "true" ]]; then
 	brew_install "Go" go go "${GO_VERSION}"
