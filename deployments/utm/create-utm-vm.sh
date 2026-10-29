@@ -104,9 +104,20 @@ if [ ! -f "$utm_vm_dir/$os-$arch-dev-alchemy.utm/config.plist" ]; then
 		envsubst <"$project_root/deployments/utm/$os_lower_first_part-$arch/config.plist" >"$utm_vm_dir/$os-$arch-dev-alchemy.utm/config.plist"
 fi
 
-if [ ! -f "$utm_vm_dir/$os-$arch-dev-alchemy.utm/Data/$os_lower-$arch.qcow2" ]; then
+utm_qcow2="$utm_vm_dir/$os-$arch-dev-alchemy.utm/Data/$os_lower-$arch.qcow2"
+if [ ! -f "$utm_qcow2" ]; then
 	echo "Copying the qcow2 image to UTM VM directory..."
-	rsync -av --progress "$qemu_img" "$utm_vm_dir/$os-$arch-dev-alchemy.utm/Data/$os_lower-$arch.qcow2"
+	# An APFS clone shares the image's blocks with the cache until either file
+	# changes, so the multi-GB image needs no extra disk space. Clone to a
+	# temporary name so an interrupted copy is never mistaken for a complete one.
+	if cp -c "$qemu_img" "$utm_qcow2.clone"; then
+		mv "$utm_qcow2.clone" "$utm_qcow2"
+		echo "Cloned the qcow2 image (APFS copy-on-write)."
+	else
+		rm -f "$utm_qcow2.clone"
+		echo "APFS clone not possible; falling back to a full copy."
+		rsync -av --progress "$qemu_img" "$utm_qcow2"
+	fi
 else
 	echo "The qcow2 image already exists in the UTM VM directory. Skipping copy."
 fi
