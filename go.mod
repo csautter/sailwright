@@ -2,6 +2,8 @@ module github.com/csautter/dev-alchemy
 
 go 1.26.0
 
+toolchain go1.27.3
+
 require (
 	github.com/KarpelesLab/vncpasswd v1.0.1
 	github.com/hashicorp/go-getter v1.8.10

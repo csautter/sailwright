@@ -81,6 +81,20 @@
     },
     {
       "customType": "regex",
+      "description": "Update the go.mod toolchain directive together with the Go pins in the macOS scripts",
+      "managerFilePatterns": [
+        "/(^|/)go\\.mod$/"
+      ],
+      "matchStrings": [
+        "\\ntoolchain go(?<currentValue>\\d+\\.\\d+\\.\\d+)\\n"
+      ],
+      "depNameTemplate": "go",
+      "packageNameTemplate": "go",
+      "datasourceTemplate": "custom.homebrew-formula",
+      "versioningTemplate": "loose"
+    },
+    {
+      "customType": "regex",
       "description": "Update HashiCorp Packer plugin version constraints in .pkr.hcl files",
       "managerFilePatterns": [
         "/(^|/)build/.+\\.pkr\\.hcl$/"
