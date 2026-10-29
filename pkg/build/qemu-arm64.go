@@ -61,6 +61,7 @@ func arm64QemuMachineEnv(config VirtualMachineConfig) []string {
 		return nil
 	}
 	if machine := os.Getenv(arm64QemuMachineEnvVar); machine != "" {
+		// #nosec G706 -- %q escapes newlines and control characters, so the value cannot forge log lines.
 		log.Printf("Using ARM64 QEMU machine %q from %s", machine, arm64QemuMachineEnvVar)
 		return nil
 	}
