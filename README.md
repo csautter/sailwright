@@ -2,15 +2,15 @@
 
 **Test your dev machine setup before it touches a laptop.**
 
-Sailwright is one CLI to set up, test, and repair developer machines on
-**macOS**, **Windows**, and **Linux**. It is built for platform and DevEx teams
-that support a mixed-OS fleet. Unlike chezmoi, Nix/Devbox, or devcontainers,
-Sailwright tests the same setup automation in real, disposable macOS, Windows,
-and Linux VMs before it touches a developer's machine. It complements your
-MDM/UEM tooling instead of replacing it.
+Sailwright is one CLI to set up, test, and keep developer machines consistent
+on **macOS**, **Windows**, and **Linux**. It is built for platform and DevEx
+teams that support a mixed-OS fleet. Unlike chezmoi, Nix/Devbox, or
+devcontainers, Sailwright runs your setup automation in real, disposable VMs
+before you roll it out to developers.
 
-- **One machine setup** for macOS, Windows, and Linux
-- **Tested in real VMs** before you roll a change out
+- **Plain Ansible underneath**: reuse your existing roles and playbooks
+- **Real VM targets**: macOS, Windows 11, and Ubuntu guests, depending on your
+  host (see [Support Snapshot](#support-snapshot))
 - **Free and open source**, no telemetry
 
 <p align="center">
@@ -88,9 +88,9 @@ This means Sailwright can cover every currently supported guest OS family on a
 **macOS** host, and every currently supported family except
 **macOS** on a **Windows host** or **Linux** host.
 
-Run `sailwright build list` (or `create`, `start`, `provision`, `stop`,
-`destroy` with `list`) to see the exact combinations available on your current
-machine; see [Discover what your host supports](#3-discover-what-your-host-supports).
+Run `sailwright <command> list` (for example `build list` or `provision list`)
+to see the exact combinations available on your current machine; see
+[Discover what your host supports](#3-discover-what-your-host-supports).
 
 ### Machine-readable listings
 
