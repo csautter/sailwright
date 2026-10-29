@@ -243,12 +243,31 @@ jobs:
           "${RUNNER_TEMP}/bin/sailwright" --help | grep -q "Usage:"
           "${RUNNER_TEMP}/bin/sailwright-gateway" --help | grep -q "Usage:"
 
+      # The packaged install below takes minutes and depends on apt mirrors,
+      # the HashiCorp repo and go.dev, so only run it when the PR touches
+      # something that can break it. A go.mod change is included because the
+      # installer reads the Go version from it.
+      - name: Detect installer changes
+        id: installer-changes
+        if: ${{ runner.os == 'Linux' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+          if git diff --name-only "${BASE_SHA}" HEAD | grep -qE \
+            '^(runtimeassets\.go|go\.mod|scripts/linux/|cmd/cmd/install[^/]*\.go$|pkg/build/(embedded_project|directories)\.go$|\.github/workflows/release-binaries\.yml$)'; then
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+          fi
+
       # A release binary runs from its embedded assets instead of a git
       # checkout, so run its dependency installer from outside the repository.
       # Every other workflow uses `go run` inside the checkout, which cannot
       # catch an asset that is missing from runtimeassets.go.
       - name: Run sailwright install from the packaged binary
-        if: ${{ runner.os == 'Linux' }}
+        if: ${{ runner.os == 'Linux' && steps.installer-changes.outputs.changed == 'true' }}
+        timeout-minutes: 20
         working-directory: ${{ runner.temp }}
         run: |
           "${RUNNER_TEMP}/bin/sailwright" install --with-go
