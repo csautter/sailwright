@@ -269,9 +269,16 @@ jobs:
         if: ${{ runner.os == 'Linux' && steps.installer-changes.outputs.changed == 'true' }}
         timeout-minutes: 20
         working-directory: ${{ runner.temp }}
+        env:
+          DEV_ALCHEMY_APP_DATA_DIR: ${{ runner.temp }}/sailwright-app-data
         run: |
           "${RUNNER_TEMP}/bin/sailwright" install --with-go
-          test -f "${HOME}/.local/share/dev-alchemy/project/.embedded-assets.sha256"
+          project_dir="${DEV_ALCHEMY_APP_DATA_DIR}/project"
+          test -f "${project_dir}/.embedded-assets.sha256"
+          # The installer skips Go when the runner's go already matches, so
+          # check whichever go comes first once /usr/local/go/bin is added.
+          go_version="$(awk '/^go [0-9]+\.[0-9]+(\.[0-9]+)?$/ { print $2; exit }' "${project_dir}/go.mod")"
+          PATH="/usr/local/go/bin:${PATH}" go version | grep -q "go${go_version} "
 
       - name: Install with install.ps1
         if: ${{ runner.os == 'Windows' }}
