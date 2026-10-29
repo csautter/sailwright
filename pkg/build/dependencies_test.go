@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -110,13 +111,25 @@ func TestMissingPythonVenvExecutables(t *testing.T) {
 	}
 }
 
+// fixedPythonVersions returns a version probe that reports the given version per
+// resolved executable path.
+func fixedPythonVersions(versions map[string][2]int) pythonVersionProbe {
+	return func(command pythonVenvCommand) (int, int, error) {
+		version, ok := versions[command.executable]
+		if !ok {
+			return 0, 0, fmt.Errorf("unexpected probe of %s", command.executable)
+		}
+		return version[0], version[1], nil
+	}
+}
+
 func TestResolvePythonVenvCommandPrefersPython3OnUnix(t *testing.T) {
 	command, err := resolvePythonVenvCommandForOS("linux", func(name string) (string, error) {
-		if name == "python3" {
-			return "/usr/bin/python3", nil
+		if name == "python3" || name == "python3.12" {
+			return "/usr/bin/" + name, nil
 		}
 		return "", fmt.Errorf("%s not found", name)
-	})
+	}, fixedPythonVersions(map[string][2]int{"/usr/bin/python3": {3, 13}, "/usr/bin/python3.12": {3, 12}}))
 	if err != nil {
 		t.Fatalf("resolvePythonVenvCommandForOS returned error: %v", err)
 	}
@@ -134,7 +147,7 @@ func TestResolvePythonVenvCommandFallsBackToPyLauncherOnWindows(t *testing.T) {
 			return `C:\Windows\py.exe`, nil
 		}
 		return "", fmt.Errorf("%s not found", name)
-	})
+	}, fixedPythonVersions(map[string][2]int{`C:\Windows\py.exe`: {3, 13}}))
 	if err != nil {
 		t.Fatalf("resolvePythonVenvCommandForOS returned error: %v", err)
 	}
@@ -149,7 +162,7 @@ func TestResolvePythonVenvCommandFallsBackToPyLauncherOnWindows(t *testing.T) {
 func TestResolvePythonVenvCommandReportsCheckedCandidates(t *testing.T) {
 	_, err := resolvePythonVenvCommandForOS("windows", func(name string) (string, error) {
 		return "", fmt.Errorf("%s not found", name)
-	})
+	}, fixedPythonVersions(nil))
 	if err == nil {
 		t.Fatal("expected error when no Python command is found, got nil")
 	}
@@ -157,6 +170,204 @@ func TestResolvePythonVenvCommandReportsCheckedCandidates(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("expected error %q to mention checked candidate %q", err.Error(), want)
 		}
+	}
+}
+
+// macOS ships Python 3.9 as /usr/bin/python3, which the pinned Playwright no
+// longer supports, so a versioned Homebrew interpreter must win.
+func TestResolvePythonVenvCommandSkipsTooOldPython3(t *testing.T) {
+	command, err := resolvePythonVenvCommandForOS("darwin", func(name string) (string, error) {
+		switch name {
+		case "python3":
+			return "/usr/bin/python3", nil
+		case "python3.13":
+			return "/opt/homebrew/bin/python3.13", nil
+		}
+		return "", fmt.Errorf("%s not found", name)
+	}, fixedPythonVersions(map[string][2]int{"/usr/bin/python3": {3, 9}, "/opt/homebrew/bin/python3.13": {3, 13}}))
+	if err != nil {
+		t.Fatalf("resolvePythonVenvCommandForOS returned error: %v", err)
+	}
+	if command.executable != "/opt/homebrew/bin/python3.13" {
+		t.Fatalf("expected Homebrew python3.13, got %q", command.executable)
+	}
+}
+
+func TestResolvePythonVenvCommandReportsTooOldVersions(t *testing.T) {
+	_, err := resolvePythonVenvCommandForOS("darwin", func(name string) (string, error) {
+		if name == "python3" {
+			return "/usr/bin/python3", nil
+		}
+		return "", fmt.Errorf("%s not found", name)
+	}, fixedPythonVersions(map[string][2]int{"/usr/bin/python3": {3, 9}}))
+	if err == nil {
+		t.Fatal("expected error when only Python 3.9 is available, got nil")
+	}
+	for _, want := range []string{"Python 3.10 or newer", "/usr/bin/python3 (Python 3.9)", "python3.13", "/opt/homebrew/bin/python3", "brew install python@3.13"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error %q to contain %q", err.Error(), want)
+		}
+	}
+}
+
+// An interpreter reachable under several names is probed and reported once.
+func TestResolvePythonVenvCommandProbesEachInterpreterOnce(t *testing.T) {
+	probes := 0
+	_, err := resolvePythonVenvCommandForOS("linux", func(name string) (string, error) {
+		if name == "python3" || name == "python" {
+			return "/usr/bin/python3", nil
+		}
+		return "", fmt.Errorf("%s not found", name)
+	}, func(command pythonVenvCommand) (int, int, error) {
+		probes++
+		return 3, 9, nil
+	})
+	if err == nil {
+		t.Fatal("expected error when only Python 3.9 is available, got nil")
+	}
+	if probes != 1 {
+		t.Errorf("expected one probe of /usr/bin/python3, got %d", probes)
+	}
+	if got := strings.Count(err.Error(), "/usr/bin/python3 (Python 3.9)"); got != 1 {
+		t.Errorf("expected /usr/bin/python3 once in %q, got %d", err.Error(), got)
+	}
+}
+
+// Homebrew's python3 is found even when /usr/bin comes first on PATH.
+func TestResolvePythonVenvCommandProbesHomebrewOnDarwin(t *testing.T) {
+	command, err := resolvePythonVenvCommandForOS("darwin", func(name string) (string, error) {
+		switch name {
+		case "python3":
+			return "/usr/bin/python3", nil
+		case "/opt/homebrew/bin/python3":
+			return name, nil
+		}
+		return "", fmt.Errorf("%s not found", name)
+	}, fixedPythonVersions(map[string][2]int{"/usr/bin/python3": {3, 9}, "/opt/homebrew/bin/python3": {3, 14}}))
+	if err != nil {
+		t.Fatalf("resolvePythonVenvCommandForOS returned error: %v", err)
+	}
+	if command.executable != "/opt/homebrew/bin/python3" {
+		t.Fatalf("expected Homebrew python3, got %q", command.executable)
+	}
+}
+
+func TestResolvePythonVenvCommandHasNoBrewHintOutsideDarwin(t *testing.T) {
+	_, err := resolvePythonVenvCommandForOS("linux", func(name string) (string, error) {
+		return "", fmt.Errorf("%s not found", name)
+	}, fixedPythonVersions(nil))
+	if err == nil {
+		t.Fatal("expected error when no Python command is found, got nil")
+	}
+	if strings.Contains(err.Error(), "brew") || strings.Contains(err.Error(), "/opt/homebrew") {
+		t.Fatalf("expected no Homebrew details on linux, got %q", err.Error())
+	}
+}
+
+func TestProbePythonVersionReportsFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell scripts as fake interpreters")
+	}
+	for _, tc := range []struct {
+		name    string
+		script  string
+		wantErr string
+	}{
+		{name: "non-zero exit", script: "#!/bin/sh\nexit 3\n", wantErr: "failed to query Python version"},
+		{name: "unexpected output", script: "#!/bin/sh\necho 'Python 3.13'\n", wantErr: "unexpected Python version"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := filepath.Join(t.TempDir(), "python3")
+			if err := os.WriteFile(fake, []byte(tc.script), 0o755); err != nil { // #nosec G306 -- test needs an executable fake interpreter.
+				t.Fatal(err)
+			}
+			_, _, err := probePythonVersion(pythonVenvCommand{executable: fake})
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// A venv created by Python 3.9 is removed and rebuilt with the resolved interpreter.
+func TestEnsurePythonVenvRecreatesTooOldVenv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell scripts as fake interpreters")
+	}
+	workdir := t.TempDir()
+	venvPython, pipPath := pythonVenvExecutablePaths(workdir)
+	if err := os.MkdirAll(filepath.Dir(venvPython), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPython := "#!/bin/sh\nif [ \"$1\" = -c ]; then echo 3.9; fi\n"
+	for path, content := range map[string]string{venvPython: oldPython, pipPath: "#!/bin/sh\n"} {
+		if err := os.WriteFile(path, []byte(content), 0o755); err != nil { // #nosec G306 -- test needs executable fakes.
+			t.Fatal(err)
+		}
+	}
+	marker := filepath.Join(workdir, ".venv", "old-venv")
+	if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	basePython := filepath.Join(t.TempDir(), "python3.13")
+	createVenv := "#!/bin/sh\nmkdir -p .venv/bin\n" +
+		"printf '#!/bin/sh\\nif [ \"$1\" = -c ]; then echo 3.13; fi\\n' > .venv/bin/python3\n" +
+		"printf '#!/bin/sh\\n' > .venv/bin/pip\nchmod +x .venv/bin/python3 .venv/bin/pip\n"
+	if err := os.WriteFile(basePython, []byte(createVenv), 0o755); err != nil { // #nosec G306 -- test needs an executable fake interpreter.
+		t.Fatal(err)
+	}
+
+	if err := ensurePythonVenvWithCommand(workdir, pythonVenvCommand{executable: basePython}); err != nil {
+		t.Fatalf("ensurePythonVenvWithCommand returned error: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("expected the old venv to be removed, stat err: %v", err)
+	}
+	if err := checkPythonVenvUsable(workdir); err != nil {
+		t.Fatalf("expected the recreated venv to be usable, got %v", err)
+	}
+}
+
+func TestParsePythonVersion(t *testing.T) {
+	tests := []struct {
+		output       string
+		major, minor int
+		wantErr      bool
+	}{
+		{output: "3.9\n", major: 3, minor: 9},
+		{output: "3.13", major: 3, minor: 13},
+		{output: "Python 3.13", wantErr: true},
+		{output: "", wantErr: true},
+	}
+	for _, tt := range tests {
+		major, minor, err := parsePythonVersion(tt.output)
+		if (err != nil) != tt.wantErr {
+			t.Fatalf("parsePythonVersion(%q) error = %v, wantErr %v", tt.output, err, tt.wantErr)
+		}
+		if !tt.wantErr && (major != tt.major || minor != tt.minor) {
+			t.Fatalf("parsePythonVersion(%q) = %d.%d, want %d.%d", tt.output, major, minor, tt.major, tt.minor)
+		}
+	}
+}
+
+// A venv created by an older system Python must be rebuilt instead of reused.
+func TestCheckPythonVenvUsableRejectsTooOldInterpreter(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell script as fake interpreter")
+	}
+	workdir := t.TempDir()
+	venvPython, _ := pythonVenvExecutablePaths(workdir)
+	if err := os.MkdirAll(filepath.Dir(venvPython), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fake := "#!/bin/sh\nif [ \"$1\" = -c ]; then echo 3.9; fi\n"
+	if err := os.WriteFile(venvPython, []byte(fake), 0o755); err != nil { // #nosec G306 -- test needs an executable fake interpreter.
+		t.Fatal(err)
+	}
+
+	err := checkPythonVenvUsable(workdir)
+	if err == nil || !strings.Contains(err.Error(), "Python 3.9 is older than 3.10") {
+		t.Fatalf("expected too-old venv error, got %v", err)
 	}
 }
 
@@ -280,61 +491,84 @@ func TestGetWindows11DownloadArm64(t *testing.T) {
 	}
 }
 
-func TestResolveDebianPackageURL(t *testing.T) {
-	if os.Getenv("RUN_INTEGRATION_TESTS") == "" {
-		t.Skip("skipping integration test; set RUN_INTEGRATION_TESTS=1 to run")
+func TestQemuEfiAarch64URLsUsePinnedDebianPoolAndSnapshot(t *testing.T) {
+	urls := qemuEfiAarch64URLs()
+	want := []string{
+		"https://deb.debian.org/debian/pool/main/e/edk2/qemu-efi-aarch64_" + qemuEfiAarch64Version + "_all.deb",
+		"https://snapshot.debian.org/archive/debian/" + qemuEfiAarch64SnapshotTimestamp + "/pool/main/e/edk2/qemu-efi-aarch64_" + qemuEfiAarch64Version + "_all.deb",
 	}
-	url, err := resolveDebianPackageURL("trixie", "qemu-efi-aarch64")
-	if err != nil {
-		t.Fatalf("resolveDebianPackageURL returned error: %v", err)
+	if strings.Join(urls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected qemu-efi-aarch64 URLs:\ngot  %v\nwant %v", urls, want)
 	}
-	if !strings.HasPrefix(url, "https://deb.debian.org/debian/pool/") {
-		t.Errorf("unexpected URL prefix: %s", url)
-	}
-	if !strings.Contains(url, "qemu-efi-aarch64") {
-		t.Errorf("URL does not contain package name: %s", url)
-	}
-	t.Logf("Resolved URL: %s", url)
-
-	// Verify the resolved URL is actually reachable
-	resp, err := http.Head(url)
-	if err != nil {
-		t.Fatalf("HTTP HEAD request to resolved URL failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("resolved URL returned HTTP %d: %s", resp.StatusCode, url)
-	}
-	t.Logf("HTTP HEAD status: %d", resp.StatusCode)
 }
 
-func TestResolveAndDownloadQemuEfiAarch64(t *testing.T) {
+// Renovate bumps only the version. A cached deb that still matches the old
+// checksum lets the build jobs pass, so catch the stale pin here instead.
+func TestQemuEfiAarch64PinIsConsistent(t *testing.T) {
+	if qemuEfiAarch64PinnedFor != qemuEfiAarch64Version {
+		t.Fatalf("qemuEfiAarch64Version is %s but the SHA-256 and snapshot timestamp were pinned for %s; "+
+			"run scripts/update-qemu-efi-aarch64-pin.sh to update qemuEfiAarch64SHA256, qemuEfiAarch64SnapshotTimestamp, "+
+			"qemuEfiAarch64PinnedFor and scripts/macos/download-arm64-uefi.sh (see build/packer/linux/ubuntu/README.md)",
+			qemuEfiAarch64Version, qemuEfiAarch64PinnedFor)
+	}
+}
+
+// The ARM64 firmware must not follow "latest in trixie": a firmware update
+// together with a new QEMU already left ARM64 builds hanging in UEFI on macOS.
+func TestArm64DependencyReconciliationPinsQemuEfiAarch64(t *testing.T) {
+	dirs := GetDirectoriesInstance()
+	originalCacheDir := dirs.CacheDir
+	dirs.CacheDir = t.TempDir()
+	defer func() {
+		dirs.CacheDir = originalCacheDir
+	}()
+
+	wantPath := filepath.Join(dirs.CacheDir, "qemu-efi-aarch64_all.deb")
+	for _, vmconfig := range []VirtualMachineConfig{
+		{OS: "ubuntu", UbuntuType: "server", Arch: "arm64", HostOs: HostOsDarwin, VirtualizationEngine: VirtualizationEngineUtm},
+		{OS: "ubuntu", UbuntuType: "desktop", Arch: "arm64", HostOs: HostOsDarwin, VirtualizationEngine: VirtualizationEngineUtm},
+		{OS: "windows11", Arch: "arm64", HostOs: HostOsDarwin, VirtualizationEngine: VirtualizationEngineUtm},
+		{OS: "windows11", Arch: "arm64", HostOs: HostOsLinux, VirtualizationEngine: VirtualizationEngineQemu},
+	} {
+		found := false
+		for _, dep := range webFileDependenciesForVMConfig(vmconfig) {
+			if dep.LocalPath != wantPath {
+				continue
+			}
+			found = true
+			if dep.Checksum != "sha256:"+qemuEfiAarch64SHA256 {
+				t.Errorf("%+v: expected pinned qemu-efi-aarch64 checksum, got %q", vmconfig, dep.Checksum)
+			}
+			if dep.BeforeHook != nil {
+				t.Errorf("%+v: qemu-efi-aarch64 must not resolve its URL at download time", vmconfig)
+			}
+			urls := qemuEfiAarch64URLs()
+			if dep.Source != urls[0] || strings.Join(dep.FallbackSources, " ") != strings.Join(urls[1:], " ") {
+				t.Errorf("%+v: unexpected qemu-efi-aarch64 sources %q %v", vmconfig, dep.Source, dep.FallbackSources)
+			}
+		}
+		if !found {
+			t.Errorf("%+v: expected dependency reconciliation to include %s", vmconfig, wantPath)
+		}
+	}
+}
+
+func TestDownloadPinnedQemuEfiAarch64(t *testing.T) {
 	if os.Getenv("RUN_INTEGRATION_TESTS") == "" {
 		t.Skip("skipping integration test; set RUN_INTEGRATION_TESTS=1 to run")
 	}
-	url, err := resolveDebianPackageURL("trixie", "qemu-efi-aarch64")
-	if err != nil {
-		t.Fatalf("resolveDebianPackageURL returned error: %v", err)
+	for _, url := range qemuEfiAarch64URLs() {
+		t.Run(url, func(t *testing.T) {
+			dep := WebFileDependency{
+				LocalPath: filepath.Join(t.TempDir(), "qemu-efi-aarch64_all.deb"),
+				Checksum:  "sha256:" + qemuEfiAarch64SHA256,
+				Source:    url,
+			}
+			if err := downloadWebFileDependency(nil, dep); err != nil {
+				t.Fatalf("downloadWebFileDependency failed: %v", err)
+			}
+		})
 	}
-	t.Logf("Resolved URL: %s", url)
-
-	destPath := filepath.Join(t.TempDir(), "qemu-efi-aarch64_all.deb")
-	dep := WebFileDependency{
-		LocalPath: destPath,
-		Source:    url,
-	}
-	if err := downloadWebFileDependency(nil, dep); err != nil {
-		t.Fatalf("downloadWebFileDependency failed: %v", err)
-	}
-
-	info, err := os.Stat(destPath)
-	if err != nil {
-		t.Fatalf("downloaded file not found at %s: %v", destPath, err)
-	}
-	if info.Size() == 0 {
-		t.Errorf("downloaded file is empty: %s", destPath)
-	}
-	t.Logf("Downloaded %s (%d bytes)", destPath, info.Size())
 }
 
 func TestDownloadWebFileDependencyWithoutProgressBar(t *testing.T) {
@@ -553,13 +787,18 @@ func TestDownloadWebFileDependencyRejectsChecksumMismatch(t *testing.T) {
 
 	destPath := filepath.Join(t.TempDir(), "artifact.iso")
 	dep := WebFileDependency{
-		LocalPath: destPath,
-		Source:    server.URL + "/artifact.iso",
-		Checksum:  "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		LocalPath:   destPath,
+		Source:      server.URL + "/artifact.iso",
+		Checksum:    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		FailureHint: "the pin is probably stale",
 	}
 
-	if err := downloadWebFileDependency(nil, dep); err == nil {
+	err := downloadWebFileDependency(nil, dep)
+	if err == nil {
 		t.Fatal("expected downloadWebFileDependency to reject checksum mismatch")
+	}
+	if !strings.HasSuffix(err.Error(), "; the pin is probably stale") {
+		t.Fatalf("expected the failure hint at the end of the error, got %v", err)
 	}
 	if _, err := os.Stat(destPath); !os.IsNotExist(err) {
 		t.Fatalf("expected checksum-mismatched download to be removed, stat err: %v", err)

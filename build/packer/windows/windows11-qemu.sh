@@ -206,10 +206,37 @@ linux_kvm_is_usable() {
 	return 0
 }
 
+# Same requirement as resolvePythonVenvCommand in pkg/build: the pinned
+# Playwright needs Python 3.10+, but macOS ships 3.9 as /usr/bin/python3.
+python_is_supported() {
+	"$1" -c 'import sys; sys.exit(sys.version_info < (3, 10))' >/dev/null 2>&1
+}
+
+resolve_python_for_venv() {
+	local candidate
+	local -a candidates=(python3 python3.14 python3.13 python3.12 python3.11 python3.10 python)
+
+	if [[ "$(uname -s)" == "Darwin" ]]; then
+		# /usr/bin often comes before Homebrew on PATH and holds Python 3.9.
+		candidates+=(/opt/homebrew/bin/python3 /usr/local/bin/python3)
+	fi
+
+	for candidate in "${candidates[@]}"; do
+		if command -v "$candidate" >/dev/null 2>&1 && python_is_supported "$candidate"; then
+			echo "$candidate"
+			return 0
+		fi
+	done
+
+	echo "Python 3.10 or newer not found; checked ${candidates[*]}; install one (on macOS: brew install python@3.13)" >&2
+	return 1
+}
+
 download_windows_iso_if_missing() {
 	local target_arch="$1"
 	local iso_path="$2"
 	local -a playwright_args
+	local python_bin
 
 	if [[ -f "$iso_path" ]]; then
 		echo "Windows 11 $target_arch ISO already exists, skipping download"
@@ -227,8 +254,13 @@ download_windows_iso_if_missing() {
 	echo "Downloading Windows 11 $target_arch ISO"
 	mkdir -p "$(dirname "$iso_path")"
 	cd "${project_root}/scripts/macos" || exit 1
+	python_bin="$(resolve_python_for_venv)" || return 1
+	if [[ -d .venv ]] && ! python_is_supported .venv/bin/python3; then
+		echo "Python virtual environment for Windows 11 download script uses Python older than 3.10; recreating"
+		rm -rf .venv
+	fi
 	if [[ ! -d .venv ]]; then
-		python3 -m venv .venv
+		"$python_bin" -m venv .venv
 	fi
 	# shellcheck disable=SC1091
 	source .venv/bin/activate

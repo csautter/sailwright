@@ -72,6 +72,7 @@
         "/(^|/)pkg/build/dependencies\\.go$/",
         "/(^|/)build/packer/linux/ubuntu/linux-ubuntu-(on-macos|qemu)\\.sh$/",
         "/(^|/)scripts/macos/download-virtio-win-iso\\.sh$/",
+        "/(^|/)scripts/macos/download-arm64-uefi\\.sh$/",
         "/(^|/)scripts/windows/sailwright-self-setup\\.ps1$/"
       ],
       "matchStrings": [
@@ -294,6 +295,20 @@
         "custom.virtio-win"
       ],
       "extractVersion": "^virtio-win-(?<version>0\\.1\\.\\d+-\\d+)/$"
+    },
+    {
+      "description": "qemu-efi-aarch64 also pins a SHA-256 and a snapshot timestamp that Renovate cannot update",
+      "matchDatasources": [
+        "deb"
+      ],
+      "matchPackageNames": [
+        "qemu-efi-aarch64"
+      ],
+      "groupName": "qemu-efi-aarch64 ARM64 firmware",
+      "automerge": false,
+      "prBodyNotes": [
+        "**Manual steps required:** this PR only bumps the version. The \"Sync qemu-efi-aarch64 pin\" workflow then commits the SHA-256, the snapshot timestamp and `qemuEfiAarch64PinnedFor` (or run `scripts/update-qemu-efi-aarch64-pin.sh`). Before merging, follow the rest of the pin-update checklist in `build/packer/linux/ubuntu/README.md`, including the boot test on Apple Silicon. `TestQemuEfiAarch64PinIsConsistent` fails until the pins are synced."
+      ]
     },
     {
       "matchPackageNames": [

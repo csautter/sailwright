@@ -70,6 +70,39 @@ func TestUbuntuArm64QemuBootOrderPrefersInstalledDiskAfterInstall(t *testing.T) 
 	}
 }
 
+// Homebrew QEMU 11.x with HVF hangs in the Debian AAVMF firmware on the
+// unversioned virt machine, so macOS pins the machine version. Linux keeps
+// plain virt because Ubuntu's QEMU 8.2 has no virt-10.0.
+// sailwright build passes the machine through PKR_VAR_arm64_machine (see arm64QemuMachineEnv);
+// without it, macOS keeps the pin and other hosts use virt.
+func TestArm64QemuPinsMachineVersionOnMacOS(t *testing.T) {
+	t.Parallel()
+
+	for _, templatePath := range []string{ubuntuQemuTemplatePath, windowsQemuTemplatePath} {
+		t.Run(filepath.Base(templatePath), func(t *testing.T) {
+			t.Parallel()
+
+			got := readRepoFile(t, templatePath)
+			assertContainsAll(t, "ARM64 machine variable of "+templatePath, got, `variable "arm64_machine"`)
+			if !containsCollapsedAssignment(got, "arm64_machine", `var.arm64_machine != "" ? var.arm64_machine : local.arm64_machine_default`) {
+				t.Errorf("expected template %q to let the arm64_machine variable override the default machine", templatePath)
+			}
+			if !containsCollapsedAssignment(got, "arm64_machine_default", `local.host_is_darwin ? "virt-10.0,highmem=on" : "virt,highmem=on"`) {
+				t.Errorf("expected template %q to pin the default ARM64 machine version on macOS only", templatePath)
+			}
+
+			arm64Args, ok := textBetween(got, "\"arm64\" = [\n      [\"-accel\",", "]\n  }")
+			if !ok {
+				t.Fatalf("failed to locate arm64 QEMU args in %q", templatePath)
+			}
+			assertContainsAll(t, "ARM64 QEMU args of "+templatePath, arm64Args, `["-machine", local.arm64_machine]`)
+			if strings.Contains(arm64Args, `"virt,highmem=on"`) {
+				t.Errorf("template %q passes the unversioned virt machine to ARM64 QEMU on every host", templatePath)
+			}
+		})
+	}
+}
+
 func TestWindowsQemuTemplateIsSharedAcrossMacOSAndLinux(t *testing.T) {
 	t.Parallel()
 

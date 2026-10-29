@@ -2,16 +2,16 @@
 ## playwright_win11_iso.py
 This script uses Playwright to fetch the latest Windows 11 ISO download link from Microsoft's official download page.
 ### Prerequisites
-- Python 3.7 or higher
+- Python 3.10 or higher (the pinned Playwright no longer supports Python 3.9, which macOS ships as `/usr/bin/python3`)
 - Playwright library
 ### Installation
-1. **Install Python**: Ensure you have Python 3.7 or higher installed. You can install it via Homebrew:
+1. **Install Python**: Ensure you have Python 3.10 or higher installed. `sailwright install` installs Homebrew `python@3.13` and, unlike its other tools, does not `brew pin` it, so `brew upgrade` keeps applying Python fixes. To install it by hand:
    ```bash
-   brew install python
+   brew install python@3.13
    ```
 2. **Set Up a Virtual Environment** (optional but recommended):
    ```bash
-   python3 -m venv .venv
+   python3.13 -m venv .venv
    source .venv/bin/activate
    ```
 3. **Install the script requirements**:

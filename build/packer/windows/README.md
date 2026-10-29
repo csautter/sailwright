@@ -9,6 +9,7 @@ This directory contains the Packer templates for building Windows 11 images on W
 - [Packer](https://www.packer.io/downloads) installed
 - Windows, macOS, or Linux host with a compatible virtualization backend
 - For repository-managed host dependencies, run `sailwright install` on macOS/Linux or `sailwright.exe install` on Windows from repo root before building.
+- The automatic Windows 11 ISO download needs Python 3.10 or newer. macOS ships Python 3.9 as `/usr/bin/python3`; `sailwright install` adds Homebrew `python@3.13`. See [scripts/macos/README.md](../../../scripts/macos/README.md).
 
 ### Usage
 
@@ -84,6 +85,14 @@ UTM_WINDOWS_ANSIBLE_PASSWORD=P@ssw0rd!
 LIBVIRT_WINDOWS_ANSIBLE_USER=Administrator
 LIBVIRT_WINDOWS_ANSIBLE_PASSWORD=P@ssw0rd!
 ```
+
+### ARM64 on macOS
+
+Windows 11 ARM64 uses the same pinned `virt-10.0` machine type on macOS and
+the same pinned Debian AAVMF firmware as the Ubuntu ARM64 builds. Without
+the pin, Homebrew QEMU 11.x hangs on the TianoCore screen before the Windows
+boot loader starts. See
+[ARM64 on macOS: pinned machine type and firmware](../linux/ubuntu/README.md#arm64-on-macos-pinned-machine-type-and-firmware).
 
 ### Security Note
 

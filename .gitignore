@@ -80,3 +80,4 @@ test/e2e/out/
 # Devcontainer: generated host mounts and personal mount list
 .devcontainer/.generated/
 .devcontainer/mounts.local
+.devcontainer/local/

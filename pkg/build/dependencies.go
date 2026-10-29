@@ -1,8 +1,6 @@
 package build
 
 import (
-	"bufio"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -15,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -144,6 +143,8 @@ type WebFileDependency struct {
 	RelatedVmConfigs []VirtualMachineConfig
 	// BeforeHook is a function that is called before downloading the dependency. It can be used to modify the Source URL dynamically.
 	BeforeHook func() (string, error)
+	// FailureHint is appended to the error when every source fails.
+	FailureHint string
 }
 
 const (
@@ -161,6 +162,24 @@ const (
 	// virtioWinSHA256 is not managed by Renovate: no datasource publishes ISO digests.
 	// The "Sync virtio-win checksum" workflow updates it via scripts/update-virtio-win-checksum.sh.
 	virtioWinSHA256 = "303f7ae40dad495d6ae474fdc571df58958a4dbc5c37a522d80f9a203867949d"
+
+	// renovate: datasource=deb depName=qemu-efi-aarch64 versioning=deb registryUrl=https://deb.debian.org/debian?suite=trixie&components=main&binaryArch=all
+	qemuEfiAarch64Version = "2025.02-8+deb13u1"
+
+	// qemuEfiAarch64SHA256 and qemuEfiAarch64SnapshotTimestamp are not managed by Renovate:
+	// the deb datasource publishes no digests. Update both together with qemuEfiAarch64Version;
+	// a stale checksum fails the download instead of silently changing the ARM64 firmware.
+	// Keep this comment directly below the Renovate-managed version: it also stops the
+	// shared Renovate regex from capturing the checksum as a digest of the version.
+	qemuEfiAarch64SHA256 = "a00b2411a79c8aeafd95a7c868ac3cd1aab592f1af9fff965f02d81a625276ed"
+	// A snapshot.debian.org timestamp at which qemuEfiAarch64Version was in the archive; use
+	// the file's first_seen. Earlier timestamps return 404, and so can timestamps after the
+	// version was removed. deb.debian.org drops superseded versions at point releases.
+	qemuEfiAarch64SnapshotTimestamp = "20260104T203950Z"
+	// The qemuEfiAarch64Version that qemuEfiAarch64SHA256 and qemuEfiAarch64SnapshotTimestamp
+	// were taken for. Renovate does not touch it, so a version-only bump fails
+	// TestQemuEfiAarch64PinIsConsistent instead of passing CI with a cached deb.
+	qemuEfiAarch64PinnedFor = "2025.02-8+deb13u1"
 
 	virtioWinFedoraArchiveURL = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio"
 	virtioWinMirrorArchiveURL = "https://fedora-virt.repo.nfrance.com/virtio-win/direct-downloads/archive-virtio"
@@ -328,62 +347,28 @@ func probeDownloadURL(ctx context.Context, client *http.Client, candidate string
 	return downloadProbeResult{URL: candidate, Bytes: bytesRead, Duration: duration}
 }
 
-// resolveDebianPackageURL fetches the current download URL for an architecture-independent
-// Debian package by querying the official Packages index for the given suite.
-// This avoids hardcoding version strings that change frequently and are purged quickly.
-func resolveDebianPackageURL(suite, packageName string) (string, error) {
-	if !isSafeDebianPackageSegment(suite) || !isSafeDebianPackageSegment(packageName) {
-		return "", fmt.Errorf("invalid Debian package lookup: suite=%q package=%q", suite, packageName)
+// qemuEfiAarch64URLs returns the pinned Debian qemu-efi-aarch64 package on the
+// Debian mirror first and on snapshot.debian.org as a fallback.
+func qemuEfiAarch64URLs() []string {
+	poolPath := "pool/main/e/edk2/qemu-efi-aarch64_" + qemuEfiAarch64Version + "_all.deb"
+	return []string{
+		"https://deb.debian.org/debian/" + poolPath,
+		"https://snapshot.debian.org/archive/debian/" + qemuEfiAarch64SnapshotTimestamp + "/" + poolPath,
 	}
+}
 
-	packagesURL := fmt.Sprintf("https://deb.debian.org/debian/dists/%s/main/binary-all/Packages.gz", suite)
-	log.Printf("Resolving latest Debian package URL for %s from %s", packageName, packagesURL)
-
-	// #nosec G107 -- the host is fixed to deb.debian.org and the path segments are validated above.
-	resp, err := http.Get(packagesURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch Debian package index: %w", err)
+// qemuEfiAarch64Dependency returns the pinned ARM64 UEFI firmware package for the given VM configs.
+func qemuEfiAarch64Dependency(related ...VirtualMachineConfig) WebFileDependency {
+	urls := qemuEfiAarch64URLs()
+	return WebFileDependency{
+		LocalPath:        GetDirectoriesInstance().CachePath("qemu-efi-aarch64_all.deb"),
+		Checksum:         "sha256:" + qemuEfiAarch64SHA256,
+		Source:           urls[0],
+		FallbackSources:  urls[1:],
+		RelatedVmConfigs: related,
+		FailureHint: fmt.Sprintf("if every source failed the checksum, the qemu-efi-aarch64 %s pin is probably stale (see build/packer/linux/ubuntu/README.md)",
+			qemuEfiAarch64Version),
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected HTTP status %d fetching %s", resp.StatusCode, packagesURL)
-	}
-
-	gz, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to decompress Debian package index: %w", err)
-	}
-	defer gz.Close()
-
-	scanner := bufio.NewScanner(gz)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
-	var filename string
-	inTarget := false
-
-outer:
-	for scanner.Scan() {
-		line := scanner.Text()
-		switch {
-		case line == "Package: "+packageName:
-			inTarget = true
-		case inTarget && strings.HasPrefix(line, "Filename: "):
-			filename = strings.TrimPrefix(line, "Filename: ")
-		case inTarget && filename != "" && line == "":
-			break outer
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("error reading Debian package index: %w", err)
-	}
-	if filename == "" {
-		return "", fmt.Errorf("package %q not found in Debian suite %q (binary-all)", packageName, suite)
-	}
-
-	url := "https://deb.debian.org/debian/" + filename
-	log.Printf("Resolved %s to %s", packageName, url)
-	return url, nil
 }
 
 func DependencyReconciliation(vmconfig VirtualMachineConfig) {
@@ -442,14 +427,36 @@ func (command pythonVenvCommand) displayName() string {
 	return command.executable + " " + strings.Join(command.argsPrefix, " ")
 }
 
+// minPythonMinor is the oldest Python 3 minor version the Windows 11 download
+// script supports. Playwright 1.61 dropped Python 3.9, which macOS still ships
+// as /usr/bin/python3.
+const minPythonMinor = 10
+
+const pythonVersionProbeTimeout = 10 * time.Second
+
+// pythonVersionProbe reports the major and minor version of a Python command.
+type pythonVersionProbe func(command pythonVenvCommand) (major, minor int, err error)
+
 func resolvePythonVenvCommand() (pythonVenvCommand, error) {
-	return resolvePythonVenvCommandForOS(runtime.GOOS, exec.LookPath)
+	return resolvePythonVenvCommandForOS(runtime.GOOS, exec.LookPath, probePythonVersion)
 }
 
-func resolvePythonVenvCommandForOS(goos string, lookPath func(string) (string, error)) (pythonVenvCommand, error) {
+func resolvePythonVenvCommandForOS(goos string, lookPath func(string) (string, error), probeVersion pythonVersionProbe) (pythonVenvCommand, error) {
 	candidates := []pythonVenvCommand{
 		{executable: "python3"},
+		{executable: "python3.14"},
+		{executable: "python3.13"},
+		{executable: "python3.12"},
+		{executable: "python3.11"},
+		{executable: "python3.10"},
 		{executable: "python"},
+	}
+	if goos == "darwin" {
+		// /usr/bin often comes before Homebrew on PATH and holds Python 3.9.
+		candidates = append(candidates,
+			pythonVenvCommand{executable: "/opt/homebrew/bin/python3"},
+			pythonVenvCommand{executable: "/usr/local/bin/python3"},
+		)
 	}
 	if goos == "windows" {
 		candidates = []pythonVenvCommand{
@@ -460,16 +467,69 @@ func resolvePythonVenvCommandForOS(goos string, lookPath func(string) (string, e
 	}
 
 	checked := make([]string, 0, len(candidates))
+	// python3 and python3.13 are often links to the same interpreter: probe and report it once.
+	seen := make(map[string]bool, len(candidates))
 	for _, candidate := range candidates {
 		resolvedPath, err := lookPath(candidate.executable)
-		if err == nil {
-			candidate.executable = resolvedPath
-			return candidate, nil
+		if err != nil {
+			checked = append(checked, candidate.displayName())
+			continue
 		}
-		checked = append(checked, candidate.displayName())
+		target := resolvedPath
+		if realPath, err := filepath.EvalSymlinks(resolvedPath); err == nil {
+			target = realPath
+		}
+		if seen[target] {
+			continue
+		}
+		seen[target] = true
+		candidate.executable = resolvedPath
+		major, minor, err := probeVersion(candidate)
+		if err != nil {
+			checked = append(checked, fmt.Sprintf("%s (%v)", candidate.displayName(), err))
+			continue
+		}
+		if !isSupportedPythonVersion(major, minor) {
+			checked = append(checked, fmt.Sprintf("%s (Python %d.%d)", candidate.displayName(), major, minor))
+			continue
+		}
+		return candidate, nil
 	}
 
-	return pythonVenvCommand{}, fmt.Errorf("Python 3 executable not found on PATH; checked %s", strings.Join(checked, ", "))
+	hint := ""
+	if goos == "darwin" {
+		hint = "; install one with: brew install python@3.13"
+	}
+	return pythonVenvCommand{}, fmt.Errorf("Python 3.%d or newer not found on PATH; checked %s%s", minPythonMinor, strings.Join(checked, ", "), hint)
+}
+
+func isSupportedPythonVersion(major, minor int) bool {
+	return major == 3 && minor >= minPythonMinor
+}
+
+func probePythonVersion(command pythonVenvCommand) (int, int, error) {
+	// A broken interpreter, such as a stale Windows Store alias, must not block the bootstrap.
+	ctx, cancel := context.WithTimeout(context.Background(), pythonVersionProbeTimeout)
+	defer cancel()
+	// #nosec G204 -- the executable is a resolved Python interpreter and the argv is fixed.
+	output, err := exec.CommandContext(ctx, command.executable, command.args("-c", "import sys; print('%d.%d' % sys.version_info[:2])")...).Output()
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to query Python version: %w", err)
+	}
+	return parsePythonVersion(string(output))
+}
+
+func parsePythonVersion(output string) (int, int, error) {
+	majorText, minorText, ok := strings.Cut(strings.TrimSpace(output), ".")
+	if !ok {
+		return 0, 0, fmt.Errorf("unexpected Python version %q", strings.TrimSpace(output))
+	}
+	major, majorErr := strconv.Atoi(majorText)
+	minor, minorErr := strconv.Atoi(minorText)
+	if majorErr != nil || minorErr != nil {
+		return 0, 0, fmt.Errorf("unexpected Python version %q", strings.TrimSpace(output))
+	}
+	return major, minor, nil
 }
 
 // bootstrapPythonEnv ensures the Python virtual environment at workdir/.venv exists
@@ -549,11 +609,21 @@ func ensurePythonVenvWithCommand(workdir string, pythonCommand pythonVenvCommand
 	return nil
 }
 
-// checkPythonVenvUsable verifies that the venv interpreter starts and can import pip.
+// checkPythonVenvUsable verifies that the venv interpreter starts, can import pip
+// and is new enough for the pinned requirements.
 func checkPythonVenvUsable(workdir string) error {
 	venvPython, _ := pythonVenvExecutablePaths(workdir)
-	_, err := RunCliCommand(workdir, venvPython, []string{"-m", "pip", "--version"})
-	return err
+	if _, err := RunCliCommand(workdir, venvPython, []string{"-m", "pip", "--version"}); err != nil {
+		return err
+	}
+	major, minor, err := probePythonVersion(pythonVenvCommand{executable: venvPython})
+	if err != nil {
+		return err
+	}
+	if !isSupportedPythonVersion(major, minor) {
+		return fmt.Errorf("Python %d.%d is older than 3.%d", major, minor, minPythonMinor)
+	}
+	return nil
 }
 
 func pythonVenvExecutablePaths(workdir string) (venvPython, pipPath string) {
@@ -659,23 +729,6 @@ func getWindows11Download(arch string, savePath string, download bool) (string, 
 	return url, nil
 }
 
-func isSafeDebianPackageSegment(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z':
-		case r >= 'A' && r <= 'Z':
-		case r >= '0' && r <= '9':
-		case r == '.', r == '-', r == '_':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
 func getWebFileDependencies() []WebFileDependency {
 	return []WebFileDependency{
 		{
@@ -775,27 +828,20 @@ func getWebFileDependencies() []WebFileDependency {
 				},
 			},
 		},
-		{
-			LocalPath: GetDirectoriesInstance().CachePath("qemu-efi-aarch64_all.deb"),
-			Checksum:  "",
-			BeforeHook: func() (string, error) {
-				return resolveDebianPackageURL("trixie", "qemu-efi-aarch64")
+		qemuEfiAarch64Dependency(
+			VirtualMachineConfig{
+				OS:                   "windows11",
+				Arch:                 "arm64",
+				HostOs:               HostOsDarwin,
+				VirtualizationEngine: VirtualizationEngineUtm,
 			},
-			RelatedVmConfigs: []VirtualMachineConfig{
-				{
-					OS:                   "windows11",
-					Arch:                 "arm64",
-					HostOs:               HostOsDarwin,
-					VirtualizationEngine: VirtualizationEngineUtm,
-				},
-				{
-					OS:                   "windows11",
-					Arch:                 "arm64",
-					HostOs:               HostOsLinux,
-					VirtualizationEngine: VirtualizationEngineQemu,
-				},
+			VirtualMachineConfig{
+				OS:                   "windows11",
+				Arch:                 "arm64",
+				HostOs:               HostOsLinux,
+				VirtualizationEngine: VirtualizationEngineQemu,
 			},
-		},
+		),
 		{
 			LocalPath:       GetDirectoriesInstance().CachePath("windows", "virtio-win.iso"),
 			Checksum:        "sha256:" + virtioWinSHA256,
@@ -915,36 +961,36 @@ func getWebFileDependencies() []WebFileDependency {
 				},
 			},
 		},
-		{
-			LocalPath: GetDirectoriesInstance().CachePath("qemu-efi-aarch64_all.deb"),
-			Checksum:  "",
-			BeforeHook: func() (string, error) {
-				return resolveDebianPackageURL("trixie", "qemu-efi-aarch64")
+		qemuEfiAarch64Dependency(
+			VirtualMachineConfig{
+				OS:                   "ubuntu",
+				UbuntuType:           "server",
+				Arch:                 "arm64",
+				HostOs:               HostOsDarwin,
+				VirtualizationEngine: VirtualizationEngineUtm,
 			},
-			RelatedVmConfigs: []VirtualMachineConfig{
-				{
-					OS:                   "ubuntu",
-					UbuntuType:           "server",
-					Arch:                 "arm64",
-					HostOs:               HostOsDarwin,
-					VirtualizationEngine: VirtualizationEngineUtm,
-				},
-				{
-					OS:                   "ubuntu",
-					UbuntuType:           "server",
-					Arch:                 "arm64",
-					HostOs:               HostOsLinux,
-					VirtualizationEngine: VirtualizationEngineQemu,
-				},
-				{
-					OS:                   "ubuntu",
-					UbuntuType:           "desktop",
-					Arch:                 "arm64",
-					HostOs:               HostOsLinux,
-					VirtualizationEngine: VirtualizationEngineQemu,
-				},
+			VirtualMachineConfig{
+				OS:                   "ubuntu",
+				UbuntuType:           "desktop",
+				Arch:                 "arm64",
+				HostOs:               HostOsDarwin,
+				VirtualizationEngine: VirtualizationEngineUtm,
 			},
-		},
+			VirtualMachineConfig{
+				OS:                   "ubuntu",
+				UbuntuType:           "server",
+				Arch:                 "arm64",
+				HostOs:               HostOsLinux,
+				VirtualizationEngine: VirtualizationEngineQemu,
+			},
+			VirtualMachineConfig{
+				OS:                   "ubuntu",
+				UbuntuType:           "desktop",
+				Arch:                 "arm64",
+				HostOs:               HostOsLinux,
+				VirtualizationEngine: VirtualizationEngineQemu,
+			},
+		),
 	}
 }
 
@@ -996,7 +1042,11 @@ func downloadWebFileDependency(p *mpb.Progress, dep WebFileDependency) error {
 		}
 	}
 
-	return fmt.Errorf("failed to download web file dependency from all sources: %s", strings.Join(failures, "; "))
+	err := fmt.Errorf("failed to download web file dependency from all sources: %s", strings.Join(failures, "; "))
+	if dep.FailureHint != "" {
+		return fmt.Errorf("%w; %s", err, dep.FailureHint)
+	}
+	return err
 }
 
 func downloadWebFileDependencyFromSource(p *mpb.Progress, dep WebFileDependency, source string) error {

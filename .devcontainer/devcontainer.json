@@ -29,5 +29,5 @@
   "remoteUser": "root",
   "containerUser": "root",
   "updateRemoteUserUID": true,
-  "postStartCommand": "bash .devcontainer/clone-color.sh; go mod vendor && go install ./cmd/sailwright-gateway || echo 'warning: sailwright-gateway install failed' >&2; if [ -f /root/.codex-auth.json ]; then mkdir -p /root/.codex && ln -sfn /root/.codex-auth.json /root/.codex/auth.json; fi; nohup bash .devcontainer/install-extensions.sh >/tmp/install-extensions.log 2>&1 &"
+  "postStartCommand": "if [ -f .devcontainer/local/post-start.sh ]; then bash .devcontainer/local/post-start.sh; fi; bash .devcontainer/clone-color.sh; go mod vendor && go install ./cmd/sailwright-gateway || echo 'warning: sailwright-gateway install failed' >&2; if [ -f /root/.codex-auth.json ]; then mkdir -p /root/.codex && ln -sfn /root/.codex-auth.json /root/.codex/auth.json; fi; nohup bash .devcontainer/install-extensions.sh >/tmp/install-extensions.log 2>&1 &"
 }

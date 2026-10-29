@@ -31,13 +31,15 @@ func runQemuUbuntuBuild(config VirtualMachineConfig, relativeScriptPath string) 
 	if config.Verbose {
 		args = append(args, "--verbose")
 	}
-	return RunBuildScript(config, "bash", args)
+	return RunBuildScript(config, "bash", args, arm64QemuMachineEnv(config)...)
 }
 
 func RunQemuUbuntuBuildOnLinux(config VirtualMachineConfig) error {
+	logArm64QemuVersion(config)
 	return runQemuUbuntuBuild(config, "build/packer/linux/ubuntu/linux-ubuntu-on-linux.sh")
 }
 
 func RunQemuWindowsBuildOnLinux(config VirtualMachineConfig) error {
+	logArm64QemuVersion(config)
 	return runQemuWindowsBuild(config, "build/packer/windows/windows11-on-linux.sh")
 }

@@ -1,7 +1,10 @@
 package build
 
 import (
+	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -12,6 +15,7 @@ const (
 	windowsQemuScriptPath        = "build/packer/windows/windows11-qemu.sh"
 	windowsAutounattendIsoPath   = "scripts/macos/create-win11-autounattend-iso.sh"
 	linuxDependencyInstallerPath = "scripts/linux/sailwright-install-dependencies.sh"
+	arm64UefiDownloadScriptPath  = "scripts/macos/download-arm64-uefi.sh"
 )
 
 func TestUbuntuQemuWrapperScriptsUseSharedTemplate(t *testing.T) {
@@ -147,4 +151,82 @@ func TestLinuxDependencyInstallerIncludesWindowsIsoExtractionTools(t *testing.T)
 		`libarchive-tools`,
 		`xorriso`,
 	)
+}
+
+// The shell fallback must pick the same Python as resolvePythonVenvCommand,
+// or it fails in pip on macOS where /usr/bin/python3 is 3.9.
+func TestWindowsQemuScriptRequiresSupportedPython(t *testing.T) {
+	t.Parallel()
+
+	got := readRepoFile(t, windowsQemuScriptPath)
+	assertContainsAll(t, windowsQemuScriptPath, got,
+		fmt.Sprintf(`sys.version_info < (3, %d)`, minPythonMinor),
+		`candidates=(python3 python3.14 python3.13 python3.12 python3.11 python3.10 python)`,
+		`candidates+=(/opt/homebrew/bin/python3 /usr/local/bin/python3)`,
+		`python_is_supported .venv/bin/python3`,
+		`"$python_bin" -m venv .venv`,
+	)
+	if strings.Contains(got, "python3 -m venv") {
+		t.Errorf("expected %q to create the venv with the resolved interpreter, not python3", windowsQemuScriptPath)
+	}
+}
+
+func TestArm64UefiDownloadScriptUsesSamePinAsGo(t *testing.T) {
+	t.Parallel()
+
+	got := readRepoFile(t, arm64UefiDownloadScriptPath)
+	assertContainsAll(t, arm64UefiDownloadScriptPath, got,
+		`QEMU_EFI_AARCH64_VERSION="`+qemuEfiAarch64Version+`"`,
+		`QEMU_EFI_AARCH64_SHA256="`+qemuEfiAarch64SHA256+`"`,
+		`QEMU_EFI_AARCH64_SNAPSHOT_TIMESTAMP="`+qemuEfiAarch64SnapshotTimestamp+`"`,
+		`pool/main/e/edk2/qemu-efi-aarch64_${QEMU_EFI_AARCH64_VERSION}_all.deb`,
+		`.qemu-efi-aarch64.sha256`,
+		`tmp_deb="$(mktemp "${DEB_PATH}.XXXXXX")"`,
+	)
+	if strings.Contains(got, "Packages.gz") {
+		t.Errorf("expected %q not to resolve the latest firmware from the Debian index", arm64UefiDownloadScriptPath)
+	}
+}
+
+// Renovate's shared regex captures a quoted hex value on the line after the version as
+// its digest. The comment below each qemu-efi-aarch64 version keeps the SHA-256 out of
+// that match; reformatting or deleting it would let Renovate treat the SHA-256 as a digest.
+func TestRenovateDoesNotCaptureQemuEfiAarch64SHA256AsDigest(t *testing.T) {
+	t.Parallel()
+
+	var config struct {
+		CustomManagers []struct {
+			MatchStrings []string `json:"matchStrings"`
+		} `json:"customManagers"`
+	}
+	if err := json.Unmarshal([]byte(readRepoFile(t, "renovate.json")), &config); err != nil {
+		t.Fatalf("failed to parse renovate.json: %v", err)
+	}
+
+	for _, path := range []string{"pkg/build/dependencies.go", arm64UefiDownloadScriptPath} {
+		content := readRepoFile(t, path)
+		matched := false
+		for _, manager := range config.CustomManagers {
+			for _, matchString := range manager.MatchStrings {
+				pattern, err := regexp.Compile(matchString)
+				if err != nil {
+					continue
+				}
+				for _, match := range pattern.FindAllStringSubmatch(content, -1) {
+					depName := pattern.SubexpIndex("depName")
+					digest := pattern.SubexpIndex("currentDigest")
+					if depName < 0 || match[depName] != "qemu-efi-aarch64" {
+						continue
+					}
+					matched = true
+					if digest >= 0 && match[digest] != "" {
+						t.Errorf("%s: Renovate captures %q as the qemu-efi-aarch64 digest; keep the comment directly below the version", path, match[digest])
+					}
+				}
+			}
+		}
+		if !matched {
+			t.Errorf("%s: no Renovate matchString finds the qemu-efi-aarch64 version", path)
+		}
+	}
 }
