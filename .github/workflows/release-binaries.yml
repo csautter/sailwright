@@ -243,6 +243,17 @@ jobs:
           "${RUNNER_TEMP}/bin/sailwright" --help | grep -q "Usage:"
           "${RUNNER_TEMP}/bin/sailwright-gateway" --help | grep -q "Usage:"
 
+      # A release binary runs from its embedded assets instead of a git
+      # checkout, so run its dependency installer from outside the repository.
+      # Every other workflow uses `go run` inside the checkout, which cannot
+      # catch an asset that is missing from runtimeassets.go.
+      - name: Run sailwright install from the packaged binary
+        if: ${{ runner.os == 'Linux' }}
+        working-directory: ${{ runner.temp }}
+        run: |
+          "${RUNNER_TEMP}/bin/sailwright" install --with-go
+          test -f "${HOME}/.local/share/dev-alchemy/project/.embedded-assets.sha256"
+
       - name: Install with install.ps1
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh
