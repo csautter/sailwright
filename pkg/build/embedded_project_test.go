@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -180,9 +181,75 @@ func TestEnsureEmbeddedProjectDir_PrunesStaleEntriesWhenManifestChanges(t *testi
 // resolved statically.
 var scriptRepoPathPattern = regexp.MustCompile(`\$\{?(project_root|script_dir|SCRIPT_DIR)\}?((?:/[A-Za-z0-9_.-]+)+/?)(\$?)`)
 
+// scriptRepoReference is a repo file that a shell script references, resolved
+// to a path relative to the project root.
+type scriptRepoReference struct {
+	match  string
+	target string
+}
+
+// scriptRepoReferences returns the repo files that the script at scriptPath
+// references through scriptRepoPathPattern. project_root resolves against the
+// project root and script_dir/SCRIPT_DIR against the script's directory, so a
+// script must only use project_root for the repo root (a parameter carrying
+// the root counts). Paths concatenated with another variable, the root itself
+// and paths outside the root are skipped.
+func scriptRepoReferences(scriptPath string, content string) []scriptRepoReference {
+	var references []scriptRepoReference
+	for _, match := range scriptRepoPathPattern.FindAllStringSubmatch(content, -1) {
+		variable, relPath, concatenated := match[1], match[2], match[3]
+		if concatenated != "" {
+			continue
+		}
+
+		base := "."
+		if variable != "project_root" {
+			base = path.Dir(scriptPath)
+		}
+		target := path.Join(base, strings.TrimPrefix(relPath, "/"))
+		if target == "." || target == ".." || strings.HasPrefix(target, "../") {
+			continue
+		}
+
+		references = append(references, scriptRepoReference{match: match[0], target: target})
+	}
+	return references
+}
+
+func TestScriptRepoReferences(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{name: "braced project_root", content: `cat "${project_root}/go.mod"`, want: []string{"go.mod"}},
+		{name: "bare project_root", content: `cat $project_root/go.mod`, want: []string{"go.mod"}},
+		{name: "script_dir is relative to the script", content: `bash "${script_dir}/helper.sh"`, want: []string{"scripts/linux/helper.sh"}},
+		{name: "SCRIPT_DIR is relative to the script", content: `bash "$SCRIPT_DIR/helper.sh"`, want: []string{"scripts/linux/helper.sh"}},
+		{name: "parent segments resolve", content: `ls "${script_dir}/../macos/x.sh"`, want: []string{"scripts/macos/x.sh"}},
+		{name: "trailing slash names a directory", content: `ls "${project_root}/playbooks/"`, want: []string{"playbooks"}},
+		{name: "several references", content: "a=${project_root}/a\nb=${script_dir}/b", want: []string{"a", "scripts/linux/b"}},
+		{name: "concatenated with a variable", content: `cat "${project_root}/cache/${name}"`, want: nil},
+		{name: "project root itself", content: `cd "${script_dir}/../.."`, want: nil},
+		{name: "outside the project root", content: `cd "${script_dir}/../../../elsewhere"`, want: nil},
+		{name: "other variables", content: `cat "${repo_root}/go.mod" "${HOME}/.bashrc"`, want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			for _, reference := range scriptRepoReferences("scripts/linux/install.sh", tc.content) {
+				got = append(got, reference.target)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("expected %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
 // Release binaries run the embedded scripts outside a git checkout, so every
-// repo file they reference must be embedded as well.
-func TestEmbeddedShellScriptsOnlyReferenceEmbeddedFiles(t *testing.T) {
+// repo file they reference must be embedded as well. Only the forms matched by
+// scriptRepoReferences are checked; PowerShell scripts are not scanned.
+func TestEmbeddedShellScriptRepoReferencesAreEmbedded(t *testing.T) {
 	assets := runtimeassets.FS()
 
 	err := fs.WalkDir(assets, ".", func(scriptPath string, d fs.DirEntry, err error) error {
@@ -195,24 +262,9 @@ func TestEmbeddedShellScriptsOnlyReferenceEmbeddedFiles(t *testing.T) {
 			return err
 		}
 
-		for _, match := range scriptRepoPathPattern.FindAllStringSubmatch(string(content), -1) {
-			variable, relPath, concatenated := match[1], match[2], match[3]
-			if concatenated != "" {
-				continue
-			}
-
-			base := "."
-			if variable != "project_root" {
-				base = path.Dir(scriptPath)
-			}
-			target := path.Join(base, strings.TrimPrefix(relPath, "/"))
-			if target == "." || strings.HasPrefix(target, "../") || target == ".." {
-				// The project root itself, or a path outside it.
-				continue
-			}
-
-			if _, err := fs.Stat(assets, target); err != nil {
-				t.Errorf("%s references %q, which is not embedded in the release binary (add it to runtimeassets.go)", scriptPath, match[0])
+		for _, reference := range scriptRepoReferences(scriptPath, string(content)) {
+			if _, err := fs.Stat(assets, reference.target); err != nil {
+				t.Errorf("%s references %q, which is not embedded in the release binary (add it to runtimeassets.go)", scriptPath, reference.match)
 			}
 		}
 		return nil
