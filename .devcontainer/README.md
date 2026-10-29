@@ -9,8 +9,8 @@ never blocks startup. The creation log lists what was mounted and skipped.
 
 Mounted automatically when present:
 
-- Agent config: `~/.agents/{skills,agents}`, `~/.codex/{skills,auth.json}`,
-  `~/.local/share/opencode`, `~/.gemini`
+- Agent config: `~/.agents/skills` (for Claude and Codex), `~/.codex`
+  (`/root/.codex-host`, only for its `auth.json`), `~/.gemini`
 - Sibling repos next to this checkout: `sailwright-plans`,
   `sailwright-roles-private`
 - Always: `~/.sailwright-gateway` (read-only, see
@@ -25,8 +25,8 @@ so sessions, history, settings and logins survive a container rebuild:
 - `~/.claude-devcontainer` is `/root/.claude`. `CLAUDE_CONFIG_DIR` points there,
   so `.claude.json` (onboarding, project trust, MCP servers) is kept as well.
 - `~/.codex-devcontainer` is `/root/.codex` (`sessions/`, `history.jsonl`,
-  `config.toml`). `~/.codex/skills` is mounted on top of it, and a host
-  `~/.codex/auth.json` is linked in on every start so the login is shared with
+  `config.toml`). A host `~/.codex/auth.json` (mounted at
+  `/root/.codex-host`) is linked in on every start so the login is shared with
   the host. Its `.tmp/` plugin cache and `tmp/` runtime helpers live in the
   `sailwright-codex-tmp` and `sailwright-codex-runtime-tmp` Docker volumes
   instead: Codex rewrites thousands of files in `.tmp/` on every start, and a
