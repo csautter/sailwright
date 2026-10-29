@@ -333,6 +333,8 @@ sailwright provision ubuntu --type server --arch amd64
 If you are targeting Windows and remote access is not configured yet, start
 with [Windows Ansible Access](./docs/windows-ansible-access.md).
 
+On Linux and macOS, an interactive `sailwright build ubuntu ...` offers to pull
+the published image instead of building locally (default: build locally).
 When you want to share reusable build artifacts through an OCI registry instead
 of rebuilding them locally, use `sailwright push` and `sailwright pull`; see the
 [OCI build artifact registry workflow](./docs/testing-workflows.md#oci-build-artifact-registry-workflow).

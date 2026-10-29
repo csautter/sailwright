@@ -19,6 +19,7 @@ import (
 type workflow struct {
 	On          triggers          `yaml:"on"`
 	Permissions map[string]string `yaml:"permissions"`
+	Env         map[string]string `yaml:"env"`
 	Jobs        map[string]job    `yaml:"jobs"`
 }
 

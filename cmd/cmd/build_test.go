@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -262,6 +264,7 @@ func TestBuildCommandReturnsErrorWhenBuildFails(t *testing.T) {
 	}
 	vm := vms[0]
 
+	stubPrebuiltOffer(t)
 	previousRunner, previousArch, previousType, previousEngine := runBuildFunc, arch, osType, buildEngine
 	t.Cleanup(func() {
 		runBuildFunc, arch, osType, buildEngine = previousRunner, previousArch, previousType, previousEngine
@@ -275,6 +278,45 @@ func TestBuildCommandReturnsErrorWhenBuildFails(t *testing.T) {
 	err := buildCmd.RunE(buildCmd, []string{vm.OS})
 	if err == nil || !strings.Contains(err.Error(), "packer exploded") {
 		t.Fatalf("expected build failure to be returned, got %v", err)
+	}
+}
+
+func TestBuildCommandPrebuiltOfferDecidesWhetherToBuild(t *testing.T) {
+	vms := availableBuildVirtualMachines()
+	index := slices.IndexFunc(vms, func(vm alchemy_build.VirtualMachineConfig) bool {
+		return prebuiltArtifactReference(vm) != ""
+	})
+	if index == -1 {
+		t.Skip("no build target with a published prebuilt image on this host")
+	}
+	vm := vms[index]
+
+	for _, accept := range []bool{true, false} {
+		t.Run(fmt.Sprintf("accept=%v", accept), func(t *testing.T) {
+			stubs := stubPrebuiltOffer(t)
+			stubs.answer = accept
+			previousRunner, previousArch, previousType, previousEngine := runBuildFunc, arch, osType, buildEngine
+			previousIn := buildCmd.InOrStdin()
+			t.Cleanup(func() {
+				runBuildFunc, arch, osType, buildEngine = previousRunner, previousArch, previousType, previousEngine
+				buildCmd.SetIn(previousIn)
+			})
+
+			built := false
+			runBuildFunc = func(alchemy_build.VirtualMachineConfig) error {
+				built = true
+				return nil
+			}
+			arch, osType, buildEngine = vm.Arch, vm.UbuntuType, string(vm.VirtualizationEngine)
+			buildCmd.SetIn(strings.NewReader(""))
+
+			if err := buildCmd.RunE(buildCmd, []string{vm.OS}); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if built == accept || (stubs.pulled != "") != accept {
+				t.Fatalf("accept=%v: built=%v pulled=%q", accept, built, stubs.pulled)
+			}
+		})
 	}
 }
 

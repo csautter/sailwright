@@ -133,6 +133,11 @@ fi
 if [[ "${RECORD}" == "true" && "${QUICKSTART_IN_RECORDING:-}" != "1" ]]; then
 	mkdir -p "${RECORD_DIR}"
 	export QUICKSTART_IN_RECORDING=1
+	# The recorder gives `sailwright build` a pty even when nobody can answer its
+	# prebuilt-image prompt (e.g. in CI), so skip the prompt in that case.
+	if [[ ! -t 0 ]]; then
+		export SAILWRIGHT_NO_PREBUILT_OFFER=1
+	fi
 	# Expand ORIG_ARGS defensively: on bash < 4.4 `"${arr[@]}"` on an empty
 	# array trips `set -u`, which would break a no-arg invocation.
 	child_cmd="$(printf '%q ' "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"})"

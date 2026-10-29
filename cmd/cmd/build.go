@@ -297,6 +297,10 @@ var buildCmd = &cobra.Command{
 You can specify the OS name, type, and architecture.
 Use "all" to build all stable VM configurations for the current host OS.
 
+Interactive Ubuntu builds on Linux and macOS offer to pull the image published
+at ghcr.io/csautter/ubuntu-24 instead of building locally (default: no). Pass
+--no-prebuilt or set SAILWRIGHT_NO_PREBUILT_OFFER=1 to skip the offer.
+
 Example:
   sailwright build ubuntu --type server --arch amd64
   sailwright build windows11 --arch arm64
@@ -370,6 +374,17 @@ Example:
 		if err != nil {
 			return fmt.Errorf("❌ %w", err)
 		}
+		VirtualMachineConfig.NoCache = noCache
+		VirtualMachineConfig.Verbose = buildVerbose
+
+		pulled, err := offerPrebuiltArtifact(cmd, VirtualMachineConfig)
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
+		}
+		if pulled {
+			return nil
+		}
+
 		fmt.Printf("🔧 Building VM for OS: %s, Type: %s, Architecture: %s, Engine: %s\n", osName, osType, arch, alchemy_build.DisplayVirtualizationEngine(VirtualMachineConfig.VirtualizationEngine))
 
 		// #nosec G404 -- this random value only spreads local VNC port selection and is not security-sensitive.
@@ -377,8 +392,6 @@ Example:
 
 		VirtualMachineConfig.VncPort = port
 		VirtualMachineConfig.Headless = headless
-		VirtualMachineConfig.NoCache = noCache
-		VirtualMachineConfig.Verbose = buildVerbose
 
 		if err := runBuildFunc(VirtualMachineConfig); err != nil {
 			return fmt.Errorf("❌ Build failed for OS: %s, Type: %s, Architecture: %s — %w", osName, osType, arch, err)
@@ -408,4 +421,5 @@ func init() {
 	buildCmd.Flags().BoolVar(&headless, "headless", false, "Run QEMU in headless mode (no GUI, VNC only)")
 	buildCmd.Flags().BoolVarP(&buildVerbose, "verbose", "v", false, "Enable verbose Packer logging (sets PACKER_LOG=1)")
 	buildCmd.Flags().BoolVar(&noCache, "no-cache", false, "Force a rebuild even when the build artifact already exists")
+	buildCmd.Flags().BoolVar(&noPrebuiltOffer, "no-prebuilt", false, "Build locally without offering to pull the published Ubuntu image")
 }

@@ -220,6 +220,26 @@ pass `--yes` to accept it without prompting. Pick the arch that matches the
 host CPU. Windows hosts use Hyper-V and cannot use these artifacts, and Windows
 VM build artifacts are intentionally not published.
 
+The `Test Pull of Published OCI Images` workflow
+(`.github/workflows/test-pull-published-images.yml`) runs weekly and on changes
+to the OCI code. It checks that all four published tags resolve to a VM build
+artifact with matching annotations, and pulls `server-amd64` anonymously and
+`server-arm64` with `GITHUB_TOKEN` through the CLI, then verifies the pulled
+qcow2 image.
+
+Because local VM builds take a long time, an interactive
+`sailwright build ubuntu ...` on Linux and macOS hosts offers to pull the
+matching published artifact instead. The default answer is no, which builds
+locally; a failed pull also falls back to the local build, while Ctrl+C during
+the pull stops the command. The pull is anonymous and ignores Docker
+credentials, because the images are public. The offer is skipped when the
+artifact already exists, with `--no-cache` or `--no-prebuilt`, when
+`SAILWRIGHT_NO_PREBUILT_OFFER` is set to a non-empty value, for `build all`,
+and when stdin is not a terminal (including `/dev/null` and agent gateway
+jobs). `scripts/quickstart.sh` sets `SAILWRIGHT_NO_PREBUILT_OFFER=1` when it
+records a session without a terminal on stdin, because the recorder would
+otherwise give the build a terminal nobody can answer.
+
 For HTTPS registries with an internal or self-signed certificate, prefer adding
 the registry CA with `--ca-file /path/to/ca.pem`. For short-lived testing
 against a registry you already trust, `--insecure-skip-tls-verify` disables TLS

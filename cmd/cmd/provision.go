@@ -11,6 +11,7 @@ import (
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
 	alchemy_provision "github.com/csautter/dev-alchemy/pkg/provision"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -373,12 +374,9 @@ func isInteractiveInput(input io.Reader) bool {
 		return true
 	}
 
-	info, err := file.Stat()
-	if err != nil {
-		return false
-	}
-
-	return info.Mode()&os.ModeCharDevice != 0
+	// A character-device check would also accept /dev/null, which is what
+	// non-interactive callers such as the agent gateway attach as stdin.
+	return term.IsTerminal(int(file.Fd())) // #nosec G115 -- file descriptors fit in int.
 }
 
 func promptForConfirmation(input io.Reader, output io.Writer, prompt string) (bool, error) {
