@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0](https://github.com/csautter/sailwright/compare/v0.21.0...v0.22.0) (2026-10-29)
+
+
+### Added
+
+* **build:** add --no-prebuilt opt-out and harden the prebuilt offer ([751bafd](https://github.com/csautter/sailwright/commit/751bafdad13535cce564064f1f64c69926730569))
+* **build:** choose the ARM64 QEMU machine by what QEMU supports ([376fc22](https://github.com/csautter/sailwright/commit/376fc224acf913455ca778155ced641f1a698704))
+* **build:** log and check the QEMU version for macOS ARM64 builds ([99ee9a1](https://github.com/csautter/sailwright/commit/99ee9a122859adbb392256716f8d37b122755e5e))
+* **build:** offer to pull the prebuilt Ubuntu image before a local build ([5b64e6f](https://github.com/csautter/sailwright/commit/5b64e6f0db3d58a38b57b20bc2399ca0ed88bdb4))
+* **deps:** sync the qemu-efi-aarch64 pin with a script and workflow ([1aa1132](https://github.com/csautter/sailwright/commit/1aa113246751fff66ff672a6fc126387416d03ec))
+
+
+### Fixed
+
+* **build:** look for Homebrew Python in the Windows 11 ISO shell fallback ([0bcc0b3](https://github.com/csautter/sailwright/commit/0bcc0b36918381a64863a07731ff9e28e4699802))
+* **build:** pin the ARM64 QEMU machine to virt-10.0 on macOS ([b2e9e28](https://github.com/csautter/sailwright/commit/b2e9e28aa8ffc860cc73c6691a4025deda0742f1))
+* **build:** require Python 3.10+ in the Windows 11 ISO shell fallback ([494365c](https://github.com/csautter/sailwright/commit/494365c52b7fba9dcdc12327de3a235fb6104644))
+* **build:** stop macOS ARM64 builds early when QEMU is older than 10.0 ([c075f35](https://github.com/csautter/sailwright/commit/c075f35d00051dfbad7ff79acc2189a0ea87afd6))
+* **build:** stop macOS ARM64 QEMU builds hanging in UEFI ([d94cdb4](https://github.com/csautter/sailwright/commit/d94cdb48bb8b21ab7710d1c59d01bbdc5df3868b))
+* **cmd:** treat only terminals as interactive input ([0080636](https://github.com/csautter/sailwright/commit/008063648a0027750c27d9a0caebc7e9143e6eb0))
+* **deploy:** clone the qcow2 image into UTM instead of copying it ([f899785](https://github.com/csautter/sailwright/commit/f899785a5d55158b3f34577b1072ca482f451c1b))
+* **deploy:** clone the qcow2 image into UTM instead of copying it ([41bec78](https://github.com/csautter/sailwright/commit/41bec780b4c3d1d5d84398ee9be4efdfc044d9e2))
+* **deps:** download the ARM64 firmware to a unique temp file ([2489075](https://github.com/csautter/sailwright/commit/2489075480ded418c2b967edeb8de5e0a5f9a8dd))
+* **deps:** fail CI when the qemu-efi-aarch64 pin is only partly bumped ([12c1a75](https://github.com/csautter/sailwright/commit/12c1a75bba478a3ff4117baad81c64d4a703b03c))
+* **deps:** find Homebrew Python on macOS and bound the version probe ([006f6d9](https://github.com/csautter/sailwright/commit/006f6d9d70d70ed802f1bd53b22011c2bc2cd583))
+* **deps:** install Homebrew Python 3.13 with the macOS dependencies ([2f27c47](https://github.com/csautter/sailwright/commit/2f27c47e922fb7a94db2b0d7a26cb00b2bebf2ef))
+* **deps:** leave Homebrew python@3.13 unpinned ([14ea7e0](https://github.com/csautter/sailwright/commit/14ea7e0a10d09d3500944cbc2e0775dc0bb79773))
+* **deps:** pin qemu-efi-aarch64 instead of following trixie ([3219476](https://github.com/csautter/sailwright/commit/3219476504cb43d38444eb4d43d39fecee251577))
+* **deps:** pin the qemu-efi-aarch64 snapshot timestamp to first_seen ([4002195](https://github.com/csautter/sailwright/commit/4002195f3824a6034c543f0eeee8861e547dab0a))
+* **deps:** require Python 3.10+ for the Windows 11 download venv ([6944734](https://github.com/csautter/sailwright/commit/69447347b780e3a85408a56f380bafe838b3f7d5))
+* **oci:** correct artifact pull commands and host labels ([92d8b44](https://github.com/csautter/sailwright/commit/92d8b445f5d281c86bb851759e7933901c43a402))
+* **oci:** derive artifact host support from foreign pull rules ([c854265](https://github.com/csautter/sailwright/commit/c85426567356af31d8bdbc71c1f0b5f3b872db87))
+* **oci:** describe sailwright pull and host support in artifact description ([dadfaab](https://github.com/csautter/sailwright/commit/dadfaab0a40e98230fd0a1e7e90cbf937ad7ad5f))
+* refresh iso upload logging ([6184c51](https://github.com/csautter/sailwright/commit/6184c51a6acb8f8a78ecbac70e6d416da3581ad7))
+
+
+### Changed
+
+* **build:** drop the version parameter from qemuEfiAarch64URLs ([b20ffd7](https://github.com/csautter/sailwright/commit/b20ffd7287f348ddd200be6e18520310ed45dd36))
+* **build:** share the qemu-efi-aarch64 dependency definition ([6a0bf21](https://github.com/csautter/sailwright/commit/6a0bf21356f0e13a98b1951da0538df273479569))
+* **deps:** probe each Python interpreter once ([89be125](https://github.com/csautter/sailwright/commit/89be125f7b4f88feb2c7a59331b21144323e1ac0))
+
+
+### Build
+
+* **devcontainer:** add optional local hooks for machine-specific setup ([8da761a](https://github.com/csautter/sailwright/commit/8da761a39930f86152c3c66abc0960cab95539bb))
+* **devcontainer:** mount host codex dir for auth and drop extra agent mounts ([da006e0](https://github.com/csautter/sailwright/commit/da006e03e33cfb94ecd589e92072a31e74b49074))
+* **devcontainer:** run the host hook from outside the workspace ([6ebf6b4](https://github.com/csautter/sailwright/commit/6ebf6b44ff09569e04fbbcd01f4ebc829a64a1d6))
+* **devcontainer:** update go base image to 2.3.3 ([2274ccc](https://github.com/csautter/sailwright/commit/2274ccc4eb19d9b5dc8ac5f071309c5428bbee83))
+* **go:** pin the Go toolchain in go.mod and let Renovate bump it ([88eac04](https://github.com/csautter/sailwright/commit/88eac04f829b3ba4ebed5f122bab0112b043a206))
+* **go:** pin the Go toolchain in go.mod and let Renovate bump it ([ced4e5b](https://github.com/csautter/sailwright/commit/ced4e5b34b4ddfc9cf49fb32d177f08a54e44ef1))
+
+
+### CI
+
+* pin the published image contract and widen pull test triggers ([0e33b1d](https://github.com/csautter/sailwright/commit/0e33b1df6afbec4d8892e3eab4c478595bc41d0a))
+
 ## [0.21.0](https://github.com/csautter/sailwright/compare/v0.20.0...v0.21.0) (2026-10-26)
 
 
