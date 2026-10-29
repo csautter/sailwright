@@ -21,6 +21,7 @@ on:
       - "build/packer/windows/**/*"
       - "pkg/build/**"
       - "pkg/deploy/**"
+      - "deployments/utm/**"
       - "scripts/linux/*"
       - "scripts/linux/**/*"
       - "scripts/macos/*"
@@ -172,6 +173,7 @@ jobs:
           RUN_INTEGRATION_TESTS: "1"
           RUN_MACOS_UTM_DEPLOY_SMOKE: "1"
         run: |
+          df -h "$GITHUB_WORKSPACE" "$HOME"
           go test -timeout 60m -v ./pkg/deploy -run "^${{ matrix.deploy_test_name }}$"
 
       - name: Move .vnc.mp4 files to artifact directory
