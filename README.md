@@ -3,14 +3,13 @@
 **Test your dev machine setup before it touches a laptop.**
 
 Sailwright is one CLI to set up, test, and repair developer machines on
-**macOS**, **Windows**, and **Linux**, powered by
-[Ansible](https://www.ansible.com/). It is built for platform and DevEx teams
-that support a mixed-OS fleet and already know Ansible. Unlike chezmoi,
-Nix/Devbox, or devcontainers, Sailwright tests the same playbooks in real,
-disposable macOS, Windows, and Linux VMs before they touch a developer's
-machine. It complements your MDM/UEM tooling instead of replacing it.
+**macOS**, **Windows**, and **Linux**. It is built for platform and DevEx teams
+that support a mixed-OS fleet. Unlike chezmoi, Nix/Devbox, or devcontainers,
+Sailwright tests the same setup automation in real, disposable macOS, Windows,
+and Linux VMs before it touches a developer's machine. It complements your
+MDM/UEM tooling instead of replacing it.
 
-- **One set of playbooks** for macOS, Windows, and Linux
+- **One machine setup** for macOS, Windows, and Linux
 - **Tested in real VMs** before you roll a change out
 - **Free and open source**, no telemetry
 
