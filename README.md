@@ -1,29 +1,17 @@
 # Sailwright
 
-**Sailwright** is an opinionated cross-platform automation toolkit for setting
-up, testing, and maintaining developer environments on **macOS**, **Linux**,
-and **Windows**. It combines [Ansible](https://www.ansible.com/) with
-host-specific VM and system tooling so teams can manage local machines, remote
-hosts, and disposable test systems through one repository.
+**Test your dev machine setup before it touches a laptop.**
 
-It is especially useful when a team has a mixed device fleet and wants one
-repeatable way to:
+Sailwright is one CLI to set up, test, and keep developer machines consistent
+on **macOS**, **Windows**, and **Linux**. It is built for platform and DevEx
+teams that support a mixed-OS fleet. Unlike chezmoi, Nix/Devbox, or
+devcontainers, Sailwright runs your setup automation in real, disposable VMs
+before you roll it out to developers.
 
-- onboard developers faster
-- keep machine setup consistent across operating systems
-- test provisioning changes safely before rolling them out
-- reduce one-off scripts, tribal knowledge, and repeated support work
-
-Sailwright is not a replacement for classic MDM/UEM tooling. It complements
-those tools by handling the developer-tooling and workflow layer that often
-remains manual, team-specific, and hard to reproduce.
-
-Unlike raw `ansible-playbook` runs, chezmoi, Nix/Devbox, or devcontainers,
-Sailwright pairs Ansible with disposable, host-specific VM build/provision
-tooling so the same playbooks can be tested against real macOS/Linux/Windows
-targets before they ever touch a developer's machine.
-
-> _"Transform your system into a dev powerhouse with a touch of automation magic."_
+- **Plain Ansible underneath**: reuse your existing roles and playbooks
+- **Real VM targets**: macOS, Windows 11, and Ubuntu guests, depending on your
+  host (see [Support Snapshot](#support-snapshot))
+- **Free and open source**, no telemetry
 
 <p align="center">
   <img src="./demo/quickstart.gif" width="49%" alt="Sailwright quick-start: install, build, create, start, and provision a VM" />
@@ -78,7 +66,13 @@ same problems:
 - OS-specific scripts drift over time
 
 Sailwright addresses that by keeping setup logic in versioned Ansible roles
-and playbooks, then using host-appropriate tooling to apply and test them.
+and playbooks, then using host-appropriate tooling to apply and test them. That
+helps teams onboard developers faster, keep machines consistent across
+operating systems, and replace one-off scripts and tribal knowledge with one
+repeatable workflow.
+
+Sailwright handles the developer-tooling and workflow layer that classic
+MDM/UEM tools leave manual, team-specific, and hard to reproduce.
 
 ## Support Snapshot
 
@@ -94,17 +88,9 @@ This means Sailwright can cover every currently supported guest OS family on a
 **macOS** host, and every currently supported family except
 **macOS** on a **Windows host** or **Linux** host.
 
-Use the built-in discovery commands to see the exact combinations available on
-your current machine:
-
-```bash
-sailwright build list
-sailwright create list
-sailwright start list
-sailwright provision list
-sailwright stop list
-sailwright destroy list
-```
+Run `sailwright <command> list` (for example `build list` or `provision list`)
+to see the exact combinations available on your current machine; see
+[Discover what your host supports](#3-discover-what-your-host-supports).
 
 ### Machine-readable listings
 
@@ -128,24 +114,9 @@ Sailwright follows a few simple ideas:
 That makes it practical both for daily developer use and for testing changes in
 VMs before applying them to real machines.
 
-You can also use the built-in wrapper for host-local provisioning:
-
-```bash
-sailwright provision local --check
-sailwright provision local --proto ssh --check
-sailwright provision local --playbook ./playbooks/setup.yml --check
-sailwright provision local
-```
-
-Use this when you want the same command surface on your real workstation that
-you use for managed test targets. A bare run uses the playbook from configfile
-`ansible-role-sources.yml` when configured; otherwise it falls back to the
-bundled role-source smoke/example playbook. For platform defaults, Windows
-transport behavior, cleanup flags, and rollback steps, see
-[Local Provisioning](./docs/local-provisioning.md) and
-[Windows Ansible Access](./docs/windows-ansible-access.md). For direct
-`ansible-playbook` examples, use
-[Running Playbooks](./docs/running-playbooks.md).
+The same command surface works on your real workstation
+(`sailwright provision local`) and on managed test targets; see
+[Run your first useful workflow](#4-run-your-first-useful-workflow).
 
 ## 🚀 Getting Started
 
@@ -159,37 +130,11 @@ You can either:
 - download a release binary manually
 - clone the repository when you want to edit playbooks, roles, or project code
 
-#### Install with Homebrew
-
-The [csautter/homebrew-sailwright](https://github.com/csautter/homebrew-sailwright)
-tap is updated on every release and installs the same release binaries,
-verified against the published SHA-256 checksums, plus shell completions:
-
-```bash
-brew install csautter/sailwright/sailwright
-# host-side MCP gateway for agents, optional:
-brew install csautter/sailwright/sailwright-gateway
-```
-
-Update with `brew upgrade sailwright`.
-
-#### Install with the install script
-
-```bash
-# macOS / Linux: installs to ~/.local/bin
-curl -fsSL https://github.com/csautter/sailwright/releases/latest/download/install.sh | sh
-```
-
-```powershell
-# Windows: installs to %LOCALAPPDATA%\Programs\sailwright and adds it to the user PATH
-irm https://github.com/csautter/sailwright/releases/latest/download/install.ps1 | iex
-```
-
-Both scripts install the latest release of `sailwright` and
-`sailwright-gateway`, abort if a SHA-256 checksum does not match, and also
-verify the cosign signature of the checksums when `cosign` is installed. Rerun
-the command to update. See [Installation](./docs/installation.md) for pinning
-a version, choosing another directory, or skipping the gateway.
+The [Quick Start](#quick-start) commands cover Homebrew and the install
+scripts. The Homebrew tap also offers the host-side MCP gateway for agents as
+`brew install csautter/sailwright/sailwright-gateway`; the install scripts
+include it by default. See [Installation](./docs/installation.md) for pinning a
+version, choosing another directory, skipping the gateway, and updating.
 
 #### Manual install
 

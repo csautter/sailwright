@@ -22,6 +22,9 @@ brew install csautter/sailwright/sailwright
 brew install csautter/sailwright/sailwright-gateway   # optional
 ```
 
+Update with `brew upgrade sailwright` (and `brew upgrade sailwright-gateway`
+if you installed it).
+
 See [Homebrew Tap](./homebrew-tap.md) for how the tap is maintained.
 
 ## Install script
