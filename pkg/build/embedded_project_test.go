@@ -36,6 +36,13 @@ func TestEnsureProjectDir_PrefersGitCheckout(t *testing.T) {
 	}
 }
 
+func TestSailwrightModulePathMatchesGoMod(t *testing.T) {
+	repoRoot := filepath.Join("..", "..")
+	if !isSailwrightCheckout(repoRoot) {
+		t.Fatalf("module path in %s does not match sailwrightModulePath %q", filepath.Join(repoRoot, "go.mod"), sailwrightModulePath)
+	}
+}
+
 func TestEnsureProjectDir_IgnoresOtherGitRepos(t *testing.T) {
 	repoRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {

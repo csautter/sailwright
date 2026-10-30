@@ -16,7 +16,9 @@ import (
 const (
 	embeddedProjectDirName      = "project"
 	embeddedProjectManifestFile = ".embedded-assets.sha256"
-	sailwrightModulePath        = "github.com/csautter/dev-alchemy"
+	// The Go module path keeps the pre-rename name until the deferred module
+	// rename in ADR 0004. Change it together with go.mod.
+	sailwrightModulePath = "github.com/csautter/dev-alchemy"
 )
 
 func ensureProjectDir(workingDir string, appDataDir string) (string, error) {
