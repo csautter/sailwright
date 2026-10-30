@@ -50,6 +50,7 @@ BeforeAll {
         Mock Assert-GoToolchainLayout {}
         Mock Get-ChocolateyInstalledVersion { return $null }
         Mock Get-GitForWindowsVersion { return $null }
+        Mock Get-GitForWindowsRoot { return "C:\Program Files\Git" }
         Mock Ensure-ChocolateyPackage {
             $script:EnsuredPackages += [pscustomobject]@{
                 PackageName = $PackageName
@@ -362,7 +363,35 @@ Describe "sailwright self setup Cygwin helpers" -Skip:(-not $IsWindows) {
         }
     }
 
-    Context "Ensure-GitInstalled" {
+    Context "Invoke-DevAlchemySelfSetup" {
+        It "uses the default install path without installing VirtualBox" {
+            Initialize-SelfSetupMainMocks
+
+            $null = Invoke-DevAlchemySelfSetup
+
+            @($script:EnsuredPackages | Where-Object { $_.PackageName -eq "virtualbox" }).Count | Should -Be 0
+            $script:EnsuredPaths | Should -Not -Contain "C:\Program Files\Oracle\VirtualBox"
+            $script:EnsuredPaths | Should -Contain "C:\Program Files\Git\bin"
+            $script:CygwinEnsureCalls[0].InstallRoot | Should -Be $script:PreferredRoot
+            $script:CygwinPackageCalls[0].CygwinRoot | Should -Be $script:PreferredRoot
+            $script:CygwinPipPackageCalls[0].CygwinRoot | Should -Be $script:PreferredRoot
+            $script:ShownToolVersionsRoot | Should -Be $script:PreferredRoot
+        }
+
+        It "installs VirtualBox and adds its path when -VirtualBox is supplied" {
+            Initialize-SelfSetupMainMocks
+
+            $null = Invoke-DevAlchemySelfSetup -VirtualBox
+
+            @($script:EnsuredPackages | Where-Object { $_.PackageName -eq "virtualbox" }).Count | Should -Be 1
+            $script:EnsuredPaths | Should -Contain "C:\Program Files\Oracle\VirtualBox"
+            $script:CygwinEnsureCalls[0].InstallRoot | Should -Be $script:PreferredRoot
+        }
+    }
+}
+
+Describe "sailwright self setup Git helpers" {
+    Context "Ensure-GitInstalled" -Skip:(-not $IsWindows) {
         BeforeEach {
             Initialize-SelfSetupMainMocks
         }
@@ -379,6 +408,14 @@ Describe "sailwright self setup Cygwin helpers" -Skip:(-not $IsWindows) {
             Mock Get-GitForWindowsVersion { return [version]"2.54.0" }
 
             Ensure-GitInstalled -Version "2.54.0"
+
+            @($script:EnsuredPackages).Count | Should -Be 0
+        }
+
+        It "keeps a newer Windows build of the pinned release" {
+            Mock Get-GitForWindowsVersion { return [version]"2.54.0.3" }
+
+            Ensure-GitInstalled -Version "2.54.0.2"
 
             @($script:EnsuredPackages).Count | Should -Be 0
         }
@@ -406,23 +443,75 @@ Describe "sailwright self setup Cygwin helpers" -Skip:(-not $IsWindows) {
             $script:EnsuredPackages[0].PackageName | Should -Be "git"
         }
 
-        It "enforces the pinned version when Git is managed by Chocolatey" {
+        It "keeps a newer Chocolatey-managed Git instead of downgrading it" {
             Mock Get-ChocolateyInstalledVersion { return "2.56.0" } -ParameterFilter { $PackageName -eq "git" }
             Mock Get-GitForWindowsVersion { return [version]"2.56.0" }
 
             Ensure-GitInstalled -Version "2.54.0"
 
-            $script:EnsuredPackages[0].PackageName | Should -Be "git"
-            $script:EnsuredPackages[0].Version | Should -Be "2.54.0"
+            @($script:EnsuredPackages).Count | Should -Be 0
+        }
+
+        It "installs the exact pinned version when the pin is not numeric" {
+            Mock Get-GitForWindowsVersion { throw "The installed version should not be checked for a non-numeric pin." }
+            Mock Write-Warning {}
+
+            Ensure-GitInstalled -Version "2.55.0-rc0"
+
+            $script:EnsuredPackages[0].Version | Should -Be "2.55.0-rc0"
         }
     }
 
-    Context "Get-GitForWindowsVersion" {
+    Context "Get-GitForWindowsRoot" -Skip:(-not $IsWindows) {
+        It "uses the install path recorded by the Git for Windows installer" {
+            Set-TestPathMock -ExistingPaths @("HKLM:\SOFTWARE\GitForWindows")
+            Mock Get-ItemProperty { return [pscustomobject]@{ InstallPath = "C:\Tools\Git" } }
+
+            Get-GitForWindowsRoot | Should -Be "C:\Tools\Git"
+        }
+
+        It "falls back to Program Files when the installer key is absent" {
+            Set-TestPathMock
+            Mock Get-ItemProperty { throw "Registry should not be queried when the key is absent." }
+
+            Get-GitForWindowsRoot | Should -Be (Join-Path $env:ProgramFiles "Git")
+        }
+    }
+
+    Context "Get-GitForWindowsVersion" -Skip:(-not $IsWindows) {
+        BeforeEach {
+            Mock Get-GitForWindowsRoot { return "C:\Tools\Git" }
+        }
+
         It "returns null when Git for Windows is not installed, even if another git is on PATH" {
             Mock Get-Command { throw "PATH lookup should not be used to find Git for Windows." }
+            Mock Invoke-GitVersionCommand { throw "git should not run when Git for Windows is absent." }
             Set-TestPathMock
 
             Get-GitForWindowsVersion | Should -BeNullOrEmpty
+        }
+
+        It "reads the version of the installed Git for Windows" {
+            Set-TestPathMock -ExistingPaths @("C:\Tools\Git\cmd\git.exe")
+            Mock Invoke-GitVersionCommand { return "git version 2.56.0.windows.2" } -ParameterFilter { $GitExePath -eq "C:\Tools\Git\cmd\git.exe" }
+
+            Get-GitForWindowsVersion | Should -Be ([version]"2.56.0.2")
+        }
+
+        It "returns null when git --version fails" {
+            Set-TestPathMock -ExistingPaths @("C:\Tools\Git\cmd\git.exe")
+            Mock Invoke-GitVersionCommand { return $null }
+
+            Get-GitForWindowsVersion | Should -BeNullOrEmpty
+        }
+
+        It "warns and returns null when the version output is not a Git for Windows release" {
+            Set-TestPathMock -ExistingPaths @("C:\Tools\Git\cmd\git.exe")
+            Mock Invoke-GitVersionCommand { return "git version 2.56.0.vfs.0.0" }
+            Mock Write-Warning {}
+
+            Get-GitForWindowsVersion | Should -BeNullOrEmpty
+            Should -Invoke Write-Warning -Times 1 -Exactly
         }
     }
 
@@ -439,33 +528,20 @@ Describe "sailwright self setup Cygwin helpers" -Skip:(-not $IsWindows) {
             ConvertTo-GitForWindowsVersion -VersionOutput "git version 2.54.0" | Should -Be ([version]"2.54.0")
         }
 
+        It "ignores surrounding whitespace" {
+            ConvertTo-GitForWindowsVersion -VersionOutput "git version 2.54.0.windows.2`r`n" | Should -Be ([version]"2.54.0.2")
+        }
+
+        It "rejects release candidates" {
+            ConvertTo-GitForWindowsVersion -VersionOutput "git version 2.54.0.rc1.windows.1" | Should -BeNullOrEmpty
+        }
+
+        It "rejects non-Git for Windows builds such as Microsoft's VFS fork" {
+            ConvertTo-GitForWindowsVersion -VersionOutput "git version 2.54.0.vfs.0.0" | Should -BeNullOrEmpty
+        }
+
         It "returns null for unrecognized output" {
             ConvertTo-GitForWindowsVersion -VersionOutput "not git" | Should -BeNullOrEmpty
-        }
-    }
-
-    Context "Invoke-DevAlchemySelfSetup" {
-        It "uses the default install path without installing VirtualBox" {
-            Initialize-SelfSetupMainMocks
-
-            $null = Invoke-DevAlchemySelfSetup
-
-            @($script:EnsuredPackages | Where-Object { $_.PackageName -eq "virtualbox" }).Count | Should -Be 0
-            $script:EnsuredPaths | Should -Not -Contain "C:\Program Files\Oracle\VirtualBox"
-            $script:CygwinEnsureCalls[0].InstallRoot | Should -Be $script:PreferredRoot
-            $script:CygwinPackageCalls[0].CygwinRoot | Should -Be $script:PreferredRoot
-            $script:CygwinPipPackageCalls[0].CygwinRoot | Should -Be $script:PreferredRoot
-            $script:ShownToolVersionsRoot | Should -Be $script:PreferredRoot
-        }
-
-        It "installs VirtualBox and adds its path when -VirtualBox is supplied" {
-            Initialize-SelfSetupMainMocks
-
-            $null = Invoke-DevAlchemySelfSetup -VirtualBox
-
-            @($script:EnsuredPackages | Where-Object { $_.PackageName -eq "virtualbox" }).Count | Should -Be 1
-            $script:EnsuredPaths | Should -Contain "C:\Program Files\Oracle\VirtualBox"
-            $script:CygwinEnsureCalls[0].InstallRoot | Should -Be $script:PreferredRoot
         }
     }
 }
