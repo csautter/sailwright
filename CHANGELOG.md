@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.1](https://github.com/csautter/sailwright/compare/v0.22.0...v0.22.1) (2026-10-30)
+
+
+### Fixed
+
+* **build:** embed linux install scripts and go.mod in release binaries ([f65743e](https://github.com/csautter/sailwright/commit/f65743e94623fff7e37aace0b21a05ba5a94c4d4))
+* embed linux install scripts ([b7015be](https://github.com/csautter/sailwright/commit/b7015be4fdf7644c86fdc1b4147777bb8be70c84))
+
+
+### CI
+
+* **release:** assert the Go toolchain from the packaged install ([47a834c](https://github.com/csautter/sailwright/commit/47a834c9a2bf3051a49df9a2dd154be7a306038e))
+* **release:** run the packaged-binary install only when installer inputs change ([a5fad9d](https://github.com/csautter/sailwright/commit/a5fad9d4fa7ddebf47fd976e800217e299c190ed))
+* **test:** trigger Go unit tests on changes to all embedded asset dirs ([664a20f](https://github.com/csautter/sailwright/commit/664a20fe563e8c74c06890f2a6007e8394e21046))
+
 ## [0.22.0](https://github.com/csautter/sailwright/compare/v0.21.0...v0.22.0) (2026-10-29)
 
 
