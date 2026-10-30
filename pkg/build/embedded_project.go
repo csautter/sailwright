@@ -16,17 +16,36 @@ import (
 const (
 	embeddedProjectDirName      = "project"
 	embeddedProjectManifestFile = ".embedded-assets.sha256"
+	// The Go module path keeps the pre-rename name until the deferred module
+	// rename in ADR 0004. Change it together with go.mod.
+	sailwrightModulePath = "github.com/csautter/dev-alchemy"
+	projectDirEnvVar     = "SAILWRIGHT_PROJECT_DIR"
 )
 
 func ensureProjectDir(workingDir string, appDataDir string) (string, error) {
-	if projectDir := determineTopLevelDirWithGit(workingDir); projectDir != "" {
+	if override := os.Getenv(projectDirEnvVar); override != "" {
+		projectDir, err := filepath.Abs(override)
+		if err != nil {
+			return "", fmt.Errorf("resolve %s: %w", projectDirEnvVar, err)
+		}
+		info, err := os.Stat(projectDir) // #nosec G703 -- the user explicitly selects this directory.
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", projectDirEnvVar, err)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("%s: %s is not a directory", projectDirEnvVar, projectDir)
+		}
+		return projectDir, nil
+	}
+
+	if projectDir := findSailwrightCheckout(workingDir); projectDir != "" {
 		return projectDir, nil
 	}
 
 	return ensureEmbeddedProjectDir(appDataDir)
 }
 
-func determineTopLevelDirWithGit(workingDir string) string {
+func findSailwrightCheckout(workingDir string) string {
 	dir := workingDir
 	if dir == "" {
 		var err error
@@ -39,7 +58,12 @@ func determineTopLevelDirWithGit(workingDir string) string {
 	for {
 		gitPath := filepath.Join(dir, ".git")
 		if _, err := os.Stat(gitPath); err == nil {
-			return dir
+			// Only a Sailwright checkout is a project dir. Other repos, such as
+			// a team's setup repo, fall back to the embedded project.
+			if isSailwrightCheckout(dir) {
+				return dir
+			}
+			return ""
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -49,6 +73,20 @@ func determineTopLevelDirWithGit(workingDir string) string {
 	}
 
 	return ""
+}
+
+func isSailwrightCheckout(dir string) bool {
+	content, err := os.ReadFile(filepath.Join(dir, "go.mod")) // #nosec G304 -- dir is a parent of the working directory.
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "module" {
+			return strings.Trim(fields[1], `"`) == sailwrightModulePath
+		}
+	}
+	return false
 }
 
 func ensureEmbeddedProjectDir(appDataDir string) (string, error) {

@@ -175,8 +175,9 @@ Expand-Archive "sailwright_${Version}_windows_amd64.zip" -DestinationPath .
 .\sailwright.exe build list
 ```
 
-When you run a release binary outside a Git checkout, Sailwright extracts its
-embedded runtime assets into a managed app-data directory. See
+When you run a release binary outside a Sailwright source checkout, including
+from inside your own Git repositories, Sailwright extracts its embedded runtime
+assets into a managed app-data directory. See
 [Managed Application Data](./docs/managed-application-data.md) for the default
 locations and override options.
 

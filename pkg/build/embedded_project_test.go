@@ -23,6 +23,9 @@ func TestEnsureProjectDir_PrefersGitCheckout(t *testing.T) {
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		t.Fatalf("failed to create working directory: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "go.mod"), []byte("module "+sailwrightModulePath+"\n\ngo 1.26.0\n"), 0o644); err != nil {
+		t.Fatalf("failed to create go.mod: %v", err)
+	}
 
 	projectDir, err := ensureProjectDir(workingDir, t.TempDir())
 	if err != nil {
@@ -30,6 +33,153 @@ func TestEnsureProjectDir_PrefersGitCheckout(t *testing.T) {
 	}
 	if projectDir != repoRoot {
 		t.Fatalf("expected repo root %q, got %q", repoRoot, projectDir)
+	}
+}
+
+func TestSailwrightModulePathMatchesGoMod(t *testing.T) {
+	repoRoot := filepath.Join("..", "..")
+	if !isSailwrightCheckout(repoRoot) {
+		t.Fatalf("module path in %s does not match sailwrightModulePath %q", filepath.Join(repoRoot, "go.mod"), sailwrightModulePath)
+	}
+}
+
+func TestEnsureProjectDir_IgnoresOtherGitRepos(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("failed to create fake .git directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "ansible.cfg"), []byte("[defaults]\n"), 0o644); err != nil {
+		t.Fatalf("failed to create ansible.cfg: %v", err)
+	}
+	appDataDir := t.TempDir()
+
+	projectDir, err := ensureProjectDir(repoRoot, appDataDir)
+	if err != nil {
+		t.Fatalf("ensureProjectDir returned error: %v", err)
+	}
+	wantProjectDir := filepath.Join(appDataDir, embeddedProjectDirName)
+	if projectDir != wantProjectDir {
+		t.Fatalf("expected embedded project dir %q, got %q", wantProjectDir, projectDir)
+	}
+}
+
+func TestIsSailwrightCheckout(t *testing.T) {
+	tests := []struct {
+		name  string
+		goMod string
+		want  bool
+	}{
+		{name: "plain module line", goMod: "module " + sailwrightModulePath + "\n\ngo 1.26.0\n", want: true},
+		{name: "quoted module path", goMod: "module \"" + sailwrightModulePath + "\"\n", want: true},
+		{name: "CRLF line endings", goMod: "module " + sailwrightModulePath + "\r\n\r\ngo 1.26.0\r\n", want: true},
+		{name: "leading comment and trailing comment", goMod: "// team fork\nmodule " + sailwrightModulePath + " // pinned\n", want: true},
+		{name: "other module", goMod: "module example.com/team-setup\n", want: false},
+		{name: "module path prefix", goMod: "module " + sailwrightModulePath + "/tools\n", want: false},
+		{name: "no module line", goMod: "go 1.26.0\n", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(tt.goMod), 0o644); err != nil {
+				t.Fatalf("failed to create go.mod: %v", err)
+			}
+			if got := isSailwrightCheckout(dir); got != tt.want {
+				t.Fatalf("isSailwrightCheckout() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	if isSailwrightCheckout(t.TempDir()) {
+		t.Fatal("expected a directory without go.mod not to be a Sailwright checkout")
+	}
+}
+
+func TestFindSailwrightCheckout_AcceptsGitFile(t *testing.T) {
+	// Worktrees and submodules have a .git file instead of a directory.
+	repoRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoRoot, ".git"), []byte("gitdir: /elsewhere/.git/worktrees/main\n"), 0o644); err != nil {
+		t.Fatalf("failed to create .git file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "go.mod"), []byte("module "+sailwrightModulePath+"\n"), 0o644); err != nil {
+		t.Fatalf("failed to create go.mod: %v", err)
+	}
+
+	if got := findSailwrightCheckout(repoRoot); got != repoRoot {
+		t.Fatalf("expected worktree root %q, got %q", repoRoot, got)
+	}
+}
+
+func TestFindSailwrightCheckout_StopsAtNearestRepo(t *testing.T) {
+	// A non-Sailwright repo nested inside a checkout is not the checkout.
+	checkoutRoot := t.TempDir()
+	nestedRepo := filepath.Join(checkoutRoot, "roles", "team-role")
+	for _, dir := range []string{filepath.Join(checkoutRoot, ".git"), filepath.Join(nestedRepo, ".git")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("failed to create fake .git directory: %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(checkoutRoot, "go.mod"), []byte("module "+sailwrightModulePath+"\n"), 0o644); err != nil {
+		t.Fatalf("failed to create go.mod: %v", err)
+	}
+
+	if got := findSailwrightCheckout(nestedRepo); got != "" {
+		t.Fatalf("expected no checkout for nested repo, got %q", got)
+	}
+}
+
+func TestEnsureProjectDir_IgnoresGoReposWithOtherModules(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("failed to create fake .git directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "go.mod"), []byte("module example.com/team-setup\n\ngo 1.26.0\n"), 0o644); err != nil {
+		t.Fatalf("failed to create go.mod: %v", err)
+	}
+	appDataDir := t.TempDir()
+
+	projectDir, err := ensureProjectDir(repoRoot, appDataDir)
+	if err != nil {
+		t.Fatalf("ensureProjectDir returned error: %v", err)
+	}
+	wantProjectDir := filepath.Join(appDataDir, embeddedProjectDirName)
+	if projectDir != wantProjectDir {
+		t.Fatalf("expected embedded project dir %q, got %q", wantProjectDir, projectDir)
+	}
+}
+
+func TestEnsureProjectDir_UsesOverride(t *testing.T) {
+	overrideDir := t.TempDir()
+	t.Setenv(projectDirEnvVar, overrideDir)
+
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("failed to create fake .git directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "go.mod"), []byte("module "+sailwrightModulePath+"\n"), 0o644); err != nil {
+		t.Fatalf("failed to create go.mod: %v", err)
+	}
+
+	projectDir, err := ensureProjectDir(repoRoot, t.TempDir())
+	if err != nil {
+		t.Fatalf("ensureProjectDir returned error: %v", err)
+	}
+	if projectDir != overrideDir {
+		t.Fatalf("expected override dir %q, got %q", overrideDir, projectDir)
+	}
+}
+
+func TestEnsureProjectDir_RejectsInvalidOverride(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(notADir, nil, 0o644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+
+	for _, override := range []string{filepath.Join(t.TempDir(), "missing"), notADir} {
+		t.Setenv(projectDirEnvVar, override)
+		if _, err := ensureProjectDir(t.TempDir(), t.TempDir()); err == nil {
+			t.Fatalf("expected an error for override %q", override)
+		}
 	}
 }
 
