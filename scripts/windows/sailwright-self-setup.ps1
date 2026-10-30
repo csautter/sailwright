@@ -247,6 +247,44 @@ function Ensure-ChocolateyPackage {
     Invoke-ChocolateyPackageCommand -Command $command -PackageName $PackageName -Version $Version -Arguments $packageArguments
 }
 
+function Get-UnmanagedGitVersion {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        return $null
+    }
+
+    $output = & git --version 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return $null
+    }
+
+    $versionMatch = [regex]::Match("$output", "git version (?<version>\d+\.\d+\.\d+)")
+    if (-not $versionMatch.Success) {
+        return $null
+    }
+
+    return [version]$versionMatch.Groups["version"].Value
+}
+
+function Ensure-GitInstalled {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version
+    )
+
+    # The Git for Windows installer refuses to downgrade an existing newer
+    # installation (e.g. the one preinstalled on GitHub-hosted runners), so keep
+    # an unmanaged Git that already satisfies the pinned minimum version.
+    if (-not (Get-ChocolateyInstalledVersion -PackageName "git")) {
+        $existingVersion = Get-UnmanagedGitVersion
+        if ($existingVersion -and $existingVersion -ge [version]$Version) {
+            Write-Host "git $existingVersion is already installed outside Chocolatey and satisfies pinned version $Version."
+            return
+        }
+    }
+
+    Ensure-ChocolateyPackage -PackageName "git" -Version $Version
+}
+
 function Ensure-GoInstallRootClean {
     param(
         [Parameter(Mandatory = $true)]
@@ -987,7 +1025,7 @@ function Invoke-DevAlchemySelfSetup {
     } else {
         Write-Output "Skipping Go installation because -WithGo was not specified."
     }
-    Ensure-ChocolateyPackage -PackageName "git" -Version $gitVersion
+    Ensure-GitInstalled -Version $gitVersion
     Ensure-ChocolateyPackage -PackageName "make" -Version $makeVersion
     Ensure-ChocolateyPackage -PackageName "packer" -Version $packerVersion
     Ensure-ChocolateyPackage -PackageName "azure-cli" -Version $azureCliVersion

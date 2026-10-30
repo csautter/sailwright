@@ -48,6 +48,8 @@ BeforeAll {
         Mock Ensure-ChocolateyInstalled {}
         Mock Ensure-GoInstallRootClean {}
         Mock Assert-GoToolchainLayout {}
+        Mock Get-ChocolateyInstalledVersion { return $null }
+        Mock Get-UnmanagedGitVersion { return $null }
         Mock Ensure-ChocolateyPackage {
             $script:EnsuredPackages += [pscustomobject]@{
                 PackageName = $PackageName
@@ -357,6 +359,45 @@ Describe "sailwright self setup Cygwin helpers" -Skip:(-not $IsWindows) {
             $script:StartedCygwinSetup.FilePath | Should -Be (Join-Path $script:PreferredRoot "cygwinsetup.exe")
             ($script:StartedCygwinSetup.ArgumentList -join "|") |
                 Should -Be '--quiet-mode|--root "C:\tools\cygwin"|--local-package-dir "C:\tools\cygwin\packages"|--no-desktop|--no-startmenu|--packages openssh'
+        }
+    }
+
+    Context "Ensure-GitInstalled" {
+        BeforeEach {
+            Initialize-SelfSetupMainMocks
+        }
+
+        It "keeps a newer unmanaged Git instead of downgrading it" {
+            Mock Get-UnmanagedGitVersion { return [version]"2.56.0" }
+
+            Ensure-GitInstalled -Version "2.54.0"
+
+            @($script:EnsuredPackages).Count | Should -Be 0
+        }
+
+        It "installs the pinned Git when no Git is available" {
+            Ensure-GitInstalled -Version "2.54.0"
+
+            $script:EnsuredPackages[0].PackageName | Should -Be "git"
+            $script:EnsuredPackages[0].Version | Should -Be "2.54.0"
+        }
+
+        It "installs the pinned Git when the unmanaged Git is older" {
+            Mock Get-UnmanagedGitVersion { return [version]"2.40.1" }
+
+            Ensure-GitInstalled -Version "2.54.0"
+
+            $script:EnsuredPackages[0].PackageName | Should -Be "git"
+        }
+
+        It "enforces the pinned version when Git is managed by Chocolatey" {
+            Mock Get-ChocolateyInstalledVersion { return "2.56.0" } -ParameterFilter { $PackageName -eq "git" }
+            Mock Get-UnmanagedGitVersion { return [version]"2.56.0" }
+
+            Ensure-GitInstalled -Version "2.54.0"
+
+            $script:EnsuredPackages[0].PackageName | Should -Be "git"
+            $script:EnsuredPackages[0].Version | Should -Be "2.54.0"
         }
     }
 
