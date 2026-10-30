@@ -16,6 +16,7 @@ import (
 const (
 	embeddedProjectDirName      = "project"
 	embeddedProjectManifestFile = ".embedded-assets.sha256"
+	sailwrightModulePath        = "github.com/csautter/dev-alchemy"
 )
 
 func ensureProjectDir(workingDir string, appDataDir string) (string, error) {
@@ -39,7 +40,12 @@ func determineTopLevelDirWithGit(workingDir string) string {
 	for {
 		gitPath := filepath.Join(dir, ".git")
 		if _, err := os.Stat(gitPath); err == nil {
-			return dir
+			// Only a Sailwright checkout is a project dir. Other repos, such as
+			// a team's setup repo, fall back to the embedded project.
+			if isSailwrightCheckout(dir) {
+				return dir
+			}
+			return ""
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -49,6 +55,20 @@ func determineTopLevelDirWithGit(workingDir string) string {
 	}
 
 	return ""
+}
+
+func isSailwrightCheckout(dir string) bool {
+	content, err := os.ReadFile(filepath.Join(dir, "go.mod")) // #nosec G304 -- dir is a parent of the working directory.
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "module" {
+			return strings.Trim(fields[1], `"`) == sailwrightModulePath
+		}
+	}
+	return false
 }
 
 func ensureEmbeddedProjectDir(appDataDir string) (string, error) {

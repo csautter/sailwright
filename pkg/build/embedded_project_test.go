@@ -23,6 +23,9 @@ func TestEnsureProjectDir_PrefersGitCheckout(t *testing.T) {
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		t.Fatalf("failed to create working directory: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "go.mod"), []byte("module "+sailwrightModulePath+"\n\ngo 1.26.0\n"), 0o644); err != nil {
+		t.Fatalf("failed to create go.mod: %v", err)
+	}
 
 	projectDir, err := ensureProjectDir(workingDir, t.TempDir())
 	if err != nil {
@@ -30,6 +33,26 @@ func TestEnsureProjectDir_PrefersGitCheckout(t *testing.T) {
 	}
 	if projectDir != repoRoot {
 		t.Fatalf("expected repo root %q, got %q", repoRoot, projectDir)
+	}
+}
+
+func TestEnsureProjectDir_IgnoresOtherGitRepos(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("failed to create fake .git directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "ansible.cfg"), []byte("[defaults]\n"), 0o644); err != nil {
+		t.Fatalf("failed to create ansible.cfg: %v", err)
+	}
+	appDataDir := t.TempDir()
+
+	projectDir, err := ensureProjectDir(repoRoot, appDataDir)
+	if err != nil {
+		t.Fatalf("ensureProjectDir returned error: %v", err)
+	}
+	wantProjectDir := filepath.Join(appDataDir, embeddedProjectDirName)
+	if projectDir != wantProjectDir {
+		t.Fatalf("expected embedded project dir %q, got %q", wantProjectDir, projectDir)
 	}
 }
 
