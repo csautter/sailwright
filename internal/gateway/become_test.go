@@ -86,6 +86,8 @@ func TestBecomeSupported(t *testing.T) {
 	cases := map[string]bool{
 		"provision local --check":                 want,
 		"provision --yes local":                   want,
+		"provision -K local":                      want,
+		"provision --ask-become-pass local":       want,
 		"provision ubuntu --check":                false,
 		"install":                                 false,
 		"provision -- local":                      false,
@@ -146,5 +148,20 @@ func TestWriteBecomePasswordFile(t *testing.T) {
 	cleanup()
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("cleanup must remove the password file")
+	}
+}
+
+func TestRejectAskBecomePass(t *testing.T) {
+	cases := map[string]bool{
+		"provision local -K":                     true,
+		"provision --ask-become-pass local":      true,
+		"provision local --ask-become-pass=true": true,
+		"provision local --check":                false,
+		"provision local -- --ask-become-pass":   false,
+	}
+	for args, rejected := range cases {
+		if err := rejectAskBecomePass(strings.Fields(args)); (err != nil) != rejected {
+			t.Fatalf("rejectAskBecomePass(%q) = %v, want rejected=%v", args, err, rejected)
+		}
 	}
 }

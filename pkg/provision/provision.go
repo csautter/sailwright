@@ -129,6 +129,7 @@ var (
 
 type ProvisionOptions struct {
 	Check                           bool
+	AskBecomePass                   bool
 	Verbosity                       int
 	PlaybookPath                    string
 	PlaybookPathExplicit            bool
@@ -1577,6 +1578,11 @@ func appendProvisionCommandOptions(args []string, options ProvisionOptions) ([]s
 	}
 	if options.Check {
 		args = append(args, "--check")
+	}
+	if options.AskBecomePass {
+		// ansible-playbook prompts on /dev/tty, so this works although the command
+		// runner leaves stdin detached and pipes stdout/stderr into the logs.
+		args = append(args, "--ask-become-pass")
 	}
 	if len(options.ExtraArgs) > 0 {
 		args = append(args, options.ExtraArgs...)

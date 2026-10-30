@@ -17,11 +17,12 @@ use this guide for wrapper-specific behavior and flags.
 
 ```bash
 sailwright provision local --check
+sailwright provision local --ask-become-pass
 sailwright provision local --proto ssh --check
 sailwright provision local --playbook ./playbooks/setup.yml --check
 sailwright provision local --playbook ./playbooks/setup.yml
 sailwright provision local -- --diff --tags java
-sailwright provision local --inventory-path ./inventory/remote.yml -- --limit workstation --ask-become-pass
+sailwright provision local --inventory-path ./inventory/remote.yml --ask-become-pass -- --limit workstation
 sailwright provision local --check --yes
 sailwright provision local --check --yes --force-winrm-uninstall
 sailwright provision local --proto ssh --check --yes --force-ssh-uninstall
@@ -46,6 +47,23 @@ Use `--playbook` to point at a different playbook file. Use
 
 The macOS/Linux local target is currently marked unstable until it has been
 validated end-to-end.
+
+## sudo password on macOS and Linux
+
+Roles that install system packages run their tasks with `become`, which uses
+`sudo`. If `sudo` asks for a password on your machine, add `--ask-become-pass`
+(short: `-K`) and Sailwright prompts for it once before the run:
+
+```bash
+sailwright provision local --ask-become-pass
+sailwright provision local -K --check
+```
+
+The prompt needs an interactive terminal. For scripted runs, pass a password
+file to Ansible instead: `sailwright provision local -- --become-password-file
+<path>`. The flag is not available for local Windows provisioning, which
+connects through a temporary administrator account, or for VM targets, where
+Sailwright sets the credentials itself.
 
 ## Windows local behavior
 

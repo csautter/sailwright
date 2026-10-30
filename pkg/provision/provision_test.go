@@ -1080,6 +1080,21 @@ func TestBuildStaticInventoryProvisionArgsAppendsProvisionOptions(t *testing.T) 
 	}
 }
 
+func TestBuildStaticInventoryProvisionArgsAppendsAskBecomePass(t *testing.T) {
+	args, err := buildStaticInventoryProvisionArgs("./inventory/localhost.yaml", "localhost", ProvisionOptions{
+		Check:         true,
+		AskBecomePass: true,
+		ExtraArgs:     []string{"--diff"},
+	})
+	if err != nil {
+		t.Fatalf("buildStaticInventoryProvisionArgs returned error: %v", err)
+	}
+
+	if got := strings.Join(args, " "); !strings.Contains(got, "--check --ask-become-pass --diff") {
+		t.Fatalf("expected --ask-become-pass before extra ansible args, args: %v", args)
+	}
+}
+
 func TestBuildStaticInventoryProvisionArgsUsesCustomPlaybookPath(t *testing.T) {
 	args, err := buildStaticInventoryProvisionArgs("./inventory/localhost.yaml", "localhost", ProvisionOptions{
 		PlaybookPath: "./playbooks/bootstrap.yml",
