@@ -22,14 +22,14 @@ const (
 )
 
 func ensureProjectDir(workingDir string, appDataDir string) (string, error) {
-	if projectDir := determineTopLevelDirWithGit(workingDir); projectDir != "" {
+	if projectDir := findSailwrightCheckout(workingDir); projectDir != "" {
 		return projectDir, nil
 	}
 
 	return ensureEmbeddedProjectDir(appDataDir)
 }
 
-func determineTopLevelDirWithGit(workingDir string) string {
+func findSailwrightCheckout(workingDir string) string {
 	dir := workingDir
 	if dir == "" {
 		var err error
