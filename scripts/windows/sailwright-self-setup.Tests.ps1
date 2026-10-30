@@ -383,6 +383,14 @@ Describe "sailwright self setup Cygwin helpers" -Skip:(-not $IsWindows) {
             @($script:EnsuredPackages).Count | Should -Be 0
         }
 
+        It "installs the pinned Git when the unmanaged Git is an older build of the same release" {
+            Mock Get-GitForWindowsVersion { return [version]"2.54.0" }
+
+            Ensure-GitInstalled -Version "2.54.0.2"
+
+            $script:EnsuredPackages[0].Version | Should -Be "2.54.0.2"
+        }
+
         It "installs the pinned Git when no Git is available" {
             Ensure-GitInstalled -Version "2.54.0"
 
@@ -415,6 +423,24 @@ Describe "sailwright self setup Cygwin helpers" -Skip:(-not $IsWindows) {
             Set-TestPathMock
 
             Get-GitForWindowsVersion | Should -BeNullOrEmpty
+        }
+    }
+
+    Context "ConvertTo-GitForWindowsVersion" {
+        It "maps the first Windows build of a release to the plain release version" {
+            ConvertTo-GitForWindowsVersion -VersionOutput "git version 2.54.0.windows.1" | Should -Be ([version]"2.54.0")
+        }
+
+        It "maps later Windows builds to the Chocolatey revision" {
+            ConvertTo-GitForWindowsVersion -VersionOutput "git version 2.54.0.windows.3" | Should -Be ([version]"2.54.0.3")
+        }
+
+        It "parses versions without a Windows build suffix" {
+            ConvertTo-GitForWindowsVersion -VersionOutput "git version 2.54.0" | Should -Be ([version]"2.54.0")
+        }
+
+        It "returns null for unrecognized output" {
+            ConvertTo-GitForWindowsVersion -VersionOutput "not git" | Should -BeNullOrEmpty
         }
     }
 

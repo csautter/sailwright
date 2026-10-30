@@ -248,6 +248,29 @@ function Ensure-ChocolateyPackage {
     Invoke-ChocolateyPackageCommand -Command $command -PackageName $PackageName -Version $Version -Arguments $packageArguments
 }
 
+function ConvertTo-GitForWindowsVersion {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$VersionOutput
+    )
+
+    # Chocolatey publishes "git version 2.54.0.windows.2" as 2.54.0.2 and the
+    # first build of a release (".windows.1") as plain 2.54.0.
+    $versionMatch = [regex]::Match($VersionOutput, "git version (?<version>\d+\.\d+\.\d+)(?:\.windows\.(?<build>\d+))?")
+    if (-not $versionMatch.Success) {
+        return $null
+    }
+
+    $version = $versionMatch.Groups["version"].Value
+    $build = $versionMatch.Groups["build"]
+    if ($build.Success -and [int]$build.Value -gt 1) {
+        $version = "$version.$($build.Value)"
+    }
+
+    return [version]$version
+}
+
 function Get-GitForWindowsVersion {
     # Only an existing Git for Windows installation blocks a downgrade; other Git
     # builds on PATH (Scoop, MSYS2, Cygwin, ...) do not provide it, so ignore them.
@@ -261,12 +284,7 @@ function Get-GitForWindowsVersion {
         return $null
     }
 
-    $versionMatch = [regex]::Match("$output", "git version (?<version>\d+\.\d+\.\d+)")
-    if (-not $versionMatch.Success) {
-        return $null
-    }
-
-    return [version]$versionMatch.Groups["version"].Value
+    return ConvertTo-GitForWindowsVersion -VersionOutput "$output"
 }
 
 function Ensure-GitInstalled {
