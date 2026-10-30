@@ -18,6 +18,7 @@ on:
       - "build/packer/**"
       - "scripts/linux/**"
       - "scripts/macos/**"
+      - "scripts/windows/**"
       - "pkg/deploy/**"
       - "go.mod"
       - "go.sum"
@@ -28,6 +29,11 @@ on:
       - "roles_test_1/**"
       - "roles_test_2/**"
       - "runtimeassets.go"
+      - "deployments/utm/**"
+      - "deployments/vagrant/**"
+      - "playbooks/**"
+      - "inventory/**"
+      - "ansible.cfg"
   pull_request:
     paths:
       - "cmd/main.go"
@@ -43,6 +49,7 @@ on:
       - "build/packer/**"
       - "scripts/linux/**"
       - "scripts/macos/**"
+      - "scripts/windows/**"
       - "pkg/deploy/**"
       - "go.mod"
       - "go.sum"
@@ -53,6 +60,11 @@ on:
       - "roles_test_1/**"
       - "roles_test_2/**"
       - "runtimeassets.go"
+      - "deployments/utm/**"
+      - "deployments/vagrant/**"
+      - "playbooks/**"
+      - "inventory/**"
+      - "ansible.cfg"
   workflow_dispatch:
 
 concurrency:

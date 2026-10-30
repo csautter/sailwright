@@ -8,9 +8,12 @@ import (
 )
 
 // EmbeddedFiles contains the repo assets that runtime Go code and the scripts it invokes
-// expect to exist on disk when running outside a git checkout.
+// expect to exist on disk when running outside a git checkout. When adding a script that
+// sailwright runs, add it and every repo file it reads here;
+// TestInstallCommandForHostScriptsAreEmbedded and
+// TestEmbeddedShellScriptRepoReferencesAreEmbedded catch common misses.
 //
-//go:embed ansible.cfg playbooks inventory roles roles_test_1 roles_test_2 build/packer deployments/vagrant deployments/utm scripts/macos scripts/windows
+//go:embed ansible.cfg playbooks inventory roles roles_test_1 roles_test_2 build/packer deployments/vagrant deployments/utm scripts/linux scripts/macos scripts/windows go.mod
 var EmbeddedFiles embed.FS
 
 // FS returns the embedded runtime asset filesystem.

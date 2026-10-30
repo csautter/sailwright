@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"io/fs"
 	"path/filepath"
 	"reflect"
 	"testing"
 
+	runtimeassets "github.com/csautter/dev-alchemy"
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
 )
 
@@ -146,5 +148,26 @@ func TestInstallCommandForUnsupportedHost(t *testing.T) {
 	_, err := installCommandForHost(alchemy_build.HostOsType("plan9"), "/tmp/dev-alchemy", installCommandOptions{})
 	if err == nil {
 		t.Fatalf("expected unsupported host error")
+	}
+}
+
+// Release binaries run outside a git checkout, so the installer must come
+// from the embedded runtime assets rather than the repository on disk.
+func TestInstallCommandForHostScriptsAreEmbedded(t *testing.T) {
+	for _, hostOs := range []alchemy_build.HostOsType{
+		alchemy_build.HostOsDarwin,
+		alchemy_build.HostOsLinux,
+		alchemy_build.HostOsWindows,
+	} {
+		t.Run(string(hostOs), func(t *testing.T) {
+			spec, err := installCommandForHost(hostOs, "", installCommandOptions{withGo: true})
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+
+			if _, err := fs.Stat(runtimeassets.FS(), filepath.ToSlash(spec.scriptPath)); err != nil {
+				t.Fatalf("install script %q is not embedded in the release binary (add it to runtimeassets.go): %v", spec.scriptPath, err)
+			}
+		})
 	}
 }
