@@ -339,6 +339,9 @@ func (g *Gateway) toolRunCLI(_ context.Context, req *mcp.CallToolRequest, in run
 	if err := validateRawArgs(in.Args); err != nil {
 		return nil, JobView{}, err
 	}
+	if err := rejectAskBecomePass(in.Args); err != nil {
+		return nil, JobView{}, err
+	}
 	params := structParams(in)
 
 	op, notSafe := ParseSafe(in.Args, g.grammar())
@@ -566,6 +569,21 @@ func validateRawArgs(args []string) error {
 		}
 		if strings.ContainsRune(arg, 0) {
 			return errors.New("arguments must not contain NUL bytes")
+		}
+	}
+	return nil
+}
+
+// rejectAskBecomePass refuses `sailwright provision --ask-become-pass`: jobs have no
+// terminal, so the CLI would fail after approval. The operator supplies the sudo
+// password with approve-sudo instead.
+func rejectAskBecomePass(args []string) error {
+	for _, arg := range args {
+		if arg == "--" {
+			return nil
+		}
+		if arg == "-K" || arg == "--ask-become-pass" || strings.HasPrefix(arg, "--ask-become-pass=") {
+			return errors.New("--ask-become-pass (-K) needs a terminal and is not available through the gateway; omit it, the operator can supply the sudo password with approve-sudo")
 		}
 	}
 	return nil
