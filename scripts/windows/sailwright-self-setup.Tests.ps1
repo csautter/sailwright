@@ -49,7 +49,7 @@ BeforeAll {
         Mock Ensure-GoInstallRootClean {}
         Mock Assert-GoToolchainLayout {}
         Mock Get-ChocolateyInstalledVersion { return $null }
-        Mock Get-UnmanagedGitVersion { return $null }
+        Mock Get-GitForWindowsVersion { return $null }
         Mock Ensure-ChocolateyPackage {
             $script:EnsuredPackages += [pscustomobject]@{
                 PackageName = $PackageName
@@ -368,7 +368,15 @@ Describe "sailwright self setup Cygwin helpers" -Skip:(-not $IsWindows) {
         }
 
         It "keeps a newer unmanaged Git instead of downgrading it" {
-            Mock Get-UnmanagedGitVersion { return [version]"2.56.0" }
+            Mock Get-GitForWindowsVersion { return [version]"2.56.0" }
+
+            Ensure-GitInstalled -Version "2.54.0"
+
+            @($script:EnsuredPackages).Count | Should -Be 0
+        }
+
+        It "keeps an unmanaged Git that matches the pinned version" {
+            Mock Get-GitForWindowsVersion { return [version]"2.54.0" }
 
             Ensure-GitInstalled -Version "2.54.0"
 
@@ -383,7 +391,7 @@ Describe "sailwright self setup Cygwin helpers" -Skip:(-not $IsWindows) {
         }
 
         It "installs the pinned Git when the unmanaged Git is older" {
-            Mock Get-UnmanagedGitVersion { return [version]"2.40.1" }
+            Mock Get-GitForWindowsVersion { return [version]"2.40.1" }
 
             Ensure-GitInstalled -Version "2.54.0"
 
@@ -392,12 +400,21 @@ Describe "sailwright self setup Cygwin helpers" -Skip:(-not $IsWindows) {
 
         It "enforces the pinned version when Git is managed by Chocolatey" {
             Mock Get-ChocolateyInstalledVersion { return "2.56.0" } -ParameterFilter { $PackageName -eq "git" }
-            Mock Get-UnmanagedGitVersion { return [version]"2.56.0" }
+            Mock Get-GitForWindowsVersion { return [version]"2.56.0" }
 
             Ensure-GitInstalled -Version "2.54.0"
 
             $script:EnsuredPackages[0].PackageName | Should -Be "git"
             $script:EnsuredPackages[0].Version | Should -Be "2.54.0"
+        }
+    }
+
+    Context "Get-GitForWindowsVersion" {
+        It "returns null when Git for Windows is not installed, even if another git is on PATH" {
+            Mock Get-Command { throw "PATH lookup should not be used to find Git for Windows." }
+            Set-TestPathMock
+
+            Get-GitForWindowsVersion | Should -BeNullOrEmpty
         }
     }
 

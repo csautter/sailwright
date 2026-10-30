@@ -28,6 +28,7 @@ $ansibleVersion = "14.5.0"
 # renovate: datasource=pypi depName=pywinrm versioning=pep440
 $pywinrmVersion = "0.5.0"
 
+$gitForWindowsRoot = "C:\Program Files\Git"
 $cygwinInstallRoot = "C:\tools\cygwin"
 $cygwinPackages = @(
     "python312",
@@ -247,12 +248,15 @@ function Ensure-ChocolateyPackage {
     Invoke-ChocolateyPackageCommand -Command $command -PackageName $PackageName -Version $Version -Arguments $packageArguments
 }
 
-function Get-UnmanagedGitVersion {
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+function Get-GitForWindowsVersion {
+    # Only an existing Git for Windows installation blocks a downgrade; other Git
+    # builds on PATH (Scoop, MSYS2, Cygwin, ...) do not provide it, so ignore them.
+    $gitExePath = Join-Path $gitForWindowsRoot "cmd\git.exe"
+    if (-not (Test-Path -LiteralPath $gitExePath -PathType Leaf)) {
         return $null
     }
 
-    $output = & git --version 2>$null
+    $output = & $gitExePath --version 2>$null
     if ($LASTEXITCODE -ne 0) {
         return $null
     }
@@ -275,7 +279,7 @@ function Ensure-GitInstalled {
     # installation (e.g. the one preinstalled on GitHub-hosted runners), so keep
     # an unmanaged Git that already satisfies the pinned minimum version.
     if (-not (Get-ChocolateyInstalledVersion -PackageName "git")) {
-        $existingVersion = Get-UnmanagedGitVersion
+        $existingVersion = Get-GitForWindowsVersion
         if ($existingVersion -and $existingVersion -ge [version]$Version) {
             Write-Host "git $existingVersion is already installed outside Chocolatey and satisfies pinned version $Version."
             return
@@ -1043,7 +1047,7 @@ function Invoke-DevAlchemySelfSetup {
         Write-Output "Skipping VirtualBox installation because -VirtualBox was not specified."
     }
 
-    Ensure-PathContains -PathEntry "C:\Program Files\Git\bin"
+    Ensure-PathContains -PathEntry (Join-Path $gitForWindowsRoot "bin")
 
     foreach ($package in $cygwinPackages) {
         Ensure-CygwinPackage -PackageName $package -CygwinRoot $cygwinRoot
