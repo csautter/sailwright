@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0](https://github.com/csautter/sailwright/compare/v0.22.1...v0.23.0) (2026-10-30)
+
+
+### Added
+
+* **build:** add SAILWRIGHT_PROJECT_DIR to override the project dir ([84bce53](https://github.com/csautter/sailwright/commit/84bce532f80af196e02e833b3a85c8e6885f044e))
+
+
+### Fixed
+
+* **build:** only treat a Sailwright checkout as the project dir ([c95595d](https://github.com/csautter/sailwright/commit/c95595d54151dae58897b23cb42d5ce0fbe178b4))
+* project dir detection ([0c26ead](https://github.com/csautter/sailwright/commit/0c26ead8cf0e2ea8de6fcf71ab1eab49beac50a8))
+
+
+### Changed
+
+* **build:** rename the project dir lookup to findSailwrightCheckout ([5dcd811](https://github.com/csautter/sailwright/commit/5dcd811e7d7bec10310ed37014fc5136dcef6a37))
+
 ## [0.22.1](https://github.com/csautter/sailwright/compare/v0.22.0...v0.22.1) (2026-10-30)
 
 
