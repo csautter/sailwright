@@ -25,8 +25,8 @@ Under that root, Sailwright manages:
     `/tmp/dev-alchemy/qemu-out-*`; those leftovers can be deleted.
 - `.vagrant/` for isolated Vagrant state
 - `packer_cache/` for Packer plugin and download cache
-- `project/` for the embedded runtime project used by standalone binaries
-  outside a Git checkout
+- `project/` for the embedded runtime project, used whenever the working
+  directory is not inside a Sailwright source checkout
 
 ## Config location
 
@@ -65,4 +65,4 @@ On the first standalone run, Sailwright extracts bundled scripts, playbooks,
 and other runtime assets into `DEV_ALCHEMY_APP_DATA_DIR/project`.
 
 Later runs keep that managed tree in sync so the standalone `sailwright` binary
-can operate without a repository checkout.
+can operate without a Sailwright source checkout.
