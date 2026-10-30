@@ -739,7 +739,9 @@ func linuxLocalProvisionVirtualMachine() (alchemy_build.VirtualMachineConfig, bo
 	}, true
 }
 
-func TestProvisionCommandPassesAskBecomePassForLocalLinux(t *testing.T) {
+// restoreAskBecomePassState resets the globals the --ask-become-pass tests change.
+func restoreAskBecomePassState(t *testing.T) {
+	t.Helper()
 	previousAskBecomePass := askBecomePass
 	previousCurrentHostLocalProvisionVirtualMachineFunc := currentHostLocalProvisionVirtualMachineFunc
 	previousRunProvisionFunc := runProvisionFunc
@@ -751,8 +753,16 @@ func TestProvisionCommandPassesAskBecomePassForLocalLinux(t *testing.T) {
 		rootCmd.SetIn(nil)
 		rootCmd.SetOut(nil)
 		rootCmd.SetErr(nil)
+		provisionCmd.SetIn(nil)
 		provisionCmd.Flags().Lookup("ask-become-pass").Changed = false
 	})
+}
+
+// executeLocalLinuxProvision runs the provision command through cobra, so `--` is
+// parsed, against a stubbed local Linux host and returns the options it would run with.
+func executeLocalLinuxProvision(t *testing.T, args ...string) (alchemy_provision.ProvisionOptions, error) {
+	t.Helper()
+	restoreAskBecomePassState(t)
 
 	currentHostLocalProvisionVirtualMachineFunc = linuxLocalProvisionVirtualMachine
 	var capturedOptions alchemy_provision.ProvisionOptions
@@ -761,27 +771,50 @@ func TestProvisionCommandPassesAskBecomePassForLocalLinux(t *testing.T) {
 		return nil
 	}
 
-	rootCmd.SetArgs([]string{"provision", "local", "-K"})
+	rootCmd.SetArgs(append([]string{"provision"}, args...))
 	rootCmd.SetIn(strings.NewReader(""))
 	rootCmd.SetOut(io.Discard)
 	rootCmd.SetErr(io.Discard)
 
-	if err := rootCmd.Execute(); err != nil {
+	err := rootCmd.Execute()
+	return capturedOptions, err
+}
+
+func TestProvisionCommandPassesAskBecomePassForLocalLinux(t *testing.T) {
+	options, err := executeLocalLinuxProvision(t, "local", "-K")
+	if err != nil {
 		t.Fatalf("expected provision command to execute successfully, got: %v", err)
 	}
-	if !capturedOptions.AskBecomePass {
+	if !options.AskBecomePass {
 		t.Fatal("expected -K to propagate into provision options")
 	}
 }
 
+func TestProvisionCommandRejectsAskBecomePassWithBecomePasswordFile(t *testing.T) {
+	for _, passthrough := range [][]string{
+		{"--become-password-file", "/tmp/pw"},
+		{"--become-password-file=/tmp/pw"},
+		{"--diff", "--become-pass-file", "/tmp/pw"},
+	} {
+		_, err := executeLocalLinuxProvision(t, append([]string{"local", "-K", "--"}, passthrough...)...)
+		if err == nil || !strings.Contains(err.Error(), "cannot be combined with --become-password-file") {
+			t.Fatalf("expected conflict error for passthrough %q, got: %v", passthrough, err)
+		}
+	}
+}
+
+func TestProvisionCommandAllowsBecomePasswordFileWithoutAskBecomePass(t *testing.T) {
+	options, err := executeLocalLinuxProvision(t, "local", "--", "--become-password-file", "/tmp/pw")
+	if err != nil {
+		t.Fatalf("expected provision command to execute successfully, got: %v", err)
+	}
+	if options.AskBecomePass || !reflect.DeepEqual(options.ExtraArgs, []string{"--become-password-file", "/tmp/pw"}) {
+		t.Fatalf("expected the password file to pass through unchanged, got: %+v", options)
+	}
+}
+
 func TestProvisionCommandRejectsAskBecomePassWithoutTerminal(t *testing.T) {
-	previousAskBecomePass := askBecomePass
-	previousCurrentHostLocalProvisionVirtualMachineFunc := currentHostLocalProvisionVirtualMachineFunc
-	t.Cleanup(func() {
-		askBecomePass = previousAskBecomePass
-		currentHostLocalProvisionVirtualMachineFunc = previousCurrentHostLocalProvisionVirtualMachineFunc
-		provisionCmd.SetIn(nil)
-	})
+	restoreAskBecomePassState(t)
 
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {
@@ -803,12 +836,7 @@ func TestProvisionCommandRejectsAskBecomePassWithoutTerminal(t *testing.T) {
 }
 
 func TestProvisionCommandRejectsAskBecomePassForWindowsLocal(t *testing.T) {
-	previousAskBecomePass := askBecomePass
-	previousCurrentHostLocalProvisionVirtualMachineFunc := currentHostLocalProvisionVirtualMachineFunc
-	t.Cleanup(func() {
-		askBecomePass = previousAskBecomePass
-		currentHostLocalProvisionVirtualMachineFunc = previousCurrentHostLocalProvisionVirtualMachineFunc
-	})
+	restoreAskBecomePassState(t)
 
 	askBecomePass = true
 	currentHostLocalProvisionVirtualMachineFunc = func() (alchemy_build.VirtualMachineConfig, bool) {
@@ -830,11 +858,7 @@ func TestProvisionCommandRejectsAskBecomePassForWindowsLocal(t *testing.T) {
 }
 
 func TestProvisionCommandRejectsAskBecomePassForVMTargets(t *testing.T) {
-	previousAskBecomePass := askBecomePass
-	t.Cleanup(func() {
-		askBecomePass = previousAskBecomePass
-	})
-
+	restoreAskBecomePassState(t)
 	askBecomePass = true
 
 	err := provisionCmd.RunE(provisionCmd, []string{"windows11"})

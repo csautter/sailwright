@@ -1580,6 +1580,8 @@ func appendProvisionCommandOptions(args []string, options ProvisionOptions) ([]s
 		args = append(args, "--check")
 	}
 	if options.AskBecomePass {
+		// ansible-playbook prompts on /dev/tty, so this works although the command
+		// runner leaves stdin detached and pipes stdout/stderr into the logs.
 		args = append(args, "--ask-become-pass")
 	}
 	if len(options.ExtraArgs) > 0 {

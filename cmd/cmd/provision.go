@@ -207,6 +207,9 @@ Examples:
 				if !isInteractiveInput(cmd.InOrStdin()) {
 					return fmt.Errorf("❌ --ask-become-pass needs an interactive terminal; pass `-- --become-password-file <path>` instead")
 				}
+				if hasBecomePasswordFileArg(extraAnsibleArgs) {
+					return fmt.Errorf("❌ --ask-become-pass cannot be combined with --become-password-file; use one of them")
+				}
 			}
 			if selectedVM.HostOs == alchemy_build.HostOsWindows &&
 				options.LocalWindowsProtocol == alchemy_provision.LocalWindowsProvisionProtocolSSH &&
@@ -335,6 +338,18 @@ func splitProvisionArgs(cmd *cobra.Command, args []string) (string, []string) {
 	}
 
 	return args[0], extraAnsibleArgs
+}
+
+// hasBecomePasswordFileArg reports whether the passthrough Ansible args already supply
+// a become password file, which ansible-playbook rejects together with --ask-become-pass.
+func hasBecomePasswordFileArg(args []string) bool {
+	for _, arg := range args {
+		name, _, _ := strings.Cut(arg, "=")
+		if name == "--become-password-file" || name == "--become-pass-file" {
+			return true
+		}
+	}
+	return false
 }
 
 func confirmProvisionIntent(cmd *cobra.Command, vm alchemy_build.VirtualMachineConfig, options alchemy_provision.ProvisionOptions) error {
