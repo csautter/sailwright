@@ -729,3 +729,119 @@ func TestProvisionCommandRejectsProtoForVMTargets(t *testing.T) {
 		t.Fatalf("expected explicit proto validation error, got: %v", err)
 	}
 }
+
+func linuxLocalProvisionVirtualMachine() (alchemy_build.VirtualMachineConfig, bool) {
+	return alchemy_build.VirtualMachineConfig{
+		OS:                   "local",
+		Arch:                 "-",
+		HostOs:               alchemy_build.HostOsLinux,
+		VirtualizationEngine: localProvisionVirtualizationEngine,
+	}, true
+}
+
+func TestProvisionCommandPassesAskBecomePassForLocalLinux(t *testing.T) {
+	previousAskBecomePass := askBecomePass
+	previousCurrentHostLocalProvisionVirtualMachineFunc := currentHostLocalProvisionVirtualMachineFunc
+	previousRunProvisionFunc := runProvisionFunc
+	t.Cleanup(func() {
+		askBecomePass = previousAskBecomePass
+		currentHostLocalProvisionVirtualMachineFunc = previousCurrentHostLocalProvisionVirtualMachineFunc
+		runProvisionFunc = previousRunProvisionFunc
+		rootCmd.SetArgs(nil)
+		rootCmd.SetIn(nil)
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		provisionCmd.Flags().Lookup("ask-become-pass").Changed = false
+	})
+
+	currentHostLocalProvisionVirtualMachineFunc = linuxLocalProvisionVirtualMachine
+	var capturedOptions alchemy_provision.ProvisionOptions
+	runProvisionFunc = func(vm alchemy_build.VirtualMachineConfig, options alchemy_provision.ProvisionOptions) error {
+		capturedOptions = options
+		return nil
+	}
+
+	rootCmd.SetArgs([]string{"provision", "local", "-K"})
+	rootCmd.SetIn(strings.NewReader(""))
+	rootCmd.SetOut(io.Discard)
+	rootCmd.SetErr(io.Discard)
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("expected provision command to execute successfully, got: %v", err)
+	}
+	if !capturedOptions.AskBecomePass {
+		t.Fatal("expected -K to propagate into provision options")
+	}
+}
+
+func TestProvisionCommandRejectsAskBecomePassWithoutTerminal(t *testing.T) {
+	previousAskBecomePass := askBecomePass
+	previousCurrentHostLocalProvisionVirtualMachineFunc := currentHostLocalProvisionVirtualMachineFunc
+	t.Cleanup(func() {
+		askBecomePass = previousAskBecomePass
+		currentHostLocalProvisionVirtualMachineFunc = previousCurrentHostLocalProvisionVirtualMachineFunc
+		provisionCmd.SetIn(nil)
+	})
+
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("failed to open %s: %v", os.DevNull, err)
+	}
+	defer devNull.Close()
+
+	askBecomePass = true
+	currentHostLocalProvisionVirtualMachineFunc = linuxLocalProvisionVirtualMachine
+	provisionCmd.SetIn(devNull)
+
+	err = provisionCmd.RunE(provisionCmd, []string{"local"})
+	if err == nil {
+		t.Fatal("expected non-interactive run with --ask-become-pass to fail")
+	}
+	if !strings.Contains(err.Error(), "--become-password-file") {
+		t.Fatalf("expected hint to --become-password-file, got: %v", err)
+	}
+}
+
+func TestProvisionCommandRejectsAskBecomePassForWindowsLocal(t *testing.T) {
+	previousAskBecomePass := askBecomePass
+	previousCurrentHostLocalProvisionVirtualMachineFunc := currentHostLocalProvisionVirtualMachineFunc
+	t.Cleanup(func() {
+		askBecomePass = previousAskBecomePass
+		currentHostLocalProvisionVirtualMachineFunc = previousCurrentHostLocalProvisionVirtualMachineFunc
+	})
+
+	askBecomePass = true
+	currentHostLocalProvisionVirtualMachineFunc = func() (alchemy_build.VirtualMachineConfig, bool) {
+		return alchemy_build.VirtualMachineConfig{
+			OS:                   "local",
+			Arch:                 "-",
+			HostOs:               alchemy_build.HostOsWindows,
+			VirtualizationEngine: localProvisionVirtualizationEngine,
+		}, true
+	}
+
+	err := provisionCmd.RunE(provisionCmd, []string{"local"})
+	if err == nil {
+		t.Fatal("expected Windows local run with --ask-become-pass to fail")
+	}
+	if !strings.Contains(err.Error(), "--ask-become-pass is not supported for local Windows provisioning") {
+		t.Fatalf("expected explicit ask-become-pass validation error, got: %v", err)
+	}
+}
+
+func TestProvisionCommandRejectsAskBecomePassForVMTargets(t *testing.T) {
+	previousAskBecomePass := askBecomePass
+	t.Cleanup(func() {
+		askBecomePass = previousAskBecomePass
+	})
+
+	askBecomePass = true
+
+	err := provisionCmd.RunE(provisionCmd, []string{"windows11"})
+	if err == nil {
+		t.Fatal("expected VM provision to reject --ask-become-pass")
+	}
+	if !strings.Contains(err.Error(), "--ask-become-pass is only supported for local provisioning") {
+		t.Fatalf("expected explicit ask-become-pass validation error, got: %v", err)
+	}
+}

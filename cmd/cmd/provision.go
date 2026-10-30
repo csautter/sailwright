@@ -23,6 +23,7 @@ var (
 	playbookPath        string
 	inventoryPath       string
 	ansibleVerbosity    int
+	askBecomePass       bool
 )
 
 const localProvisionVirtualizationEngine = alchemy_build.VirtualizationEngine("local")
@@ -130,6 +131,7 @@ var provisionCmd = &cobra.Command{
 
 Important Ansible options exposed directly:
   --check, --dry-run      Run ansible-playbook with --check.
+  -K, --ask-become-pass   Ask for the sudo password that tasks with become need. Local macOS and Linux provisioning only.
   --proto PROTO          For local Windows provisioning, select winrm (default) or ssh.
   --force-winrm-uninstall For local Windows WinRM provisioning, force cleanup to disable WinRM.
   --force-ssh-uninstall   For local Windows SSH provisioning, force cleanup to disable sshd, remove SSH firewall rules, and remove the transient user without uninstalling OpenSSH Server.
@@ -143,11 +145,12 @@ Configure layered local or Git-backed role and playbook roots in the OS-specific
 
 Examples:
   sailwright provision local --check
+  sailwright provision local --ask-become-pass
   sailwright provision local --proto ssh --check
   sailwright provision local --proto ssh --check --yes --force-ssh-uninstall
   sailwright provision local --playbook ./playbooks/setup.yml --check
   sailwright provision local -- --diff
-  sailwright provision local --inventory-path ./inventory/remote.yml -- --limit workstation --ask-become-pass
+  sailwright provision local --inventory-path ./inventory/remote.yml --ask-become-pass -- --limit workstation
   sailwright provision macos --arch arm64 --check
   sailwright provision windows11 --arch amd64 --check
   sailwright provision windows11 --arch arm64 --check
@@ -158,6 +161,7 @@ Examples:
 		osName, extraAnsibleArgs := splitProvisionArgs(cmd, args)
 		options := alchemy_provision.ProvisionOptions{
 			Check:                           check,
+			AskBecomePass:                   askBecomePass,
 			Verbosity:                       ansibleVerbosity,
 			PlaybookPath:                    strings.TrimSpace(playbookPath),
 			PlaybookPathExplicit:            cmd.Flags().Changed("playbook"),
@@ -196,6 +200,14 @@ Examples:
 			if cmd.Flags().Changed("proto") && selectedVM.HostOs != alchemy_build.HostOsWindows {
 				return fmt.Errorf("❌ --proto is only supported for local Windows provisioning")
 			}
+			if askBecomePass {
+				if selectedVM.HostOs == alchemy_build.HostOsWindows {
+					return fmt.Errorf("❌ --ask-become-pass is not supported for local Windows provisioning; Sailwright connects with a temporary administrator account")
+				}
+				if !isInteractiveInput(cmd.InOrStdin()) {
+					return fmt.Errorf("❌ --ask-become-pass needs an interactive terminal; pass `-- --become-password-file <path>` instead")
+				}
+			}
 			if selectedVM.HostOs == alchemy_build.HostOsWindows &&
 				options.LocalWindowsProtocol == alchemy_provision.LocalWindowsProvisionProtocolSSH &&
 				forceWinRMUninstall {
@@ -233,6 +245,9 @@ Examples:
 		}
 		if forceSSHUninstall {
 			return fmt.Errorf("❌ --force-ssh-uninstall is only supported for local Windows provisioning")
+		}
+		if askBecomePass {
+			return fmt.Errorf("❌ --ask-become-pass is only supported for local provisioning; Sailwright sets the credentials for VM targets")
 		}
 
 		if osName != "ubuntu" {
@@ -285,6 +300,7 @@ func init() {
 	provisionCmd.Flags().StringVarP(&osType, "type", "t", "server", "Type of OS (e.g., server, desktop)")
 	provisionCmd.Flags().BoolVar(&check, "check", false, "Run ansible with --check (dry-run)")
 	provisionCmd.Flags().BoolVar(&check, "dry-run", false, "Alias for --check")
+	provisionCmd.Flags().BoolVarP(&askBecomePass, "ask-become-pass", "K", false, "Ask for the sudo password that tasks with become need (local macOS and Linux provisioning only)")
 	provisionCmd.Flags().StringVar(&localProvisionProto, "proto", string(alchemy_provision.DefaultLocalWindowsProvisionProtocol()), "Local Windows provision transport: winrm or ssh")
 	provisionCmd.Flags().IntVar(&ansibleVerbosity, "verbosity", 3, "Ansible verbosity level (0-4). Default 3 is equivalent to -vvv")
 	provisionCmd.Flags().StringVar(&playbookPath, "playbook", "", "Override the Ansible playbook path")
