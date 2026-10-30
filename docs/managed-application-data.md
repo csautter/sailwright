@@ -46,6 +46,10 @@ You can override the default root by setting
 `DEV_ALCHEMY_APP_DATA_DIR`.
 You can override the config directory by setting
 `DEV_ALCHEMY_CONFIG_DIR`.
+You can point Sailwright at a specific project tree (playbooks, inventories,
+and scripts), such as a fork or a customized copy, by setting
+`SAILWRIGHT_PROJECT_DIR`. The directory must exist. When it is set, Sailwright
+skips checkout detection and does not extract the embedded project.
 
 Sailwright also exports these derived paths for helper scripts and manual
 workflows:

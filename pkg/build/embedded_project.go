@@ -19,9 +19,25 @@ const (
 	// The Go module path keeps the pre-rename name until the deferred module
 	// rename in ADR 0004. Change it together with go.mod.
 	sailwrightModulePath = "github.com/csautter/dev-alchemy"
+	projectDirEnvVar     = "SAILWRIGHT_PROJECT_DIR"
 )
 
 func ensureProjectDir(workingDir string, appDataDir string) (string, error) {
+	if override := os.Getenv(projectDirEnvVar); override != "" {
+		projectDir, err := filepath.Abs(override)
+		if err != nil {
+			return "", fmt.Errorf("resolve %s: %w", projectDirEnvVar, err)
+		}
+		info, err := os.Stat(projectDir) // #nosec G703 -- the user explicitly selects this directory.
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", projectDirEnvVar, err)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("%s: %s is not a directory", projectDirEnvVar, projectDir)
+		}
+		return projectDir, nil
+	}
+
 	if projectDir := findSailwrightCheckout(workingDir); projectDir != "" {
 		return projectDir, nil
 	}

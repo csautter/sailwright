@@ -148,6 +148,41 @@ func TestEnsureProjectDir_IgnoresGoReposWithOtherModules(t *testing.T) {
 	}
 }
 
+func TestEnsureProjectDir_UsesOverride(t *testing.T) {
+	overrideDir := t.TempDir()
+	t.Setenv(projectDirEnvVar, overrideDir)
+
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("failed to create fake .git directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "go.mod"), []byte("module "+sailwrightModulePath+"\n"), 0o644); err != nil {
+		t.Fatalf("failed to create go.mod: %v", err)
+	}
+
+	projectDir, err := ensureProjectDir(repoRoot, t.TempDir())
+	if err != nil {
+		t.Fatalf("ensureProjectDir returned error: %v", err)
+	}
+	if projectDir != overrideDir {
+		t.Fatalf("expected override dir %q, got %q", overrideDir, projectDir)
+	}
+}
+
+func TestEnsureProjectDir_RejectsInvalidOverride(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(notADir, nil, 0o644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+
+	for _, override := range []string{filepath.Join(t.TempDir(), "missing"), notADir} {
+		t.Setenv(projectDirEnvVar, override)
+		if _, err := ensureProjectDir(t.TempDir(), t.TempDir()); err == nil {
+			t.Fatalf("expected an error for override %q", override)
+		}
+	}
+}
+
 func TestEnsureProjectDir_FallsBackToEmbeddedProject(t *testing.T) {
 	appDataDir := t.TempDir()
 
