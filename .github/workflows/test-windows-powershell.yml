@@ -11,6 +11,7 @@ on:
       - "scripts/windows/**/*.ps1"
       - "scripts/install.ps1"
       - "test/install/*.ps1"
+      - "cmd/cmd/install.go"
       - ".github/workflows/test-windows-powershell.yml"
 
 jobs:
@@ -97,3 +98,58 @@ jobs:
           if ($result.FailedCount -gt 0) {
               throw "$($result.FailedCount) Pester test(s) failed."
           }
+
+  github-hosted-self-setup:
+    # GitHub-hosted runners preinstall tools such as Git for Windows and the
+    # Azure CLI outside Chocolatey, often newer than the pinned versions. Run the
+    # real host setup there so installer conflicts (e.g. MSI downgrade refusals)
+    # surface before a release reaches users of these runners.
+    name: sailwright install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2025
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Record preinstalled tool versions
+        shell: pwsh
+        run: |
+          foreach ($command in @("git", "az", "choco")) {
+              $resolved = Get-Command $command -ErrorAction SilentlyContinue
+              if ($resolved) {
+                  Write-Output "$command -> $($resolved.Source)"
+              } else {
+                  Write-Output "$command -> not installed"
+              }
+          }
+          git --version
+          az version --output json
+          Get-ChildItem -Path "HKLM:\SOFTWARE\Python\PythonCore" -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Output "PythonCore $($_.PSChildName) -> $((Get-ItemProperty -Path "$($_.PSPath)\InstallPath" -ErrorAction SilentlyContinue).'(default)')" }
+
+      - name: Run sailwright install
+        shell: pwsh
+        run: go run ./cmd/main.go install
+
+      - name: Verify preinstalled tools still work
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          git --version
+          if ($LASTEXITCODE -ne 0) { throw "git is not usable after sailwright install." }
+          az version --output json
+          if ($LASTEXITCODE -ne 0) { throw "az is not usable after sailwright install." }
+          python --version
+          if ($LASTEXITCODE -ne 0) { throw "python is not usable after sailwright install." }

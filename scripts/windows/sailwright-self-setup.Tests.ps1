@@ -38,6 +38,7 @@ BeforeAll {
     function Initialize-SelfSetupMainMocks {
         $script:EnsuredPackages = @()
         $script:EnsuredPaths = @()
+        $script:PrependedPaths = @()
         $script:CygwinEnsureCalls = @()
         $script:CygwinPackageCalls = @()
         $script:CygwinPipPackageCalls = @()
@@ -50,6 +51,9 @@ BeforeAll {
         Mock Assert-GoToolchainLayout {}
         Mock Get-ChocolateyInstalledVersion { return $null }
         Mock Get-GitForWindowsVersion { return $null }
+        Mock Get-AzureCliMsiVersion { return $null }
+        Mock Get-NativePythonInstallation { return $null }
+        Mock Ensure-PathEntriesFirst { $script:PrependedPaths += @($PathEntries) }
         Mock Get-GitForWindowsRoot { return "C:\Program Files\Git" }
         Mock Ensure-ChocolateyPackage {
             $script:EnsuredPackages += [pscustomobject]@{
@@ -542,6 +546,199 @@ Describe "sailwright self setup Git helpers" {
 
         It "returns null for unrecognized output" {
             ConvertTo-GitForWindowsVersion -VersionOutput "not git" | Should -BeNullOrEmpty
+        }
+    }
+}
+
+Describe "sailwright self setup Azure CLI helpers" {
+    Context "Ensure-AzureCliInstalled" -Skip:(-not $IsWindows) {
+        BeforeEach {
+            Initialize-SelfSetupMainMocks
+        }
+
+        It "keeps a newer unmanaged Azure CLI instead of downgrading it" {
+            Mock Get-AzureCliMsiVersion { return [version]"2.91.0" }
+
+            Ensure-AzureCliInstalled -Version "2.86.0"
+
+            @($script:EnsuredPackages).Count | Should -Be 0
+        }
+
+        It "keeps an unmanaged Azure CLI that matches the pinned version" {
+            Mock Get-AzureCliMsiVersion { return [version]"2.86.0" }
+
+            Ensure-AzureCliInstalled -Version "2.86.0"
+
+            @($script:EnsuredPackages).Count | Should -Be 0
+        }
+
+        It "installs the pinned Azure CLI when none is installed" {
+            Ensure-AzureCliInstalled -Version "2.86.0"
+
+            $script:EnsuredPackages[0].PackageName | Should -Be "azure-cli"
+            $script:EnsuredPackages[0].Version | Should -Be "2.86.0"
+        }
+
+        It "upgrades an older Azure CLI to the pinned version" {
+            Mock Get-AzureCliMsiVersion { return [version]"2.70.0" }
+
+            Ensure-AzureCliInstalled -Version "2.86.0"
+
+            $script:EnsuredPackages[0].PackageName | Should -Be "azure-cli"
+            $script:EnsuredPackages[0].Version | Should -Be "2.86.0"
+        }
+
+        It "installs the exact pinned version when the pin is not numeric" {
+            Mock Get-AzureCliMsiVersion { throw "The installed version should not be checked for a non-numeric pin." }
+            Mock Write-Warning {}
+
+            Ensure-AzureCliInstalled -Version "2.87.0-beta"
+
+            $script:EnsuredPackages[0].Version | Should -Be "2.87.0-beta"
+        }
+    }
+
+    Context "Get-AzureCliMsiVersion" -Skip:(-not $IsWindows) {
+        It "returns the highest Azure CLI version from the machine-wide uninstall entries" {
+            Mock Get-ItemProperty {
+                if ($Path -like "HKLM:\SOFTWARE\WOW6432Node\*") {
+                    return @([pscustomobject]@{ DisplayName = "Microsoft Azure CLI"; DisplayVersion = "2.40.0" })
+                }
+
+                return @(
+                    [pscustomobject]@{ DisplayName = "Git"; DisplayVersion = "9.9.9" },
+                    [pscustomobject]@{ DisplayName = "Microsoft Azure CLI (64-bit)"; DisplayVersion = "2.91.0" }
+                )
+            }
+
+            Get-AzureCliMsiVersion | Should -Be ([version]"2.91.0")
+        }
+
+        It "ignores Azure CLI entries without a numeric version" {
+            Mock Get-ItemProperty {
+                return @([pscustomobject]@{ DisplayName = "Microsoft Azure CLI"; DisplayVersion = "unknown" })
+            }
+
+            Get-AzureCliMsiVersion | Should -BeNullOrEmpty
+        }
+
+        It "returns null when Azure CLI is not installed" {
+            Mock Get-ItemProperty { return @([pscustomobject]@{ DisplayName = "Git"; DisplayVersion = "2.56.0" }) }
+
+            Get-AzureCliMsiVersion | Should -BeNullOrEmpty
+        }
+    }
+}
+
+Describe "sailwright self setup native Python helpers" {
+    Context "Ensure-NativePythonInstalled" -Skip:(-not $IsWindows) {
+        BeforeEach {
+            Initialize-SelfSetupMainMocks
+        }
+
+        It "keeps a newer patch release of the pinned minor version and puts it first on PATH" {
+            Mock Get-NativePythonInstallation {
+                return [pscustomobject]@{ Version = [version]"3.13.16"; InstallPath = "C:\hostedtoolcache\windows\Python\3.13.16\x64" }
+            }
+
+            Ensure-NativePythonInstalled -Version "3.13.13"
+
+            @($script:EnsuredPackages).Count | Should -Be 0
+            $script:PrependedPaths | Should -Be @(
+                "C:\hostedtoolcache\windows\Python\3.13.16\x64",
+                "C:\hostedtoolcache\windows\Python\3.13.16\x64\Scripts"
+            )
+        }
+
+        It "keeps an installation that matches the pinned version" {
+            Mock Get-NativePythonInstallation {
+                return [pscustomobject]@{ Version = [version]"3.13.13"; InstallPath = "C:\Python313" }
+            }
+
+            Ensure-NativePythonInstalled -Version "3.13.13"
+
+            @($script:EnsuredPackages).Count | Should -Be 0
+            $script:PrependedPaths[0] | Should -Be "C:\Python313"
+        }
+
+        It "installs the pinned Python when none of the pinned minor version is installed" {
+            Ensure-NativePythonInstalled -Version "3.13.13"
+
+            $script:EnsuredPackages[0].PackageName | Should -Be "python313"
+            $script:EnsuredPackages[0].Version | Should -Be "3.13.13"
+            @($script:PrependedPaths).Count | Should -Be 0
+        }
+
+        It "upgrades an older patch release to the pinned version" {
+            Mock Get-NativePythonInstallation {
+                return [pscustomobject]@{ Version = [version]"3.13.2"; InstallPath = "C:\Python313" }
+            }
+
+            Ensure-NativePythonInstalled -Version "3.13.13"
+
+            $script:EnsuredPackages[0].PackageName | Should -Be "python313"
+            @($script:PrependedPaths).Count | Should -Be 0
+        }
+
+        It "installs the exact pinned version when the pin is not numeric" {
+            Mock Get-NativePythonInstallation { throw "The installed version should not be checked for a non-numeric pin." }
+            Mock Write-Warning {}
+
+            Ensure-NativePythonInstalled -Version "3.14.0rc1"
+
+            $script:EnsuredPackages[0].PackageName | Should -Be "python314"
+            $script:EnsuredPackages[0].Version | Should -Be "3.14.0rc1"
+        }
+    }
+
+    Context "Get-NativePythonInstallation" -Skip:(-not $IsWindows) {
+        BeforeEach {
+            $script:PythonKey = "HKLM:\SOFTWARE\Python\PythonCore\3.13\InstallPath"
+            $script:PythonExe = "C:\hostedtoolcache\windows\Python\3.13.16\x64\python.exe"
+            Mock Get-ItemProperty {
+                return [pscustomobject]@{ "(default)" = "C:\hostedtoolcache\windows\Python\3.13.16\x64\" }
+            }
+            Mock Invoke-NativePythonVersionCommand { return "Python 3.13.16" }
+        }
+
+        It "reads the machine-wide registration of the pinned minor version" {
+            Set-TestPathMock -ExistingPaths @($script:PythonKey, $script:PythonExe)
+
+            $installation = Get-NativePythonInstallation -Version "3.13.13"
+
+            $installation.Version | Should -Be ([version]"3.13.16")
+            $installation.InstallPath | Should -Be "C:\hostedtoolcache\windows\Python\3.13.16\x64"
+        }
+
+        It "returns null when the pinned minor version is not registered" {
+            Set-TestPathMock -ExistingPaths @($script:PythonExe)
+
+            Get-NativePythonInstallation -Version "3.13.13" | Should -BeNullOrEmpty
+        }
+
+        It "returns null when the registered python.exe is missing" {
+            Set-TestPathMock -ExistingPaths @($script:PythonKey)
+
+            Get-NativePythonInstallation -Version "3.13.13" | Should -BeNullOrEmpty
+        }
+
+        It "warns and returns null when the version output is not a release" {
+            Set-TestPathMock -ExistingPaths @($script:PythonKey, $script:PythonExe)
+            Mock Invoke-NativePythonVersionCommand { return "Python 3.13.0rc1" }
+            Mock Write-Warning {}
+
+            Get-NativePythonInstallation -Version "3.13.13" | Should -BeNullOrEmpty
+            Should -Invoke Write-Warning -Times 1
+        }
+    }
+
+    Context "ConvertTo-NativePythonVersion" {
+        It "parses release versions" {
+            ConvertTo-NativePythonVersion -VersionOutput "Python 3.13.16`r`n" | Should -Be ([version]"3.13.16")
+        }
+
+        It "rejects pre-releases" {
+            ConvertTo-NativePythonVersion -VersionOutput "Python 3.14.0rc1" | Should -BeNullOrEmpty
         }
     }
 }
