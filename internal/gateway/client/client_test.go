@@ -128,8 +128,8 @@ func TestBridgeForwardsToolsAndCalls(t *testing.T) {
 		}
 
 		tools, err := downstream.ListTools(ctx, nil)
-		if err != nil || len(tools.Tools) != 18 {
-			t.Fatalf("expected the 18 gateway tools, got %d (%v)", len(tools.Tools), err)
+		if err != nil || len(tools.Tools) != 19 {
+			t.Fatalf("expected the 19 gateway tools, got %d (%v)", len(tools.Tools), err)
 		}
 
 		result, err := downstream.CallTool(ctx, &mcp.CallToolParams{Name: "vm_create", Arguments: map[string]any{"os": "ubuntu"}})

@@ -61,6 +61,37 @@ func main() {
 		}
 		return
 	}
+	if len(args) > 2 && args[0] == "vm" && args[1] == "info" {
+		targetArgs := append([]string{"info"}, args[2:]...)
+		id := targetID(targetArgs)
+		if !knownOS(args[2]) || readState(id) != "running" {
+			fmt.Fprintln(os.Stderr, "VM is not running")
+			os.Exit(1)
+		}
+		typ, arch := "", "amd64"
+		if args[2] == "ubuntu" {
+			typ = "server"
+		}
+		for i := 3; i+1 < len(args); i++ {
+			if args[i] == "--type" {
+				typ = args[i+1]
+			}
+			if args[i] == "--arch" {
+				arch = args[i+1]
+			}
+		}
+		address := os.Getenv("FAKE_VM_ADDRESS")
+		if address == "" {
+			address = "192.0.2.10"
+		}
+		protocol, port := "ssh", 22
+		if args[2] == "windows11" {
+			protocol, port = "winrm", 5985
+		}
+		password := os.Getenv("FAKE_VM_PASSWORD")
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "os": args[2], "type": typ, "arch": arch, "engine": "qemu", "state": "running", "address": address, "network_mode": "unknown", "protocol": protocol, "port": port, "username": "packer", "password": password})
+		return
+	}
 	if args[0] == "__session" {
 		// Reports how the gateway started this process.
 		fmt.Println(sessionInfo())

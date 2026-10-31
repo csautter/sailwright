@@ -39,6 +39,7 @@ func (g *Gateway) newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{Name: "list_targets", Description: "Run `sailwright <command> list --json` and return the targets with their current state.", Annotations: readOnly}, g.toolListTargets)
 	mcp.AddTool(server, &mcp.Tool{Name: "command_help", Description: "Show `sailwright [command] [list] --help`.", Annotations: readOnly}, g.toolCommandHelp)
 
+	mcp.AddTool(server, &mcp.Tool{Name: "vm_info", Description: "Get guest connection credentials, SSH ProxyCommand config and Ansible inventory for a running managed VM.", Annotations: readOnly}, g.toolVMInfo)
 	mcp.AddTool(server, &mcp.Tool{Name: "vm_build", Description: "Build a VM image (safe set, starts a job)."}, g.toolBuild)
 	mcp.AddTool(server, &mcp.Tool{Name: "vm_create", Description: "Create a VM from a built image (safe set, starts a job)."}, g.vmTool(OpCreate))
 	mcp.AddTool(server, &mcp.Tool{Name: "vm_start", Description: "Start a VM (safe set, starts a job)."}, g.vmTool(OpStart))
@@ -226,7 +227,7 @@ func (g *Gateway) toolGatewayInfo(_ context.Context, _ *mcp.CallToolRequest, _ e
 		BinarySource:    g.pinned.Source,
 		DataDir:         g.cfg.DataDir,
 		ApprovalEnabled: g.approver.Enabled(),
-		SafeTools:       []string{"list_targets", "command_help", "vm_build", "vm_create", "vm_start", "vm_stop", "vm_destroy", "vm_provision", "artifact_pull", "job_screenshot", "run_cli (safe subset)"},
+		SafeTools:       []string{"list_targets", "command_help", "vm_info", "vm_build", "vm_create", "vm_start", "vm_stop", "vm_destroy", "vm_provision", "artifact_pull", "job_screenshot", "run_cli (safe subset)"},
 		ApprovalTools:   []string{"provision_local", "install", "run_cli (everything else)"},
 		Playbooks:       grammar.Playbooks,
 		PullAllowlist:   g.cfg.PullAllowlist,
@@ -234,7 +235,7 @@ func (g *Gateway) toolGatewayInfo(_ context.Context, _ *mcp.CallToolRequest, _ e
 		ActiveJob:       g.jobs.Active(),
 		Targets:         g.catalog.Summary(),
 		TargetErrors:    g.catalog.Errors(),
-		VMAccess:        "not available yet",
+		VMAccess:        "SSH and WinRM through vm_info and vm tunnel",
 		Limits: GatewayLimits{
 			JobTimeoutSeconds:  int64(g.cfg.JobTimeoutValue.Seconds()),
 			ApprovalTTLSeconds: int64(g.cfg.ApprovalTTLValue.Seconds()),

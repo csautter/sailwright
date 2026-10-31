@@ -58,26 +58,29 @@ type WorkspaceMapping struct {
 
 // Config is the operator-owned gateway configuration. It is never writable through MCP.
 type Config struct {
-	Listen             string             `yaml:"listen"`
-	AllowedHosts       []string           `yaml:"allowed_hosts"`
-	AllowedSourceCIDRs []string           `yaml:"allowed_source_cidrs"`
-	AllowedOrigins     []string           `yaml:"allowed_origins"`
-	Binary             string             `yaml:"binary"`
-	BinarySHA256       string             `yaml:"binary_sha256"`
-	DataDir            string             `yaml:"data_dir"`
-	StateIsolation     string             `yaml:"state_isolation"`
-	SharedCacheDir     string             `yaml:"shared_cache_dir"`
-	EnvPassthrough     []string           `yaml:"env_passthrough"`
-	PullAllowlist      []string           `yaml:"pull_allowlist"`
-	AgentWorkspaces    []WorkspaceMapping `yaml:"agent_workspaces"`
-	JobTimeout         string             `yaml:"job_timeout"`
-	ApprovalTTL        string             `yaml:"approval_ttl"`
-	MinFreeDiskGB      int                `yaml:"min_free_disk_gb"`
-	CleanPromptMinGB   int                `yaml:"clean_prompt_min_gb"`
-	OutputLimitBytes   int                `yaml:"output_limit_bytes"`
-	SnapshotMaxBytes   int64              `yaml:"snapshot_max_bytes"`
-	SnapshotMaxFiles   int                `yaml:"snapshot_max_files"`
-	AgentDir           string             `yaml:"agent_dir"`
+	MaxTunnels             int                `yaml:"max_tunnels"`
+	TunnelIdleTimeout      string             `yaml:"tunnel_idle_timeout"`
+	TunnelIdleTimeoutValue time.Duration      `yaml:"-"`
+	Listen                 string             `yaml:"listen"`
+	AllowedHosts           []string           `yaml:"allowed_hosts"`
+	AllowedSourceCIDRs     []string           `yaml:"allowed_source_cidrs"`
+	AllowedOrigins         []string           `yaml:"allowed_origins"`
+	Binary                 string             `yaml:"binary"`
+	BinarySHA256           string             `yaml:"binary_sha256"`
+	DataDir                string             `yaml:"data_dir"`
+	StateIsolation         string             `yaml:"state_isolation"`
+	SharedCacheDir         string             `yaml:"shared_cache_dir"`
+	EnvPassthrough         []string           `yaml:"env_passthrough"`
+	PullAllowlist          []string           `yaml:"pull_allowlist"`
+	AgentWorkspaces        []WorkspaceMapping `yaml:"agent_workspaces"`
+	JobTimeout             string             `yaml:"job_timeout"`
+	ApprovalTTL            string             `yaml:"approval_ttl"`
+	MinFreeDiskGB          int                `yaml:"min_free_disk_gb"`
+	CleanPromptMinGB       int                `yaml:"clean_prompt_min_gb"`
+	OutputLimitBytes       int                `yaml:"output_limit_bytes"`
+	SnapshotMaxBytes       int64              `yaml:"snapshot_max_bytes"`
+	SnapshotMaxFiles       int                `yaml:"snapshot_max_files"`
+	AgentDir               string             `yaml:"agent_dir"`
 	// ViewListen is the loopback address of the live view for build screenshots
 	// ("off" disables it); port 0 picks a free port.
 	ViewListen string `yaml:"view_listen"`
@@ -277,6 +280,16 @@ func (c *Config) Resolve() error {
 		}
 	}
 
+	if c.MaxTunnels == 0 {
+		c.MaxTunnels = 16
+	}
+	if c.MaxTunnels < 1 || c.MaxTunnels > 1024 {
+		return fmt.Errorf("max_tunnels must be between 1 and 1024")
+	}
+	c.TunnelIdleTimeoutValue, err = parseDurationDefault(c.TunnelIdleTimeout, 5*time.Minute)
+	if err != nil || c.TunnelIdleTimeoutValue <= 0 {
+		return fmt.Errorf("invalid tunnel_idle_timeout")
+	}
 	c.JobTimeoutValue, err = parseDurationDefault(c.JobTimeout, defaultJobTimeout)
 	if err != nil {
 		return fmt.Errorf("job_timeout: %w", err)
@@ -349,7 +362,10 @@ func (c *Config) Resolve() error {
 		}
 	}
 	// The agent dir is mounted into containers, so it must not expose gateway state.
-	for _, dir := range []string{c.StateDir, c.DataDir} {
+	for _, dir := range []string{c.StateDir, c.DataDir, c.SharedAppData, c.SharedCache, c.SharedVagrant, c.SharedPackerCache, c.SharedCacheDir} {
+		if dir == "" {
+			continue
+		}
 		if isWithin(c.AgentDir, dir) || isWithin(dir, c.AgentDir) {
 			return fmt.Errorf("agent_dir %s must not overlap the gateway directory %s", c.AgentDir, dir)
 		}

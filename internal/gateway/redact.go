@@ -22,6 +22,7 @@ var ansiPattern = regexp.MustCompile(`\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x
 
 // Redactor replaces known secret values with a marker.
 type Redactor struct {
+	mu      sync.RWMutex
 	secrets []string
 	minLen  int // shortest value kept, carried so With does not drop short required secrets
 }
@@ -33,15 +34,18 @@ func NewRedactor(secrets ...string) *Redactor {
 
 func newRedactor(minLen int, secrets []string) *Redactor {
 	var kept []string
+	seen := map[string]bool{}
 	for _, secret := range secrets {
-		if secret == "" || len(secret) < minLen {
+		if secret == "" || len(secret) < minLen || seen[secret] {
 			continue
 		}
 		kept = append(kept, secret)
+		seen[secret] = true
 		// Also catch the JSON-escaped form used in structured logs and tool results.
 		if escaped, err := json.Marshal(secret); err == nil {
-			if inner := string(escaped[1 : len(escaped)-1]); inner != secret {
+			if inner := string(escaped[1 : len(escaped)-1]); inner != secret && !seen[inner] {
 				kept = append(kept, inner)
+				seen[inner] = true
 			}
 		}
 	}
@@ -52,7 +56,12 @@ func newRedactor(minLen int, secrets []string) *Redactor {
 
 // maxSecretLen is the length of the longest secret that is redacted.
 func (r *Redactor) maxSecretLen() int {
-	if r == nil || len(r.secrets) == 0 {
+	if r == nil {
+		return 0
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.secrets) == 0 {
 		return 0
 	}
 	return len(r.secrets[0]) // sorted longest first
@@ -64,6 +73,8 @@ func (r *Redactor) safeCut(buf []byte, cut int) int {
 	if r == nil {
 		return cut
 	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for moved := true; moved; {
 		moved = false
 		for _, secret := range r.secrets {
@@ -81,6 +92,8 @@ func (r *Redactor) With(secrets ...string) *Redactor {
 	var all []string
 	minLen := minRedactedSecret
 	if r != nil {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
 		all = append(all, r.secrets...)
 		minLen = r.minLen
 	}
@@ -92,6 +105,8 @@ func (r *Redactor) With(secrets ...string) *Redactor {
 func (r *Redactor) WithRequired(secrets ...string) *Redactor {
 	var all []string
 	if r != nil {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
 		all = append(all, r.secrets...)
 	}
 	return newRedactor(1, append(all, secrets...))
@@ -102,6 +117,8 @@ func (r *Redactor) String(value string) string {
 	if r == nil {
 		return value
 	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for _, secret := range r.secrets {
 		value = strings.ReplaceAll(value, secret, redactedMarker)
 	}
@@ -203,4 +220,12 @@ func sanitizeForTerminal(value string) string {
 		}
 	}
 	return b.String()
+}
+
+// AddRequired registers newly resolved guest secrets for subsequent audit and job output.
+func (r *Redactor) AddRequired(secrets ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	merged := newRedactor(1, append(append([]string{}, r.secrets...), secrets...))
+	r.secrets, r.minLen = merged.secrets, merged.minLen
 }
