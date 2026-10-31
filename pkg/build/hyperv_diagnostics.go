@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/csautter/dev-alchemy/internal/winpsenv"
 )
 
 type hypervDiagnosticCommand struct {
@@ -160,7 +162,7 @@ func runDiagnosticCommand(executable string, args ...string) ([]byte, error) {
 
 	// #nosec G204 -- diagnostic commands and args are hard-coded and only used for host inspection.
 	cmd := exec.CommandContext(ctx, executable, args...)
-	cmd.Env = append(os.Environ(), GetDirectoriesInstance().ManagedEnv()...)
+	cmd.Env = winpsenv.CommandEnv(executable, GetDirectoriesInstance().ManagedEnv())
 
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
