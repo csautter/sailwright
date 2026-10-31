@@ -82,5 +82,8 @@ guest clock to the host time through the QEMU guest agent. If provisioning logs
 hand:
 
 ```bash
-virsh --connect qemu:///system domtime <domain> --now
+virsh --connect "${DEV_ALCHEMY_LIBVIRT_URI:-qemu:///system}" domtime <domain> --now
 ```
+
+The domain is named `<os>-<type>-<arch>-dev-alchemy`, for example
+`ubuntu-server-amd64-dev-alchemy`.

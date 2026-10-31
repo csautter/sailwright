@@ -110,6 +110,8 @@ func TestDiscoverLinuxVagrantIPv4_FallsBackToSSHCommandWhenSSHConfigLacksIP(t *t
 }
 
 func TestDiscoverLinuxLibvirtVMIPv4_UsesGuestAgentBeforeLease(t *testing.T) {
+	t.Setenv("DEV_ALCHEMY_LIBVIRT_URI", "")
+
 	vm := alchemy_build.VirtualMachineConfig{
 		OS:         "ubuntu",
 		UbuntuType: "server",
@@ -156,6 +158,8 @@ func TestDiscoverLinuxLibvirtVMIPv4_UsesGuestAgentBeforeLease(t *testing.T) {
 }
 
 func TestDiscoverLinuxLibvirtVMIPv4_FallsBackToLease(t *testing.T) {
+	t.Setenv("DEV_ALCHEMY_LIBVIRT_URI", "")
+
 	vm := alchemy_build.VirtualMachineConfig{
 		OS:         "ubuntu",
 		UbuntuType: "desktop",
@@ -205,6 +209,8 @@ func TestDiscoverLinuxLibvirtVMIPv4_FallsBackToLease(t *testing.T) {
 }
 
 func TestSyncLinuxLibvirtGuestClock_SetsHostTimeThroughGuestAgent(t *testing.T) {
+	t.Setenv("DEV_ALCHEMY_LIBVIRT_URI", "")
+
 	vm := alchemy_build.VirtualMachineConfig{
 		OS:         "ubuntu",
 		UbuntuType: "desktop",
