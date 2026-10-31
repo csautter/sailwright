@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -36,9 +37,7 @@ func runCommandWithStreamingLogsWithEnv(workingDir string, timeout time.Duration
 	cmd := exec.CommandContext(ctx, executable, args...)
 	sanitizedArgs := sanitizeCommandArgsForLogs(args)
 	cmd.Dir = workingDir
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
+	cmd.Env = commandEnv(executable, extraEnv)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -106,9 +105,7 @@ func runCommandWithCombinedOutputWithEnv(workingDir string, timeout time.Duratio
 	// #nosec G204,G702 -- callers provide explicit executables and argv slices; no shell interpretation occurs.
 	cmd := exec.CommandContext(ctx, executable, args...)
 	cmd.Dir = workingDir
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
+	cmd.Env = commandEnv(executable, extraEnv)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -116,6 +113,91 @@ func runCommandWithCombinedOutputWithEnv(workingDir string, timeout time.Duratio
 	}
 
 	return string(output), nil
+}
+
+// commandEnv returns the environment for a child process, or nil to inherit the
+// current environment unchanged.
+func commandEnv(executable string, extraEnv []string) []string {
+	environ, changed := sanitizeWindowsPowerShellEnv(executable, os.Environ())
+	if !changed && len(extraEnv) == 0 {
+		return nil
+	}
+
+	return append(environ, extraEnv...)
+}
+
+// sanitizeWindowsPowerShellEnv removes PowerShell 7 module directories from
+// PSModulePath when the child process is Windows PowerShell. When sailwright is
+// started from pwsh (e.g. the default shell of GitHub Actions Windows runners),
+// Windows PowerShell inherits pwsh's PSModulePath and loads incompatible
+// PowerShell 7 core modules: Microsoft.PowerShell.Security then fails to load
+// and the Cert: drive is missing. pwsh applies the same mitigation itself when
+// it starts powershell.exe directly.
+func sanitizeWindowsPowerShellEnv(executable string, environ []string) ([]string, bool) {
+	if !isWindowsPowerShellExecutable(executable) {
+		return environ, false
+	}
+
+	sanitized := make([]string, 0, len(environ))
+	changed := false
+	for _, entry := range environ {
+		key, value, found := strings.Cut(entry, "=")
+		if !found || !strings.EqualFold(key, "PSModulePath") {
+			sanitized = append(sanitized, entry)
+			continue
+		}
+
+		filtered := filterPowerShellCoreModulePaths(value)
+		if filtered == value {
+			sanitized = append(sanitized, entry)
+			continue
+		}
+
+		changed = true
+		if strings.Trim(filtered, ";") != "" {
+			sanitized = append(sanitized, key+"="+filtered)
+		}
+	}
+
+	return sanitized, changed
+}
+
+func isWindowsPowerShellExecutable(executable string) bool {
+	base := strings.ToLower(executable[strings.LastIndexAny(executable, `\/`)+1:])
+	return base == "powershell" || base == "powershell.exe"
+}
+
+func filterPowerShellCoreModulePaths(modulePath string) string {
+	entries := strings.Split(modulePath, ";")
+	kept := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if isPowerShellCoreModulePath(entry) {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+
+	return strings.Join(kept, ";")
+}
+
+// isPowerShellCoreModulePath reports whether a module directory belongs to
+// PowerShell 7: <...>\PowerShell\Modules (all users / current user) or
+// <...>\PowerShell\<version>\Modules ($PSHOME). Windows PowerShell paths use a
+// WindowsPowerShell segment instead.
+func isPowerShellCoreModulePath(path string) bool {
+	segments := strings.FieldsFunc(path, func(r rune) bool { return r == '\\' || r == '/' })
+	count := len(segments)
+	if count < 2 || !strings.EqualFold(segments[count-1], "Modules") {
+		return false
+	}
+	if strings.EqualFold(segments[count-2], "PowerShell") {
+		return true
+	}
+
+	return count >= 3 &&
+		strings.EqualFold(segments[count-3], "PowerShell") &&
+		segments[count-2] != "" &&
+		segments[count-2][0] >= '0' && segments[count-2][0] <= '9'
 }
 
 func sanitizeCommandArgsForLogs(args []string) []string {
