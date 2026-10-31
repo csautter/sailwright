@@ -1,0 +1,6 @@
+# Set by the test for each run, so a stale marker cannot pass.
+become_probe_token: ""
+# Root-owned file the play writes with become.
+become_probe_marker: /etc/sailwright-become-probe
+# Package installed with become on Debian/Ubuntu; empty skips the install.
+become_probe_apt_package: ""
