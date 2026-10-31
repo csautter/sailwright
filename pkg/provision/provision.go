@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -90,6 +91,7 @@ const (
 	linuxLibvirtIPv4DiscoveryRetryWindow   = 2 * time.Minute
 	linuxLibvirtIPv4DiscoveryRetryInterval = 3 * time.Second
 	linuxLibvirtIPv4CommandTimeout         = time.Minute
+	linuxLibvirtGuestClockSyncTimeout      = 30 * time.Second
 	linuxLibvirtDomifaddrSourceAgent       = "agent"
 	linuxLibvirtDomifaddrSourceLease       = "lease"
 
@@ -596,6 +598,8 @@ func runLinuxQemuUbuntuProvision(vm alchemy_build.VirtualMachineConfig, options 
 		return fmt.Errorf("failed to determine libvirt VM IPv4 address: %w", err)
 	}
 
+	syncLinuxLibvirtGuestClock(projectDir, vm)
+
 	connectionConfig, err := loadUbuntuLibvirtAnsibleConnectionConfig(projectDir)
 	if err != nil {
 		return fmt.Errorf("failed to load libvirt ubuntu ansible configuration: %w", err)
@@ -912,6 +916,33 @@ func discoverLinuxLibvirtVMIPv4WithOptions(projectDir string, vm alchemy_build.V
 		time.Duration(options.maxAttempts-1)*options.retryInterval,
 		lastErr,
 	)
+}
+
+// syncLinuxLibvirtGuestClock sets the guest clock to the host time through the
+// QEMU guest agent. A guest that was paused, or whose host slept, resumes with
+// its old time, and apt then rejects repository metadata as "not valid yet".
+// Failures only warn, so guests without the agent can still be provisioned.
+func syncLinuxLibvirtGuestClock(projectDir string, vm alchemy_build.VirtualMachineConfig) {
+	syncLinuxLibvirtGuestClockWithRunner(projectDir, vm, runCommandWithCombinedOutput)
+}
+
+func syncLinuxLibvirtGuestClockWithRunner(
+	projectDir string,
+	vm alchemy_build.VirtualMachineConfig,
+	runCommand func(string, time.Duration, string, []string) (string, error),
+) {
+	domainName := alchemy_deploy.LinuxLibvirtDomainName(vm)
+	output, err := runCommand(
+		projectDir,
+		linuxLibvirtGuestClockSyncTimeout,
+		"virsh",
+		[]string{"--connect", alchemy_deploy.LinuxLibvirtURI(), "domtime", domainName, "--now"},
+	)
+	if err != nil {
+		log.Printf("warning: could not set the clock of libvirt VM %q to the host time: %v; output: %s", domainName, err, strings.TrimSpace(output))
+		return
+	}
+	log.Printf("set the clock of libvirt VM %q to the host time", domainName)
 }
 
 func withDefaultLinuxLibvirtIPv4DiscoveryOptions(options linuxLibvirtIPv4DiscoveryOptions) linuxLibvirtIPv4DiscoveryOptions {
