@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.1](https://github.com/csautter/sailwright/compare/v0.24.0...v0.24.1) (2026-10-31)
+
+
+### Fixed
+
+* **install:** compare Git for Windows build numbers against the pinned version ([5926a82](https://github.com/csautter/sailwright/commit/5926a820aaa57552bf09ff07fd06e7f29782cd95))
+* **install:** keep newer preinstalled Git on Windows instead of downgrading ([27ddbb8](https://github.com/csautter/sailwright/commit/27ddbb89236ed17e8a77cfc8a292748418d03852))
+* **install:** only treat an existing Git for Windows install as preinstalled Git ([69bffca](https://github.com/csautter/sailwright/commit/69bffcada55eb881db1a55dd6f4a9c7fad35f045))
+* **install:** treat the pinned Git version as a minimum for any Git for Windows install ([b0feadb](https://github.com/csautter/sailwright/commit/b0feadb4d57ff6d3b4ae01827855a3cdd02e5d11))
+* windows install ([143fed6](https://github.com/csautter/sailwright/commit/143fed667cade0b359771a00c81b7f67a1327f7f))
+
 ## [0.24.0](https://github.com/csautter/sailwright/compare/v0.23.0...v0.24.0) (2026-10-30)
 
 
