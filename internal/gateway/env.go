@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -49,6 +50,7 @@ type ManagedDirs struct {
 	// Screens keeps sampled build console frames per job; jobs do not survive a restart.
 	Screens      string
 	EmbeddedData string
+	Shared       bool
 }
 
 // NewManagedDirs derives the managed directories from the config.
@@ -61,6 +63,7 @@ func NewManagedDirs(cfg Config) ManagedDirs {
 		Logs:         filepath.Join(cfg.StateDir, "logs"),
 		Screens:      filepath.Join(cfg.StateDir, "screens"),
 		EmbeddedData: filepath.Join(cfg.DataDir, "embedded"),
+		Shared:       cfg.StateIsolation == "shared",
 	}
 	dirs.Cache = filepath.Join(dirs.AppData, "cache")
 	if cfg.SharedCacheDir != "" {
@@ -68,12 +71,25 @@ func NewManagedDirs(cfg Config) ManagedDirs {
 	}
 	dirs.Vagrant = filepath.Join(dirs.AppData, ".vagrant")
 	dirs.PackerCache = filepath.Join(dirs.AppData, "packer_cache")
+	if cfg.StateIsolation == "shared" {
+		dirs.AppData, dirs.Cache = cfg.SharedAppData, cfg.SharedCache
+		dirs.Vagrant, dirs.PackerCache = cfg.SharedVagrant, cfg.SharedPackerCache
+		if cfg.SharedCacheDir != "" {
+			dirs.Cache = cfg.SharedCacheDir
+		}
+	}
 	return dirs
 }
 
 // Ensure creates all managed directories with owner-only permissions.
 func (d ManagedDirs) Ensure() error {
 	for _, dir := range []string{d.AppData, d.Config, d.Cache, d.Vagrant, d.PackerCache, d.Work, d.Staging, d.Logs, d.Screens, d.EmbeddedData} {
+		if d.Shared && (dir == d.AppData || dir == d.Cache || dir == d.Vagrant || dir == d.PackerCache) {
+			if err := os.MkdirAll(dir, stateDirPermission); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := ensurePrivateDir(dir); err != nil {
 			return err
 		}
@@ -147,4 +163,59 @@ func findGitRoot(dir string) string {
 		}
 		dir = parent
 	}
+}
+
+// resolveSharedDirs mirrors the CLI's directory contract without importing it.
+func (c *Config) resolveSharedDirs() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	app := os.Getenv(envAppDataDir)
+	if app == "" {
+		switch runtime.GOOS {
+		case "darwin":
+			app = filepath.Join(home, "Library", "Application Support", "dev-alchemy")
+		case "windows":
+			base := os.Getenv("LOCALAPPDATA")
+			if base == "" {
+				base = os.Getenv("APPDATA")
+			}
+			if base == "" {
+				base, err = os.UserConfigDir()
+				if err != nil {
+					return err
+				}
+			}
+			app = filepath.Join(base, "dev-alchemy")
+		default:
+			base := os.Getenv("XDG_DATA_HOME")
+			if base == "" {
+				base = filepath.Join(home, ".local", "share")
+			}
+			app = filepath.Join(base, "dev-alchemy")
+		}
+	}
+	c.SharedAppData, err = filepath.Abs(app)
+	if err != nil {
+		return fmt.Errorf("resolve shared app data: %w", err)
+	}
+	for _, entry := range []struct {
+		name, fallback string
+		destination    *string
+	}{
+		{envCacheDir, "cache", &c.SharedCache},
+		{envVagrantDir, ".vagrant", &c.SharedVagrant},
+		{envPackerCacheDir, "packer_cache", &c.SharedPackerCache},
+	} {
+		value := os.Getenv(entry.name)
+		if value == "" {
+			value = filepath.Join(c.SharedAppData, entry.fallback)
+		}
+		*entry.destination, err = filepath.Abs(value)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

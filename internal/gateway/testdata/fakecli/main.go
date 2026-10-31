@@ -53,6 +53,14 @@ func main() {
 		fmt.Println("Usage: sailwright [command]")
 		return
 	}
+	if args[0] == "--gateway-metadata" {
+		if value := os.Getenv("FAKE_CLI_METADATA"); value != "" {
+			fmt.Println(value)
+		} else {
+			fmt.Println(`{"schema_version":1,"lock_version":1,"version":"fake"}`)
+		}
+		return
+	}
 	if args[0] == "__session" {
 		// Reports how the gateway started this process.
 		fmt.Println(sessionInfo())

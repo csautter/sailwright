@@ -65,6 +65,7 @@ type Config struct {
 	Binary             string             `yaml:"binary"`
 	BinarySHA256       string             `yaml:"binary_sha256"`
 	DataDir            string             `yaml:"data_dir"`
+	StateIsolation     string             `yaml:"state_isolation"`
 	SharedCacheDir     string             `yaml:"shared_cache_dir"`
 	EnvPassthrough     []string           `yaml:"env_passthrough"`
 	PullAllowlist      []string           `yaml:"pull_allowlist"`
@@ -85,6 +86,10 @@ type Config struct {
 	ScreenStuckAfter string `yaml:"screen_stuck_after"`
 
 	// Resolved values, filled by Resolve.
+	SharedAppData         string         `yaml:"-"`
+	SharedCache           string         `yaml:"-"`
+	SharedVagrant         string         `yaml:"-"`
+	SharedPackerCache     string         `yaml:"-"`
 	StateDir              string         `yaml:"-"`
 	ListenAddr            netip.AddrPort `yaml:"-"` // invalid when the TCP listener is off
 	ViewAddr              netip.AddrPort `yaml:"-"` // invalid when the live view is off
@@ -239,6 +244,17 @@ func (c *Config) Resolve() error {
 		c.SourcePrefixes = append(c.SourcePrefixes, prefix.Masked())
 	}
 
+	if c.StateIsolation == "" {
+		c.StateIsolation = "shared"
+	}
+	if c.StateIsolation != "shared" && c.StateIsolation != "isolated" {
+		return fmt.Errorf("state_isolation must be shared or isolated")
+	}
+	if c.StateIsolation == "shared" {
+		if err := c.resolveSharedDirs(); err != nil {
+			return err
+		}
+	}
 	if c.DataDir == "" {
 		c.DataDir = filepath.Join(c.StateDir, "data")
 	}
@@ -324,7 +340,7 @@ func (c *Config) Resolve() error {
 		return errors.New("binary_sha256 must be 64 lowercase hex characters")
 	}
 
-	for _, dir := range []string{c.StateDir, c.DataDir, c.AgentDir, c.SharedCacheDir} {
+	for _, dir := range []string{c.StateDir, c.DataDir, c.AgentDir, c.SharedCacheDir, c.SharedAppData, c.SharedCache, c.SharedVagrant, c.SharedPackerCache} {
 		if dir == "" {
 			continue
 		}

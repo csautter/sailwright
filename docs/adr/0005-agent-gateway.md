@@ -71,3 +71,18 @@ policy on the host.
 - Only one job runs at a time, and remote (non-local) hosts are not supported.
 
 See [Agent Gateway](../agent-gateway.md) for usage and configuration.
+
+## Amendment: shared CLI data (2026-10-31)
+
+The original isolated-state decision is amended. App-data and caches are shared
+with the operator's CLI by default, with `state_isolation: isolated` available
+for the previous layout. Config remains gateway-owned because role sources
+execute Ansible code on the host. Embedded assets from the pinned binary are
+extracted into a separate gateway directory to avoid cross-version replacement.
+
+The CLI coordinates operations with OS file locks in app-data. Target operations
+use the same lock regardless of command; whole-set operations and registry
+transfers exclude target operations. Startup checks a versioned state-schema and
+locking contract, warns about compatible CLI version differences, and refuses
+unsafe sharing. Gateway cleanup never deletes shared caches. Existing isolated
+state is preserved and accompanied by a one-time migration notice.

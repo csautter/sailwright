@@ -61,10 +61,10 @@ The agent, and everything it reads, is treated as untrusted.
   `env_passthrough`; `SSH_AUTH_SOCK`, cloud credentials and similar host
   variables are not passed on. stdin is `/dev/null`, which Sailwright treats
   as non-interactive, so prompts are skipped or fail instead of hanging.
-- **Isolated state.** Sailwright runs with its own app-data, config and cache
-  directories below the gateway data dir, so your regular Sailwright data and
-  role-source configuration are not used. This costs disk space; see
-  [Disk usage](#disk-usage).
+- **Shared data, private config.** By default the gateway and CLI share app-data
+  and caches. Config and extracted playbooks remain gateway-owned: your
+  `ansible-role-sources.yml` is never loaded by gateway jobs. CLI file locks
+  reject concurrent operations on the same target. See [Disk usage](#disk-usage).
 - **Transport.** Agents reach the gateway through a Unix socket in a
   dedicated agent folder (`~/.sailwright-gateway`) that you mount read-only
   into the devcontainer. Access is limited by file permissions (`0600`) and by
@@ -206,6 +206,7 @@ binary: /home/me/sailwright/dist/linux-amd64/sailwright
 # binary_sha256: <hex>            # skip the interactive confirmation
 data_dir: /home/me/.local/share/sailwright-gateway   # ISOs, images, build caches
 agent_dir: /home/me/.sailwright-gateway     # socket + token copy, mounted into containers
+state_isolation: shared           # isolated keeps VM state and caches gateway-owned
 # shared_cache_dir: /home/me/.local/share/dev-alchemy/cache   # reuse your CLI cache, see Disk usage
 env_passthrough:                   # values are redacted from output and logs
   - LIBVIRT_UBUNTU_ANSIBLE_PASSWORD
@@ -333,64 +334,42 @@ Type "approve 3f2a9c1d" or "deny 3f2a9c1d" and press Enter.
 
 ## Disk usage
 
-Builds download ISOs and produce VM images of many gigabytes. Because the
-gateway runs Sailwright with its own directories, these files are **not**
-shared with the Sailwright CLI you use yourself: an image you built with the
-CLI is downloaded or built again for the gateway.
+By default (`state_isolation: shared`), gateway jobs use the normal CLI's
+app-data and cache directories, including `DEV_ALCHEMY_APP_DATA_DIR`,
+`DEV_ALCHEMY_CACHE_DIR`, `DEV_ALCHEMY_VAGRANT_DIR` and
+`DEV_ALCHEMY_PACKER_CACHE_DIR` overrides. Images and created VM state are
+shared, so builds do not need a second copy of the same image.
 
-The data dir holds everything large. Without `data_dir` it follows the
-platform's data location, like the CLI:
+Config always stays at `data_dir/config`. Embedded assets from the pinned
+binary are extracted under `data_dir/embedded/project`, independently of the
+shared data. `DEV_ALCHEMY_CONFIG_DIR` and project overrides from the host do
+not redirect gateway jobs to your normal role-source configuration.
 
-| OS | Gateway data dir | Sailwright CLI app data |
-| --- | --- | --- |
-| Linux | `$XDG_DATA_HOME/sailwright-gateway` (`~/.local/share/sailwright-gateway`) | `~/.local/share/dev-alchemy` |
-| macOS | `~/Library/Application Support/sailwright-gateway/data` | `~/Library/Application Support/dev-alchemy` |
-| Windows | `%LOCALAPPDATA%\sailwright-gateway` | `%LOCALAPPDATA%\dev-alchemy` |
+Set `state_isolation: isolated` to keep app-data under `data_dir/app`, as in
+older versions. `shared_cache_dir` remains a deprecated explicit cache override
+in either mode. It never changes the config location.
 
-With `--state-dir`, the data dir is `<state-dir>/data` instead, so separate
-gateway instances never share data. Older versions always used
-`<state-dir>/data`; the gateway prints a note on startup if that directory is
-still there, and you can delete it.
+CLI operations acquire operating-system file locks under app-data `locks/`.
+The same target cannot be built, created, started, stopped, destroyed or
+provisioned concurrently. Different targets may run concurrently; `all` and
+registry transfers acquire an exclusive lock covering all targets. A competing
+command exits with a `resource busy` error. Locks are released on process exit;
+lock files remain in place and should not be removed.
 
-Inside the data dir:
+At startup the gateway checks the pinned CLI's state schema and locking
+protocol, and compares them with `sailwright` on PATH when installed. Shared
+mode refuses incompatible or missing contracts. Compatible version differences
+produce a warning. Rebuild or update both binaries together when moving from
+an older CLI that has no locking support.
 
-| Path | Content | Safe to delete when the gateway is stopped |
-| --- | --- | --- |
-| `app/cache/` | ISOs, firmware, build output (`qemu-out-*`, `*.qcow2`) | yes; the next build downloads and builds again |
-| `app/packer_cache/` | Packer downloads | yes |
-| `app/libvirt/images/` | disks of created libvirt VMs (Linux, session connection) | no, only after destroying those VMs |
-| `app/.vagrant/` | Vagrant state of created VMs | no, only after destroying those VMs |
-| `config/` | isolated Sailwright config | no |
+Existing `data_dir/app` is left untouched. A one-time startup notice explains
+how to select isolated mode or remove old data after destroying its VMs.
 
-**Sharing the cache with the CLI.** Set `shared_cache_dir` to your CLI cache
-dir (for example `~/.local/share/dev-alchemy/cache`) to use one copy of ISOs
-and build output. This gives up part of the isolation on purpose: jobs
-started by an agent can then write to, rebuild (`no_cache`) or overwrite the
-cache your own CLI uses, and a build you start yourself can run at the same
-time as a gateway job on the same files. Only the cache is shared;
-`packer_cache`, `.vagrant` and the config stay below the data dir.
-
-The free disk check (`min_free_disk_gb`) looks at the volume of the data dir.
-
-**Deleting the cache.** When you stop the gateway with Ctrl+C and
-`app/cache` and `app/packer_cache` together use at least
-`clean_prompt_min_gb` (default 20 GB), the gateway first cancels running jobs
-and then asks:
-
-```text
-The gateway cache uses 87.4 GB:
-  80.1 GB    /home/me/.local/share/sailwright-gateway/app/cache
-  7.3 GB     /home/me/.local/share/sailwright-gateway/app/packer_cache
-Delete it? Created VMs are not affected; the next build downloads and builds again. [y/N]
-```
-
-Enter or a second Ctrl+C keeps the cache. There is no question when the
-gateway is stopped with SIGTERM or runs without a terminal. To delete the
-cache later, or from a script, run `sailwright-gateway clean` (add `--yes` to
-skip the question) while the gateway is stopped; it refuses while the TCP
-listener, the agent socket or the state directory lock is in use. Both only empty the two
-cache folders; created VMs, `.vagrant`, `libvirt/images`, the config and a
-`shared_cache_dir` are never touched.
+**Cleaning:** shared mode never deletes the user's cache, even with `--yes`.
+In isolated mode, `sailwright-gateway clean` empties only gateway-owned cache
+and Packer-cache directories while the gateway is stopped. VM disks, Vagrant
+state, config and an explicit shared cache are preserved. The shutdown cache
+question follows the same ownership rules.
 
 ## Files in the state directory
 
@@ -399,7 +378,7 @@ cache folders; created VMs, `.vagrant`, `libvirt/images`, the config and a
 | `token` | bearer token (owner-only permissions) |
 | `gateway.yaml` | optional configuration |
 | `bin/sailwright` | pinned binary copy |
-| `data/` | only with `--state-dir` or on macOS: the data dir, see [Disk usage](#disk-usage) |
+| `data/` | gateway-owned config and extracted assets; only with `--state-dir` or on macOS: the data dir, see [Disk usage](#disk-usage) |
 | `work/` | empty working directory for commands |
 | `staging/` | read-only bundle snapshots, removed after each job |
 | `logs/<job>.log` | redacted output per job, capped at 64 MiB; removed with the job history and after 30 days |

@@ -26,6 +26,9 @@ type CacheUsage struct {
 // dir belongs to the operator's own sailwright and is never cleaned. VM state
 // (.vagrant, libvirt images) and the isolated config are never included.
 func CleanableDirs(cfg Config) []string {
+	if cfg.StateIsolation == "shared" {
+		return nil
+	}
 	dirs := NewManagedDirs(cfg)
 	var cleanable []string
 	for _, dir := range []string{dirs.Cache, dirs.PackerCache} {

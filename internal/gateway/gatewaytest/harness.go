@@ -111,6 +111,7 @@ func Start(t testing.TB, opts Options) *Harness {
 		jobTimeout = "2m"
 	}
 	cfg := gateway.Config{
+		StateIsolation:  "isolated",
 		StateDir:        h.StateDir,
 		Listen:          "127.0.0.1:0",
 		EnvPassthrough:  []string{"FAKE_CLI_RECORD", "FAKE_CLI_STATE", "FAKE_VM_PASSWORD"},
