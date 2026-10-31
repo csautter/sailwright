@@ -36,6 +36,8 @@ func runClean(t *testing.T, stateDir string) (string, error) {
 }
 
 func TestCleanRefusesWhileStateDirIsLocked(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 	stateDir := t.TempDir()
 	lock, err := gateway.AcquireStateLock(stateDir)
 	if err != nil {

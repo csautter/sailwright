@@ -1,8 +1,8 @@
 # Agent Gateway (experimental)
 
-`sailwright-gateway` lets a coding agent that runs inside a devcontainer drive
-Sailwright on the real host (Linux, macOS or Windows) **without getting a
-shell on the host**. The gateway runs on the host, exposes a fixed set of
+`sailwright-gateway` lets a coding agent run Sailwright through a host-side
+policy, either from a devcontainer or directly on a development machine
+(Linux, macOS or Windows). The gateway runs on that machine, exposes a fixed set of
 Sailwright operations over [MCP](https://modelcontextprotocol.io) (Streamable
 HTTP), and asks you on its own terminal before it runs anything outside a
 predefined safe set.
@@ -15,7 +15,7 @@ The design rationale is recorded in [ADR 0005](./adr/0005-agent-gateway.md). The
 ## How it works
 
 ```text
-devcontainer (agent, E2E tests)
+agent / E2E tests (same machine or devcontainer)
    │  sailwright-gateway connect (stdio MCP bridge)
    │  Unix socket (Linux) or TCP (Docker Desktop) + bearer token
    ▼
@@ -87,7 +87,35 @@ The agent, and everything it reads, is treated as untrusted.
 
 ## Quick start
 
-Three steps, the same on every host.
+### Agent on the same machine
+
+On a dedicated development machine or VM, build and start the gateway locally:
+
+```bash
+make build-cli-local build-gateway-local
+./dist/<os>-<arch>/sailwright-gateway serve --binary ./dist/<os>-<arch>/sailwright
+```
+
+Put `sailwright-gateway` on the agent's PATH and register `sailwright-gateway
+connect` as the stdio MCP server, using the same `.mcp.json` as a devcontainer.
+The connector discovers `~/.sailwright-gateway/gateway.sock` and its token
+without a bind mount. On Windows it uses local loopback TCP instead. Run
+`sailwright-gateway connect --check` to verify the selected endpoint.
+
+Explicit `SAILWRIGHT_GATEWAY_URL`, `SAILWRIGHT_GATEWAY_DIR` and
+`SAILWRIGHT_GATEWAY_TOKEN` settings still take precedence. With a custom agent
+directory and TCP transport, set the URL explicitly to the gateway's loopback
+listener. The connector never starts a server or chooses a binary to pin.
+
+The same safe set, approval rules and audit apply. Running the agent and gateway
+as the same OS user does not create a filesystem sandbox between them. An agent
+may build and pin the local binary itself only when the operator has authorized
+that workflow in the dedicated development environment.
+
+### Agent in a devcontainer
+
+Use these three steps when the agent runs in a container and the gateway runs
+on its host.
 
 1. **On the host:** build from a checkout you trust and start the gateway in a
    terminal you keep open:
@@ -150,18 +178,27 @@ Check the connection inside the container with
 
 `connect` finds the gateway by itself:
 
-1. `SAILWRIGHT_GATEWAY_URL`, if set (`http://host:port/mcp` or `unix:///path/gateway.sock`)
-2. the socket in `SAILWRIGHT_GATEWAY_DIR` (default `/run/sailwright-gateway`), if it accepts connections
-3. `http://host.docker.internal:7391/mcp`
+1. `SAILWRIGHT_GATEWAY_URL`, if set (`http://host:port/mcp` or `unix:///path/gateway.sock`).
+2. The directory selected by `SAILWRIGHT_GATEWAY_DIR`, if set; otherwise the
+   mounted `/run/sailwright-gateway` directory when its token exists.
+3. The current user's `~/.sailwright-gateway`, when no mounted token is present.
 
-The token comes from `SAILWRIGHT_GATEWAY_TOKEN` or the `token` file in the
-mounted folder, so you don't have to copy it around. The E2E test module uses
-the same discovery.
+Within the selected directory it prefers a reachable Unix socket. Without one,
+container directories use `http://host.docker.internal:7391/mcp`; the default
+local user directory uses `http://127.0.0.1:7391/mcp`. A mounted token stays
+paired with the container host even when a local gateway also exists. This
+preserves Docker Desktop behavior, where the mounted socket is not usable.
+
+The token comes from `SAILWRIGHT_GATEWAY_TOKEN` or the selected directory's
+`token` file. The stdio bridge, VM tunnel client and E2E runner all use this
+same discovery.
 
 ## Host and container setups
 
 | Setup | How the agent connects | Extra configuration |
 | --- | --- | --- |
+| Agent and gateway on the same Linux/macOS machine | User Unix socket | none |
+| Agent and gateway on the same Windows machine | Loopback TCP | none |
 | Linux, Docker Engine (rootful or rootless), Podman | Unix socket | none |
 | macOS / Windows, Docker Desktop | TCP via `host.docker.internal` (sockets don't cross the Docker Desktop VM) | none; the token still comes from the mounted folder |
 | Agent on another machine | not supported yet | |
@@ -490,3 +527,21 @@ and TCP guest to test policy and stream handling without a hypervisor.
 - One host per gateway; remote hosts over the network are not supported yet.
 - On Windows, cancellation terminates the process tree immediately; there is
   no graceful stop signal.
+
+### Guests inside a development VM
+
+Treat the development VM as the gateway host. Probe nested KVM support before
+building a guest: CPU virtualization flags and the presence of `/dev/kvm` alone
+do not prove that QEMU can initialize it. The Ubuntu QEMU build script already
+probes KVM and falls back to software emulation when unavailable;
+`DEV_ALCHEMY_QEMU_FORCE_SOFTWARE_EMULATION=1` forces that slower build path.
+To pass this override to gateway jobs, explicitly list it in `env_passthrough`.
+This build override does not change libvirt's guest runtime configuration.
+
+The development VM still needs normal Linux host prerequisites: QEMU, libvirt,
+`virt-install`, access to `/dev/kvm` and the selected libvirt connection. With
+`qemu:///system`, enable the libvirt `default` NAT network. Ansible and
+`sshpass` are also needed for the provisioning and SSH E2E scenarios. See
+[Linux VM testing](./testing-workflows.md) for setup and session-connection
+options. A successful gateway smoke test establishes transport and CLI access;
+a guest lifecycle test establishes nested virtualization and networking.

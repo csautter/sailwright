@@ -1,5 +1,5 @@
 // Command sailwright-gateway is the host-side gateway that lets an agent in a
-// devcontainer drive a pinned sailwright binary over MCP. See docs/agent-gateway.md.
+// local process or devcontainer drive a pinned sailwright binary over MCP. See docs/agent-gateway.md.
 //
 // The name follows the sailwright extension contract (sailwright-<name> on PATH), but
 // the gateway runs standalone and does not depend on the extension interface.
@@ -122,15 +122,17 @@ func newConnectCommand() *cobra.Command {
 	var check bool
 	command := &cobra.Command{
 		Use:   "connect",
-		Short: "Bridge MCP over stdio to a running gateway (run inside the devcontainer)",
+		Short: "Bridge MCP over stdio to a gateway on this machine or a container host",
 		Long: `Serves the gateway's tools over stdio so any agent harness can start it as an
 MCP server. The gateway is found automatically:
 
   1. SAILWRIGHT_GATEWAY_URL (http://... or unix:///path/to/gateway.sock)
   2. the socket in SAILWRIGHT_GATEWAY_DIR (default /run/sailwright-gateway)
-  3. http://host.docker.internal:7391/mcp
+  3. ~/.sailwright-gateway when no mounted token is present
 
-The token is read from SAILWRIGHT_GATEWAY_TOKEN or the token file in that directory.`,
+The selected directory supplies the socket and token. Container directories fall
+back to http://host.docker.internal:7391/mcp; the local user directory falls back
+to http://127.0.0.1:7391/mcp. SAILWRIGHT_GATEWAY_TOKEN overrides the file token.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			endpoint, err := client.Discover(os.Getenv)
 			if err != nil {
@@ -464,7 +466,7 @@ sailwright-gateway %s
   token file: %s
   audit log:  %s
 
-In the devcontainer, agents connect with: sailwright-gateway connect
+Agents on this machine or in the configured devcontainer connect with: sailwright-gateway connect
 Press Ctrl+C to stop.
 `, version, tcpURL, socket, cfg.AgentDir, pinned.Source, pinned.SHA256, cfg.DataDir, approvalState, liveView,
 		gateway.TokenPath(cfg.StateDir), cfg.StateDir+string(os.PathSeparator)+"audit.jsonl")
