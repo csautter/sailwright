@@ -35,6 +35,9 @@ $azureCliUninstallRegistryKeys = @(
     "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
     "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
 )
+# PEP 514 registration written by per-machine python.org installs. Only the
+# machine-wide (admin-writable) key is trusted, as for Git for Windows.
+$pythonCoreRegistryKey = "HKLM:\SOFTWARE\Python\PythonCore"
 $cygwinInstallRoot = "C:\tools\cygwin"
 $cygwinPackages = @(
     "python312",
@@ -116,6 +119,23 @@ function Ensure-PathContains {
     }
 
     [Environment]::SetEnvironmentVariable("Path", ($currentEntries + $PathEntry) -join ";", "Machine")
+    Refresh-ProcessPath
+}
+
+function Ensure-PathEntriesFirst {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$PathEntries
+    )
+
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $currentEntries = @($machinePath -split ";" | Where-Object { $_ -ne "" })
+    $remainingEntries = @($currentEntries | Where-Object { $PathEntries -notcontains $_ })
+    $desiredEntries = @($PathEntries) + $remainingEntries
+
+    if (($desiredEntries -join ";") -ne ($currentEntries -join ";")) {
+        [Environment]::SetEnvironmentVariable("Path", ($desiredEntries -join ";"), "Machine")
+    }
     Refresh-ProcessPath
 }
 
@@ -429,6 +449,110 @@ function Get-NativePythonChocolateyPackageName {
     }
 
     return "python{0}{1}" -f $versionMatch.Groups["major"].Value, $versionMatch.Groups["minor"].Value
+}
+
+function ConvertTo-NativePythonVersion {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$VersionOutput
+    )
+
+    # Pre-releases ("Python 3.14.0rc1") never satisfy a pinned release version.
+    $versionMatch = [regex]::Match($VersionOutput.Trim(), "^Python (?<version>\d+\.\d+\.\d+)$")
+    if (-not $versionMatch.Success) {
+        return $null
+    }
+
+    return [version]$versionMatch.Groups["version"].Value
+}
+
+function Invoke-NativePythonVersionCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PythonExePath
+    )
+
+    $output = & $PythonExePath --version 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return $null
+    }
+
+    return "$output"
+}
+
+function Get-NativePythonInstallation {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version
+    )
+
+    $versionMatch = [regex]::Match($Version, "^(?<major>\d+)\.(?<minor>\d+)")
+    if (-not $versionMatch.Success) {
+        return $null
+    }
+
+    $installPathKey = Join-Path $pythonCoreRegistryKey "$($versionMatch.Groups["major"].Value).$($versionMatch.Groups["minor"].Value)\InstallPath"
+    if (-not (Test-Path $installPathKey)) {
+        return $null
+    }
+
+    $installPath = (Get-ItemProperty -Path $installPathKey -ErrorAction SilentlyContinue).'(default)'
+    if (-not $installPath) {
+        return $null
+    }
+    $installPath = $installPath.TrimEnd("\")
+
+    $pythonExePath = Join-Path $installPath "python.exe"
+    if (-not (Test-Path -LiteralPath $pythonExePath -PathType Leaf)) {
+        return $null
+    }
+
+    $output = Invoke-NativePythonVersionCommand -PythonExePath $pythonExePath
+    if (-not $output) {
+        return $null
+    }
+
+    $installedVersion = ConvertTo-NativePythonVersion -VersionOutput $output
+    if (-not $installedVersion) {
+        Write-Warning "Could not parse a Python release version from '$output' ($pythonExePath)."
+        return $null
+    }
+
+    return [pscustomobject]@{
+        Version = $installedVersion
+        InstallPath = $installPath
+    }
+}
+
+function Ensure-NativePythonInstalled {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version
+    )
+
+    $packageName = Get-NativePythonChocolateyPackageName -Version $Version
+
+    $pinnedVersion = $null
+    if (-not [version]::TryParse($Version, [ref]$pinnedVersion)) {
+        Write-Warning "Pinned Python version $Version is not numeric; skipping the installed version check."
+        Ensure-ChocolateyPackage -PackageName $packageName -Version $Version
+        return
+    }
+
+    # The python.org installer refuses to downgrade an existing newer patch
+    # release of the same minor version (e.g. the tool cache Python preinstalled
+    # on GitHub-hosted runners) and fails with exit code 1603. Treat the pin as a
+    # minimum and put the kept installation first on PATH, as the Chocolatey
+    # package does with PrependPath=1.
+    $existing = Get-NativePythonInstallation -Version $Version
+    if ($existing -and $existing.Version -ge $pinnedVersion) {
+        Write-Host "Python $($existing.Version) is already installed at $($existing.InstallPath) and satisfies pinned version $Version."
+        Ensure-PathEntriesFirst -PathEntries @($existing.InstallPath, (Join-Path $existing.InstallPath "Scripts"))
+        return
+    }
+
+    Ensure-ChocolateyPackage -PackageName $packageName -Version $Version
 }
 
 function Test-ShouldRetryChocolateyCommand {
@@ -1148,8 +1272,7 @@ function Invoke-DevAlchemySelfSetup {
     Ensure-ChocolateyPackage -PackageName "make" -Version $makeVersion
     Ensure-ChocolateyPackage -PackageName "packer" -Version $packerVersion
     Ensure-AzureCliInstalled -Version $azureCliVersion
-    $nativePythonPackageName = Get-NativePythonChocolateyPackageName -Version $nativePythonVersion
-    Ensure-ChocolateyPackage -PackageName $nativePythonPackageName -Version $nativePythonVersion
+    Ensure-NativePythonInstalled -Version $nativePythonVersion
     Assert-NativePythonAvailable
     Export-CommandDirectoryToGitHubPath -CommandName "python"
     $cygwinRoot = Ensure-CygwinChocolateyPackage -Version $cygwinVersion -InstallRoot $cygwinInstallRoot

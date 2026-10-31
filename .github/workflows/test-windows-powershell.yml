@@ -135,6 +135,8 @@ jobs:
           }
           git --version
           az version --output json
+          Get-ChildItem -Path "HKLM:\SOFTWARE\Python\PythonCore" -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Output "PythonCore $($_.PSChildName) -> $((Get-ItemProperty -Path "$($_.PSPath)\InstallPath" -ErrorAction SilentlyContinue).'(default)')" }
 
       - name: Run sailwright install
         shell: pwsh
@@ -149,3 +151,5 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "git is not usable after sailwright install." }
           az version --output json
           if ($LASTEXITCODE -ne 0) { throw "az is not usable after sailwright install." }
+          python --version
+          if ($LASTEXITCODE -ne 0) { throw "python is not usable after sailwright install." }
