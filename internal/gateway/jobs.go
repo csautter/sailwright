@@ -476,6 +476,9 @@ func (m *JobManager) List() []JobView {
 func (m *JobManager) Active() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if active, ok := m.jobs[m.active]; ok && active.snapshotView().Done() {
+		return ""
+	}
 	return m.active
 }
 
