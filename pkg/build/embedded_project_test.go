@@ -423,3 +423,20 @@ func TestEmbeddedShellScriptRepoReferencesAreEmbedded(t *testing.T) {
 		t.Fatalf("walk embedded assets: %v", err)
 	}
 }
+
+func TestEmbeddedProjectUsesSeparateDataRoot(t *testing.T) {
+	t.Setenv(projectDirEnvVar, "")
+	root := t.TempDir()
+	t.Setenv("DEV_ALCHEMY_EMBEDDED_DATA_DIR", root)
+	app := t.TempDir()
+	project, err := ensureProjectDir(t.TempDir(), app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project != filepath.Join(root, "project") {
+		t.Fatalf("unexpected extraction path: %s", project)
+	}
+	if _, err := os.Stat(filepath.Join(app, "project")); !os.IsNotExist(err) {
+		t.Fatalf("shared app data was used: %v", err)
+	}
+}

@@ -42,6 +42,9 @@ func ensureProjectDir(workingDir string, appDataDir string) (string, error) {
 		return projectDir, nil
 	}
 
+	if root := os.Getenv("DEV_ALCHEMY_EMBEDDED_DATA_DIR"); root != "" {
+		return ensureEmbeddedProjectDir(root)
+	}
 	return ensureEmbeddedProjectDir(appDataDir)
 }
 

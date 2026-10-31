@@ -47,18 +47,20 @@ type ManagedDirs struct {
 	Staging     string
 	Logs        string
 	// Screens keeps sampled build console frames per job; jobs do not survive a restart.
-	Screens string
+	Screens      string
+	EmbeddedData string
 }
 
 // NewManagedDirs derives the managed directories from the config.
 func NewManagedDirs(cfg Config) ManagedDirs {
 	dirs := ManagedDirs{
-		AppData: filepath.Join(cfg.DataDir, "app"),
-		Config:  filepath.Join(cfg.DataDir, "config"),
-		Work:    filepath.Join(cfg.StateDir, "work"),
-		Staging: filepath.Join(cfg.StateDir, "staging"),
-		Logs:    filepath.Join(cfg.StateDir, "logs"),
-		Screens: filepath.Join(cfg.StateDir, "screens"),
+		AppData:      filepath.Join(cfg.DataDir, "app"),
+		Config:       filepath.Join(cfg.DataDir, "config"),
+		Work:         filepath.Join(cfg.StateDir, "work"),
+		Staging:      filepath.Join(cfg.StateDir, "staging"),
+		Logs:         filepath.Join(cfg.StateDir, "logs"),
+		Screens:      filepath.Join(cfg.StateDir, "screens"),
+		EmbeddedData: filepath.Join(cfg.DataDir, "embedded"),
 	}
 	dirs.Cache = filepath.Join(dirs.AppData, "cache")
 	if cfg.SharedCacheDir != "" {
@@ -71,7 +73,7 @@ func NewManagedDirs(cfg Config) ManagedDirs {
 
 // Ensure creates all managed directories with owner-only permissions.
 func (d ManagedDirs) Ensure() error {
-	for _, dir := range []string{d.AppData, d.Config, d.Cache, d.Vagrant, d.PackerCache, d.Work, d.Staging, d.Logs, d.Screens} {
+	for _, dir := range []string{d.AppData, d.Config, d.Cache, d.Vagrant, d.PackerCache, d.Work, d.Staging, d.Logs, d.Screens, d.EmbeddedData} {
 		if err := ensurePrivateDir(dir); err != nil {
 			return err
 		}
@@ -81,7 +83,7 @@ func (d ManagedDirs) Ensure() error {
 
 // PlaybookDir is where the pinned binary extracts its embedded playbooks.
 func (d ManagedDirs) PlaybookDir() string {
-	return filepath.Join(d.AppData, "project", "playbooks")
+	return filepath.Join(d.EmbeddedData, "project", "playbooks")
 }
 
 // BuildChildEnv returns the complete environment for a sailwright child process. It
@@ -102,6 +104,8 @@ func BuildChildEnv(dirs ManagedDirs, passthrough []string, getenv func(string) s
 			values[name] = value
 		}
 	}
+	values["SAILWRIGHT_PROJECT_DIR"] = ""
+	values["DEV_ALCHEMY_EMBEDDED_DATA_DIR"] = dirs.EmbeddedData
 	values[envAppDataDir] = dirs.AppData
 	values[envConfigDir] = dirs.Config
 	values[envCacheDir] = dirs.Cache
