@@ -90,8 +90,10 @@ jobs:
       - name: Install ansible-core in a shared virtualenv
         run: |
           if [[ "$RUNNER_OS" == "macOS" ]]; then
-            python="$(brew --prefix)/bin/python3"
-            [[ -x "$python" ]] || { brew install python && python="$(brew --prefix)/bin/python3"; }
+            # Homebrew's default python3 can be newer than ansible-core supports
+            # (3.15 breaks ansible-core 2.21), so pin a supported version.
+            python="$(brew --prefix)/opt/python@3.13/bin/python3.13"
+            [[ -x "$python" ]] || brew install python@3.13
           else
             python=/usr/bin/python3
             if ! "$python" -m venv "$RUNNER_TEMP/venv-probe" >/dev/null 2>&1; then
@@ -139,7 +141,9 @@ jobs:
           sudo visudo -cf "$rule"
           sudo mkdir -p /etc/sudoers.d
           sudo install -m 0440 "$rule" "/etc/sudoers.d/$TEST_USER"
-          sudo visudo -c
+          # Check only this file: the runner image's own sudoers files may not
+          # pass `visudo -c` (e.g. /etc/sudoers.d/runner has mode 0644).
+          sudo visudo -cf "/etc/sudoers.d/$TEST_USER"
           # Guard: the test is only meaningful if sudo really asks.
           if sudo -u "$TEST_USER" sudo -n true 2>/dev/null; then
             echo "::error::sudo works without a password for $TEST_USER"
