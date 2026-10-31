@@ -30,7 +30,7 @@ func (r *Runner) Run(ctx context.Context, argv []string, dir string, out io.Writ
 		return -1, err
 	}
 
-	// #nosec G204 -- the binary is the pinned copy and argv is passed without a shell.
+	// #nosec G204 G702 -- the binary is the pinned copy and argv is passed without a shell.
 	cmd := exec.Command(r.Binary.Path, argv...)
 	cmd.Dir = dir
 	cmd.Env = r.Env

@@ -94,6 +94,7 @@ func isSailwrightCheckout(dir string) bool {
 
 func ensureEmbeddedProjectDir(appDataDir string) (string, error) {
 	projectDir := filepath.Join(appDataDir, embeddedProjectDirName)
+	// #nosec G703 -- extraction root is selected by the operator or managed gateway environment.
 	if err := os.MkdirAll(projectDir, managedDirPermission); err != nil {
 		return "", fmt.Errorf("create embedded project directory: %w", err)
 	}

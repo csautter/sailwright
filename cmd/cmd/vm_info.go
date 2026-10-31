@@ -28,6 +28,7 @@ func newVMCommand() *cobra.Command {
 						return err
 					}
 					if outputJSON {
+						// #nosec G117 -- this explicit guest-info command intentionally returns guest credentials.
 						return json.NewEncoder(cmd.OutOrStdout()).Encode(value)
 					}
 					_, err = fmt.Fprintf(cmd.OutOrStdout(), "VM: %s/%s/%s\nState: %s\nEngine: %s\nAddress: %s\nNetwork: %s\nProtocol: %s\nPort: %d\nUsername: %s\nPassword: %s\n", value.OS, value.Type, value.Arch, value.State, value.Engine, value.Address, value.NetworkMode, value.Protocol, value.Port, value.Username, value.Password)

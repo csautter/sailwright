@@ -22,6 +22,7 @@ func Acquire(appData, target string) (func(), error) {
 		}
 	}
 	take := func(name string, shared bool) error {
+		// #nosec G304 -- operator-owned app data; names are fixed or SHA-256 hashes of target keys.
 		f, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_RDWR, 0o600)
 		if err != nil {
 			return err
