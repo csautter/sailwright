@@ -1,0 +1,12 @@
+# Role source config for the --ask-become-pass end-to-end test.
+# Same layout as a team setup repo: roles and playbooks next to this file.
+playbook: become-probe.yml
+include_default_roles: false
+include_default_playbooks: false
+
+sources:
+  - name: become-probe
+    type: local
+    path: .
+    roles_path: roles
+    playbooks_path: playbooks

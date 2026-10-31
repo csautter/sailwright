@@ -1,0 +1,170 @@
+name: Test Ask Become Pass
+
+# End-to-end test of `sailwright provision local -K` on GitHub-hosted Linux and
+# macOS runners. The runner user has passwordless sudo, so the test creates a
+# user whose sudo needs a password and runs the CLI as that user in a
+# pseudo-terminal (test/askbecomepass). It checks that Ansible's become prompt
+# reaches the terminal although Sailwright prefixes Ansible's output line by
+# line, that it is asked exactly once, and that become tasks then run as root.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cmd/main.go"
+      - "cmd/cmd/provision.go"
+      - "cmd/cmd/root.go"
+      - "pkg/provision/**"
+      - "pkg/build/**"
+      - "runtimeassets.go"
+      - "inventory/**"
+      - "ansible.cfg"
+      - "go.mod"
+      - "go.sum"
+      - "test/askbecomepass/**"
+      - ".github/workflows/test-ask-become-pass.yml"
+  pull_request:
+    paths:
+      - "cmd/main.go"
+      - "cmd/cmd/provision.go"
+      - "cmd/cmd/root.go"
+      - "pkg/provision/**"
+      - "pkg/build/**"
+      - "runtimeassets.go"
+      - "inventory/**"
+      - "ansible.cfg"
+      - "go.mod"
+      - "go.sum"
+      - "test/askbecomepass/**"
+      - ".github/workflows/test-ask-become-pass.yml"
+  schedule:
+    # Weekly, to catch changes in ansible-core and the runner images.
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  ask-become-pass:
+    name: provision local -K (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-24.04
+            locale: C.UTF-8
+            apt_package: hello
+          - name: macos
+            os: macos-latest
+            locale: en_US.UTF-8
+            apt_package: ""
+    env:
+      TEST_USER: swaskpass
+      TEST_ROOT: /tmp/sw-askpass
+      TEST_WORKDIR: /tmp/sw-askpass-work
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build the CLI
+        run: |
+          make build-cli-local
+          mkdir -p "$TEST_ROOT/bin"
+          cp "dist/$(go env GOOS)-$(go env GOARCH)/sailwright" "$TEST_ROOT/bin/sailwright"
+          "$TEST_ROOT/bin/sailwright" --help >/dev/null
+
+      - name: Install ansible-core in a shared virtualenv
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            python="$(brew --prefix)/bin/python3"
+            [[ -x "$python" ]] || { brew install python && python="$(brew --prefix)/bin/python3"; }
+          else
+            python=/usr/bin/python3
+            if ! "$python" -m venv "$RUNNER_TEMP/venv-probe" >/dev/null 2>&1; then
+              sudo apt-get update && sudo apt-get install -y python3-venv
+            fi
+          fi
+          "$python" -m venv "$TEST_ROOT/venv"
+          "$TEST_ROOT/venv/bin/python" -m pip install --upgrade pip
+          "$TEST_ROOT/venv/bin/python" -m pip install ansible-core
+          "$TEST_ROOT/venv/bin/ansible-playbook" --version
+
+      - name: Copy tests and fixture where the test user can read them
+        run: |
+          cp -R test/askbecomepass "$TEST_ROOT/tests"
+          chmod -R a+rX "$TEST_ROOT"
+
+      - name: Generate the test user's password
+        run: |
+          password="$(openssl rand -hex 16)"
+          echo "::add-mask::$password"
+          echo "TEST_PASSWORD=$password" >> "$GITHUB_ENV"
+
+      - name: Create the test user (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo useradd --create-home --shell /bin/bash "$TEST_USER"
+          echo "$TEST_USER:$TEST_PASSWORD" | sudo chpasswd
+
+      - name: Create the test user (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          sudo sysadminctl -addUser "$TEST_USER" -fullName "Sailwright ask-become-pass test" \
+            -password "$TEST_PASSWORD" -shell /bin/bash
+          dscl . -read "/Users/$TEST_USER" UniqueID
+
+      - name: Require a password for the test user's sudo
+        run: |
+          rule="$RUNNER_TEMP/sudoers-$TEST_USER"
+          {
+            echo "$TEST_USER ALL=(ALL) ALL"
+            # No cached credentials and no first-use lecture: every sudo call
+            # needs the password, and the output stays predictable.
+            echo "Defaults:$TEST_USER timestamp_timeout=0, lecture=never"
+          } > "$rule"
+          sudo visudo -cf "$rule"
+          sudo mkdir -p /etc/sudoers.d
+          sudo install -m 0440 "$rule" "/etc/sudoers.d/$TEST_USER"
+          sudo visudo -c
+          # Guard: the test is only meaningful if sudo really asks.
+          if sudo -u "$TEST_USER" sudo -n true 2>/dev/null; then
+            echo "::error::sudo works without a password for $TEST_USER"
+            exit 1
+          fi
+          sudo install -d -o "$TEST_USER" -m 0700 "$TEST_WORKDIR"
+
+      - name: Run the --ask-become-pass end-to-end tests
+        run: |
+          interpreter=auto_silent
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            interpreter="$TEST_ROOT/venv/bin/python"
+          fi
+          # Run as the test user, from a directory outside any git checkout, so
+          # the binary uses its embedded project like a released binary does.
+          cd /
+          sudo -u "$TEST_USER" env \
+            HOME="$TEST_WORKDIR" \
+            PATH="$TEST_ROOT/venv/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+            LANG="${{ matrix.locale }}" \
+            LC_ALL="${{ matrix.locale }}" \
+            ANSIBLE_PYTHON_INTERPRETER="$interpreter" \
+            SAILWRIGHT_ASKPASS_BIN="$TEST_ROOT/bin/sailwright" \
+            SAILWRIGHT_ASKPASS_PASSWORD="$TEST_PASSWORD" \
+            SAILWRIGHT_ASKPASS_FIXTURE="$TEST_ROOT/tests/fixture" \
+            SAILWRIGHT_ASKPASS_WORKDIR="$TEST_WORKDIR" \
+            SAILWRIGHT_ASKPASS_APT_PACKAGE="${{ matrix.apt_package }}" \
+            "$TEST_ROOT/venv/bin/python" -m unittest discover -s "$TEST_ROOT/tests" -v
