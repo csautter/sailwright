@@ -545,3 +545,18 @@ The development VM still needs normal Linux host prerequisites: QEMU, libvirt,
 [Linux VM testing](./testing-workflows.md) for setup and session-connection
 options. A successful gateway smoke test establishes transport and CLI access;
 a guest lifecycle test establishes nested virtualization and networking.
+
+Existing desktop sessions retain their old groups after `usermod`. Start the
+gateway from a new login session that includes `libvirt`, or run its serve
+command through `sg libvirt -c '...'`. You can check the new group access with
+`sg libvirt -c 'virsh --connect qemu:///system list --all'` before restarting
+the gateway. Follow the CLI's image-directory ACL hints if QEMU cannot access
+its managed disks; the controller's access to the libvirt socket and the QEMU
+service user's access to disk files are separate permissions.
+
+If a large OCI download fails with an HTTP/2 `PROTOCOL_ERROR`, retrying over
+HTTP/1 can help diagnose the network path. Start the local gateway with
+`GODEBUG=http2client=0` in its environment and add `GODEBUG` to its existing
+`env_passthrough` list so the pinned CLI receives it too. Restart the gateway
+after changing those settings. This is an optional registry-transfer workaround;
+it does not change guest networking or virtualization acceleration.
