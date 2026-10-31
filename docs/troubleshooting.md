@@ -64,3 +64,26 @@ sudo virsh --connect qemu:///system net-autostart default
 For `DEV_ALCHEMY_LIBVIRT_URI=qemu:///session`, run the same checks against
 `qemu:///session`. Session VMs use libvirt user-mode networking by default, so
 guest-agent visibility is usually the most reliable IP source.
+
+## Linux: apt Reports Release Files That Are "Not Valid Yet"
+
+A libvirt VM that was paused, or whose host was suspended, resumes with the
+time it had when it stopped. Until NTP catches up, apt rejects repository
+metadata:
+
+```text
+E:Release file for http://archive.ubuntu.com/ubuntu/dists/noble-updates/InRelease is not valid yet (invalid for another 5h 9min 48s)
+```
+
+Before running Ansible against a Linux libvirt Ubuntu VM, Sailwright sets the
+guest clock to the host time through the QEMU guest agent. If provisioning logs
+`could not set the clock of libvirt VM ...`, the agent is not reachable; make sure
+`qemu-guest-agent` is installed and running in the guest, or set the clock by
+hand:
+
+```bash
+virsh --connect "${DEV_ALCHEMY_LIBVIRT_URI:-qemu:///system}" domtime <domain> --now
+```
+
+The domain is named `<os>-<type>-<arch>-dev-alchemy`, for example
+`ubuntu-server-amd64-dev-alchemy`.

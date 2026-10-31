@@ -110,6 +110,8 @@ func TestDiscoverLinuxVagrantIPv4_FallsBackToSSHCommandWhenSSHConfigLacksIP(t *t
 }
 
 func TestDiscoverLinuxLibvirtVMIPv4_UsesGuestAgentBeforeLease(t *testing.T) {
+	t.Setenv("DEV_ALCHEMY_LIBVIRT_URI", "")
+
 	vm := alchemy_build.VirtualMachineConfig{
 		OS:         "ubuntu",
 		UbuntuType: "server",
@@ -156,6 +158,8 @@ func TestDiscoverLinuxLibvirtVMIPv4_UsesGuestAgentBeforeLease(t *testing.T) {
 }
 
 func TestDiscoverLinuxLibvirtVMIPv4_FallsBackToLease(t *testing.T) {
+	t.Setenv("DEV_ALCHEMY_LIBVIRT_URI", "")
+
 	vm := alchemy_build.VirtualMachineConfig{
 		OS:         "ubuntu",
 		UbuntuType: "desktop",
@@ -200,6 +204,71 @@ func TestDiscoverLinuxLibvirtVMIPv4_FallsBackToLease(t *testing.T) {
 	} {
 		if !strings.Contains(gotCalls, want) {
 			t.Fatalf("expected calls to contain %q, got %q", want, gotCalls)
+		}
+	}
+}
+
+func TestSyncLinuxLibvirtGuestClock_SetsHostTimeThroughGuestAgent(t *testing.T) {
+	t.Setenv("DEV_ALCHEMY_LIBVIRT_URI", "")
+
+	vm := alchemy_build.VirtualMachineConfig{
+		OS:         "ubuntu",
+		UbuntuType: "desktop",
+		Arch:       "amd64",
+	}
+
+	var calls []string
+	syncLinuxLibvirtGuestClockWithRunner("project-dir", vm, func(workingDir string, timeout time.Duration, executable string, args []string) (string, error) {
+		if workingDir != "project-dir" {
+			t.Fatalf("expected working directory to be passed through, got %q", workingDir)
+		}
+		if timeout != linuxLibvirtGuestClockSyncTimeout {
+			t.Fatalf("expected clock sync timeout %s, got %s", linuxLibvirtGuestClockSyncTimeout, timeout)
+		}
+		if executable != "virsh" {
+			t.Fatalf("expected virsh executable, got %q", executable)
+		}
+		calls = append(calls, strings.Join(args, " "))
+		return "", nil
+	})
+
+	wantCall := "--connect qemu:///system domtime ubuntu-desktop-amd64-dev-alchemy --now"
+	if strings.Join(calls, " -> ") != wantCall {
+		t.Fatalf("expected clock sync call %q, got %v", wantCall, calls)
+	}
+}
+
+func TestSyncLinuxLibvirtGuestClock_WarnsWhenGuestAgentIsUnavailable(t *testing.T) {
+	var buffer bytes.Buffer
+	previousOutput := log.Writer()
+	previousFlags := log.Flags()
+	previousPrefix := log.Prefix()
+	log.SetOutput(&buffer)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+		log.SetPrefix(previousPrefix)
+	})
+
+	vm := alchemy_build.VirtualMachineConfig{
+		OS:         "ubuntu",
+		UbuntuType: "server",
+		Arch:       "arm64",
+	}
+
+	syncLinuxLibvirtGuestClockWithRunner("project-dir", vm, func(string, time.Duration, string, []string) (string, error) {
+		return "error: Guest agent is not responding\n", errors.New("exit status 1")
+	})
+
+	got := buffer.String()
+	for _, want := range []string{
+		`warning: could not set the clock of libvirt VM "ubuntu-server-arm64-dev-alchemy" to the host time`,
+		"Guest agent is not responding",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected log to contain %q, got %q", want, got)
 		}
 	}
 }
