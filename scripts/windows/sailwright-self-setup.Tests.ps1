@@ -50,6 +50,7 @@ BeforeAll {
         Mock Assert-GoToolchainLayout {}
         Mock Get-ChocolateyInstalledVersion { return $null }
         Mock Get-GitForWindowsVersion { return $null }
+        Mock Get-AzureCliMsiVersion { return $null }
         Mock Get-GitForWindowsRoot { return "C:\Program Files\Git" }
         Mock Ensure-ChocolateyPackage {
             $script:EnsuredPackages += [pscustomobject]@{
@@ -542,6 +543,86 @@ Describe "sailwright self setup Git helpers" {
 
         It "returns null for unrecognized output" {
             ConvertTo-GitForWindowsVersion -VersionOutput "not git" | Should -BeNullOrEmpty
+        }
+    }
+}
+
+Describe "sailwright self setup Azure CLI helpers" {
+    Context "Ensure-AzureCliInstalled" -Skip:(-not $IsWindows) {
+        BeforeEach {
+            Initialize-SelfSetupMainMocks
+        }
+
+        It "keeps a newer unmanaged Azure CLI instead of downgrading it" {
+            Mock Get-AzureCliMsiVersion { return [version]"2.91.0" }
+
+            Ensure-AzureCliInstalled -Version "2.86.0"
+
+            @($script:EnsuredPackages).Count | Should -Be 0
+        }
+
+        It "keeps an unmanaged Azure CLI that matches the pinned version" {
+            Mock Get-AzureCliMsiVersion { return [version]"2.86.0" }
+
+            Ensure-AzureCliInstalled -Version "2.86.0"
+
+            @($script:EnsuredPackages).Count | Should -Be 0
+        }
+
+        It "installs the pinned Azure CLI when none is installed" {
+            Ensure-AzureCliInstalled -Version "2.86.0"
+
+            $script:EnsuredPackages[0].PackageName | Should -Be "azure-cli"
+            $script:EnsuredPackages[0].Version | Should -Be "2.86.0"
+        }
+
+        It "upgrades an older Azure CLI to the pinned version" {
+            Mock Get-AzureCliMsiVersion { return [version]"2.70.0" }
+
+            Ensure-AzureCliInstalled -Version "2.86.0"
+
+            $script:EnsuredPackages[0].PackageName | Should -Be "azure-cli"
+            $script:EnsuredPackages[0].Version | Should -Be "2.86.0"
+        }
+
+        It "installs the exact pinned version when the pin is not numeric" {
+            Mock Get-AzureCliMsiVersion { throw "The installed version should not be checked for a non-numeric pin." }
+            Mock Write-Warning {}
+
+            Ensure-AzureCliInstalled -Version "2.87.0-beta"
+
+            $script:EnsuredPackages[0].Version | Should -Be "2.87.0-beta"
+        }
+    }
+
+    Context "Get-AzureCliMsiVersion" -Skip:(-not $IsWindows) {
+        It "returns the highest Azure CLI version from the machine-wide uninstall entries" {
+            Mock Get-ItemProperty {
+                if ($Path -like "HKLM:\SOFTWARE\WOW6432Node\*") {
+                    return @([pscustomobject]@{ DisplayName = "Microsoft Azure CLI"; DisplayVersion = "2.40.0" })
+                }
+
+                return @(
+                    [pscustomobject]@{ DisplayName = "Git"; DisplayVersion = "9.9.9" },
+                    [pscustomobject]@{ DisplayName = "Microsoft Azure CLI (64-bit)"; DisplayVersion = "2.91.0" }
+                )
+            }
+
+            Get-AzureCliMsiVersion | Should -Be ([version]"2.91.0")
+        }
+
+        It "ignores Azure CLI entries without a numeric version" {
+            Mock Get-ItemProperty {
+                return @([pscustomobject]@{ DisplayName = "Microsoft Azure CLI"; DisplayVersion = "unknown" })
+            }
+
+            Get-AzureCliMsiVersion | Should -BeNullOrEmpty
+        }
+
+        It "returns null when Azure CLI is not installed" {
+            Mock Get-ItemProperty { return @([pscustomobject]@{ DisplayName = "Git"; DisplayVersion = "2.56.0" }) }
+
+            Get-AzureCliMsiVersion | Should -BeNullOrEmpty
         }
     }
 }

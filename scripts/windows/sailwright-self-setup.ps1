@@ -29,6 +29,12 @@ $ansibleVersion = "14.5.0"
 $pywinrmVersion = "0.5.0"
 
 $gitForWindowsRegistryKey = "HKLM:\SOFTWARE\GitForWindows"
+# Only machine-wide (admin-writable) uninstall entries are trusted to describe
+# an existing Azure CLI MSI installation.
+$azureCliUninstallRegistryKeys = @(
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+    "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+)
 $cygwinInstallRoot = "C:\tools\cygwin"
 $cygwinPackages = @(
     "python312",
@@ -1049,6 +1055,56 @@ function Ensure-CygwinPipPackage {
     }
 }
 
+function Get-AzureCliMsiVersion {
+    # The Azure CLI MSI can be installed outside Chocolatey (e.g. preinstalled on
+    # GitHub-hosted runners), so Chocolatey reports it as missing. Read the
+    # version from the MSI uninstall entries instead and return the highest one.
+    $highestVersion = $null
+    foreach ($registryKey in $azureCliUninstallRegistryKeys) {
+        foreach ($entry in @(Get-ItemProperty -Path $registryKey -ErrorAction SilentlyContinue)) {
+            if ("$($entry.DisplayName)" -notlike "Microsoft Azure CLI*") {
+                continue
+            }
+
+            $entryVersion = $null
+            if (-not [version]::TryParse("$($entry.DisplayVersion)", [ref]$entryVersion)) {
+                continue
+            }
+
+            if (-not $highestVersion -or $entryVersion -gt $highestVersion) {
+                $highestVersion = $entryVersion
+            }
+        }
+    }
+
+    return $highestVersion
+}
+
+function Ensure-AzureCliInstalled {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version
+    )
+
+    $pinnedVersion = $null
+    if (-not [version]::TryParse($Version, [ref]$pinnedVersion)) {
+        Write-Warning "Pinned azure-cli version $Version is not numeric; skipping the installed version check."
+        Ensure-ChocolateyPackage -PackageName "azure-cli" -Version $Version
+        return
+    }
+
+    # The Azure CLI MSI refuses to downgrade an existing newer installation and
+    # fails with exit code 1603, and a Chocolatey downgrade runs that same MSI.
+    # Treat the pin as a minimum, whether or not Chocolatey manages the install.
+    $existingVersion = Get-AzureCliMsiVersion
+    if ($existingVersion -and $existingVersion -ge $pinnedVersion) {
+        Write-Host "azure-cli $existingVersion is already installed and satisfies pinned version $Version."
+        return
+    }
+
+    Ensure-ChocolateyPackage -PackageName "azure-cli" -Version $Version
+}
+
 function Show-InstalledToolVersions {
     param(
         [switch]$WithGo,
@@ -1091,7 +1147,7 @@ function Invoke-DevAlchemySelfSetup {
     Ensure-GitInstalled -Version $gitVersion
     Ensure-ChocolateyPackage -PackageName "make" -Version $makeVersion
     Ensure-ChocolateyPackage -PackageName "packer" -Version $packerVersion
-    Ensure-ChocolateyPackage -PackageName "azure-cli" -Version $azureCliVersion
+    Ensure-AzureCliInstalled -Version $azureCliVersion
     $nativePythonPackageName = Get-NativePythonChocolateyPackageName -Version $nativePythonVersion
     Ensure-ChocolateyPackage -PackageName $nativePythonPackageName -Version $nativePythonVersion
     Assert-NativePythonAvailable
