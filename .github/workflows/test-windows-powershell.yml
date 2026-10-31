@@ -12,6 +12,7 @@ on:
       - "scripts/install.ps1"
       - "test/install/*.ps1"
       - "cmd/cmd/install.go"
+      - "pkg/provision/**"
       - ".github/workflows/test-windows-powershell.yml"
 
 jobs:
@@ -104,7 +105,7 @@ jobs:
     # Azure CLI outside Chocolatey, often newer than the pinned versions. Run the
     # real host setup there so installer conflicts (e.g. MSI downgrade refusals)
     # surface before a release reaches users of these runners.
-    name: sailwright install (${{ matrix.os }})
+    name: sailwright install and provision --check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -153,3 +154,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "az is not usable after sailwright install." }
           python --version
           if ($LASTEXITCODE -ne 0) { throw "python is not usable after sailwright install." }
+
+      # Keep pwsh: Windows PowerShell children of a pwsh process inherit its
+      # PSModulePath, which broke the local WinRM bootstrap (missing Cert: drive).
+      - name: Run sailwright provision local --check
+        shell: pwsh
+        run: go run ./cmd/main.go provision local --check --yes
