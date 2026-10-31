@@ -11,8 +11,13 @@ on:
       - "scripts/windows/**/*.ps1"
       - "scripts/install.ps1"
       - "test/install/*.ps1"
+      - "cmd/main.go"
       - "cmd/cmd/install.go"
+      - "cmd/cmd/provision*.go"
+      - "internal/winpsenv/**"
       - "pkg/provision/**"
+      - "go.mod"
+      - "go.sum"
       - ".github/workflows/test-windows-powershell.yml"
 
 jobs:

@@ -9,6 +9,7 @@ on:
       - "cmd/cmd/**"
       - "cmd/sailwright-gateway/**"
       - "internal/gateway/**"
+      - "internal/winpsenv/**"
       - "test/e2e/**"
       - ".github/workflows/test-cmd-unit-tests.yml"
       # Static checks in pkg/build and test/workflowcheck read these files.
@@ -40,6 +41,7 @@ on:
       - "cmd/cmd/**"
       - "cmd/sailwright-gateway/**"
       - "internal/gateway/**"
+      - "internal/winpsenv/**"
       - "test/e2e/**"
       - ".github/workflows/test-cmd-unit-tests.yml"
       # Static checks in pkg/build and test/workflowcheck read these files.
@@ -100,6 +102,9 @@ jobs:
 
       - name: Run tools tests
         run: go test ./tools/...
+
+      - name: Run Windows PowerShell environment tests
+        run: go test ./internal/winpsenv/...
 
       - name: Run gateway and E2E runner tests
         run: go test ${{ runner.os == 'Linux' && '-race' || '' }} ./internal/gateway/... ./cmd/sailwright-gateway/... ./test/e2e/...
