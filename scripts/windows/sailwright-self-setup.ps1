@@ -28,6 +28,7 @@ $ansibleVersion = "14.5.0"
 # renovate: datasource=pypi depName=pywinrm versioning=pep440
 $pywinrmVersion = "0.5.0"
 
+$gitForWindowsRegistryKey = "HKLM:\SOFTWARE\GitForWindows"
 $cygwinInstallRoot = "C:\tools\cygwin"
 $cygwinPackages = @(
     "python312",
@@ -245,6 +246,106 @@ function Ensure-ChocolateyPackage {
     }
 
     Invoke-ChocolateyPackageCommand -Command $command -PackageName $PackageName -Version $Version -Arguments $packageArguments
+}
+
+function ConvertTo-GitForWindowsVersion {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$VersionOutput
+    )
+
+    # Chocolatey publishes "git version 2.54.0.windows.2" as 2.54.0.2 and the
+    # first build of a release (".windows.1") as plain 2.54.0. Anything else
+    # (release candidates, forks such as "2.54.0.vfs.0.0") is not a Git for
+    # Windows release, so it never counts as satisfying the pinned version.
+    $versionMatch = [regex]::Match($VersionOutput.Trim(), "^git version (?<version>\d+\.\d+\.\d+)(?:\.windows\.(?<build>\d+))?$")
+    if (-not $versionMatch.Success) {
+        return $null
+    }
+
+    $version = $versionMatch.Groups["version"].Value
+    $build = $versionMatch.Groups["build"]
+    if ($build.Success -and [int]$build.Value -gt 1) {
+        $version = "$version.$($build.Value)"
+    }
+
+    return [version]$version
+}
+
+function Get-GitForWindowsRoot {
+    # Only the machine-wide HKLM key is trusted: it is admin-writable, whereas a
+    # non-admin user could point HKCU at a git.exe the elevated setup would run.
+    if (Test-Path $gitForWindowsRegistryKey) {
+        $installPath = (Get-ItemProperty -Path $gitForWindowsRegistryKey -Name InstallPath -ErrorAction SilentlyContinue).InstallPath
+        if ($installPath) {
+            return $installPath
+        }
+    }
+
+    $programFiles = if ($env:ProgramFiles) { $env:ProgramFiles } else { "C:\Program Files" }
+    return Join-Path $programFiles "Git"
+}
+
+function Invoke-GitVersionCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$GitExePath
+    )
+
+    $output = & $GitExePath --version 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return $null
+    }
+
+    return "$output"
+}
+
+function Get-GitForWindowsVersion {
+    # Only an existing Git for Windows installation blocks a downgrade; other Git
+    # builds on PATH (Scoop, MSYS2, Cygwin, ...) do not provide it, so ignore them.
+    $gitExePath = Join-Path (Get-GitForWindowsRoot) "cmd\git.exe"
+    if (-not (Test-Path -LiteralPath $gitExePath -PathType Leaf)) {
+        return $null
+    }
+
+    $output = Invoke-GitVersionCommand -GitExePath $gitExePath
+    if (-not $output) {
+        return $null
+    }
+
+    $version = ConvertTo-GitForWindowsVersion -VersionOutput $output
+    if (-not $version) {
+        Write-Warning "Could not parse a Git for Windows release version from '$output' ($gitExePath)."
+    }
+
+    return $version
+}
+
+function Ensure-GitInstalled {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version
+    )
+
+    $pinnedVersion = $null
+    if (-not [version]::TryParse($Version, [ref]$pinnedVersion)) {
+        Write-Warning "Pinned git version $Version is not numeric; skipping the installed version check."
+        Ensure-ChocolateyPackage -PackageName "git" -Version $Version
+        return
+    }
+
+    # The Git for Windows installer refuses to downgrade an existing newer
+    # installation (e.g. the one preinstalled on GitHub-hosted runners), and a
+    # Chocolatey downgrade runs that same installer. Treat the pin as a minimum,
+    # whether or not Chocolatey manages the existing installation.
+    $existingVersion = Get-GitForWindowsVersion
+    if ($existingVersion -and $existingVersion -ge $pinnedVersion) {
+        Write-Host "git $existingVersion is already installed and satisfies pinned version $Version."
+        return
+    }
+
+    Ensure-ChocolateyPackage -PackageName "git" -Version $Version
 }
 
 function Ensure-GoInstallRootClean {
@@ -987,7 +1088,7 @@ function Invoke-DevAlchemySelfSetup {
     } else {
         Write-Output "Skipping Go installation because -WithGo was not specified."
     }
-    Ensure-ChocolateyPackage -PackageName "git" -Version $gitVersion
+    Ensure-GitInstalled -Version $gitVersion
     Ensure-ChocolateyPackage -PackageName "make" -Version $makeVersion
     Ensure-ChocolateyPackage -PackageName "packer" -Version $packerVersion
     Ensure-ChocolateyPackage -PackageName "azure-cli" -Version $azureCliVersion
@@ -1005,7 +1106,7 @@ function Invoke-DevAlchemySelfSetup {
         Write-Output "Skipping VirtualBox installation because -VirtualBox was not specified."
     }
 
-    Ensure-PathContains -PathEntry "C:\Program Files\Git\bin"
+    Ensure-PathContains -PathEntry (Join-Path (Get-GitForWindowsRoot) "bin")
 
     foreach ($package in $cygwinPackages) {
         Ensure-CygwinPackage -PackageName $package -CygwinRoot $cygwinRoot
