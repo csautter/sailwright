@@ -388,12 +388,7 @@ func runHypervWindows11Provision(vm alchemy_build.VirtualMachineConfig, options 
 	}
 
 	projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
-	vagrantSettings, err := alchemy_deploy.ResolveHypervVagrantExecutionSettings(vm)
-	if err != nil {
-		return fmt.Errorf("failed to resolve Hyper-V Vagrant settings: %w", err)
-	}
-
-	ip, err := discoverWindowsVagrantIPv4(vagrantSettings.VagrantDir, vagrantSettings.VagrantEnv)
+	ip, err := DiscoverHyperVAddress(vm)
 	if err != nil {
 		return fmt.Errorf("failed to determine vagrant VM IPv4 address: %w", err)
 	}
@@ -431,7 +426,7 @@ func runUtmWindows11Provision(vm alchemy_build.VirtualMachineConfig, options Pro
 
 	projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
 
-	ip, err := discoverUtmVMIPv4(projectDir, vm)
+	ip, err := DiscoverUTMAddress(projectDir, vm)
 	if err != nil {
 		return fmt.Errorf("failed to determine UTM VM IPv4 address: %w", err)
 	}
@@ -469,7 +464,7 @@ func runLinuxQemuWindows11Provision(vm alchemy_build.VirtualMachineConfig, optio
 
 	projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
 
-	ip, err := discoverLinuxLibvirtVMIPv4(projectDir, vm)
+	ip, err := DiscoverLibvirtAddress(projectDir, vm)
 	if err != nil {
 		return fmt.Errorf("failed to determine libvirt VM IPv4 address: %w", err)
 	}
@@ -506,12 +501,7 @@ func runHypervUbuntuProvision(vm alchemy_build.VirtualMachineConfig, options Pro
 	}
 
 	projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
-	vagrantSettings, err := alchemy_deploy.ResolveHypervVagrantExecutionSettings(vm)
-	if err != nil {
-		return fmt.Errorf("failed to resolve Hyper-V Vagrant settings: %w", err)
-	}
-
-	ip, err := discoverLinuxVagrantIPv4(vagrantSettings.VagrantDir, vagrantSettings.VagrantEnv)
+	ip, err := DiscoverHyperVAddress(vm)
 	if err != nil {
 		return fmt.Errorf("failed to determine vagrant VM IPv4 address: %w", err)
 	}
@@ -557,7 +547,7 @@ func runUtmUbuntuProvision(vm alchemy_build.VirtualMachineConfig, options Provis
 
 	projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
 
-	ip, err := discoverUtmVMIPv4(projectDir, vm)
+	ip, err := DiscoverUTMAddress(projectDir, vm)
 	if err != nil {
 		return fmt.Errorf("failed to determine UTM VM IPv4 address: %w", err)
 	}
@@ -603,7 +593,7 @@ func runLinuxQemuUbuntuProvision(vm alchemy_build.VirtualMachineConfig, options 
 
 	projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
 
-	ip, err := discoverLinuxLibvirtVMIPv4(projectDir, vm)
+	ip, err := DiscoverLibvirtAddress(projectDir, vm)
 	if err != nil {
 		return fmt.Errorf("failed to determine libvirt VM IPv4 address: %w", err)
 	}
@@ -652,7 +642,7 @@ func runTartMacOSProvision(vm alchemy_build.VirtualMachineConfig, options Provis
 	projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
 	vmName := tartMacOSVMName(vm)
 
-	ip, err := ensureTartVMReadyForProvision(projectDir, vmName, tartProvisionAvailabilityOptions{})
+	ip, err := DiscoverTartAddress(projectDir, vm)
 	if err != nil {
 		return err
 	}

@@ -30,7 +30,7 @@ type vmListingTargetJSON struct {
 	Arch   string            `json:"arch"`
 	Engine string            `json:"engine"`
 	Fields map[string]string `json:"fields"`
-	// Address is reserved for the VM network address and is always null for now.
+	// Address stays null: address discovery is performed by `vm info`, not listings.
 	Address *string `json:"address"`
 }
 
