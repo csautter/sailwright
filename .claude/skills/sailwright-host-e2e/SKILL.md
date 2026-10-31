@@ -79,3 +79,42 @@ steps, explicit expectations, cleanup in `always`, and a `preflight` check
 for any existing state that cleanup could otherwise destroy. Verify it with the fake
 CLI self-test (`go test ./test/e2e/...`) and then once against the gateway.
 A human reviews and merges it.
+
+## Test Sailwright inside a disposable guest
+
+Use this when testing installers, `sailwright install`, or `provision local`
+without modifying the real host. Nested virtualization is outside this workflow.
+
+1. Use `gateway_info` and `list_targets` to choose an Ubuntu target. Confirm
+   it has no existing VM before taking ownership of cleanup. Reuse a built
+   image, or build it through `vm_build` first.
+2. Create and start the guest through `vm_create` and `vm_start`; wait for
+   each job to finish. Call `vm_info` and save its SSH config in the container.
+3. Use `scp -F <config>` with the returned Host alias to copy the appropriate
+   guest-OS/architecture Sailwright build to `/tmp/` in the guest. A binary
+   being tested inside the guest is distinct from the host's pinned binary.
+4. Use `ssh -F <config> <alias>` to run `uname -a`, inspect the guest and run
+   the installer, `sailwright install` or `sailwright provision local` there.
+   Always make clear that these commands run in the guest. Read exit codes
+   and relevant output, then copy test reports back with scp.
+5. Destroy the guest through `vm_destroy` in cleanup, including after failures.
+   Report the host binary hash, target, guest build and observed results.
+
+The opt-in `TestVMAccess` scenario in `test/e2e` verifies SSH and scp and
+performs cleanup. See `docs/agent-gateway.md` for its invocation. Never include
+passwords from `vm_info` in reports, shell arguments or committed files.
+
+## Develop roles with an Ansible controller in the container
+
+1. Create/start a disposable guest as above and call `vm_info`.
+2. Write its `ansible_inventory` to an owner-only file outside committed
+   content. For SSH it already contains a ProxyCommand. Install `sshpass`
+   in the container when using password authentication.
+3. For WinRM, start the returned `listen_command` in a container terminal and
+   keep it running; the inventory points to its loopback port. Install
+   `pywinrm` in the controller container. Never bind the listener to a wildcard.
+4. Run `ansible-playbook -i <inventory> <workspace-playbook>` in the container,
+   first with `--check`, then normally, then again to check idempotence.
+   The controller and workspace roles stay in the container; the managed guest
+   is the target. This does not execute those roles on the host.
+5. Destroy the guest and remove temporary credential files when finished.

@@ -222,6 +222,8 @@ clean_prompt_min_gb: 20            # offer to delete the cache on Ctrl+C from th
 output_limit_bytes: 8388608
 snapshot_max_bytes: 52428800
 snapshot_max_files: 5000
+max_tunnels: 16                   # simultaneous SSH/WinRM streams
+tunnel_idle_timeout: 5m
 view_listen: 127.0.0.1:0           # build live view, loopback only; port 0 picks one; "off" disables
 screen_stuck_after: 15m            # hint when console and output stay unchanged; "off" disables
 ```
@@ -233,6 +235,7 @@ screen_stuck_after: 15m            # hint when console and output stay unchanged
 | `gateway_info` | info | host, binary hash, targets, playbooks, approval state, limits (timeout, output, snapshot, disk) |
 | `list_targets` | info | `sailwright <command> list --json` |
 | `command_help` | info | `sailwright [command] [list] --help` |
+| `vm_info` | info | `sailwright vm info`; guest credentials, SSH config and Ansible inventory |
 | `vm_build`, `vm_create`, `vm_start`, `vm_stop`, `vm_destroy` | safe | the matching command for one listed target |
 | `vm_provision` | safe | `provision <vm>` with an embedded playbook, `--check`, `--verbosity` |
 | `artifact_pull` | safe | `pull <ref> --yes --no-docker-credentials` for allowlisted references |
@@ -389,11 +392,101 @@ The agent folder (`agent_dir`, default `~/.sailwright-gateway`) is separate
 from the state directory and only holds `gateway.sock` and a copy of `token`.
 It must not overlap the state or data directory or an agent workspace.
 
+## VM access
+
+`sailwright vm info ubuntu --type server --arch amd64 --json` reports a
+running VM's engine, address, network mode (or `unknown`), protocol, port and
+guest credentials in schema version 1. Text output is available without
+`--json`. Address discovery is deliberately separate from `list --json`, where
+`address` remains null. Hyper-V asks `Get-VMNetworkAdapter` first and falls back
+to Vagrant. The command never starts a stopped VM.
+
+Call MCP `vm_info` with the same target to receive guest credentials, an
+`ssh_config` block and an Ansible inventory. These contain sensitive guest
+credentials; keep inventory files private. The gateway does not write them to
+audit or job logs. Its config remains separate from your CLI config.
+
+Save `ssh_config` to a container file, then use its `Host` alias:
+
+```bash
+ssh -F ./ssh_config sailwright-ubuntu-server-amd64
+scp -F ./ssh_config ./artifact sailwright-ubuntu-server-amd64:/tmp/artifact
+```
+
+Supply the returned guest password at SSH's prompt or through your container's
+credential mechanism. SSH host keys are checked normally. For disposable VMs,
+use a dedicated `UserKnownHostsFile` and remove the old entry when recreating a
+guest; avoid changing your normal host keys.
+
+The generated ProxyCommand is:
+
+```bash
+sailwright-gateway vm tunnel ubuntu/server/amd64 22
+```
+
+It writes only guest bytes to stdout, and discovers the gateway and token in
+the same way as `connect`. Targets always have three slash-separated fields;
+Windows and macOS have an empty type, for example `windows11//amd64`.
+
+For SSH Ansible, save `ansible_inventory` as an owner-only JSON file (JSON is
+also valid YAML) and run your playbook from the container:
+
+```bash
+chmod 600 inventory.json
+ansible-playbook -i inventory.json site.yml
+```
+
+Install the usual SSH password-auth dependency (`sshpass`) in the controller
+container when using password authentication. Your roles now execute on the
+container's Ansible controller, with the guest as the target.
+
+WinRM needs a local listener because its Ansible connection has no
+ProxyCommand. Run the `listen_command` returned by `vm_info` in a separate
+container terminal, for example:
+
+```bash
+sailwright-gateway vm tunnel windows11//amd64 5985 --listen 127.0.0.1:15985
+```
+
+Keep it running while Ansible uses the returned inventory. The inventory maps
+WinRM to that local port. Port 5986 uses 15986. Install `pywinrm` in the
+controller container. The listener accepts explicit loopback addresses only.
+
+**Tunnel policy:** `/tunnel` uses authenticated HTTP/1 upgrade behind the same
+source, Host, Origin and bearer checks as MCP. Only ports 22, 5985 and 5986 are
+allowed. The destination address comes exclusively from the pinned CLI,
+refreshed for every new tunnel. Loopback, link-local, multicast, unspecified
+and host-owned addresses are rejected, including mapped IPv4 addresses.
+Bridged/LAN guests are allowed; bridged or unknown network modes produce a
+`LAN_OR_UNKNOWN_NETWORK` audit warning. There are at most `max_tunnels`
+connections; inactive streams close after `tunnel_idle_timeout`. Shutdown closes
+active streams. Audit events record denied requests, opening, closing, target,
+port, duration and byte counts; they never contain guest passwords.
+
+VM information has a two-second cache for repeated MCP calls. Tunnel creation
+bypasses it, so a recently stopped guest cannot be reached using cached info.
+The tunnel transports SSH or WinRM; it never runs a host shell.
+
+### Testing disposable guest access
+
+Build the Ubuntu image on the host first, then use a target that does not
+already have a VM. With the gateway running and `ssh`, `scp`, `sshpass` and
+`sailwright-gateway` installed in the container:
+
+```bash
+SAILWRIGHT_VM_ACCESS_E2E=1 SAILWRIGHT_E2E_TARGET=ubuntu/server/amd64 \
+  go test -tags e2e ./test/e2e -run '^TestVMAccess$' -count=1 -timeout 1h -v
+```
+
+This preflights existing state, creates and starts the VM, obtains `vm_info`,
+runs `uname -a` through SSH, copies a file with scp, verifies it in the guest,
+and destroys the VM even after failure. It needs a real host gateway and is
+skipped unless explicitly enabled. The ordinary gateway suite uses a fake CLI
+and TCP guest to test policy and stream handling without a hypervisor.
+
 ## Limitations
 
-- No access into VMs yet (SSH, RDP, VNC). Agents can drive the VM lifecycle
-  and provisioning and see the console of a running build, but cannot open a
-  shell or type into a VM through the gateway.
+- GUI access (RDP/VNC) is not exposed by the tunnel.
 - One host per gateway; remote hosts over the network are not supported yet.
 - On Windows, cancellation terminates the process tree immediately; there is
   no graceful stop signal.
