@@ -22,6 +22,9 @@ Optional settings:
     SAILWRIGHT_ASKPASS_APT_PACKAGE  package the play installs with apt (Linux)
     SAILWRIGHT_ASKPASS_PROMPT_TIMEOUT  seconds until the prompt must appear (180)
     SAILWRIGHT_ASKPASS_RUN_TIMEOUT     seconds for a whole run (1200)
+    SAILWRIGHT_ASKPASS_OLD_ANSIBLE=1   the installed ansible-core is older than
+                                    2.19: expect Sailwright's warning and skip
+                                    the wrong-password test, which would hang
 """
 
 import errno
@@ -49,7 +52,9 @@ FIXTURE = Path(
 APT_PACKAGE = os.environ.get("SAILWRIGHT_ASKPASS_APT_PACKAGE", "")
 PROMPT_TIMEOUT = float(os.environ.get("SAILWRIGHT_ASKPASS_PROMPT_TIMEOUT", "180"))
 RUN_TIMEOUT = float(os.environ.get("SAILWRIGHT_ASKPASS_RUN_TIMEOUT", "1200"))
+OLD_ANSIBLE = os.environ.get("SAILWRIGHT_ASKPASS_OLD_ANSIBLE") == "1"
 MARKER = Path("/etc/sailwright-become-probe")
+OLD_ANSIBLE_WARNING = "does not detect a wrong sudo password"
 
 # Ansible's prompt, at the start of a line (so not behind a log prefix) and
 # waiting for input (nothing after it). Older Ansible versions said SUDO.
@@ -218,6 +223,12 @@ class AskBecomePassTest(unittest.TestCase):
             )
         self.fail(f"{run.timed_out_reason}.{hint}")
 
+    def assert_old_ansible_warning(self, run):
+        if OLD_ANSIBLE:
+            self.assertIn(OLD_ANSIBLE_WARNING, run.plain, "expected the warning for ansible-core < 2.19")
+        else:
+            self.assertNotIn(OLD_ANSIBLE_WARNING, run.plain, "unexpected warning for ansible-core >= 2.19")
+
     def provision(self, *extra, check=False, answer=PASSWORD, max_prompts=1):
         token = uuid.uuid4().hex
         args = ["provision", "local", "-K"]
@@ -241,6 +252,7 @@ class AskBecomePassTest(unittest.TestCase):
         self.assertEqual(run.prompts, 1)
         self.assertEqual(run.exit_code, 0)
         self.assertRegex(run.plain, RECAP_OK)
+        self.assert_old_ansible_warning(run)
 
     def test_prompts_once_and_runs_become_tasks(self):
         token, run = self.provision()
@@ -248,6 +260,7 @@ class AskBecomePassTest(unittest.TestCase):
         self.assertEqual(run.prompts, 1)
         self.assertEqual(run.exit_code, 0)
         self.assertRegex(run.plain, RECAP_OK)
+        self.assert_old_ansible_warning(run)
 
         info = MARKER.stat()
         self.assertEqual(info.st_uid, 0, f"{MARKER} is not owned by root")
@@ -255,6 +268,7 @@ class AskBecomePassTest(unittest.TestCase):
         if APT_PACKAGE:
             self.assertIsNotNone(shutil.which(APT_PACKAGE), f"{APT_PACKAGE} was not installed")
 
+    @unittest.skipIf(OLD_ANSIBLE, "ansible-core < 2.19 hangs on a wrong become password")
     def test_wrong_password_fails_without_asking_again(self):
         _, run = self.provision(check=True, answer=PASSWORD + "-wrong")
         self.assert_no_timeout(run)

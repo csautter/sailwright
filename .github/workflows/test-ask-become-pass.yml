@@ -62,10 +62,22 @@ jobs:
             os: ubuntu-24.04
             locale: C.UTF-8
             apt_package: hello
+            ansible_core: ansible-core
+            old_ansible: "0"
+          # The version Ubuntu 24.04's `ansible` apt package ships. It hangs on a
+          # wrong become password, so Sailwright must warn about it.
+          - name: linux, ansible-core 2.16
+            os: ubuntu-24.04
+            locale: C.UTF-8
+            apt_package: hello
+            ansible_core: ansible-core~=2.16.0
+            old_ansible: "1"
           - name: macos
             os: macos-latest
             locale: en_US.UTF-8
             apt_package: ""
+            ansible_core: ansible-core
+            old_ansible: "0"
     env:
       TEST_USER: swaskpass
       TEST_ROOT: /tmp/sw-askpass
@@ -102,7 +114,7 @@ jobs:
           fi
           "$python" -m venv "$TEST_ROOT/venv"
           "$TEST_ROOT/venv/bin/python" -m pip install --upgrade pip
-          "$TEST_ROOT/venv/bin/python" -m pip install ansible-core
+          "$TEST_ROOT/venv/bin/python" -m pip install "${{ matrix.ansible_core }}"
           "$TEST_ROOT/venv/bin/ansible-playbook" --version
 
       - name: Copy tests and fixture where the test user can read them
@@ -171,4 +183,5 @@ jobs:
             SAILWRIGHT_ASKPASS_FIXTURE="$TEST_ROOT/tests/fixture" \
             SAILWRIGHT_ASKPASS_WORKDIR="$TEST_WORKDIR" \
             SAILWRIGHT_ASKPASS_APT_PACKAGE="${{ matrix.apt_package }}" \
+            SAILWRIGHT_ASKPASS_OLD_ANSIBLE="${{ matrix.old_ansible }}" \
             "$TEST_ROOT/venv/bin/python" -m unittest discover -s "$TEST_ROOT/tests" -v
