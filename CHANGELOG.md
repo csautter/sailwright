@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.2](https://github.com/csautter/sailwright/compare/v0.24.1...v0.24.2) (2026-10-31)
+
+
+### Fixed
+
+* **install:** keep newer preinstalled Azure CLI and Python on Windows and test install on GitHub-hosted runners ([2f30b3c](https://github.com/csautter/sailwright/commit/2f30b3cd42fb3a06d02d690ec01484e6d57aaa33))
+* **install:** keep newer preinstalled Azure CLI on Windows instead of downgrading ([0c93056](https://github.com/csautter/sailwright/commit/0c930566c347131c8d341b7a2643ac4ad54caebd))
+* **install:** keep newer preinstalled native Python on Windows instead of downgrading ([e2855f4](https://github.com/csautter/sailwright/commit/e2855f46b14fef3b40c7c24c3bfaa2bb7e468168))
+* libvirt guest clock sync ([b3665ae](https://github.com/csautter/sailwright/commit/b3665aee02a77c68002227a7e14c41a633925e1f))
+
+
+### CI
+
+* run sailwright install on a GitHub-hosted Windows runner ([c81cfbd](https://github.com/csautter/sailwright/commit/c81cfbd75ba53fb2d4313c649996a7a8e6b4d533))
+
 ## [0.24.1](https://github.com/csautter/sailwright/compare/v0.24.0...v0.24.1) (2026-10-31)
 
 
