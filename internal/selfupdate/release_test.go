@@ -158,8 +158,17 @@ func TestVersionComparison(t *testing.T) {
 			t.Errorf("rejected %s", v)
 		}
 	}
-	if Compare("v1.10.0", "1.9.9") <= 0 || Compare("v1.0.0", "2.0.0") >= 0 || Compare("v1.0.0", "1.0.0") != 0 {
-		t.Fatal("comparison failed")
+	for _, tc := range []struct {
+		a, b string
+		want int
+	}{
+		{"v1.10.0", "1.9.9", 1}, {"v1.0.0", "2.0.0", -1}, {"v1.0.0", "1.0.0", 0},
+		{"v10.0.0", "v9.99.99", 1}, {"v999999999999999999999.0.0", "v999999999999999999998.0.0", 1},
+		{"v1.2.3", "dev", 1}, {"dev", "v0.0.0", -1}, {"dev", "pr-42", 0}, {"v1.2", "v1.2.3", -1}, {"", "", 0},
+	} {
+		if got := Compare(tc.a, tc.b); got != tc.want {
+			t.Errorf("Compare(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
 	}
 }
 func TestValidateBaseURL(t *testing.T) {

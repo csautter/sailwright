@@ -31,8 +31,17 @@ var releaseVersion = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0
 // ValidVersion accepts stable release versions only; development builds cannot update.
 func ValidVersion(v string) bool { return releaseVersion.MatchString(v) }
 
-// Compare compares stable release versions without integer overflow.
+// Compare compares stable release versions without integer overflow. Invalid
+// versions (such as "dev") sort below every valid version and equal each other.
 func Compare(a, b string) int {
+	switch va, vb := ValidVersion(a), ValidVersion(b); {
+	case !va && !vb:
+		return 0
+	case !va:
+		return -1
+	case !vb:
+		return 1
+	}
 	aa, bb := strings.Split(strings.TrimPrefix(a, "v"), "."), strings.Split(strings.TrimPrefix(b, "v"), ".")
 	for i := range aa {
 		if len(aa[i]) < len(bb[i]) {
