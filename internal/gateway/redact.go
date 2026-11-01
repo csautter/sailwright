@@ -15,6 +15,10 @@ const (
 	redactedMarker     = "***"
 	minRedactedSecret  = 4
 	maxPendingLineSize = 64 << 10
+
+	// defaultGuestPassword is the documented password of disposable sailwright guests
+	// (pkg/provision). It is redacted before any guest has been resolved.
+	defaultGuestPassword = "P@ssw0rd!" // #nosec G101 -- documented default for disposable guests, redacted, never used to authenticate.
 )
 
 // ansiPattern matches terminal escape sequences (CSI, OSC and single-character escapes).
@@ -24,29 +28,37 @@ var ansiPattern = regexp.MustCompile(`\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x
 type Redactor struct {
 	mu      sync.RWMutex
 	secrets []string
-	minLen  int // shortest value kept, carried so With does not drop short required secrets
+	minLen  int // shortest optional value With accepts; accepted secrets are always kept
 }
 
 // NewRedactor builds a redactor; very short values are ignored to avoid mangling output.
 func NewRedactor(secrets ...string) *Redactor {
-	return newRedactor(minRedactedSecret, secrets)
+	return newRedactor(minRedactedSecret, nil, minRedactedSecret, secrets)
 }
 
-func newRedactor(minLen int, secrets []string) *Redactor {
+// newRedactor keeps every existing (already accepted) secret and adds the new values
+// that are at least addMinLen long. minLen is the threshold later With calls apply.
+func newRedactor(minLen int, existing []string, addMinLen int, added []string) *Redactor {
 	var kept []string
 	seen := map[string]bool{}
-	for _, secret := range secrets {
-		if secret == "" || len(secret) < minLen || seen[secret] {
-			continue
+	keep := func(secret string) {
+		if secret == "" || seen[secret] {
+			return
 		}
 		kept = append(kept, secret)
 		seen[secret] = true
+	}
+	for _, secret := range existing {
+		keep(secret)
+	}
+	for _, secret := range added {
+		if len(secret) < addMinLen {
+			continue
+		}
+		keep(secret)
 		// Also catch the JSON-escaped form used in structured logs and tool results.
 		if escaped, err := json.Marshal(secret); err == nil {
-			if inner := string(escaped[1 : len(escaped)-1]); inner != secret && !seen[inner] {
-				kept = append(kept, inner)
-				seen[inner] = true
-			}
+			keep(string(escaped[1 : len(escaped)-1]))
 		}
 	}
 	// Longest first so a secret that contains another one is fully replaced.
@@ -89,27 +101,23 @@ func (r *Redactor) safeCut(buf []byte, cut int) int {
 
 // With returns a redactor that also hides the given secrets, keeping r's minimum length.
 func (r *Redactor) With(secrets ...string) *Redactor {
-	var all []string
-	minLen := minRedactedSecret
-	if r != nil {
-		r.mu.RLock()
-		defer r.mu.RUnlock()
-		all = append(all, r.secrets...)
-		minLen = r.minLen
+	if r == nil {
+		return NewRedactor(secrets...)
 	}
-	return newRedactor(minLen, append(all, secrets...))
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return newRedactor(r.minLen, r.secrets, r.minLen, secrets)
 }
 
 // WithRequired is like With but also hides short values. Use it for secrets that must
 // never appear, such as a sudo password, accepting that output may be mangled.
 func (r *Redactor) WithRequired(secrets ...string) *Redactor {
-	var all []string
-	if r != nil {
-		r.mu.RLock()
-		defer r.mu.RUnlock()
-		all = append(all, r.secrets...)
+	if r == nil {
+		return newRedactor(minRedactedSecret, nil, 1, secrets)
 	}
-	return newRedactor(1, append(all, secrets...))
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return newRedactor(r.minLen, r.secrets, 1, secrets)
 }
 
 // String redacts a string. A nil redactor returns the value unchanged.
@@ -226,6 +234,7 @@ func sanitizeForTerminal(value string) string {
 func (r *Redactor) AddRequired(secrets ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	merged := newRedactor(1, append(append([]string{}, r.secrets...), secrets...))
-	r.secrets, r.minLen = merged.secrets, merged.minLen
+	// Short guest passwords are still hidden, but the threshold for later optional
+	// secrets (With) stays unchanged.
+	r.secrets = newRedactor(r.minLen, r.secrets, 1, secrets).secrets
 }

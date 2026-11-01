@@ -110,7 +110,7 @@ func New(opts Options) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	redactor := NewRedactor(append(PassthroughSecrets(cfg.EnvPassthrough, opts.Getenv), opts.Token, viewToken, "P@ssw0rd!", "admin")...)
+	redactor := NewRedactor(append(PassthroughSecrets(cfg.EnvPassthrough, opts.Getenv), opts.Token, viewToken, defaultGuestPassword)...)
 	audit, err := OpenAuditLog(filepath.Join(cfg.StateDir, auditFileName), redactor)
 	if err != nil {
 		return nil, err
