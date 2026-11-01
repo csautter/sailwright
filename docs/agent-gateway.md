@@ -421,6 +421,10 @@ ubuntu/server/amd64) since 14:03:12`. Gateway jobs wait up to 30 seconds.
 Locks are released on process exit; lock files remain in place and should not
 be removed.
 
+Lock protocol 2 moves the Windows lock byte away from holder metadata. Update
+both the pinned and installed CLI together; protocol 1 binaries cannot safely
+share state with protocol 2 binaries on Windows.
+
 At startup the gateway checks the pinned CLI's state schema and locking
 protocol, and compares them with `sailwright` on PATH when installed (skipped
 when that is the pinned file). Shared mode refuses a pinned CLI with an

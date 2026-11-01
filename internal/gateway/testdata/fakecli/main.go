@@ -57,7 +57,7 @@ func main() {
 		if value := os.Getenv("FAKE_CLI_METADATA"); value != "" {
 			fmt.Println(value)
 		} else {
-			fmt.Println(`{"schema_version":1,"lock_version":1,"version":"fake"}`)
+			fmt.Println(`{"schema_version":1,"lock_version":2,"version":"fake"}`)
 		}
 		return
 	}

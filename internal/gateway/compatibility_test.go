@@ -30,8 +30,9 @@ func TestSharedStateCompatibility(t *testing.T) {
 		metadata     string
 		shared, fail bool
 	}{
-		{`{"schema_version":1,"lock_version":1,"version":"test"}`, true, false},
-		{`{"schema_version":2,"lock_version":1,"version":"test"}`, true, true},
+		{`{"schema_version":1,"lock_version":2,"version":"test"}`, true, false},
+		{`{"schema_version":1,"lock_version":1,"version":"old-lock"}`, true, true},
+		{`{"schema_version":2,"lock_version":2,"version":"test"}`, true, true},
 		{`{"schema_version":1,"version":"old"}`, true, true},
 		{`not json`, true, true},
 		{`not json`, false, false},
@@ -69,15 +70,16 @@ func TestInstalledCLIContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
-	good := append(os.Environ(), `FAKE_CLI_METADATA={"schema_version":1,"lock_version":1,"version":"pinned"}`)
+	good := append(os.Environ(), `FAKE_CLI_METADATA={"schema_version":1,"lock_version":2,"version":"pinned"}`)
 	for _, tc := range []struct {
 		name, installed string
 		fail            bool
 		warning         string
 	}{
+		{"old lock byte range fails", `{"schema_version":1,"lock_version":1,"version":"old-lock"}`, true, ""},
 		{"old CLI without contract only warns", `not json`, false, "predates cross-process locking"},
-		{"incompatible reported schema fails", `{"schema_version":2,"lock_version":1,"version":"new"}`, true, ""},
-		{"version difference warns", `{"schema_version":1,"lock_version":1,"version":"other"}`, false, "differs from installed"},
+		{"incompatible reported schema fails", `{"schema_version":2,"lock_version":2,"version":"new"}`, true, ""},
+		{"version difference warns", `{"schema_version":1,"lock_version":2,"version":"other"}`, false, "differs from installed"},
 	} {
 		var out strings.Builder
 		installedEnv := append(os.Environ(), "FAKE_CLI_METADATA="+tc.installed)

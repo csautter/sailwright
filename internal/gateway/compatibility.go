@@ -20,7 +20,7 @@ type stateMetadata struct {
 // Versions of the CLI state contract this gateway understands.
 const (
 	supportedStateSchema = 1
-	supportedLockVersion = 1
+	supportedLockVersion = 2
 )
 
 // CheckCompatibility checks the state contract before any shared-state command.

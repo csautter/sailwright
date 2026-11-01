@@ -11,7 +11,8 @@ import (
 const (
 	stateSchemaVersion = 1
 	// lockProtocolVersion versions internal/operationlock's file layout and semantics.
-	lockProtocolVersion = 1
+	// Version 2 moves the Windows lock byte away from the holder metadata.
+	lockProtocolVersion = 2
 )
 
 func init() {

@@ -112,3 +112,11 @@ Consequences of the amendment:
   container normally has direct network access. On Hyper-V, where the guest
   reports all addresses, the host-side switch and subnet decide which address
   is used.
+
+## Amendment: lock protocol version 2 (2026-11-01)
+
+The Windows lock byte moves from offset zero to offset 2^62 so other processes
+can read the lock holder metadata. This changes the cross-process locking
+contract even though the app-data schema is unchanged. The CLI and gateway now
+advertise and require lock protocol 2 for shared state. A CLI reporting protocol
+1 must be updated together with the pinned CLI before sharing state.
