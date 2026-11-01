@@ -81,12 +81,7 @@ func (g *Gateway) serveTunnel(w http.ResponseWriter, r *http.Request) {
 	if osName == "ubuntu" && typ == "" {
 		typ = "server"
 	}
-	var vm ManagedVM
-	if resolver, ok := g.vmResolver.(*CLIManagedVMResolver); ok {
-		vm, err = resolver.resolve(requestCtx, osName, typ, arch, false)
-	} else {
-		vm, err = g.vmResolver.Resolve(requestCtx, osName, typ, arch)
-	}
+	vm, err := g.vmResolver.ResolveFresh(requestCtx, osName, typ, arch)
 	if err != nil {
 		deny(http.StatusNotFound, "managed VM is unavailable or not running")
 		return

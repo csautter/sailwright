@@ -88,6 +88,9 @@ func main() {
 		if args[2] == "windows11" {
 			protocol, port = "winrm", 5985
 		}
+		if delay, err := time.ParseDuration(os.Getenv("FAKE_VM_INFO_DELAY")); err == nil {
+			time.Sleep(delay)
+		}
 		password := os.Getenv("FAKE_VM_PASSWORD")
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "os": args[2], "type": typ, "arch": arch, "engine": "qemu", "state": "running", "address": address, "network_mode": "unknown", "protocol": protocol, "port": port, "username": "packer", "password": password})
 		return

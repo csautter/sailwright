@@ -495,7 +495,11 @@ controller container. The listener accepts explicit loopback addresses only.
 **Tunnel policy:** `/tunnel` uses authenticated HTTP/1 upgrade behind the same
 source, Host, Origin and bearer checks as MCP. Only ports 22, 5985 and 5986 are
 allowed. The destination address comes exclusively from the pinned CLI,
-refreshed for every new tunnel. Loopback, link-local, multicast, unspecified
+refreshed for every new tunnel. Some engines learn that address from the guest
+itself (libvirt guest agent, Hyper-V integration services), so a guest the
+agent controls can report another address on your network; the port allowlist
+and the checks below limit, but do not prevent, connections to other LAN hosts
+on those ports. Loopback, link-local, multicast, unspecified
 and host-owned addresses are rejected, including mapped IPv4 addresses.
 Bridged/LAN guests are allowed; bridged or unknown network modes produce a
 `LAN_OR_UNKNOWN_NETWORK` audit warning. There are at most `max_tunnels`
@@ -531,6 +535,9 @@ and TCP guest to test policy and stream handling without a hypervisor.
 - On Windows, cancellation terminates the process tree immediately; there is
   no graceful stop signal.
 
+Concurrent lookups for the same target share one CLI call; different targets
+are looked up in parallel. A refused tunnel prints the gateway's reason, for
+example `tunnel refused: HTTP 404: managed VM is unavailable or not running`.
 ### Guests inside a development VM
 
 Treat the development VM as the gateway host. Probe nested KVM support before

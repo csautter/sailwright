@@ -30,6 +30,10 @@ func (r *fixedVMResolver) Resolve(context.Context, string, string, string) (Mana
 	return ManagedVM{OS: "ubuntu", Type: "server", Arch: "amd64", Address: r.address, NetworkMode: "bridged"}, nil
 }
 
+func (r *fixedVMResolver) ResolveFresh(ctx context.Context, osName, osType, arch string) (ManagedVM, error) {
+	return r.Resolve(ctx, osName, osType, arch)
+}
+
 func tunnelFixture(t *testing.T) (*Gateway, client.Endpoint, *fixedVMResolver, string) {
 	t.Helper()
 	service, err := net.Listen("tcp", "127.0.0.1:0")
