@@ -139,8 +139,8 @@ func TestCheckerNeverWaitsAndCachesFailure(t *testing.T) {
 	c := Checker{Releases: Releases{BaseURL: server.URL, Version: "v1.0.0"}, Settings: Settings{Enabled: true, Interval: time.Hour}, CacheFile: file, Now: func() time.Time { return now }}
 	start := time.Now()
 	finish := c.Start()
-	if finish() != "" || time.Since(start) > 100*time.Millisecond {
-		t.Fatal("check delayed command")
+	if finish() != "" || time.Since(start) > noticeGrace+100*time.Millisecond {
+		t.Fatal("check delayed command beyond the grace period")
 	}
 	<-entered
 	if c.Start()() != "" {
@@ -156,5 +156,29 @@ func TestCheckerNeverWaitsAndCachesFailure(t *testing.T) {
 	}
 	if !cache.LastCheck.Equal(now) {
 		t.Fatal("failed check not throttled")
+	}
+}
+func TestCheckerGracePeriodForQuickCommands(t *testing.T) {
+	// A generous grace period keeps this deterministic on slow CI runners.
+	defer func(previous time.Duration) { noticeGrace = previous }(noticeGrace)
+	noticeGrace = 5 * time.Second
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		http.Redirect(w, r, "/releases/tag/v2.0.0", 302)
+	}))
+	defer server.Close()
+	file := filepath.Join(t.TempDir(), "cache.json")
+	c := Checker{Releases: Releases{BaseURL: server.URL, Version: "v1.0.0"}, Settings: Settings{Enabled: true, Interval: time.Hour}, CacheFile: file}
+	// finish is called immediately, as for a command that ends at once.
+	if got := c.Start()(); got != "v2.0.0" {
+		t.Fatalf("quick command lost the result: %q", got)
+	}
+	b, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cache checkCache
+	if err := json.Unmarshal(b, &cache); err != nil || cache.Latest != "v2.0.0" {
+		t.Fatalf("result not cached: %+v %v", cache, err)
 	}
 }

@@ -12,6 +12,10 @@ import (
 const DefaultInterval = time.Hour
 const MinimumInterval = 15 * time.Minute
 
+// noticeGrace is how long finish waits for a pending check after the command ends,
+// so quick commands still record (and can report) the result.
+var noticeGrace = 150 * time.Millisecond
+
 type Settings struct {
 	Enabled  bool
 	Interval time.Duration
@@ -120,8 +124,8 @@ type Checker struct {
 	Now       func() time.Time
 }
 
-// Start reserves the interval before launching a bounded request. Finish never waits
-// for the network. A result received after the command ends is used on the next run.
+// Start reserves the interval before launching a bounded request. Finish waits at
+// most noticeGrace for a pending request; a later result is used on the next run.
 func (c Checker) Start() func() string {
 	empty := func() string { return "" }
 	if !c.Settings.Enabled || c.Settings.Interval < MinimumInterval {
@@ -205,7 +209,7 @@ func (c Checker) Start() func() string {
 				return ""
 			}
 			return result
-		default:
+		case <-time.After(noticeGrace):
 			return ""
 		}
 	}

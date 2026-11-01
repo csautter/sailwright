@@ -271,10 +271,10 @@ to `https://github.com/csautter/sailwright/releases/latest`, reads its release
 tag redirect, and stops without fetching the release page or using the API.
 The application adds only `User-Agent: sailwright/<version>`; no configuration,
 project data, machine identifiers, or credentials are sent. The request runs
-alongside the command with a two-second timeout. The command never waits for
-it. A result completed during a command can produce a one-line notice on
-**stderr** when the command finishes. A cached result can be shown on a later
-invocation. There is no automatic installation, daemon, or background service.
+alongside the command with a two-second timeout. When the command finishes,
+the CLI waits at most 150 ms for a pending request. A result completed by then
+can produce a one-line notice on **stderr**; a cached result can be shown on a
+later invocation. There is no automatic installation, daemon, or background service.
 
 No check or notice occurs for `update`, `version`, `--version`, `help`,
 completion, development builds, when stderr has no TTY, or when `CI` is set.
