@@ -24,7 +24,11 @@ import (
 )
 
 const Repository = "https://github.com/csautter/sailwright"
-const maxArchive = 256 << 20
+
+// maxArchive bounds each downloaded archive and extracted binary. Release binaries
+// are about 50 MiB, so this leaves headroom while capping peak memory during an
+// update (two archives and two binaries) well below 512 MiB.
+const maxArchive = 128 << 20
 
 var releaseVersion = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 
