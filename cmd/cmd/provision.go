@@ -161,7 +161,7 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cmd.SilenceUsage = true
 		if len(args) == 0 {
-			return fmt.Errorf("choose a target: run `sailwright provision local --check` or `sailwright provision list`")
+			return provisionWizard(cmd)
 		}
 		osName, extraAnsibleArgs := splitProvisionArgs(cmd, args)
 		options := alchemy_provision.ProvisionOptions{
