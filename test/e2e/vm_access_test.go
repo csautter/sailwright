@@ -121,6 +121,13 @@ func TestVMAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	directory := t.TempDir()
+	// The generated config shares connections through a socket in ~/.ssh, which
+	// ssh requires to exist.
+	if home, err := os.UserHomeDir(); err == nil {
+		if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	config := filepath.Join(directory, "ssh_config")
 	// Keep ephemeral guest host keys separate from the user's SSH files.
 	content := info.SSHConfig + "  StrictHostKeyChecking accept-new\n  UserKnownHostsFile " + filepath.Join(directory, "known_hosts") + "\n"

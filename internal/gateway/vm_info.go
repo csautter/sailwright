@@ -13,6 +13,10 @@ import (
 // vmAccessListing is the listing that names the VMs vm_info and tunnels can reach.
 const vmAccessListing = "start"
 
+// sshControlPersist keeps a shared SSH connection open this long after its last
+// session ends.
+const sshControlPersist = "60s"
+
 // VMInfoOutput contains guest-only credentials and controller configuration.
 type VMInfoOutput struct {
 	OS               string `json:"os"`
@@ -60,7 +64,9 @@ func (g *Gateway) toolVMInfo(ctx context.Context, _ *mcp.CallToolRequest, in vmT
 		if strings.ContainsAny(vm.Username, "\r\n\x00") {
 			return nil, VMInfoOutput{}, fmt.Errorf("invalid SSH username")
 		}
-		out.SSHConfig = fmt.Sprintf("Host %s\n  HostName %s\n  User %s\n  Port %d\n  ProxyCommand %s\n", alias, vm.Address, strconv.Quote(vm.Username), vm.Port, proxy)
+		// Connection sharing runs ssh and scp over one tunnel instead of starting a
+		// tunnel, a CLI lookup and a hypervisor query for every command.
+		out.SSHConfig = fmt.Sprintf("Host %s\n  HostName %s\n  User %s\n  Port %d\n  ProxyCommand %s\n  ControlMaster auto\n  ControlPath ~/.ssh/sailwright-%%C\n  ControlPersist %s\n", alias, vm.Address, strconv.Quote(vm.Username), vm.Port, proxy, sshControlPersist)
 		host["ansible_host"], host["ansible_connection"] = vm.Address.String(), "ssh"
 		host["ansible_ssh_common_args"] = "-o ProxyCommand=" + strconv.Quote(proxy)
 		host["ansible_become_password"] = vm.Password

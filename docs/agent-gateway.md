@@ -497,7 +497,13 @@ Call MCP `vm_info` with the same target to receive guest credentials, an
 credentials; keep inventory files private. The gateway does not write them to
 audit or job logs. Its config remains separate from your CLI config.
 
-Save `ssh_config` to a container file, then use its `Host` alias:
+Save `ssh_config` to a container file, then use its `Host` alias. The block
+shares one connection between ssh and scp calls (`ControlMaster auto`,
+`ControlPersist 60s`) with a socket in `~/.ssh`, which must exist
+(`mkdir -m 700 -p ~/.ssh`). A shared connection stays usable for up to 60
+seconds after its last session, also after the VM's access was revoked; add
+`ControlPath none` before the generated block to turn sharing off. Ansible's SSH
+connection already shares connections this way.
 
 ```bash
 ssh -F ./ssh_config sailwright-ubuntu-server-amd64
@@ -567,15 +573,15 @@ bypasses it, so a recently stopped guest cannot be reached using cached info.
 Concurrent lookups for the same target share one CLI call; different targets
 are looked up in parallel. A refused tunnel prints the gateway's reason, for
 example `tunnel refused: HTTP 404: managed VM is unavailable or not running`.
+When a lookup fails, the gateway terminal shows the CLI's reason (redacted),
+for example `vm info ubuntu/server/amd64 failed: ... exited with 1: VM is not
+running`, and `vm_info` returns the same reason to the agent.
 The tunnel transports SSH or WinRM; it never runs a host shell.
 
 ### Testing disposable guest access
 
 Build the Ubuntu image on the host first, then use a target that does not
 already have a VM. With the gateway running and `ssh`, `scp`, `sshpass` and
-When a lookup fails, the gateway terminal shows the CLI's reason (redacted),
-for example `vm info ubuntu/server/amd64 failed: ... exited with 1: VM is not
-running`, and `vm_info` returns the same reason to the agent.
 `sailwright-gateway` installed in the container:
 
 ```bash
