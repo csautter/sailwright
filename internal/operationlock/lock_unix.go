@@ -9,8 +9,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var errLockHeld = errors.New("lock held")
-
 func lockFile(file *os.File, shared bool) error {
 	// #nosec G115 -- file descriptors fit in int.
 	mode := unix.LOCK_EX
@@ -19,9 +17,12 @@ func lockFile(file *os.File, shared bool) error {
 	}
 	if err := unix.Flock(int(file.Fd()), mode|unix.LOCK_NB); err != nil {
 		if errors.Is(err, unix.EWOULDBLOCK) {
-			return errLockHeld
+			return ErrBusy
 		}
 		return err
 	}
 	return nil
 }
+
+// unlockFile is a no-op: closing the descriptor releases a flock immediately.
+func unlockFile(*os.File) {}

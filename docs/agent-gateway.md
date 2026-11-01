@@ -393,8 +393,11 @@ CLI operations acquire operating-system file locks under app-data `locks/`.
 The same target cannot be built, created, started, stopped, destroyed or
 provisioned concurrently. Different targets may run concurrently; `all` and
 registry transfers acquire an exclusive lock covering all targets. A competing
-command exits with a `resource busy` error. Locks are released on process exit;
-lock files remain in place and should not be removed.
+command exits with a `resource busy` error, immediately by default or after
+waiting up to `SAILWRIGHT_LOCK_TIMEOUT` (a Go duration such as `30s`), that
+names the holder, for example `held by pid 4242 (sailwright create
+ubuntu/server/amd64) since 14:03:12`. Gateway jobs wait up to 30 seconds. Locks are released on process exit; lock files
+remain in place and should not be removed.
 
 At startup the gateway checks the pinned CLI's state schema and locking
 protocol, and compares them with `sailwright` on PATH when installed. Shared

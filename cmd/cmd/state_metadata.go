@@ -8,7 +8,11 @@ import (
 )
 
 // State format and locking protocol are versioned independently of releases.
-const stateSchemaVersion = 1
+const (
+	stateSchemaVersion = 1
+	// lockProtocolVersion versions internal/operationlock's file layout and semantics.
+	lockProtocolVersion = 1
+)
 
 func init() {
 	rootCmd.Version = cliVersion()
@@ -23,7 +27,7 @@ func init() {
 			SchemaVersion int    `json:"schema_version"`
 			LockVersion   int    `json:"lock_version"`
 			Version       string `json:"version"`
-		}{stateSchemaVersion, 1, cliVersion()})
+		}{stateSchemaVersion, lockProtocolVersion, cliVersion()})
 	}
 }
 
@@ -33,6 +37,10 @@ func cliVersion() string {
 		return "unknown"
 	}
 	version := info.Main.Version
+	if version == "" {
+		// `go build file.go` records no module version.
+		version = "(devel)"
+	}
 	for _, setting := range info.Settings {
 		if setting.Key == "vcs.revision" {
 			version += "+" + setting.Value
