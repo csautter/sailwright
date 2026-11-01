@@ -281,7 +281,8 @@ Failures are silent and still count toward the interval. Notices for an
 available version occur at most once per interval; stdout stays unchanged.
 The gateway does not perform checks.
 
-Settings are stored in `update.json` in the existing configuration directory;
+Settings are stored in `update.json` (for example
+`{"enabled":true,"interval":"1h"}`) in the existing configuration directory;
 check time, last seen version, and notice time are in `update-check.json` in
 the existing cache directory. Defaults are:
 
@@ -293,7 +294,10 @@ the existing cache directory. Defaults are:
 
 The existing `DEV_ALCHEMY_CONFIG_DIR`, `DEV_ALCHEMY_APP_DATA_DIR`, and
 `DEV_ALCHEMY_CACHE_DIR` overrides apply. `sailwright version` shows the resolved
-settings path and effective enablement, including environment overrides.
+settings path and effective enablement, including environment overrides. An
+unreadable or invalid `update.json` disables checks; `sailwright version`
+reports the problem, and `sailwright update --auto-check on|off` replaces the
+file with valid settings.
 
 For local integration tests only, `SAILWRIGHT_UPDATE_BASE_URL` replaces the
 repository URL for the latest redirect and release downloads (for example,

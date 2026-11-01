@@ -13,24 +13,55 @@ const DefaultInterval = time.Hour
 const MinimumInterval = 15 * time.Minute
 
 type Settings struct {
-	Enabled  bool          `json:"enabled"`
-	Interval time.Duration `json:"interval"`
+	Enabled  bool
+	Interval time.Duration
 }
 
+// settingsFile is the on-disk form; the interval uses Go duration syntax ("1h").
+type settingsFile struct {
+	Enabled  bool   `json:"enabled"`
+	Interval string `json:"interval,omitempty"`
+}
+
+func (s Settings) MarshalJSON() ([]byte, error) {
+	return json.Marshal(settingsFile{Enabled: s.Enabled, Interval: s.Interval.String()})
+}
+
+func (s *Settings) UnmarshalJSON(b []byte) error {
+	var f settingsFile
+	if err := json.Unmarshal(b, &f); err != nil {
+		return err
+	}
+	s.Enabled = f.Enabled
+	if f.Interval != "" {
+		d, err := time.ParseDuration(f.Interval)
+		if err != nil {
+			return fmt.Errorf("invalid interval %q: %w", f.Interval, err)
+		}
+		s.Interval = d
+	}
+	return nil
+}
+
+// DefaultSettings are used when no settings file exists or it cannot be used.
+func DefaultSettings() Settings { return Settings{Interval: DefaultInterval} }
+
+// LoadSettings always returns usable settings: on error it returns the defaults
+// together with the error, so callers can warn and overwrite a broken file.
 func LoadSettings(file string) (Settings, error) {
-	s := Settings{Interval: DefaultInterval}
 	b, err := os.ReadFile(file)
 	if os.IsNotExist(err) {
-		return s, nil
+		return DefaultSettings(), nil
 	}
 	if err != nil {
-		return s, err
+		return DefaultSettings(), err
 	}
+	s := DefaultSettings()
 	if err := json.Unmarshal(b, &s); err != nil {
-		return s, err
+		return DefaultSettings(), fmt.Errorf("%s: %w", file, err)
 	}
 	if s.Interval < MinimumInterval {
-		return s, fmt.Errorf("update interval must be at least %s", MinimumInterval)
+		return DefaultSettings(), fmt.Errorf("%s: update interval must be at least %s", file, MinimumInterval)
 	}
 	return s, nil
 }

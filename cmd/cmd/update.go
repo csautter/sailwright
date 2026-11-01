@@ -44,11 +44,14 @@ func init() {
 		if err != nil {
 			return err
 		}
+		checks := ""
 		settings, err := selfupdate.LoadSettings(config)
 		if err != nil {
-			return err
+			checks = fmt.Sprintf("false (invalid settings: %v; fix with sailwright update --auto-check on|off)", err)
+		} else {
+			checks = fmt.Sprintf("%t (interval %s)", selfupdate.Enabled(settings, os.Getenv), settings.Interval)
 		}
-		_, err = fmt.Fprintf(cmd.OutOrStdout(), "sailwright %s\nPlatform: %s/%s\nInstallation: %s (%s)\nAutomatic update checks: %t (interval %s)\nSettings: %s\n", version, runtime.GOOS, runtime.GOARCH, selfupdate.Installation(executable, version), executable, selfupdate.Enabled(settings, os.Getenv), settings.Interval, config)
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "sailwright %s\nPlatform: %s/%s\nInstallation: %s (%s)\nAutomatic update checks: %s\nSettings: %s\n", version, runtime.GOOS, runtime.GOARCH, selfupdate.Installation(executable, version), executable, checks, config)
 		return err
 	}})
 	var check, yes, noGateway bool
@@ -72,7 +75,8 @@ func init() {
 			}
 			s, err := selfupdate.LoadSettings(config)
 			if err != nil {
-				return err
+				// Start from defaults so a broken file can always be repaired from the CLI.
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: replacing invalid update settings: %v\n", err)
 			}
 			if cmd.Flags().Changed("auto-check") {
 				switch auto {

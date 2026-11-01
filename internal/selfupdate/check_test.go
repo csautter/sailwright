@@ -60,6 +60,31 @@ func TestSettingsAndEligibility(t *testing.T) {
 		t.Fatal("short interval accepted")
 	}
 }
+func TestSettingsFileFormatAndInvalidFiles(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "update.json")
+	if err := SaveSettings(file, Settings{Enabled: true, Interval: 90 * time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(file)
+	if err != nil || string(b) != `{"enabled":true,"interval":"1h30m0s"}` {
+		t.Fatalf("file format: %s %v", b, err)
+	}
+	for _, content := range []string{`{`, `{"enabled":true,"interval":"soon"}`, `{"enabled":true,"interval":"1m"}`, `{"enabled":true,"interval":3600}`} {
+		if err := os.WriteFile(file, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		s, err := LoadSettings(file)
+		if err == nil || s != DefaultSettings() {
+			t.Errorf("%s: want defaults and error, got %+v %v", content, s, err)
+		}
+	}
+	if err := os.WriteFile(file, []byte(`{"enabled":true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := LoadSettings(file); err != nil || !s.Enabled || s.Interval != DefaultInterval {
+		t.Fatalf("missing interval: %+v %v", s, err)
+	}
+}
 func TestCheckerIntervalAndNotice(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

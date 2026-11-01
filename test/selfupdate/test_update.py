@@ -139,6 +139,14 @@ class UpdateTest(unittest.TestCase):
         self.run_cli("update", "--auto-check-interval", "1s", code=1)
         self.assertFalse((Path(self.work.name) / "cache/update-check.json").exists())
 
+    def test_invalid_settings_can_be_repaired(self):
+        config = Path(self.work.name) / "config"
+        config.mkdir(parents=True, exist_ok=True)
+        (config / "update.json").write_text('{"enabled":true,"interval":"1m"}')
+        self.assertIn("invalid settings", self.run_cli("version").stdout)
+        self.assertIn("replacing invalid update settings", self.run_cli("update", "--auto-check", "off").stderr)
+        self.assertIn("false (interval 1h0m0s)", self.run_cli("version").stdout)
+
     def test_latest_never_downgrades(self):
         for name in ("sailwright", "sailwright-gateway"):
             shutil.copyfile(self.root / (name + "-1.0.1" + EXE), self.bin / (name + EXE))
