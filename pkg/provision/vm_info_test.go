@@ -72,21 +72,6 @@ func TestParseHypervAdaptersHandlesEmptyList(t *testing.T) {
 	}
 }
 
-func TestNetworkModes(t *testing.T) {
-	if libvirtNetworkMode("qemu:///system") != "nat" || libvirtNetworkMode("qemu:///session") != "user" {
-		t.Fatal("libvirt modes")
-	}
-	env := map[string]string{}
-	getenv := func(name string) string { return env[name] }
-	if tartNetworkMode(getenv) != "nat" {
-		t.Fatal("tart default")
-	}
-	env["TART_MACOS_BRIDGED_INTERFACE"] = "en0"
-	if tartNetworkMode(getenv) != "bridged" {
-		t.Fatal("tart bridged")
-	}
-}
-
 func TestParseGuestPort(t *testing.T) {
 	for _, tc := range []struct {
 		value    string

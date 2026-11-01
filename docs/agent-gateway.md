@@ -477,10 +477,14 @@ LAN), `user` (libvirt user-mode networking on `qemu:///session`) or `unknown`:
 
 | Engine | Mode |
 | --- | --- |
-| libvirt | `nat` on `qemu:///system` (the `default` network), `user` otherwise |
-| Tart | `nat`, or `bridged` when `TART_MACOS_BRIDGED_INTERFACE` is set |
+| libvirt | from active domain/network XML: `nat` for NAT forwarding, `user` for user interfaces, `bridged` for bridge/direct interfaces; `unknown` on query failure, routed networks or mixed modes |
+| Tart | `unknown`; the querying shell cannot establish how the running VM was started |
 | Hyper-V | from the type of the switch the VM is attached to: `Internal` is `nat`, `External` is `bridged` |
 | UTM | `unknown` |
+
+The libvirt URI and the name `default` do not prove NAT isolation. Tart's
+`TART_MACOS_BRIDGED_INTERFACE` affects guest startup, but is not used to infer
+an existing guest's network mode. Unknown modes retain the LAN audit warning.
 
 On Hyper-V the guest reports its addresses through integration services, so
 the host decides which one to use. `vm info` and provisioning take an IPv4

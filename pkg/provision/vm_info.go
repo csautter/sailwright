@@ -2,7 +2,6 @@ package provision
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
@@ -56,10 +55,11 @@ func InspectVM(vm alchemy_build.VirtualMachineConfig) (VMInfo, error) {
 		info.Address, err = DiscoverUTMAddress(project, vm)
 	case "tart":
 		info.Address, err = DiscoverTartAddress(project, vm)
-		info.NetworkMode = tartNetworkMode(os.Getenv)
+		// Tart does not expose the running guest's network mode; the current
+		// process environment does not describe how that guest was started.
 	case "qemu":
 		info.Address, err = DiscoverLibvirtAddress(project, vm)
-		info.NetworkMode = libvirtNetworkMode(alchemy_deploy.LinuxLibvirtURI())
+		info.NetworkMode = discoverLibvirtNetworkMode(project, alchemy_deploy.LinuxLibvirtDomainName(vm), alchemy_deploy.LinuxLibvirtURI(), runCommandWithCombinedOutput)
 	default:
 		return info, fmt.Errorf("VM info is unavailable for engine %s", info.Engine)
 	}
@@ -101,24 +101,6 @@ func InspectVM(vm alchemy_build.VirtualMachineConfig) (VMInfo, error) {
 		return VMInfo{}, err
 	}
 	return info, nil
-}
-
-// libvirtNetworkMode reports the network sailwright attaches libvirt VMs to: the
-// NAT "default" network on qemu:///system, user-mode networking otherwise.
-func libvirtNetworkMode(uri string) string {
-	if strings.EqualFold(strings.TrimSpace(uri), "qemu:///system") {
-		return "nat"
-	}
-	return "user"
-}
-
-// tartNetworkMode reports Tart's shared NAT network unless sailwright was told to
-// bridge the VM to a host interface.
-func tartNetworkMode(getenv func(string) string) string {
-	if strings.TrimSpace(getenv(alchemy_deploy.TartMacOSBridgedInterfaceEnvVar)) != "" {
-		return "bridged"
-	}
-	return "nat"
 }
 
 // parseGuestPort parses an inventory port; an empty value uses fallback when it is set.

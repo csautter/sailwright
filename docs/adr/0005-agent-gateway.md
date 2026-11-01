@@ -120,3 +120,12 @@ can read the lock holder metadata. This changes the cross-process locking
 contract even though the app-data schema is unchanged. The CLI and gateway now
 advertise and require lock protocol 2 for shared state. A CLI reporting protocol
 1 must be updated together with the pinned CLI before sharing state.
+
+## Amendment: conservative network reporting (2026-11-01)
+
+Suppressing the tunnel LAN warning requires a known NAT or user network. Libvirt
+mode is determined from active domain and network XML, rather than the connection
+URI or network name. Failed queries and ambiguous modes remain unknown. Tart
+also reports unknown because the querying process environment cannot establish
+the network mode of an already running guest. Bridged and unknown modes continue
+to allow tunnels with the audit warning.
