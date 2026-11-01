@@ -137,6 +137,11 @@ func main() {
 	case "install", "pull":
 		fmt.Printf("%s ok\n", command)
 	case "create":
+		// Like the real CLI, create refuses an existing VM.
+		if readState(id) != "" {
+			fmt.Fprintf(os.Stderr, "Error: VM for %s already exists\n", id)
+			os.Exit(1)
+		}
 		writeState(id, "stopped")
 		fmt.Println("created")
 	case "start":
@@ -193,10 +198,10 @@ func printListing(command string) {
 		if state == "" {
 			state = "missing"
 		}
-		start := "ready to start"
+		start, create := "ready to start", "already created"
 		switch state {
 		case "missing":
-			start = "create required"
+			start, create = "create required", "ready to create"
 		case "running":
 			start = "already running"
 		}
@@ -205,7 +210,7 @@ func printListing(command string) {
 			status = "unstable"
 		}
 		// Mirrors the columns of the real `start list` and `create list`.
-		targets[i].Fields = map[string]string{"state": state, "start": start, "status": status}
+		targets[i].Fields = map[string]string{"state": state, "start": start, "create": create, "status": status}
 	}
 	out, _ := json.Marshal(map[string]any{"schema_version": 1, "targets": targets})
 	fmt.Println("diagnostic line before the document")

@@ -21,7 +21,7 @@ const (
 	maxAgentNoteLength = 2000
 	serverInstructions = `This server drives the sailwright CLI on the host machine through a fixed policy.
 
-- Safe tools (vm_*, artifact_pull, list_targets, command_help) run immediately.
+- Safe tools (vm_*, artifact_pull, list_targets, command_help) run immediately. With shared host state, VMs this gateway did not create belong to the operator: lifecycle tools on them wait for approval, and vm_info asks the operator for access first; call it again after approval.
 - provision_local, install and run_cli calls outside the safe set wait for a human to approve them on the host terminal. You cannot approve them yourself. Explain why you need the call in the "reason" field.
 - Long operations are jobs: poll job_status and read job_output with the returned next_offset. Only one job runs at a time.
 - Use list_targets first to see which os/type/arch combinations exist on this host.
@@ -469,7 +469,7 @@ func (g *Gateway) submitSafe(tool string, op Operation, req *mcp.CallToolRequest
 	if err := op.Validate(grammar); err != nil {
 		return nil, JobView{}, err
 	}
-	view, err := g.jobs.Submit(JobSpec{
+	spec := JobSpec{
 		Tool:             tool,
 		Tier:             tierSafe,
 		Argv:             op.Argv(grammar),
@@ -479,8 +479,33 @@ func (g *Gateway) submitSafe(tool string, op Operation, req *mcp.CallToolRequest
 		Peer:             peerOf(req),
 		RequiresFreeDisk: op.Kind == OpBuild || op.Kind == OpCreate || op.Kind == OpPull,
 		Target:           &JobTarget{Kind: op.Kind, OS: op.OS, Type: op.Type, Arch: op.Arch},
-	})
+	}
+	key := vmKey(op.OS, op.Type, op.Arch)
+	switch op.Kind {
+	case OpCreate:
+		// create refuses an existing VM, so success means this gateway made it.
+		spec.OnSucceeded = func(jobID string) { g.recordOwnership(g.ownership.created(key, jobID)) }
+	case OpDestroy:
+		spec.OnSucceeded = func(string) { g.recordOwnership(g.ownership.destroyed(key)) }
+	}
+	if vmInstanceOps[op.Kind] && !g.ownership.allowed(key) {
+		// Another VM in the shared state, possibly the operator's: ask first.
+		spec.Tier, spec.NeedsApproval = tierApproval, true
+		spec.Risk = []string{riskForeignVM}
+		spec.NotSafe = fmt.Sprintf("VM %s was not created by this gateway and may be your own", key)
+	}
+	view, err := g.jobs.Submit(spec)
 	return nil, view, err
+}
+
+// vmInstanceOps act on an existing VM, which may be the operator's in shared mode.
+var vmInstanceOps = map[OpKind]bool{OpStart: true, OpStop: true, OpDestroy: true, OpProvision: true}
+
+func (g *Gateway) recordOwnership(err error) {
+	if err != nil {
+		fmt.Fprintf(g.console, "warning: cannot update the gateway VM ownership record: %v\n", err)
+		_ = g.audit.Record(AuditEvent{Event: "ownership_error", Error: err.Error()})
+	}
 }
 
 func (g *Gateway) submitApproval(tool string, argv []string, dir string, snapshot *Snapshot, notSafe string, note string, become bool, req *mcp.CallToolRequest, params map[string]any) (*mcp.CallToolResult, JobView, error) {

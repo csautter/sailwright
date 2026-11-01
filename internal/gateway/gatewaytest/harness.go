@@ -67,6 +67,9 @@ type Options struct {
 	PullAllowlist []string
 	JobTimeout    string
 	FollowOutput  bool
+	// GateForeignVMs enables the shared-state rule that VMs the gateway did not
+	// create need operator approval, while keeping the test's isolated state.
+	GateForeignVMs bool
 }
 
 // Harness is a running gateway with a fake CLI behind it.
@@ -125,6 +128,7 @@ func Start(t testing.TB, opts Options) *Harness {
 	if err := cfg.Resolve(); err != nil {
 		t.Fatal(err)
 	}
+	cfg.GateForeignVMs = opts.GateForeignVMs
 
 	token, err := gateway.LoadOrCreateToken(h.StateDir)
 	if err != nil {

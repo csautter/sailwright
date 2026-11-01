@@ -53,6 +53,7 @@ type Gateway struct {
 	audit       *AuditLog
 	redactor    *Redactor
 	vmResolver  ManagedVMResolver
+	ownership   *vmOwnership
 	tunnelSlots chan struct{}
 	tunnelDial  func(context.Context, string, string) (net.Conn, error)
 	token       string
@@ -129,6 +130,10 @@ func New(opts Options) (*Gateway, error) {
 		viewToken: viewToken,
 		console:   opts.Console,
 		version:   opts.Version,
+	}
+	g.ownership, err = loadVMOwnership(cfg.GateForeignVMs, cfg.StateDir)
+	if err != nil {
+		return nil, err
 	}
 	g.tunnelSlots = make(chan struct{}, cfg.MaxTunnels)
 	g.tunnelDial = (&net.Dialer{}).DialContext
@@ -213,11 +218,17 @@ func (g *Gateway) RefreshTargets(ctx context.Context) {
 	ctx = context.WithValue(ctx, quietInfoKey{}, true)
 	var failed []string
 	for _, command := range listCommands {
+		listedAt := time.Now().UTC()
 		targets, err := g.listTargets(ctx, command)
 		if err != nil {
 			failed = append(failed, command)
 		}
 		g.catalog.Set(command, targets, err)
+		if command == string(OpCreate) && err == nil {
+			if err := g.ownership.prune(targets, listedAt); err != nil {
+				failed = append(failed, "ownership: "+err.Error())
+			}
+		}
 	}
 	g.refreshPlaybooks()
 	event := AuditEvent{Event: "targets_refreshed", BinarySHA256: g.pinned.SHA256}

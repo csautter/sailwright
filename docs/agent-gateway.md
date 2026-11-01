@@ -67,6 +67,18 @@ The agent, and everything it reads, is treated as untrusted.
   and caches. Config and extracted playbooks remain gateway-owned: your
   `ansible-role-sources.yml` is never loaded by gateway jobs. CLI file locks
   reject concurrent operations on the same target. See [Disk usage](#disk-usage).
+  Sharing also widens what the safe set reaches: `vm_build` and
+  `artifact_pull` replace images in your cache. Your own VMs stay yours: only
+  VMs that the gateway created (recorded in `owned_vms.json` in the state
+  directory) are open to the agent without asking. For any other VM,
+  `vm_start`, `vm_stop`, `vm_destroy` and `vm_provision` become approval jobs,
+  tunnels are refused, and `vm_info` shows an access request on the gateway
+  terminal. Approving that request opens the VM (credentials, tunnels and
+  lifecycle jobs) to the agent until the gateway stops or the VM is
+  destroyed. Ownership ends when the gateway destroys the VM, or when a target
+  listing shows that you destroyed it. A VM you destroy and recreate before the
+  gateway next lists targets (after any job, and at startup) is still treated
+  as the gateway's. Use `state_isolation: isolated` for complete separation.
 - **Transport.** Agents reach the gateway through a Unix socket in a
   dedicated agent folder (`~/.sailwright-gateway`) that you mount read-only
   into the devcontainer. Access is limited by file permissions (`0600`) and by
@@ -523,6 +535,9 @@ port, duration and byte counts; they never contain guest passwords.
 
 VM information has a two-second cache for repeated MCP calls. Tunnel creation
 bypasses it, so a recently stopped guest cannot be reached using cached info.
+Concurrent lookups for the same target share one CLI call; different targets
+are looked up in parallel. A refused tunnel prints the gateway's reason, for
+example `tunnel refused: HTTP 404: managed VM is unavailable or not running`.
 The tunnel transports SSH or WinRM; it never runs a host shell.
 
 ### Testing disposable guest access
@@ -549,9 +564,6 @@ and TCP guest to test policy and stream handling without a hypervisor.
 - On Windows, cancellation terminates the process tree immediately; there is
   no graceful stop signal.
 
-Concurrent lookups for the same target share one CLI call; different targets
-are looked up in parallel. A refused tunnel prints the gateway's reason, for
-example `tunnel refused: HTTP 404: managed VM is unavailable or not running`.
 ### Guests inside a development VM
 
 Treat the development VM as the gateway host. Probe nested KVM support before

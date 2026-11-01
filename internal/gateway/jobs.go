@@ -56,6 +56,8 @@ type JobSpec struct {
 	BecomeWarning string
 	// Target is the VM of a safe-set operation; build jobs record console frames for it.
 	Target *JobTarget
+	// OnSucceeded runs after the command exits 0, before the job is reported done.
+	OnSucceeded func(jobID string)
 }
 
 // JobView is the agent-visible state of a job.
@@ -383,6 +385,9 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 	case err != nil:
 		m.finish(j, JobFailed, &code, err.Error(), started)
 	case code == 0:
+		if spec.OnSucceeded != nil {
+			spec.OnSucceeded(id)
+		}
 		m.finish(j, JobSucceeded, &code, "", started)
 	default:
 		m.finish(j, JobFailed, &code, fmt.Sprintf("exit code %d", code), started)

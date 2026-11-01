@@ -88,3 +88,23 @@ transfers exclude target operations. Startup checks a versioned state-schema and
 locking contract, warns about compatible CLI version differences, and refuses
 unsafe sharing. Gateway cleanup never deletes shared caches. Existing isolated
 state is preserved and accompanied by a one-time migration notice.
+
+Consequences of the amendment:
+
+- In shared mode builds and pulls replace cached images the operator also uses.
+  VM instances are gated by ownership: VMs the gateway created (a successful
+  `create` job, since `create` refuses existing VMs) are open to the agent;
+  for any other VM, lifecycle jobs need approval, tunnels are refused and
+  `vm_info` raises an asynchronous access request whose approval lasts for the
+  gateway run. Ownership is dropped on destroy or when `create list` reports the
+  VM gone, so an out-of-band destroy-and-recreate between listings is the
+  remaining gap; a per-instance identifier from `vm info` would close it.
+- "Only the pinned copy runs" has one exception: at startup the gateway runs
+  `sailwright --gateway-metadata` from PATH, without passthrough secrets, to
+  compare state contracts. An installed CLI without the contract is a warning,
+  not a refusal; an incompatible reported contract is refused in shared mode.
+- The shared app-data layout is mirrored from `pkg/build` and enforced by
+  `TestSharedAppDataMirrorsCLIDefaults`.
+- Tunnel destinations come only from the pinned CLI, but some engines learn
+  them from the guest. A guest under agent control can therefore point the
+  tunnel at another LAN address on ports 22, 5985 or 5986.

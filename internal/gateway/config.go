@@ -91,7 +91,10 @@ type Config struct {
 	// Resolved values, filled by Resolve.
 	// LegacyIsolation is set when state_isolation was unset and isolated mode was
 	// selected because <data_dir>/app from an older gateway exists.
-	LegacyIsolation       bool           `yaml:"-"`
+	LegacyIsolation bool `yaml:"-"`
+	// GateForeignVMs requires operator approval before the agent uses a VM this
+	// gateway did not create. Set for shared state, where the operator's VMs live.
+	GateForeignVMs        bool           `yaml:"-"`
 	SharedAppData         string         `yaml:"-"`
 	SharedCache           string         `yaml:"-"`
 	SharedVagrant         string         `yaml:"-"`
@@ -265,6 +268,7 @@ func (c *Config) Resolve() error {
 		return fmt.Errorf("state_isolation must be shared or isolated")
 	}
 	if c.StateIsolation == "shared" {
+		c.GateForeignVMs = true
 		if err := c.resolveSharedDirs(os.Getenv, runtime.GOOS); err != nil {
 			return err
 		}

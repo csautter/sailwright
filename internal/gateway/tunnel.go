@@ -81,6 +81,10 @@ func (g *Gateway) serveTunnel(w http.ResponseWriter, r *http.Request) {
 	if osName == "ubuntu" && typ == "" {
 		typ = "server"
 	}
+	if !g.ownership.allowed(vmKey(osName, typ, arch)) {
+		deny(http.StatusForbidden, "VM was not created by this gateway; call vm_info to request operator approval")
+		return
+	}
 	vm, err := g.vmResolver.ResolveFresh(requestCtx, osName, typ, arch)
 	if err != nil {
 		deny(http.StatusNotFound, "managed VM is unavailable or not running")

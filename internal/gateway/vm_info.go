@@ -34,9 +34,15 @@ func (g *Gateway) toolVMInfo(ctx context.Context, _ *mcp.CallToolRequest, in vmT
 	if in.OS == "ubuntu" && in.Type == "" {
 		in.Type = "server"
 	}
+	// Resolve first, so the operator is only asked about a VM that is running.
 	vm, err := g.vmResolver.Resolve(ctx, in.OS, in.Type, in.Arch)
 	if err != nil {
 		return nil, VMInfoOutput{}, err
+	}
+	if !g.ownership.allowed(vmKey(vm.OS, vm.Type, vm.Arch)) {
+		if err := g.requestVMAccess("vm_info", vm.OS, vm.Type, vm.Arch); err != nil {
+			return nil, VMInfoOutput{}, err
+		}
 	}
 	if err := allowedTunnelAddress(vm.Address); err != nil {
 		return nil, VMInfoOutput{}, err
