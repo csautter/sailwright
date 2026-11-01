@@ -23,3 +23,27 @@ func TestHyperVAddressUsesNativeAdapterQuery(t *testing.T) {
 		t.Fatalf("address %s: %v", ip, err)
 	}
 }
+
+func TestParseGuestPort(t *testing.T) {
+	for _, tc := range []struct {
+		value    string
+		fallback int
+		want     int
+		fail     bool
+	}{
+		{"", 22, 22, false},
+		{" 2222 ", 22, 2222, false},
+		{"5986", 0, 5986, false},
+		{"", 0, 0, true},
+		{"winrm", 0, 0, true},
+		{"70000", 22, 0, true},
+	} {
+		got, err := parseGuestPort(tc.value, tc.fallback)
+		if (err != nil) != tc.fail || got != tc.want {
+			t.Fatalf("parseGuestPort(%q, %d) = %d, %v", tc.value, tc.fallback, got, err)
+		}
+		if tc.fail && !strings.Contains(err.Error(), tc.value) {
+			t.Fatalf("error does not name the value: %v", err)
+		}
+	}
+}

@@ -108,7 +108,9 @@ func InspectVM(vm alchemy_build.VirtualMachineConfig) (VMInfo, error) {
 			connection, err = loadWindowsLibvirtAnsibleConnectionConfig(project)
 		}
 		info.Protocol, info.Username, info.Password = connection.Connection, connection.User, connection.Password
-		info.Port, _ = strconv.Atoi(connection.Port)
+		if err == nil {
+			info.Port, err = parseGuestPort(connection.Port, 0)
+		}
 	} else {
 		var connection sshAnsibleConnectionConfig
 		switch info.Engine {
@@ -122,16 +124,25 @@ func InspectVM(vm alchemy_build.VirtualMachineConfig) (VMInfo, error) {
 			connection, err = loadUbuntuLibvirtAnsibleConnectionConfig(project)
 		}
 		info.Protocol, info.Username, info.Password = "ssh", connection.User, connection.Password
-		info.Port, _ = strconv.Atoi(connection.Port)
-		if info.Port == 0 {
-			info.Port = 22
+		if err == nil {
+			info.Port, err = parseGuestPort(connection.Port, 22)
 		}
 	}
 	if err != nil {
 		return VMInfo{}, err
 	}
-	if info.Port < 1 || info.Port > 65535 {
-		return VMInfo{}, fmt.Errorf("invalid guest connection port")
-	}
 	return info, nil
+}
+
+// parseGuestPort parses an inventory port; an empty value uses fallback when it is set.
+func parseGuestPort(value string, fallback int) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" && fallback != 0 {
+		return fallback, nil
+	}
+	port, err := strconv.Atoi(value)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("invalid guest connection port %q", value)
+	}
+	return port, nil
 }
