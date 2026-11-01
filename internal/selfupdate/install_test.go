@@ -106,7 +106,7 @@ func TestReplaceRestoresBothAfterCommitFailure(t *testing.T) {
 		}
 		return os.Rename(src, dst)
 	}
-	if err := replace([]Replacement{{cli, []byte("new cli")}, {gateway, []byte("new gateway")}}, rename); err == nil {
+	if err := replace([]Replacement{{cli, []byte("new cli")}, {gateway, []byte("new gateway")}}, rename, os.Link); err == nil {
 		t.Fatal("expected commit failure")
 	}
 	for _, p := range []string{cli, gateway} {
@@ -114,5 +114,53 @@ func TestReplaceRestoresBothAfterCommitFailure(t *testing.T) {
 		if err != nil || string(b) != "original" {
 			t.Fatalf("%s: %s %v", p, b, err)
 		}
+	}
+}
+
+func TestReplaceWithoutHardLinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows backs up by rename")
+	}
+	noLink := func(string, string) error { return fmt.Errorf("operation not permitted") }
+	for _, fail := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success", true: "rollback"}[fail], func(t *testing.T) {
+			dir := t.TempDir()
+			cli, gateway := filepath.Join(dir, "sailwright"), filepath.Join(dir, "sailwright-gateway")
+			for _, p := range []string{cli, gateway} {
+				if err := os.WriteFile(p, []byte("original"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rename := os.Rename
+			if fail {
+				rename = func(src, dst string) error {
+					if dst == gateway && strings.Contains(filepath.Base(src), ".sailwright-new-") {
+						return fmt.Errorf("simulated rename failure")
+					}
+					return os.Rename(src, dst)
+				}
+			}
+			err := replace([]Replacement{{cli, []byte("new cli")}, {gateway, []byte("new gateway")}}, rename, noLink)
+			if (err != nil) != fail {
+				t.Fatalf("%v", err)
+			}
+			want := map[string]string{cli: "new cli", gateway: "new gateway"}
+			if fail {
+				want = map[string]string{cli: "original", gateway: "original"}
+			}
+			for p, w := range want {
+				b, err := os.ReadFile(p)
+				if err != nil || string(b) != w {
+					t.Fatalf("%s: %s %v", p, b, err)
+				}
+				info, _ := os.Stat(p)
+				if info.Mode().Perm() != 0755 {
+					t.Fatalf("%s: permissions %v", p, info.Mode().Perm())
+				}
+				if _, err := os.Lstat(p + ".old"); !os.IsNotExist(err) {
+					t.Fatalf("%s: backup left behind", p)
+				}
+			}
+		})
 	}
 }

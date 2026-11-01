@@ -3,6 +3,7 @@ package selfupdate
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -71,10 +72,10 @@ type Replacement struct {
 // Unix renames each binary atomically. Windows keeps the previous executable as .old.
 // If any rename fails, completed changes are rolled back.
 func Replace(items []Replacement) error {
-	return replace(items, os.Rename)
+	return replace(items, os.Rename, os.Link)
 }
 
-func replace(items []Replacement, rename func(string, string) error) (result error) {
+func replace(items []Replacement, rename, link func(string, string) error) (result error) {
 	if len(items) == 0 {
 		return nil
 	}
@@ -141,8 +142,11 @@ func replace(items []Replacement, rename func(string, string) error) (result err
 		s.backup = backup
 		if runtime.GOOS != "windows" {
 			// A hard link preserves the old inode, including a running executable.
-			if err := os.Link(s.target, s.backup); err != nil {
-				return fmt.Errorf("back up %s: %w", s.target, err)
+			// Filesystems without hard links (exFAT, some FUSE/network mounts) get a copy.
+			if err := link(s.target, s.backup); err != nil {
+				if copyErr := copyFile(s.target, s.backup, info.Mode().Perm()); copyErr != nil {
+					return fmt.Errorf("back up %s: %w", s.target, errors.Join(err, copyErr))
+				}
 			}
 			s.backed = true
 		}
@@ -166,6 +170,26 @@ func replace(items []Replacement, rename func(string, string) error) (result err
 		s.installed = true
 	}
 	return nil
+}
+
+// copyFile creates dst exclusively and removes it again if copying fails.
+func copyFile(src, dst string, perm os.FileMode) (err error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(dst)
+		}
+	}()
+	_, copyErr := io.Copy(out, in)
+	return errors.Join(copyErr, out.Sync(), out.Close())
 }
 
 // Cleanup removes Windows backups on a subsequent invocation. In-use files stay put.
