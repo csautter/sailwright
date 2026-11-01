@@ -15,6 +15,7 @@ import (
 )
 
 var (
+	selectedRoles       []string
 	check               bool
 	assumeYes           bool
 	forceWinRMUninstall bool
@@ -295,6 +296,15 @@ var provisionListCmd = &cobra.Command{
 }
 
 func runProvision(vm alchemy_build.VirtualMachineConfig, options alchemy_provision.ProvisionOptions) error {
+	path, cleanup, err := alchemy_provision.PrepareSelection(selectedRoles, options.PlaybookPath)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if path != options.PlaybookPath {
+		options.PlaybookPath = path
+		options.PlaybookPathExplicit = true
+	}
 	return runProvisionFunc(vm, options)
 }
 
@@ -310,6 +320,7 @@ func init() {
 	provisionCmd.Flags().BoolVarP(&askBecomePass, "ask-become-pass", "K", false, "Ask for the sudo password that tasks with become need (local macOS and Linux provisioning only)")
 	provisionCmd.Flags().StringVar(&localProvisionProto, "proto", string(alchemy_provision.DefaultLocalWindowsProvisionProtocol()), "Local Windows provision transport: winrm or ssh")
 	provisionCmd.Flags().IntVar(&ansibleVerbosity, "verbosity", 3, "Ansible verbosity level (0-4). Default 3 is equivalent to -vvv")
+	provisionCmd.Flags().StringArrayVar(&selectedRoles, "role", nil, "Install a role from the catalog (repeatable; cannot be combined with --playbook)")
 	provisionCmd.Flags().StringVar(&playbookPath, "playbook", "", "Override the Ansible playbook path")
 	provisionCmd.Flags().StringVar(&inventoryPath, "inventory-path", "", "Override the default inventory file for local provisioning; pass -- --limit <host-pattern> if your custom inventory needs a target")
 	provisionCmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Skip confirmation prompts for operations that change local system state")
