@@ -125,7 +125,7 @@ func printAvailableProvisionCombinations() error {
 }
 
 var provisionCmd = &cobra.Command{
-	Use:   "provision <osname|local> [flags] [-- <ansible args...>]",
+	Use:   "provision [osname|local] [flags] [-- <ansible args...>]",
 	Short: "Provision and test Ansible configuration against a VM or the local host",
 	Long: `Runs Ansible provisioning against VM targets or the current host.
 
@@ -158,6 +158,10 @@ Examples:
 `,
 	Args: validateProvisionCommandArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		cmd.SilenceUsage = true
+		if len(args) == 0 {
+			return fmt.Errorf("choose a target: run `sailwright provision local --check` or `sailwright provision list`")
+		}
 		osName, extraAnsibleArgs := splitProvisionArgs(cmd, args)
 		options := alchemy_provision.ProvisionOptions{
 			Check:                           check,
@@ -319,7 +323,7 @@ func validateProvisionCommandArgs(cmd *cobra.Command, args []string) error {
 	if dashIndex := cmd.ArgsLenAtDash(); dashIndex >= 0 {
 		positionalArgCount = dashIndex
 	}
-	if positionalArgCount != 1 {
+	if positionalArgCount > 1 {
 		return fmt.Errorf("accepts 1 arg(s), received %d", positionalArgCount)
 	}
 
