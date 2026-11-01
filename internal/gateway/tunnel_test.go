@@ -57,7 +57,9 @@ func tunnelFixture(t *testing.T) (*Gateway, client.Endpoint, *fixedVMResolver, s
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	resolver := &fixedVMResolver{address: netip.MustParseAddr("192.0.2.10")}
-	g := &Gateway{cfg: Config{MaxTunnels: 1, TunnelIdleTimeoutValue: 300 * time.Millisecond}, vmResolver: resolver, audit: audit, backgroundCtx: ctx, backgroundCancel: cancel, tunnelSlots: make(chan struct{}, 1), token: "test-token"}
+	catalog := NewTargetCatalog()
+	catalog.Set(vmAccessListing, []Target{{OS: "ubuntu", Type: "server", Arch: "amd64", Engine: "qemu"}}, nil)
+	g := &Gateway{cfg: Config{MaxTunnels: 1, TunnelIdleTimeoutValue: 300 * time.Millisecond}, catalog: catalog, vmResolver: resolver, audit: audit, backgroundCtx: ctx, backgroundCancel: cancel, tunnelSlots: make(chan struct{}, 1), token: "test-token"}
 	// Substitute only the network dial: the resolver and production address checks
 	// still run, while the fake guest service is reachable on loopback in tests.
 	g.tunnelDial = func(ctx context.Context, network, address string) (net.Conn, error) {

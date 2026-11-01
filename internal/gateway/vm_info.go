@@ -10,6 +10,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// vmAccessListing is the listing that names the VMs vm_info and tunnels can reach.
+const vmAccessListing = "start"
+
 // VMInfoOutput contains guest-only credentials and controller configuration.
 type VMInfoOutput struct {
 	OS               string `json:"os"`
@@ -28,14 +31,12 @@ type VMInfoOutput struct {
 }
 
 func (g *Gateway) toolVMInfo(ctx context.Context, _ *mcp.CallToolRequest, in vmTargetInput) (*mcp.CallToolResult, VMInfoOutput, error) {
-	if in.Arch == "" {
-		in.Arch = "amd64"
-	}
-	if in.OS == "ubuntu" && in.Type == "" {
-		in.Type = "server"
+	target, err := g.grammar().ResolveVMTarget(vmAccessListing, in.OS, in.Type, in.Arch, "")
+	if err != nil {
+		return nil, VMInfoOutput{}, err
 	}
 	// Resolve first, so the operator is only asked about a VM that is running.
-	vm, err := g.vmResolver.Resolve(ctx, in.OS, in.Type, in.Arch)
+	vm, err := g.vmResolver.Resolve(ctx, target.OS, target.Type, target.Arch)
 	if err != nil {
 		return nil, VMInfoOutput{}, err
 	}
@@ -47,13 +48,13 @@ func (g *Gateway) toolVMInfo(ctx context.Context, _ *mcp.CallToolRequest, in vmT
 	if err := allowedTunnelAddress(vm.Address); err != nil {
 		return nil, VMInfoOutput{}, err
 	}
-	if vm.Port != 22 && vm.Port != 5985 && vm.Port != 5986 {
+	if !tunnelPorts[vm.Port] {
 		return nil, VMInfoOutput{}, fmt.Errorf("guest service port is outside the tunnel allowlist")
 	}
 	out := VMInfoOutput{OS: vm.OS, Type: vm.Type, Arch: vm.Arch, Engine: vm.Engine, Address: vm.Address.String(), NetworkMode: vm.NetworkMode, Protocol: vm.Protocol, Port: vm.Port, Username: vm.Username, Password: vm.Password}
-	target := vm.OS + "/" + vm.Type + "/" + vm.Arch
-	alias := "sailwright-" + strings.ReplaceAll(target, "/", "-")
-	proxy := "sailwright-gateway vm tunnel " + target + " " + strconv.Itoa(vm.Port)
+	key := target.Key()
+	alias := "sailwright-" + strings.ReplaceAll(key, "/", "-")
+	proxy := "sailwright-gateway vm tunnel " + key + " " + strconv.Itoa(vm.Port)
 	host := map[string]any{"ansible_user": vm.Username, "ansible_password": vm.Password, "ansible_port": vm.Port}
 	if vm.Protocol == "ssh" {
 		if strings.ContainsAny(vm.Username, "\r\n\x00") {

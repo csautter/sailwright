@@ -274,3 +274,27 @@ func TestCustomProvisionSourcesNeedApproval(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveVMTargetFillsCLIDefaults(t *testing.T) {
+	catalog := NewTargetCatalog()
+	catalog.Set("start", []Target{{OS: "ubuntu", Type: "server", Arch: "amd64"}, {OS: "ubuntu", Type: "desktop", Arch: "amd64"}, {OS: "windows11", Arch: "amd64"}}, nil)
+	ctx := GrammarContext{Catalog: catalog}
+	for _, tc := range []struct {
+		os, typ, arch, want string
+	}{
+		{"ubuntu", "", "", "ubuntu/server/amd64"},
+		{"ubuntu", "desktop", "amd64", "ubuntu/desktop/amd64"},
+		// The CLI ignores a type for untyped OSes, so the key must too.
+		{"windows11", "server", "", "windows11//amd64"},
+	} {
+		got, err := ctx.ResolveVMTarget("start", tc.os, tc.typ, tc.arch, "")
+		if err != nil || got.Key() != tc.want {
+			t.Errorf("%s/%s/%s: %v %v", tc.os, tc.typ, tc.arch, got, err)
+		}
+	}
+	for _, bad := range [][3]string{{"macos", "", "arm64"}, {"ubuntu", "Server", ""}, {"", "", ""}} {
+		if _, err := ctx.ResolveVMTarget("start", bad[0], bad[1], bad[2], ""); err == nil {
+			t.Errorf("%v accepted", bad)
+		}
+	}
+}

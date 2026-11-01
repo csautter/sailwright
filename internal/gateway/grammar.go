@@ -128,6 +128,44 @@ func (o Operation) Argv(ctx GrammarContext) []string {
 	return argv
 }
 
+// VMTarget names one VM the way the CLI does: Type is empty for OSes without types.
+type VMTarget struct {
+	OS, Type, Arch string
+}
+
+// Key is the os/type/arch form used for locks, ownership and tunnel targets.
+func (t VMTarget) Key() string { return vmKey(t.OS, t.Type, t.Arch) }
+
+// ResolveVMTarget validates a target and fills the CLI defaults (arch amd64; type
+// server for OSes that list types, none for the others) against the targets that
+// `sailwright <listCommand> list` reports. Every tool that names a VM goes through
+// it, so jobs, vm_info, tunnels and ownership records agree on the VM's name.
+func (ctx GrammarContext) ResolveVMTarget(listCommand, osName, osType, arch, engine string) (VMTarget, error) {
+	if arch == "" {
+		arch = defaultArch
+	}
+	for name, value := range map[string]string{"os": osName, "type": osType, "arch": arch} {
+		if value != "" && !identifierPattern.MatchString(value) {
+			return VMTarget{}, fmt.Errorf("invalid %s %q", name, value)
+		}
+	}
+	if osName == "" {
+		return VMTarget{}, errors.New("os is required")
+	}
+	if osType == "" && ctx.Catalog.HasTypedTargets(listCommand, osName) {
+		osType = defaultOSType
+	}
+	matches := ctx.Catalog.Match(listCommand, osName, osType, arch, engine)
+	if len(matches) == 0 {
+		return VMTarget{}, fmt.Errorf("target os=%s type=%s arch=%s engine=%s is not listed by `sailwright %s list` on this host", osName, osType, arch, engine, listCommand)
+	}
+	// Types only exist for OSes that list them; drop a type the CLI would ignore.
+	if matches[0].Type == "" {
+		osType = ""
+	}
+	return VMTarget{OS: osName, Type: osType, Arch: arch}, nil
+}
+
 func embeddedPlaybookPath(playbookDir string, name string) string {
 	return filepath.Join(playbookDir, name+".yml")
 }
@@ -159,33 +197,17 @@ func (o *Operation) Validate(ctx GrammarContext) error {
 	if o.OS == "local" {
 		return errors.New("local provisioning changes the host and needs approval")
 	}
-	if o.Arch == "" {
-		o.Arch = defaultArch
-	}
-	for name, value := range map[string]string{"os": o.OS, "type": o.Type, "arch": o.Arch, "engine": o.Engine} {
-		if value != "" && !identifierPattern.MatchString(value) {
-			return fmt.Errorf("invalid %s %q", name, value)
-		}
-	}
-	if o.OS == "" {
-		return errors.New("os is required")
+	if o.Engine != "" && !identifierPattern.MatchString(o.Engine) {
+		return fmt.Errorf("invalid engine %q", o.Engine)
 	}
 	if o.Engine != "" && o.Kind != OpBuild && o.Kind != OpPull {
 		return fmt.Errorf("--engine is not supported for %s", o.Kind)
 	}
-
-	listCommand := string(o.Kind)
-	if o.Type == "" && ctx.Catalog.HasTypedTargets(listCommand, o.OS) {
-		o.Type = defaultOSType
+	target, err := ctx.ResolveVMTarget(string(o.Kind), o.OS, o.Type, o.Arch, o.Engine)
+	if err != nil {
+		return err
 	}
-	matches := ctx.Catalog.Match(listCommand, o.OS, o.Type, o.Arch, o.Engine)
-	if len(matches) == 0 {
-		return fmt.Errorf("target os=%s type=%s arch=%s engine=%s is not listed by `sailwright %s list` on this host", o.OS, o.Type, o.Arch, o.Engine, listCommand)
-	}
-	// Types only exist for OSes that list them; drop a type the CLI would ignore.
-	if matches[0].Type == "" {
-		o.Type = ""
-	}
+	o.OS, o.Type, o.Arch = target.OS, target.Type, target.Arch
 
 	if o.Kind == OpProvision {
 		if o.Verbosity < -1 || o.Verbosity > maxVerbosity {
