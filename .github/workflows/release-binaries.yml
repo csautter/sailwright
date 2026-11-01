@@ -64,6 +64,12 @@ jobs:
       - name: Package release artifact
         run: make package-cli-target package-gateway-target GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} VERSION=${VERSION}
 
+      - name: Verify embedded versions on the native build
+        if: ${{ matrix.goos == 'linux' && matrix.goarch == 'amd64' }}
+        run: |
+          dist/linux-amd64/sailwright --version | grep -F -- "${VERSION}"
+          dist/linux-amd64/sailwright-gateway --version | grep -F -- "${VERSION}"
+
       - name: Upload packaged artifact
         uses: actions/upload-artifact@v7
         with:

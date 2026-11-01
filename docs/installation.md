@@ -62,7 +62,8 @@ Sigstore services to verify the signature.
 | Default directory | `~/.local/bin` | `%LOCALAPPDATA%\Programs\sailwright` |
 | `PATH` | prints a hint if the directory is missing | adds the directory to the user `PATH` |
 
-Rerun the command to update to the latest release.
+Use `sailwright update` to update to the latest release. Older installations
+without this command need the install command above once more.
 
 ### Options
 
@@ -201,3 +202,102 @@ extensions right away; delete the file to try again. Set
 
 Vagrant is installed in a pinned version through Chocolatey and added to the
 `PATH`.
+
+## Updating
+
+Check the installed version with `sailwright --version`. `sailwright version`
+also shows OS/architecture, installation type, and the effective automatic
+check setting.
+
+- **Homebrew:** `brew upgrade sailwright` and, if installed,
+  `brew upgrade sailwright-gateway`. Self-update refuses Homebrew paths,
+  including symlinks into the Cellar. Scoop and winget installations must
+  also be updated through their package manager.
+- **Install script or manual release:** `sailwright update`. The adjacent
+  gateway is updated too; restart it if it is running. Use `--no-gateway`
+  to update only the CLI.
+- **Development build / go install:** rebuild from source or install a
+  release using the install script. Development builds cannot self-update.
+
+The updater displays the version change and a release-notes link before
+asking for confirmation. Without a terminal on stdin, pass `--yes`:
+
+```bash
+sailwright update --yes
+sailwright update --check
+sailwright update --version v1.2.3 --yes
+```
+
+`--check` installs nothing: exit **0** means already current (or newer than
+latest), **2** means an update is available, **1** means an error. An explicit
+`--version` permits a downgrade; otherwise the updater never downgrades.
+Only stable release versions are supported.
+
+Downloads use the same asset names, SHA-256 checksums, and optional cosign
+verification as the install scripts, including checksum entries prefixed
+with `dist/`. If cosign is installed, signature verification must succeed
+before installation; it can contact public Sigstore services. Both archives
+are verified and staged before either binary is replaced. Files are staged
+in the installation directory with the existing executable permissions.
+Each replacement uses an atomic rename on Linux/macOS. Windows renames the
+old executable to `.old`; the next CLI invocation removes these backups.
+A failed replacement restores previous binaries; an in-use Windows gateway
+may require stopping it before retrying. The target directory must be
+writable; the updater never invokes sudo or requests administrator rights.
+If an interrupted update leaves an `.update-lock`, check that no updater is
+running before removing that file and retrying.
+
+The first release containing `update` can update itself. For an earlier
+release, rerun the install script once to gain the command.
+
+## Optional update notices
+
+Automatic checks are **off by default**. Enable or disable them explicitly:
+
+```bash
+sailwright update --auto-check on
+sailwright update --auto-check-interval 1h
+sailwright update --auto-check off
+```
+
+The interval uses Go duration syntax, defaults to **1h**, and must be at
+least **15m**. Settings commands work offline. Alternatively set
+`SAILWRIGHT_UPDATE_CHECK=1`; `SAILWRIGHT_NO_UPDATE_CHECK=1` always disables
+checks, including when the first variable or the saved setting enables them.
+
+When enabled, an eligible CLI invocation issues at most one GET per interval
+to `https://github.com/csautter/sailwright/releases/latest`, reads its release
+tag redirect, and stops without fetching the release page or using the API.
+The application adds only `User-Agent: sailwright/<version>`; no configuration,
+project data, machine identifiers, or credentials are sent. The request runs
+alongside the command with a two-second timeout. The command never waits for
+it. A result completed during a command can produce a one-line notice on
+**stderr** when the command finishes. A cached result can be shown on a later
+invocation. There is no automatic installation, daemon, or background service.
+
+No check or notice occurs for `update`, `version`, `--version`, `help`,
+completion, development builds, when stderr has no TTY, or when `CI` is set.
+Failures are silent and still count toward the interval. Notices for an
+available version occur at most once per interval; stdout stays unchanged.
+The gateway does not perform checks.
+
+Settings are stored in `update.json` in the existing configuration directory;
+check time, last seen version, and notice time are in `update-check.json` in
+the existing cache directory. Defaults are:
+
+| Platform | Configuration directory | Cache directory |
+| --- | --- | --- |
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/dev-alchemy` | `${XDG_DATA_HOME:-~/.local/share}/dev-alchemy/cache` |
+| macOS | `~/Library/Application Support/dev-alchemy` | `~/Library/Application Support/dev-alchemy/cache` |
+| Windows | `%APPDATA%\dev-alchemy` | `%LOCALAPPDATA%\dev-alchemy\cache` |
+
+The existing `DEV_ALCHEMY_CONFIG_DIR`, `DEV_ALCHEMY_APP_DATA_DIR`, and
+`DEV_ALCHEMY_CACHE_DIR` overrides apply. `sailwright version` shows the resolved
+settings path and effective enablement, including environment overrides.
+
+For local integration tests only, `SAILWRIGHT_UPDATE_BASE_URL` replaces the
+repository URL for the latest redirect and release downloads (for example,
+`http://127.0.0.1:8765`). Signature identity remains pinned to the public
+release workflow. Never use this override for normal updates. The fixture
+tests in `test/selfupdate` exercise the installers and updater with real
+versioned binaries on all three operating systems.

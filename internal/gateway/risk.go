@@ -58,7 +58,7 @@ func AssessRisk(args []string, bundleRoot string) []string {
 	}
 
 	switch command {
-	case "install":
+	case "install", "update":
 		flags[RiskHostModifying] = true
 	case "push":
 		flags[RiskNetworkWrite] = true
@@ -98,7 +98,7 @@ func isFlagValue(args []string, i int) bool {
 	case "--check", "--dry-run", "--yes", "-y", "--headless", "--verbose", "-v", "--no-cache",
 		"--force-winrm-uninstall", "--force-ssh-uninstall", "--plain-http", "--insecure-skip-tls-verify",
 		"--password-stdin", "--no-docker-credentials", "--with-go", "--virtualbox", "--hyperv", "--vagrant", "--refresh", "--json", "--show-password",
-		"--no-prebuilt", "--ask-become-pass", "-K":
+		"--no-gateway", "--no-prebuilt", "--ask-become-pass", "-K":
 		return false
 	}
 	return true

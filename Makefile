@@ -55,7 +55,7 @@ build-cli-target:
 	@test -n "$(GOARCH)" || (echo "GOARCH is required" && exit 1)
 	mkdir -p "$(TARGET_DIST_DIR)"
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) \
-		go build -trimpath -ldflags '$(GO_LDFLAGS)' -o "$(TARGET_DIST_DIR)/$(TARGET_BINARY_NAME)" $(MAIN_PACKAGE)
+		go build -trimpath -ldflags '$(GO_LDFLAGS) -X github.com/csautter/dev-alchemy/cmd/cmd.version=$(VERSION)' -o "$(TARGET_DIST_DIR)/$(TARGET_BINARY_NAME)" $(MAIN_PACKAGE)
 
 build-cli-release: clean-dist
 	@set -e; \

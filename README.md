@@ -52,6 +52,11 @@ verify the download against the release checksums and need no `sudo` or admin
 rights. See [Installation](./docs/installation.md) for options and manual
 installs.
 
+Check your version with `sailwright --version`. Update script/manual installs
+with `sailwright update`, or use `brew upgrade sailwright` for Homebrew.
+[Optional update notices](./docs/installation.md#optional-update-notices) are
+off by default.
+
 See [🚀 Getting Started](#-getting-started) below for macOS/Windows steps,
 cloning the repo instead, and running your first full workflow.
 
