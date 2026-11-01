@@ -53,7 +53,7 @@ func DefaultSettings() Settings { return Settings{Interval: DefaultInterval} }
 // LoadSettings always returns usable settings: on error it returns the defaults
 // together with the error, so callers can warn and overwrite a broken file.
 func LoadSettings(file string) (Settings, error) {
-	b, err := os.ReadFile(file)
+	b, err := os.ReadFile(file) // #nosec G304 -- path in the user config/cache directory, not from untrusted input.
 	if os.IsNotExist(err) {
 		return DefaultSettings(), nil
 	}
@@ -221,7 +221,7 @@ func checkLock(file string) (func(), bool) {
 	if info, err := os.Stat(lock); err == nil && time.Since(info.ModTime()) > time.Minute {
 		_ = os.Remove(lock)
 	}
-	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 -- path in the user config/cache directory, not from untrusted input.
 	if err != nil {
 		return nil, false
 	}

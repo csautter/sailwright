@@ -189,7 +189,7 @@ func (r Releases) Checksums(ctx context.Context, tag string) (data []byte, signe
 			return nil, false, err
 		}
 	}
-	cmd := exec.CommandContext(ctx, cosign, "verify-blob", "--certificate", manifest+".pem", "--signature", manifest+".sig", "--certificate-identity", Repository+"/.github/workflows/release-binaries.yml@refs/heads/main", "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com", manifest)
+	cmd := exec.CommandContext(ctx, cosign, "verify-blob", "--certificate", manifest+".pem", "--signature", manifest+".sig", "--certificate-identity", Repository+"/.github/workflows/release-binaries.yml@refs/heads/main", "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com", manifest) // #nosec G204 -- cosign from LookPath with fixed argv and self-created temp paths; no shell.
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return nil, false, fmt.Errorf("cosign verification failed: %w: %s", err, output)
 	}

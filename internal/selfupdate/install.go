@@ -80,7 +80,7 @@ func replace(items []Replacement, rename, link func(string, string) error) (resu
 		return nil
 	}
 	lock := items[0].Path + ".update-lock"
-	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 -- path derived from os.Executable(), not from untrusted input.
 	if err != nil {
 		return fmt.Errorf("another update or a leftover update lock exists at %s: %w", lock, err)
 	}
@@ -174,12 +174,12 @@ func replace(items []Replacement, rename, link func(string, string) error) (resu
 
 // copyFile creates dst exclusively and removes it again if copying fails.
 func copyFile(src, dst string, perm os.FileMode) (err error) {
-	in, err := os.Open(src)
+	in, err := os.Open(src) // #nosec G304 -- path derived from os.Executable(), not from untrusted input.
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm) // #nosec G304 -- path derived from os.Executable(), not from untrusted input.
 	if err != nil {
 		return err
 	}
@@ -198,7 +198,7 @@ func Cleanup(executable string) {
 		return
 	}
 	lock := executable + ".update-lock"
-	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 -- path derived from os.Executable(), not from untrusted input.
 	if err != nil {
 		return
 	}
