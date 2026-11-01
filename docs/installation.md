@@ -236,7 +236,8 @@ Only stable release versions are supported.
 Downloads use the same asset names, SHA-256 checksums, and optional cosign
 verification as the install scripts, including checksum entries prefixed
 with `dist/`. If cosign is installed, signature verification must succeed
-before installation; it can contact public Sigstore services. Both archives
+before installation; it can contact public Sigstore services. The updater
+prints whether the signature was verified or only checksums were checked. Both archives
 are verified and staged before either binary is replaced. Files are staged
 in the installation directory with the existing executable permissions.
 Each replacement uses an atomic rename on Linux/macOS. Windows renames the

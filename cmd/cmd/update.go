@@ -161,9 +161,14 @@ func init() {
 		}
 		ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
 		defer cancel()
-		sums, err := release.Checksums(ctx, tag)
+		sums, signed, err := release.Checksums(ctx, tag)
 		if err != nil {
 			return err
+		}
+		if signed {
+			fmt.Fprintln(cmd.ErrOrStderr(), "Checksum manifest signature verified with cosign.")
+		} else {
+			fmt.Fprintln(cmd.ErrOrStderr(), "Note: cosign not found; verifying SHA-256 checksums only (signature not checked).")
 		}
 		names := []string{"sailwright"}
 		paths := []string{executable}

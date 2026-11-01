@@ -83,9 +83,9 @@ func TestReleaseVerification(t *testing.T) {
 			if err != nil || tag != "v1.2.3" {
 				t.Fatalf("%s %v", tag, err)
 			}
-			sums, err := r.Checksums(ctx, tag)
-			if err != nil {
-				t.Fatal(err)
+			sums, signed, err := r.Checksums(ctx, tag)
+			if err != nil || signed {
+				t.Fatalf("signed=%t %v", signed, err)
 			}
 			b, err := r.Binary(ctx, tag, "sailwright", goos, "amd64", sums)
 			if err != nil || string(b) != "new binary" {
@@ -110,11 +110,15 @@ func TestSignatureVerification(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture; Windows checksum integration runs in CI")
 	}
-	for _, fail := range []bool{false, true} {
-		t.Run(fmt.Sprint(fail), func(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		fail, missing       bool
+		wantErr, wantSigned bool
+	}{{name: "verified", wantSigned: true}, {name: "rejected", fail: true, wantErr: true}, {name: "signature missing", missing: true, wantErr: true}} {
+		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			code := "0"
-			if fail {
+			if tc.fail {
 				code = "1"
 			}
 			script := "#!/bin/sh\n[ \"$1\" = verify-blob ] || exit 3\ncase \"$*\" in *'" + Repository + "/.github/workflows/release-binaries.yml@refs/heads/main'*'https://token.actions.githubusercontent.com'*) exit " + code + ";; *) exit 4;; esac\n"
@@ -122,11 +126,23 @@ func TestSignatureVerification(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", dir)
-			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("signed fixture")) }))
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.missing && strings.HasSuffix(r.URL.Path, ".sig") {
+					http.NotFound(w, r)
+					return
+				}
+				_, _ = w.Write([]byte("signed fixture"))
+			}))
 			defer s.Close()
-			_, err := (Releases{BaseURL: s.URL}).Checksums(context.Background(), "v1.0.0")
-			if (err != nil) != fail {
-				t.Fatalf("fail=%t: %v", fail, err)
+			data, signed, err := (Releases{BaseURL: s.URL}).Checksums(context.Background(), "v1.0.0")
+			if (err != nil) != tc.wantErr || signed != tc.wantSigned {
+				t.Fatalf("signed=%t err=%v", signed, err)
+			}
+			if tc.wantErr && data != nil {
+				t.Fatal("manifest returned despite failed verification")
+			}
+			if tc.missing && !strings.Contains(err.Error(), "signature is unavailable") {
+				t.Fatalf("unclear error: %v", err)
 			}
 		})
 	}
@@ -159,7 +175,7 @@ func TestValidateBaseURL(t *testing.T) {
 		if _, err := (Releases{BaseURL: bad}).Latest(context.Background()); err == nil {
 			t.Errorf("Latest used %s", bad)
 		}
-		if _, err := (Releases{BaseURL: bad}).Checksums(context.Background(), "v1.0.0"); err == nil {
+		if _, _, err := (Releases{BaseURL: bad}).Checksums(context.Background(), "v1.0.0"); err == nil {
 			t.Errorf("Checksums used %s", bad)
 		}
 	}

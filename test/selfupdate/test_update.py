@@ -106,7 +106,7 @@ class UpdateTest(unittest.TestCase):
         self.run_cli("update", "--check", code=2)
         self.run_cli("update", code=1)
         self.assert_version("v1.0.0")
-        self.run_cli("update", "--yes")
+        self.assertIn("cosign not found", self.run_cli("update", "--yes").stderr)
         self.assert_version("v1.0.1")
         self.run_cli("update", "--yes")
         self.run_cli("update", "--check")

@@ -146,40 +146,41 @@ func (r Releases) download(ctx context.Context, tag, name string, limit int64) (
 	return data, nil
 }
 
-// Checksums verifies the checksum manifest's signature whenever cosign is installed.
-func (r Releases) Checksums(ctx context.Context, tag string) ([]byte, error) {
+// Checksums downloads the checksum manifest and verifies its signature whenever
+// cosign is installed. signed reports whether the signature was verified.
+func (r Releases) Checksums(ctx context.Context, tag string) (data []byte, signed bool, err error) {
 	name := "sailwright_" + strings.TrimPrefix(tag, "v") + "_checksums.txt"
-	data, err := r.download(ctx, tag, name, 1<<20)
+	data, err = r.download(ctx, tag, name, 1<<20)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	cosign, err := exec.LookPath("cosign")
-	if err != nil {
-		return data, nil
+	cosign, lookErr := exec.LookPath("cosign")
+	if lookErr != nil {
+		return data, false, nil
 	}
 	dir, err := os.MkdirTemp("", "sailwright-signature-*")
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer os.RemoveAll(dir)
 	manifest := filepath.Join(dir, name)
 	if err := os.WriteFile(manifest, data, 0600); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	for _, suffix := range []string{".sig", ".pem"} {
-		signed, err := r.download(ctx, tag, name+suffix, 1<<20)
+		signature, err := r.download(ctx, tag, name+suffix, 1<<20)
 		if err != nil {
-			return nil, err
+			return nil, false, fmt.Errorf("cosign is installed but the signature is unavailable: %w", err)
 		}
-		if err := os.WriteFile(manifest+suffix, signed, 0600); err != nil {
-			return nil, err
+		if err := os.WriteFile(manifest+suffix, signature, 0600); err != nil {
+			return nil, false, err
 		}
 	}
 	cmd := exec.CommandContext(ctx, cosign, "verify-blob", "--certificate", manifest+".pem", "--signature", manifest+".sig", "--certificate-identity", Repository+"/.github/workflows/release-binaries.yml@refs/heads/main", "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com", manifest)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("cosign verification failed: %w: %s", err, output)
+		return nil, false, fmt.Errorf("cosign verification failed: %w: %s", err, output)
 	}
-	return data, nil
+	return data, true, nil
 }
 
 func (r Releases) Binary(ctx context.Context, tag, name, goos, arch string, checksums []byte) ([]byte, error) {
