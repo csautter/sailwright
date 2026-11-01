@@ -10,6 +10,7 @@ on:
       - "cmd/sailwright-gateway/**"
       - "internal/gateway/**"
       - "internal/winpsenv/**"
+      - "scripts/gh-runner-func/**"
       - "test/e2e/**"
       - ".github/workflows/test-cmd-unit-tests.yml"
       # Static checks in pkg/build and test/workflowcheck read these files.
@@ -42,6 +43,7 @@ on:
       - "cmd/sailwright-gateway/**"
       - "internal/gateway/**"
       - "internal/winpsenv/**"
+      - "scripts/gh-runner-func/**"
       - "test/e2e/**"
       - ".github/workflows/test-cmd-unit-tests.yml"
       # Static checks in pkg/build and test/workflowcheck read these files.
@@ -141,6 +143,9 @@ jobs:
 
       - name: Run workflow checks
         run: go test ./test/workflowcheck/...
+
+      - name: Run gh-runner Function App tests
+        run: python3 -I -m unittest discover -s scripts/gh-runner-func -v
 
   oci-integration:
     name: Run OCI registry integration test
