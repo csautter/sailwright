@@ -37,14 +37,21 @@ func TestVMInfoOutputsAndFailures(t *testing.T) {
 			if value.SchemaVersion != 1 || value.Password != "guest-secret" || value.Address != "192.0.2.10" {
 				t.Fatalf("unexpected info: %+v", value)
 			}
-		} else if !strings.Contains(out.String(), "Password: guest-secret") {
+		} else if strings.Contains(out.String(), "guest-secret") || !strings.Contains(out.String(), "Password: ********") {
 			t.Fatal(out.String())
 		}
+	}
+	command := newVMCommand()
+	var shown bytes.Buffer
+	command.SetOut(&shown)
+	command.SetArgs([]string{"info", "ubuntu", "--show-password"})
+	if err := command.Execute(); err != nil || !strings.Contains(shown.String(), "Password: guest-secret") {
+		t.Fatalf("--show-password: %v %s", err, shown.String())
 	}
 	inspectVMInfo = func(alchemy_build.VirtualMachineConfig) (provision.VMInfo, error) {
 		return provision.VMInfo{}, errors.New("VM is not running")
 	}
-	command := newVMCommand()
+	command = newVMCommand()
 	command.SetArgs([]string{"info", "ubuntu", "--json"})
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("stopped VM: %v", err)
