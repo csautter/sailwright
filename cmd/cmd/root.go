@@ -1,14 +1,24 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
+
+	"github.com/csautter/dev-alchemy/pkg/provision"
 
 	"github.com/spf13/cobra"
 )
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   "sailwright",
+	Use: "sailwright",
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		cmd.SilenceUsage = true
+		path, origin := provision.ConfigLocation()
+		if origin == "current directory" && (cmd.Name() == "provision" || cmd.Parent() == provisionCmd) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Using source configuration from current directory: %s\n", path)
+		}
+	},
 	Short: "Sailwright CLI - build self provisioning developer environments",
 	Long:  "Sailwright is a developer tool that helps you to build self provisioning developer environments for multiple platforms with ease.",
 	// Uncomment the following line if your bare application

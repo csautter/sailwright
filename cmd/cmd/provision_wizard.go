@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"os/user"
 	"runtime"
@@ -46,6 +47,18 @@ func provisionWizard(cmd *cobra.Command) error {
 	targetOS := vm.OS
 	if targetOS == "local" {
 		targetOS = runtime.GOOS
+	}
+	configPath, _ := provision.ConfigLocation()
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		location := ""
+		if err := runWizardForm(cmd, huh.NewInput().Title("Add your own tools folder or Git URL?").Description("Leave empty to use built-in examples only.").Value(&location)); err != nil {
+			return err
+		}
+		if strings.TrimSpace(location) != "" {
+			if err := provision.AddConfigSource(strings.TrimSpace(location), "", ""); err != nil {
+				return err
+			}
+		}
 	}
 	entries, err := provision.Catalog(targetOS, false)
 	if err != nil {
@@ -94,7 +107,7 @@ func provisionWizard(cmd *cobra.Command) error {
 	if err := runWizardForm(cmd, huh.NewConfirm().Title("Preview first (no changes)?").Value(&preview)); err != nil {
 		return err
 	}
-	if vm.OS == "local" && vm.HostOs != alchemy_build.HostOsWindows {
+	if !askBecomePass && vm.OS == "local" && vm.HostOs != alchemy_build.HostOsWindows {
 		askBecomePass = wizardNeedsSudoPassword()
 	}
 	if vm.OS == "local" && vm.HostOs == alchemy_build.HostOsWindows && !assumeYes {
@@ -113,19 +126,20 @@ func provisionWizard(cmd *cobra.Command) error {
 	defer func() {
 		fmt.Fprintln(cmd.OutOrStdout(), "Tip: re-run without questions: "+wizardCommand(cmd, vm, selectedRoles, playbookPath, check, askBecomePass, assumeYes))
 	}()
-	if err := cmd.RunE(cmd, []string{vm.OS}); err != nil {
-		return err
-	}
 	if preview {
-		apply := false
-		if err := runWizardForm(cmd, huh.NewConfirm().Title("Apply these changes now?").Value(&apply)); err != nil {
+		if err := cmd.RunE(cmd, []string{vm.OS}); err != nil {
 			return err
 		}
-		if apply {
-			check = false
-			return cmd.RunE(cmd, []string{vm.OS})
-		}
 	}
+	apply := false
+	if err := runWizardForm(cmd, huh.NewConfirm().Title("Apply these changes now?").Value(&apply)); err != nil {
+		return err
+	}
+	if apply {
+		check = false
+		return cmd.RunE(cmd, []string{vm.OS})
+	}
+
 	return nil
 }
 
@@ -160,7 +174,7 @@ func wizardCommand(cmd *cobra.Command, vm alchemy_build.VirtualMachineConfig, ro
 		args = append(args, "--yes")
 	}
 	skip := map[string]bool{"arch": true, "type": true, "role": true, "playbook": true, "check": true, "dry-run": true, "ask-become-pass": true, "yes": true}
-	cmd.Flags().Visit(func(f *pflag.Flag) {
+	cmd.LocalFlags().Visit(func(f *pflag.Flag) {
 		if !skip[f.Name] {
 			args = append(args, "--"+f.Name+"="+f.Value.String())
 		}

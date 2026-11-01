@@ -53,14 +53,18 @@ type roleSourceGitCommandRunner func(workingDir string, timeout time.Duration, e
 var runRoleSourceGitCommand roleSourceGitCommandRunner = runCommandWithCombinedOutput
 var runtimeGOOS = runtime.GOOS
 
-// ansibleRoleSourcesConfigPath returns the role-source config path and whether
-// it was set explicitly through DEV_ALCHEMY_ROLE_SOURCES_CONFIG.
-func ansibleRoleSourcesConfigPath(directories *alchemy_build.Directories) (string, bool) {
-	if override := strings.TrimSpace(os.Getenv(ansibleRoleSourcesConfigEnvVar)); override != "" {
-		return filepath.Clean(override), true
+// ansibleRoleSourcesConfigPath returns the effective role-source config path
+// and, when it was selected explicitly (--config or
+// DEV_ALCHEMY_ROLE_SOURCES_CONFIG), the name of that selector.
+func ansibleRoleSourcesConfigPath(_ *alchemy_build.Directories) (string, string) {
+	path, origin := ConfigLocation()
+	switch origin {
+	case "flag":
+		return path, "--config"
+	case ansibleRoleSourcesConfigEnvVar:
+		return path, ansibleRoleSourcesConfigEnvVar
 	}
-
-	return directories.ConfigPath(ansibleRoleSourcesConfigFile), false
+	return path, ""
 }
 
 func resolveAnsibleRolePaths(projectDir string) ([]string, error) {
@@ -163,12 +167,12 @@ func hasConfiguredPlaybookSources(config ansibleRoleSourcesConfig) bool {
 
 func loadCurrentAnsibleRoleSourcesConfig() (ansibleRoleSourcesConfig, string, bool, error) {
 	directories := alchemy_build.GetDirectoriesInstance()
-	configPath, explicit := ansibleRoleSourcesConfigPath(directories)
+	configPath, explicitSelector := ansibleRoleSourcesConfigPath(directories)
 
 	config, exists, err := loadAnsibleRoleSourcesConfig(configPath)
-	if err == nil && !exists && explicit {
+	if err == nil && !exists && explicitSelector != "" {
 		// An explicitly selected config must not silently fall back to the bundled roles.
-		return ansibleRoleSourcesConfig{}, configPath, false, fmt.Errorf("%s points at %q, which does not exist", ansibleRoleSourcesConfigEnvVar, configPath)
+		return ansibleRoleSourcesConfig{}, configPath, false, fmt.Errorf("%s points at %q, which does not exist", explicitSelector, configPath)
 	}
 	return config, configPath, exists, err
 }

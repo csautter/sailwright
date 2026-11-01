@@ -261,3 +261,16 @@ func FuzzParseSafe(f *testing.F) {
 		}
 	})
 }
+
+func TestCustomProvisionSourcesNeedApproval(t *testing.T) {
+	for _, args := range [][]string{
+		{"provision", "ubuntu", "--role", "java", "--role", "kubectl"},
+		{"--config", "custom.yml", "provision", "ubuntu"},
+		{"provision", "ubuntu", "--config=custom.yml"},
+		{"provision"},
+	} {
+		if _, err := ParseSafe(args, GrammarContext{}); err == nil {
+			t.Fatalf("accepted custom or interactive operation: %v", args)
+		}
+	}
+}

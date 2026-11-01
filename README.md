@@ -252,6 +252,9 @@ There are two common entry paths.
 Use the built-in wrapper first when you want the shared command surface:
 
 ```bash
+sailwright provision                         # interactive tool installation
+sailwright provision catalog                 # discover tools and setups
+sailwright provision local --role java --check
 sailwright provision local --check
 sailwright provision local --proto ssh --check
 sailwright provision local --playbook ./playbooks/setup.yml --check

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -30,6 +32,17 @@ func TestProvisionWithoutTerminal(t *testing.T) {
 }
 
 func TestWizardPreviewApplyAndCommand(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		preview, apply bool
+	}{
+		{"preview and apply", true, true}, {"preview only", true, false}, {"apply without preview", false, true}, {"decline without preview", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testWizardFlow(t, tc.preview, tc.apply) })
+	}
+}
+
+func testWizardFlow(t *testing.T, preview, apply bool) {
 	dirs := alchemy_build.GetDirectoriesInstance()
 	previousDirs := *dirs
 	defer func() { *dirs = previousDirs }()
@@ -45,10 +58,25 @@ func TestWizardPreviewApplyAndCommand(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "roles/tool/tasks/main.yml"), []byte("---\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("DEV_ALCHEMY_ROLE_SOURCES_CONFIG", filepath.Join(root, "missing.yml"))
+	configPath := filepath.Join(root, "sources.yml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DEV_ALCHEMY_ROLE_SOURCES_CONFIG", configPath)
 	oldForm, oldRun := runWizardForm, runProvisionFunc
 	defer func() { runWizardForm, runProvisionFunc = oldForm, oldRun }()
-	answers := []string{"1\n", "1\n", "1\n0\n", "y\n", "y\n"}
+	previewAnswer, applyAnswer := "n\n", "n\n"
+	if preview {
+		previewAnswer = "y\n"
+	}
+	if apply {
+		applyAnswer = "y\n"
+	}
+	answers := []string{"1\n", "1\n", "1\n0\n", previewAnswer}
+	if runtime.GOOS == "windows" {
+		answers = append(answers, "y\n")
+	}
+	answers = append(answers, applyAnswer)
 	step := 0
 	runWizardForm = func(cmd *cobra.Command, fields ...huh.Field) error {
 		if step >= len(answers) {
@@ -74,8 +102,15 @@ func TestWizardPreviewApplyAndCommand(t *testing.T) {
 	if err := provisionWizard(provisionCmd); err != nil {
 		t.Fatal(err)
 	}
-	if len(checks) != 2 || !checks[0] || checks[1] {
-		t.Fatalf("runs: %v", checks)
+	expected := []bool{}
+	if preview {
+		expected = append(expected, true)
+	}
+	if apply {
+		expected = append(expected, false)
+	}
+	if !slices.Equal(checks, expected) {
+		t.Fatalf("runs: %v, expected: %v", checks, expected)
 	}
 	if !strings.Contains(output.String(), "sailwright provision local --role tool") {
 		t.Fatalf("output: %s", output.String())

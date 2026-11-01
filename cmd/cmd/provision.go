@@ -130,6 +130,9 @@ var provisionCmd = &cobra.Command{
 	Short: "Provision and test Ansible configuration against a VM or the local host",
 	Long: `Runs Ansible provisioning against VM targets or the current host.
 
+With no target, opens an interactive tool installation wizard.
+Use sailwright provision catalog to discover tools and setups.
+
 Important Ansible options exposed directly:
   --check, --dry-run      Run ansible-playbook with --check.
   -K, --ask-become-pass   Ask for the sudo password that tasks with become need. Local macOS and Linux provisioning only.
@@ -137,7 +140,8 @@ Important Ansible options exposed directly:
   --force-winrm-uninstall For local Windows WinRM provisioning, force cleanup to disable WinRM.
   --force-ssh-uninstall   For local Windows SSH provisioning, force cleanup to disable sshd, remove SSH firewall rules, and remove the transient user without uninstalling OpenSSH Server.
   --verbosity N           Set Ansible verbosity. The default is 3, equivalent to -vvv.
-  --playbook PATH         Override the playbook path. Without this flag, ansible-role-sources.yml can set the effective default; otherwise Sailwright falls back to ./playbooks/role-sources-test.yml.
+  --role NAME             Install a catalog role (repeatable; choose roles or a playbook).
+  --playbook PATH|NAME    Select a playbook path or catalog name. Without this flag, ansible-role-sources.yml can set the effective default; otherwise Sailwright falls back to ./playbooks/role-sources-test.yml.
   --inventory-path PATH   Override the default inventory file for local provisioning.
 
 Pass any other ansible-playbook flags after --.
@@ -321,7 +325,7 @@ func init() {
 	provisionCmd.Flags().StringVar(&localProvisionProto, "proto", string(alchemy_provision.DefaultLocalWindowsProvisionProtocol()), "Local Windows provision transport: winrm or ssh")
 	provisionCmd.Flags().IntVar(&ansibleVerbosity, "verbosity", 3, "Ansible verbosity level (0-4). Default 3 is equivalent to -vvv")
 	provisionCmd.Flags().StringArrayVar(&selectedRoles, "role", nil, "Install a role from the catalog (repeatable; cannot be combined with --playbook)")
-	provisionCmd.Flags().StringVar(&playbookPath, "playbook", "", "Override the Ansible playbook path")
+	provisionCmd.Flags().StringVar(&playbookPath, "playbook", "", "Playbook path or catalog name")
 	provisionCmd.Flags().StringVar(&inventoryPath, "inventory-path", "", "Override the default inventory file for local provisioning; pass -- --limit <host-pattern> if your custom inventory needs a target")
 	provisionCmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Skip confirmation prompts for operations that change local system state")
 	provisionCmd.Flags().BoolVar(&forceWinRMUninstall, "force-winrm-uninstall", false, "For local Windows provisioning, force cleanup to disable WinRM and remove transient setup after the run")
@@ -333,6 +337,9 @@ func validateProvisionCommandArgs(cmd *cobra.Command, args []string) error {
 	positionalArgCount := len(args)
 	if dashIndex := cmd.ArgsLenAtDash(); dashIndex >= 0 {
 		positionalArgCount = dashIndex
+	}
+	if positionalArgCount == 0 && len(args) > 0 {
+		return fmt.Errorf("Ansible arguments require a target; run `sailwright provision local --check`")
 	}
 	if positionalArgCount > 1 {
 		return fmt.Errorf("accepts 1 arg(s), received %d", positionalArgCount)

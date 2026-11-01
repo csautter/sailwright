@@ -44,6 +44,9 @@ func Catalog(targetOS string, refresh bool) ([]CatalogEntry, error) {
 		}
 		var root string
 		if typ == "local" {
+			if strings.TrimSpace(source.Path) == "" {
+				return fmt.Errorf("local source %s requires a path", roleSourceLabel(source, index))
+			}
 			root, err = resolveConfiguredPath(source.Path, filepath.Dir(configPath))
 		} else {
 			var name string
@@ -180,7 +183,7 @@ func compatiblePlatforms(platforms []string, target string) bool {
 	target = strings.ToLower(target)
 	for _, p := range platforms {
 		p = strings.ToLower(p)
-		if p == target || (target == "darwin" && (p == "macos" || p == "macosx")) || (strings.HasPrefix(target, "windows") && p == "windows") || (target == "linux" && (p == "ubuntu" || p == "debian" || p == "el" || p == "fedora" || p == "archlinux")) {
+		if p == target || ((target == "darwin" || target == "macos" || target == "macosx") && (p == "darwin" || p == "macos" || p == "macosx")) || (strings.HasPrefix(target, "windows") && p == "windows") || (target == "linux" && (p == "ubuntu" || p == "debian" || p == "el" || p == "fedora" || p == "archlinux")) {
 			return true
 		}
 	}

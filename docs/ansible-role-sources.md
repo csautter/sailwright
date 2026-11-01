@@ -138,3 +138,73 @@ Then run:
 ```bash
 sailwright provision local --check
 ```
+
+## Manage sources from the CLI
+
+```bash
+sailwright config path
+sailwright config sources add ~/src/my-tools --name team
+sailwright config sources add https://github.com/example/tools.git --name shared --ref main
+sailwright config sources list
+sailwright config sources remove shared
+```
+
+Adding a source detects `roles/` and `playbooks/`, or a directory containing
+roles or playbooks directly. Git sources are cloned into the application cache
+for detection. Source names must be unique; adding an existing name fails.
+Removing a source keeps its files and cached checkout. Edits preserve existing
+YAML comments and key order and replace the file atomically.
+
+Configuration precedence, highest first:
+
+1. The global `--config PATH` flag.
+2. `DEV_ALCHEMY_ROLE_SOURCES_CONFIG`.
+3. `ansible-role-sources.yml` in the current directory.
+4. The OS-specific config directory described above.
+
+Relative source paths are relative to the selected configuration file.
+When a project configuration is detected automatically, Sailwright prints its
+path to stderr. A starter checkout with this file needs no environment variable:
+
+```bash
+sailwright provision local --check
+sailwright --config ./team-sources.yml provision catalog --json
+```
+
+## Discover tools and setups
+
+```bash
+sailwright provision catalog
+sailwright provision catalog --os windows --json
+sailwright provision catalog --refresh
+sailwright provision local --role java --role kubectl --check
+sailwright provision local --playbook setup --check
+```
+
+The catalog includes configured sources and built-in examples. It detects roles
+by `tasks/main.yml` or `tasks/main.yaml` and playbooks by a top-level YAML list
+whose plays contain `hosts`. The built-in smoke playbook and test-role folders
+are excluded. Role descriptions and platforms come from `meta/main.yml` (or
+`.yaml`); playbook descriptions use the first comment. Invalid role metadata
+produces an error naming the file.
+
+The first source wins for each name and kind. Shadowed sources are reported.
+Compatibility reflects declared platform metadata, not a guarantee that a role
+will work. Missing metadata means compatibility is unknown and the entry remains
+selectable. Incompatible entries remain visible in the catalog. The wizard
+marks them unavailable and excludes them from selection.
+
+Existing Git checkouts are read without fetching. Missing checkouts are cloned
+on first use; `--refresh` updates them according to their configured update
+policy. Provisioning retains the existing Git update behavior.
+
+`--json` writes one document with `schema_version: 1` and `entries: []`.
+Each entry has stable fields `kind` (`role` or `playbook`), `name`, `description`,
+`source`, `path`, `platforms` (array of platform names), `compatible` (boolean),
+and `shadows` (array of source labels). Empty arrays are emitted as `[]`.
+`--os` defaults to the host OS; it affects compatibility only.
+
+Roles execute in the requested order using a private temporary playbook removed
+after the run. Choose roles or one playbook per invocation. Explicit playbook
+paths continue to work. Running `provision local` without selection flags keeps
+the configured default or smoke-playbook fallback.
