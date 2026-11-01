@@ -365,6 +365,9 @@ func TestBuildWindowsStaticInventoryProvisionArgsIncludesSecureWinRMSettings(t *
 		Port:                 localWindowsWinRMHTTPSPort,
 		WinrmScheme:          "https",
 		ServerCertValidation: "ignore",
+
+		WinrmOperationTimeoutSec: localWindowsWinRMOperationTimeoutSec,
+		WinrmReadTimeoutSec:      localWindowsWinRMReadTimeoutSec,
 	}
 
 	args, cleanup, err := buildWindowsStaticInventoryProvisionArgs(projectDir, localWindowsWinRMInventoryPath, localWindowsWinRMInventoryTarget, config, ProvisionOptions{Check: true, Verbosity: defaultAnsibleVerbosity})
@@ -417,6 +420,8 @@ func TestBuildWindowsStaticInventoryProvisionArgsIncludesSecureWinRMSettings(t *
 		"ansible_port":                         localWindowsWinRMHTTPSPort,
 		"ansible_winrm_scheme":                 "https",
 		"ansible_winrm_server_cert_validation": "ignore",
+		"ansible_winrm_operation_timeout_sec":  localWindowsWinRMOperationTimeoutSec,
+		"ansible_winrm_read_timeout_sec":       localWindowsWinRMReadTimeoutSec,
 	} {
 		if extraVars[key] != expected {
 			t.Fatalf("expected %s=%q in extra vars, got: %v", key, expected, extraVars)
