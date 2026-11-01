@@ -51,7 +51,8 @@ func newVMCommand() *cobra.Command {
 			defer listener.Close()
 			fmt.Fprintln(cmd.ErrOrStderr(), "Guest tunnel listening on", listener.Addr())
 			go func() { <-ctx.Done(); _ = listener.Close() }()
-			slots := make(chan struct{}, 16)
+			const maxLocalConnections = 16
+			slots := make(chan struct{}, maxLocalConnections)
 			for {
 				local, err := listener.Accept()
 				if err != nil {
@@ -63,6 +64,7 @@ func newVMCommand() *cobra.Command {
 				select {
 				case slots <- struct{}{}:
 				default:
+					fmt.Fprintf(cmd.ErrOrStderr(), "Guest tunnel: refusing %s, %d local connections already open\n", local.RemoteAddr(), maxLocalConnections)
 					_ = local.Close()
 					continue
 				}

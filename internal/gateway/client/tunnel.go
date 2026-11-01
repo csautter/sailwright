@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -81,8 +82,20 @@ func (e Endpoint) OpenTunnel(ctx context.Context, osName, typ, arch string, port
 		return nil, err
 	}
 	if response.StatusCode != http.StatusSwitchingProtocols || response.Header.Get("Upgrade") != "sailwright-tunnel" {
+		reason := ""
 		if response.Body != nil {
+			// The gateway's refusal reasons are short, generic and safe to show.
+			data, _ := io.ReadAll(io.LimitReader(response.Body, 256))
 			_ = response.Body.Close()
+			reason = strings.TrimSpace(strings.Map(func(r rune) rune {
+				if r < 0x20 || r == 0x7f {
+					return ' '
+				}
+				return r
+			}, string(data)))
+		}
+		if reason != "" {
+			return nil, fmt.Errorf("tunnel refused: HTTP %d: %s", response.StatusCode, reason)
 		}
 		return nil, fmt.Errorf("tunnel refused: HTTP %d", response.StatusCode)
 	}
