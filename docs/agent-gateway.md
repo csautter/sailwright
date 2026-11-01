@@ -462,11 +462,35 @@ It must not overlap the state or data directory or an agent workspace.
 ## VM access
 
 `sailwright vm info ubuntu --type server --arch amd64 --json` reports a
-running VM's engine, address, network mode (or `unknown`), protocol, port and
-guest credentials in schema version 1. Text output is available without
-`--json`. Address discovery is deliberately separate from `list --json`, where
-`address` remains null. Hyper-V asks `Get-VMNetworkAdapter` first and falls back
-to Vagrant. The command never starts a stopped VM.
+running VM's engine, address, network mode, protocol, port and guest
+credentials in schema version 1. Text output is available without `--json`; it
+masks the password unless you pass `--show-password`. Address discovery is
+deliberately separate from `list --json`, where `address` remains null. The
+command never starts a stopped VM.
+
+Network modes are `nat` (reachable only from this host), `bridged` (on your
+LAN), `user` (libvirt user-mode networking on `qemu:///session`) or `unknown`:
+
+| Engine | Mode |
+| --- | --- |
+| libvirt | `nat` on `qemu:///system` (the `default` network), `user` otherwise |
+| Tart | `nat`, or `bridged` when `TART_MACOS_BRIDGED_INTERFACE` is set |
+| Hyper-V | from the type of the switch the VM is attached to: `Internal` is `nat`, `External` is `bridged` |
+| UTM | `unknown` |
+
+On Hyper-V the guest reports its addresses through integration services, so
+the host decides which one to use. `vm info` and provisioning take an IPv4
+address of an adapter on a host-reachable switch (`Private` switches are
+skipped), preferring the switch in `VAGRANT_HYPERV_SWITCH` (default
+`Default Switch`). When the host has an address on that switch's
+`vEthernet (<switch>)` adapter, the VM address must be in the same subnet.
+This works for the Windows Default Switch (a random `172.x` subnet), for the CI
+runners' internal switch with NAT (`192.168.0.0/24`) and for external switches.
+Addresses of containers or other interfaces inside the guest are ignored. If
+Hyper-V reports no usable address yet, Vagrant discovery is tried and its
+answer must pass the same checks. Gateway jobs do not receive
+`VAGRANT_HYPERV_SWITCH` or `TART_MACOS_BRIDGED_INTERFACE`; add them to
+`env_passthrough` if the agent's VMs should use the same network as yours.
 
 Call MCP `vm_info` with the same target to receive guest credentials, an
 `ssh_config` block and an Ansible inventory. These contain sensitive guest

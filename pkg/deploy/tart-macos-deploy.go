@@ -725,3 +725,7 @@ func readTartRunLogSummary(logDir string, logFileName string) string {
 
 	return summary
 }
+
+// TartMacOSBridgedInterfaceEnvVar names the host interface Tart VMs are bridged to;
+// unset means Tart's shared NAT network.
+const TartMacOSBridgedInterfaceEnvVar = tartMacOSBridgedInterfaceEnvVar

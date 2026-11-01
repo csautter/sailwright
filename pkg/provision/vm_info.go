@@ -2,10 +2,9 @@ package provision
 
 import (
 	"fmt"
-	"net/netip"
+	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
 	alchemy_deploy "github.com/csautter/dev-alchemy/pkg/deploy"
@@ -42,38 +41,6 @@ func DiscoverTartAddress(project string, vm alchemy_build.VirtualMachineConfig) 
 	return ensureTartVMReadyForProvision(project, tartMacOSVMName(vm), tartProvisionAvailabilityOptions{})
 }
 
-// DiscoverHyperVAddress queries the hypervisor first, so discovery also works
-// when Vagrant state belongs to a different data directory.
-func DiscoverHyperVAddress(vm alchemy_build.VirtualMachineConfig) (string, error) {
-	settings, err := alchemy_deploy.ResolveHypervVagrantExecutionSettings(vm)
-	if err != nil {
-		return "", err
-	}
-	name := ""
-	for _, value := range settings.VagrantEnv {
-		if strings.HasPrefix(value, "VAGRANT_VM_NAME=") {
-			name = strings.TrimPrefix(value, "VAGRANT_VM_NAME=")
-		}
-	}
-	if name == "" {
-		return "", fmt.Errorf("managed Hyper-V VM name unavailable")
-	}
-	script := "Get-VMNetworkAdapter -VMName '" + strings.ReplaceAll(name, "'", "''") + "' -ErrorAction Stop | ForEach-Object { $_.IPAddresses }"
-	output, queryErr := runProvisionCommandWithCombinedOutputWithEnv(alchemy_build.GetDirectoriesInstance().ProjectDir, 30*time.Second, "powershell.exe", []string{"-NoProfile", "-NonInteractive", "-Command", script}, nil)
-	if queryErr == nil {
-		for _, field := range strings.Fields(output) {
-			ip, err := netip.ParseAddr(field)
-			if err == nil && ip.Is4() && ip.IsGlobalUnicast() && !ip.IsLinkLocalUnicast() {
-				return ip.String(), nil
-			}
-		}
-	}
-	if vm.OS == "ubuntu" {
-		return discoverLinuxVagrantIPv4(settings.VagrantDir, settings.VagrantEnv)
-	}
-	return discoverWindowsVagrantIPv4(settings.VagrantDir, settings.VagrantEnv)
-}
-
 // InspectVM returns guest connection details without writing them to logs.
 func InspectVM(vm alchemy_build.VirtualMachineConfig) (VMInfo, error) {
 	if err := ensureProvisionTargetRunning(vm); err != nil {
@@ -84,13 +51,15 @@ func InspectVM(vm alchemy_build.VirtualMachineConfig) (VMInfo, error) {
 	var err error
 	switch info.Engine {
 	case "hyperv":
-		info.Address, err = DiscoverHyperVAddress(vm)
+		info.Address, info.NetworkMode, err = discoverHyperVNetwork(vm)
 	case "utm":
 		info.Address, err = DiscoverUTMAddress(project, vm)
 	case "tart":
 		info.Address, err = DiscoverTartAddress(project, vm)
+		info.NetworkMode = tartNetworkMode(os.Getenv)
 	case "qemu":
 		info.Address, err = DiscoverLibvirtAddress(project, vm)
+		info.NetworkMode = libvirtNetworkMode(alchemy_deploy.LinuxLibvirtURI())
 	default:
 		return info, fmt.Errorf("VM info is unavailable for engine %s", info.Engine)
 	}
@@ -132,6 +101,24 @@ func InspectVM(vm alchemy_build.VirtualMachineConfig) (VMInfo, error) {
 		return VMInfo{}, err
 	}
 	return info, nil
+}
+
+// libvirtNetworkMode reports the network sailwright attaches libvirt VMs to: the
+// NAT "default" network on qemu:///system, user-mode networking otherwise.
+func libvirtNetworkMode(uri string) string {
+	if strings.EqualFold(strings.TrimSpace(uri), "qemu:///system") {
+		return "nat"
+	}
+	return "user"
+}
+
+// tartNetworkMode reports Tart's shared NAT network unless sailwright was told to
+// bridge the VM to a host interface.
+func tartNetworkMode(getenv func(string) string) string {
+	if strings.TrimSpace(getenv(alchemy_deploy.TartMacOSBridgedInterfaceEnvVar)) != "" {
+		return "bridged"
+	}
+	return "nat"
 }
 
 // parseGuestPort parses an inventory port; an empty value uses fallback when it is set.
