@@ -63,12 +63,12 @@ Consumption plan, plus Key Vault, storage, App Insights.
 [manager.tf](../../deployments/terraform/modules/azure_gh_runner/manager.tf).
 
 **Broker** — two HTTP routes:
-[`request_runner`](../../scripts/gh-runner-func/function_app.py#L154) mints a
+[`request_runner`](../../scripts/gh-runner-func/function_app.py#L174) mints a
 registration token and creates the VM;
-[`delete_resource_group`](../../scripts/gh-runner-func/function_app.py#L117) tears it
-down. For each request the broker imperatively creates a dedicated RG, VNet, NSG, NIC,
+[`delete_resource_group`](../../scripts/gh-runner-func/function_app.py#L123) starts
+its deletion and reports `deleting` until the RG is gone, then `deleted`. For each request the broker imperatively creates a dedicated RG, VNet, NSG, NIC,
 public IP, and the Spot VM via the Azure SDK
-([function_app.py:249](../../scripts/gh-runner-func/function_app.py#L249)+).
+([function_app.py:263](../../scripts/gh-runner-func/function_app.py#L263)+).
 
 **Ephemeral runner plane** — one throwaway VM per job, targeted by label
 ([test-build-windows.yml:121](../../.github/workflows/test-build-windows.yml#L121)).

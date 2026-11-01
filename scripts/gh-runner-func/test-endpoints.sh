@@ -210,5 +210,5 @@ if [[ "$DELETE_RESOURCE_GROUP" == "true" ]]; then
     --headers "Content-Type=application/json" \
     --body "$delete_body" \
     --output jsonc
-  echo "delete_resource_group succeeded."
+  echo "delete_resource_group succeeded (status \"deleting\" means deletion is still in progress; call again to check)."
 fi

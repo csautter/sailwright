@@ -105,7 +105,9 @@ Registers a GitHub Actions runner token, creates a resource group, and provision
 
 ### POST /api/delete_resource_group
 
-Deletes a resource group and all resources within it. Intended to be called by the workflow after the runner job completes.
+Starts deleting a resource group and all resources within it. Intended to be called by the workflow after the runner job completes.
+
+The endpoint does not wait for the deletion to finish: deleting a runner VM takes longer than the ~230 s request limit of the Function App front end, which would turn a successful deletion into a `504 Gateway Time-out`. Callers poll the endpoint until it reports `"status": "deleted"`; repeated calls are idempotent. [`delete-resource-group.sh`](delete-resource-group.sh) implements this loop and is what the workflows use.
 
 **Request body (JSON)**
 
@@ -125,9 +127,10 @@ Deletes a resource group and all resources within it. Intended to be called by t
 
 | Status | Meaning |
 |--------|---------|
-| `200`  | Deletion complete. Body: `{"message": "Resource group '<name>' deleted."}` |
+| `202`  | Deletion started or still in progress. Body: `{"message": "...", "status": "deleting", "resource-group": "<name>"}` — call again later. |
+| `200`  | The resource group no longer exists. Body: `{"message": "Resource group '<name>' deleted.", "status": "deleted", "resource-group": "<name>"}` |
 | `401`  | Authentication/authorization check failed. |
-| `500`  | Internal error during deletion. |
+| `500`  | Internal error, invalid name, or the resource group is not owned by the broker. |
 
 > **Safety guard:** The function raises an exception if the resource group name does not start with `gh-runner-tmp`, preventing accidental deletion of unrelated groups.
 
@@ -343,7 +346,13 @@ func host start
 
 ## Testing endpoints
 
-Use the provided `test-endpoints.sh` script. It automatically resolves the function app name and API client ID from Terragrunt output or the Azure CLI.
+Unit tests for the handlers stub the Azure SDKs and need only Python 3:
+
+```bash
+python3 -m unittest discover -s scripts/gh-runner-func
+```
+
+To call the deployed endpoints, use the provided `test-endpoints.sh` script. It automatically resolves the function app name and API client ID from Terragrunt output or the Azure CLI.
 
 ```bash
 # Request a runner (auto-generates resource group and runner name)
