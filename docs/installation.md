@@ -301,7 +301,9 @@ file with valid settings.
 
 For local integration tests only, `SAILWRIGHT_UPDATE_BASE_URL` replaces the
 repository URL for the latest redirect and release downloads (for example,
-`http://127.0.0.1:8765`). Signature identity remains pinned to the public
-release workflow. Never use this override for normal updates. The fixture
+`http://127.0.0.1:8765`). Only http(s) URLs on a loopback address are
+accepted, and `sailwright update` prints a warning while the override is set.
+Signature identity remains pinned to the public release workflow. Never use
+this override for normal updates. The fixture
 tests in `test/selfupdate` exercise the installers and updater with real
 versioned binaries on all three operating systems.

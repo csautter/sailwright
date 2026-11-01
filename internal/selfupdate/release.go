@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -53,11 +54,30 @@ type Releases struct {
 	Version string
 }
 
-func (r Releases) base() string {
-	if r.BaseURL != "" {
-		return strings.TrimRight(r.BaseURL, "/")
+func (r Releases) base() (string, error) {
+	if r.BaseURL == "" {
+		return Repository, nil
 	}
-	return Repository
+	if err := ValidateBaseURL(r.BaseURL); err != nil {
+		return "", err
+	}
+	return strings.TrimRight(r.BaseURL, "/"), nil
+}
+
+// ValidateBaseURL limits the release source override to local test fixtures, so a
+// leaked environment variable cannot redirect updates to a remote server.
+func ValidateBaseURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.User == nil && u.RawQuery == "" && u.Fragment == "" {
+		host := u.Hostname()
+		if ip := net.ParseIP(host); host == "localhost" || (ip != nil && ip.IsLoopback()) {
+			return nil
+		}
+	}
+	return fmt.Errorf("SAILWRIGHT_UPDATE_BASE_URL must be an http(s) URL on a loopback address for local test fixtures, got %q; unset it to use %s", raw, Repository)
 }
 func (r Releases) client() *http.Client {
 	if r.Client != nil {
@@ -70,7 +90,11 @@ func (r Releases) client() *http.Client {
 func (r Releases) Latest(ctx context.Context) (string, error) {
 	client := *r.client()
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.base()+"/releases/latest", nil)
+	base, err := r.base()
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/releases/latest", nil)
 	if err != nil {
 		return "", err
 	}
@@ -94,7 +118,11 @@ func (r Releases) Latest(ctx context.Context) (string, error) {
 	return tag, nil
 }
 func (r Releases) download(ctx context.Context, tag, name string, limit int64) ([]byte, error) {
-	u := r.base() + "/releases/download/" + url.PathEscape(tag) + "/" + url.PathEscape(name)
+	base, err := r.base()
+	if err != nil {
+		return nil, err
+	}
+	u := base + "/releases/download/" + url.PathEscape(tag) + "/" + url.PathEscape(name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err

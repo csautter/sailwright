@@ -146,6 +146,24 @@ func TestVersionComparison(t *testing.T) {
 		t.Fatal("comparison failed")
 	}
 }
+func TestValidateBaseURL(t *testing.T) {
+	for _, ok := range []string{"", "http://127.0.0.1:8765", "http://localhost:1/", "https://[::1]:8443", "http://127.0.0.2"} {
+		if err := ValidateBaseURL(ok); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"http://example.com", "https://github.com/someone/else", "http://127.0.0.1.evil.test", "http://user@127.0.0.1", "file:///tmp/releases", "ftp://127.0.0.1", "127.0.0.1:8765", "http://127.0.0.1/?x=1"} {
+		if ValidateBaseURL(bad) == nil {
+			t.Errorf("accepted %s", bad)
+		}
+		if _, err := (Releases{BaseURL: bad}).Latest(context.Background()); err == nil {
+			t.Errorf("Latest used %s", bad)
+		}
+		if _, err := (Releases{BaseURL: bad}).Checksums(context.Background(), "v1.0.0"); err == nil {
+			t.Errorf("Checksums used %s", bad)
+		}
+	}
+}
 func TestInvalidRedirect(t *testing.T) {
 	for _, location := range []string{"/login", "/releases/tag/dev", "/releases/tag/v1.0.0-beta.1"} {
 		t.Run(location, func(t *testing.T) {

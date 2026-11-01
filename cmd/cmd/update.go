@@ -119,6 +119,12 @@ func init() {
 			}
 		}
 		release := releases()
+		if err := selfupdate.ValidateBaseURL(release.BaseURL); err != nil {
+			return err
+		}
+		if release.BaseURL != "" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: using non-default update source %s\n", release.BaseURL)
+		}
 		explicit := target != ""
 		tag := target
 		if explicit {
