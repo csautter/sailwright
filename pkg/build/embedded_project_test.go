@@ -427,7 +427,7 @@ func TestEmbeddedShellScriptRepoReferencesAreEmbedded(t *testing.T) {
 func TestEmbeddedProjectUsesSeparateDataRoot(t *testing.T) {
 	t.Setenv(projectDirEnvVar, "")
 	root := t.TempDir()
-	t.Setenv("DEV_ALCHEMY_EMBEDDED_DATA_DIR", root)
+	t.Setenv("SAILWRIGHT_EMBEDDED_DATA_DIR", root)
 	app := t.TempDir()
 	project, err := ensureProjectDir(t.TempDir(), app)
 	if err != nil {

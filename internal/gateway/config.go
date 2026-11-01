@@ -58,9 +58,6 @@ type WorkspaceMapping struct {
 
 // Config is the operator-owned gateway configuration. It is never writable through MCP.
 type Config struct {
-	MaxTunnels             int                `yaml:"max_tunnels"`
-	TunnelIdleTimeout      string             `yaml:"tunnel_idle_timeout"`
-	TunnelIdleTimeoutValue time.Duration      `yaml:"-"`
 	Listen                 string             `yaml:"listen"`
 	AllowedHosts           []string           `yaml:"allowed_hosts"`
 	AllowedSourceCIDRs     []string           `yaml:"allowed_source_cidrs"`
@@ -81,6 +78,9 @@ type Config struct {
 	SnapshotMaxBytes       int64              `yaml:"snapshot_max_bytes"`
 	SnapshotMaxFiles       int                `yaml:"snapshot_max_files"`
 	AgentDir               string             `yaml:"agent_dir"`
+	MaxTunnels             int                `yaml:"max_tunnels"`
+	TunnelIdleTimeout      string             `yaml:"tunnel_idle_timeout"`
+	TunnelIdleTimeoutValue time.Duration      `yaml:"-"`
 	// ViewListen is the loopback address of the live view for build screenshots
 	// ("off" disables it); port 0 picks a free port.
 	ViewListen string `yaml:"view_listen"`
@@ -89,6 +89,9 @@ type Config struct {
 	ScreenStuckAfter string `yaml:"screen_stuck_after"`
 
 	// Resolved values, filled by Resolve.
+	// LegacyIsolation is set when state_isolation was unset and isolated mode was
+	// selected because <data_dir>/app from an older gateway exists.
+	LegacyIsolation       bool           `yaml:"-"`
 	SharedAppData         string         `yaml:"-"`
 	SharedCache           string         `yaml:"-"`
 	SharedVagrant         string         `yaml:"-"`
@@ -247,19 +250,24 @@ func (c *Config) Resolve() error {
 		c.SourcePrefixes = append(c.SourcePrefixes, prefix.Masked())
 	}
 
+	if c.DataDir == "" {
+		c.DataDir = filepath.Join(c.StateDir, "data")
+	}
 	if c.StateIsolation == "" {
+		// Gateways from before shared state kept VMs in <data_dir>/app. Keep using that
+		// state until the operator opts in, so an upgrade never orphans managed VMs.
 		c.StateIsolation = "shared"
+		if info, err := os.Stat(filepath.Join(c.DataDir, "app")); err == nil && info.IsDir() {
+			c.StateIsolation, c.LegacyIsolation = "isolated", true
+		}
 	}
 	if c.StateIsolation != "shared" && c.StateIsolation != "isolated" {
 		return fmt.Errorf("state_isolation must be shared or isolated")
 	}
 	if c.StateIsolation == "shared" {
-		if err := c.resolveSharedDirs(); err != nil {
+		if err := c.resolveSharedDirs(os.Getenv, runtime.GOOS); err != nil {
 			return err
 		}
-	}
-	if c.DataDir == "" {
-		c.DataDir = filepath.Join(c.StateDir, "data")
 	}
 	if c.AgentDir == "" {
 		home, err := os.UserHomeDir()

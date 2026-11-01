@@ -210,15 +210,23 @@ func runServe(parent context.Context, flags serveFlags) error {
 	if err := dirs.Ensure(); err != nil {
 		return err
 	}
-	if err := gateway.CheckCompatibility(parent, pinned, dirs, gateway.BuildChildEnv(dirs, cfg.EnvPassthrough, os.Getenv), cfg.StateIsolation == "shared", os.Stdout); err != nil {
+	// The installed CLI is probed without passthrough secrets; it is not the pinned copy.
+	installedEnv := gateway.BuildChildEnv(dirs, nil, os.Getenv)
+	if err := gateway.CheckCompatibility(parent, pinned, dirs, gateway.BuildChildEnv(dirs, cfg.EnvPassthrough, os.Getenv), installedEnv, cfg.StateIsolation == "shared", os.Stdout); err != nil {
 		return err
+	}
+	if cfg.SharedCacheDir != "" {
+		fmt.Println("warning: shared_cache_dir is deprecated; state_isolation: shared reuses the CLI cache without it")
+	}
+	if cfg.LegacyIsolation {
+		fmt.Printf("note: keeping isolated VM state in %s from an older gateway; set state_isolation: shared to share VMs and caches with the CLI after destroying those VMs\n", filepath.Join(cfg.DataDir, "app"))
 	}
 	if cfg.StateIsolation == "shared" {
 		old := filepath.Join(cfg.DataDir, "app")
 		marker := filepath.Join(cfg.StateDir, ".shared-data-notice")
 		if _, err := os.Stat(old); err == nil {
 			if _, err := os.Stat(marker); os.IsNotExist(err) {
-				fmt.Printf("note: %s is no longer used; after destroying old VMs remove it to free space, or set state_isolation: isolated to keep using it\n", old)
+				fmt.Printf("note: %s is no longer used (including its extracted project/ directory); after destroying old VMs remove it to free space, or set state_isolation: isolated to keep using it\n", old)
 				if err := os.WriteFile(marker, []byte("shown\n"), 0o600); err != nil {
 					return err
 				}

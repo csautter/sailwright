@@ -75,8 +75,10 @@ See [Agent Gateway](../agent-gateway.md) for usage and configuration.
 ## Amendment: shared CLI data (2026-10-31)
 
 The original isolated-state decision is amended. App-data and caches are shared
-with the operator's CLI by default, with `state_isolation: isolated` available
-for the previous layout. Config remains gateway-owned because role sources
+with the operator's CLI by default for new gateways, with `state_isolation:
+isolated` available for the previous layout. When the setting is unset and
+`data_dir/app` from an older gateway exists, isolated mode is kept so upgrades
+never orphan managed VMs. Config remains gateway-owned because role sources
 execute Ansible code on the host. Embedded assets from the pinned binary are
 extracted into a separate gateway directory to avoid cross-version replacement.
 

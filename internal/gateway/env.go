@@ -12,12 +12,15 @@ import (
 // Names of the managed directory variables understood by the sailwright CLI
 // (see pkg/build/directories.go ManagedEnv).
 const (
+	cliAppName        = "dev-alchemy"
 	envAppDataDir     = "DEV_ALCHEMY_APP_DATA_DIR"
 	envConfigDir      = "DEV_ALCHEMY_CONFIG_DIR"
 	envCacheDir       = "DEV_ALCHEMY_CACHE_DIR"
 	envVagrantDir     = "DEV_ALCHEMY_VAGRANT_DIR"
 	envPackerCacheDir = "DEV_ALCHEMY_PACKER_CACHE_DIR"
 	envPackerCache    = "PACKER_CACHE_DIR"
+	envLockTimeout    = "SAILWRIGHT_LOCK_TIMEOUT"
+	childLockTimeout  = "30s"
 )
 
 // baseEnvNames are the host variables a sailwright child process needs to find its
@@ -121,7 +124,9 @@ func BuildChildEnv(dirs ManagedDirs, passthrough []string, getenv func(string) s
 		}
 	}
 	values["SAILWRIGHT_PROJECT_DIR"] = ""
-	values["DEV_ALCHEMY_EMBEDDED_DATA_DIR"] = dirs.EmbeddedData
+	values["SAILWRIGHT_EMBEDDED_DATA_DIR"] = dirs.EmbeddedData
+	// Jobs wait briefly for a target the operator's CLI is using instead of failing.
+	values[envLockTimeout] = childLockTimeout
 	values[envAppDataDir] = dirs.AppData
 	values[envConfigDir] = dirs.Config
 	values[envCacheDir] = dirs.Cache
@@ -165,36 +170,12 @@ func findGitRoot(dir string) string {
 	}
 }
 
-// resolveSharedDirs mirrors the CLI's directory contract without importing it.
-func (c *Config) resolveSharedDirs() error {
-	home, err := os.UserHomeDir()
+// resolveSharedDirs mirrors the CLI's directory contract without importing it;
+// TestSharedAppDataMirrorsCLIDefaults keeps both in sync.
+func (c *Config) resolveSharedDirs(getenv func(string) string, goos string) error {
+	app, err := sharedAppDataDir(goos, getenv, os.UserHomeDir, os.UserConfigDir)
 	if err != nil {
 		return err
-	}
-	app := os.Getenv(envAppDataDir)
-	if app == "" {
-		switch runtime.GOOS {
-		case "darwin":
-			app = filepath.Join(home, "Library", "Application Support", "dev-alchemy")
-		case "windows":
-			base := os.Getenv("LOCALAPPDATA")
-			if base == "" {
-				base = os.Getenv("APPDATA")
-			}
-			if base == "" {
-				base, err = os.UserConfigDir()
-				if err != nil {
-					return err
-				}
-			}
-			app = filepath.Join(base, "dev-alchemy")
-		default:
-			base := os.Getenv("XDG_DATA_HOME")
-			if base == "" {
-				base = filepath.Join(home, ".local", "share")
-			}
-			app = filepath.Join(base, "dev-alchemy")
-		}
 	}
 	c.SharedAppData, err = filepath.Abs(app)
 	if err != nil {
@@ -208,7 +189,7 @@ func (c *Config) resolveSharedDirs() error {
 		{envVagrantDir, ".vagrant", &c.SharedVagrant},
 		{envPackerCacheDir, "packer_cache", &c.SharedPackerCache},
 	} {
-		value := os.Getenv(entry.name)
+		value := getenv(entry.name)
 		if value == "" {
 			value = filepath.Join(c.SharedAppData, entry.fallback)
 		}
@@ -218,4 +199,39 @@ func (c *Config) resolveSharedDirs() error {
 		}
 	}
 	return nil
+}
+
+// sharedAppDataDir returns the CLI's default app-data directory for goos.
+func sharedAppDataDir(goos string, getenv func(string) string, home, configDir func() (string, error)) (string, error) {
+	if app := getenv(envAppDataDir); app != "" {
+		return filepath.Clean(app), nil
+	}
+	switch goos {
+	case "darwin":
+		dir, err := home()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, "Library", "Application Support", cliAppName), nil
+	case "windows":
+		for _, name := range []string{"LOCALAPPDATA", "APPDATA"} {
+			if base := getenv(name); base != "" {
+				return filepath.Join(base, cliAppName), nil
+			}
+		}
+		base, err := configDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(base, cliAppName), nil
+	default:
+		if base := getenv("XDG_DATA_HOME"); base != "" {
+			return filepath.Join(base, cliAppName), nil
+		}
+		dir, err := home()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, ".local", "share", cliAppName), nil
+	}
 }

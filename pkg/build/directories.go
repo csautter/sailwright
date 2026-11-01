@@ -130,6 +130,12 @@ func resolveDefaultAppDataDir() (string, error) {
 	return resolveDefaultAppDataDirForOS(runtime.GOOS, os.Getenv, os.UserHomeDir, os.UserConfigDir)
 }
 
+// DefaultAppDataDirForOS exposes the app-data contract so sailwright-gateway tests
+// can verify that the gateway's shared-state resolution mirrors it.
+func DefaultAppDataDirForOS(goos string, getenv func(string) string, userHomeDir, userConfigDir func() (string, error)) (string, error) {
+	return resolveDefaultAppDataDirForOS(goos, getenv, userHomeDir, userConfigDir)
+}
+
 func resolveDefaultConfigDir() (string, error) {
 	return resolveDefaultConfigDirForOS(runtime.GOOS, os.Getenv, os.UserHomeDir, os.UserConfigDir)
 }
