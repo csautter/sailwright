@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/csautter/dev-alchemy/internal/winpsenv"
 )
 
 const (
@@ -82,7 +84,7 @@ func RunBuildScript(config VirtualMachineConfig, executable string, args []strin
 	// promote staged artifacts before any terminal cleanup can interrupt the parent.
 	defer cleanupBuildArtifacts()
 	cmd.Dir = GetDirectoriesInstance().GetDirectories().ProjectDir
-	cmd.Env = append(os.Environ(), GetDirectoriesInstance().ManagedEnv()...)
+	cmd.Env = winpsenv.CommandEnv(executable, GetDirectoriesInstance().ManagedEnv())
 	cmd.Env = append(cmd.Env, extraEnv...)
 	if config.Verbose {
 		cmd.Env = append(cmd.Env, "PACKER_LOG=1")

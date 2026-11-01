@@ -6,8 +6,10 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
 	"github.com/spf13/cobra"
+
+	"github.com/csautter/dev-alchemy/internal/winpsenv"
+	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
 )
 
 type installCommandSpec struct {
@@ -28,6 +30,7 @@ var runInstallCommand = func(spec installCommandSpec) error {
 
 	// #nosec G204 -- installCommandForHost selects a fixed interpreter and repo-local script path for the detected host OS.
 	cmd := exec.Command(spec.executable, spec.args...)
+	cmd.Env = winpsenv.CommandEnv(spec.executable, nil)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

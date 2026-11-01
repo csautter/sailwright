@@ -7,6 +7,7 @@ import requests
 import os
 from pathlib import Path
 
+from azure.core.exceptions import ResourceNotFoundError
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 from azure.mgmt.compute import ComputeManagementClient
@@ -25,6 +26,11 @@ _REPO_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$"
 # requires this tag as a defense-in-depth companion to the name-prefix guard.
 RG_OWNER_TAG = "managed-by"
 RG_OWNER_TAG_VALUE = "gh-runner-broker"
+
+# delete_resource_group response states. "deleting" means the caller should poll
+# again; "deleted" means the resource group no longer exists.
+DELETE_STATUS_DELETING = "deleting"
+DELETE_STATUS_DELETED = "deleted"
 
 
 # EasyAuth v2 serialises Azure AD claim types as full URI strings.
@@ -138,18 +144,26 @@ def handle_delete_resource_group(req: func.HttpRequest) -> func.HttpResponse:
         resource_group = body.get("resource-group", os.environ["RESOURCE_GROUP"])
         validate_source_group_name(resource_group)
         resource_client = ResourceManagementClient(credential, subscription_id)
+        try:
+            rg = resource_client.resource_groups.get(resource_group)
+        except ResourceNotFoundError:
+            # Idempotent: a retry after a deletion that already finished must
+            # succeed. Nothing is deleted here, so no ownership check is needed.
+            return _delete_response(resource_group, DELETE_STATUS_DELETED, 200)
+
         # Defense in depth: require the broker's ownership tag in addition to the
         # name-prefix check before deleting. A same-prefix RG that the broker did
-        # not create (missing tag, or nonexistent) is refused.
-        validate_source_group_ownership(resource_client, resource_group)
-        # Delete the resource group and all resources within
-        delete_async_op = resource_client.resource_groups.begin_delete(resource_group)
-        delete_async_op.wait()
-        return func.HttpResponse(
-            json.dumps({"message": f"Resource group '{resource_group}' deleted."}),
-            mimetype="application/json",
-            status_code=200,
-        )
+        # not create (missing tag) is refused.
+        validate_source_group_ownership(rg, resource_group)
+        if (rg.properties and rg.properties.provisioning_state or "").lower() == "deleting":
+            return _delete_response(resource_group, DELETE_STATUS_DELETING, 202)
+
+        # Start the deletion without waiting for it: deleting a runner VM takes
+        # longer than the ~230 s front-end request limit of the Function App, so
+        # waiting turned successful deletions into 504 Gateway Time-out errors.
+        # Callers poll this endpoint until it reports "deleted".
+        resource_client.resource_groups.begin_delete(resource_group)
+        return _delete_response(resource_group, DELETE_STATUS_DELETING, 202)
     except Exception as e:
         logging.error("Error deleting resource group: %s", e)
         return func.HttpResponse(
@@ -410,15 +424,24 @@ def validate_source_group_name(name: str) -> bool:
     return True
 
 
-def validate_source_group_ownership(
-    resource_client: ResourceManagementClient, name: str
-) -> bool:
+def _delete_response(resource_group: str, status: str, status_code: int) -> func.HttpResponse:
+    if status == DELETE_STATUS_DELETED:
+        message = f"Resource group '{resource_group}' deleted."
+    else:
+        message = f"Deletion of resource group '{resource_group}' in progress."
+    return func.HttpResponse(
+        json.dumps({"message": message, "status": status, "resource-group": resource_group}),
+        mimetype="application/json",
+        status_code=status_code,
+    )
+
+
+def validate_source_group_ownership(rg, name: str) -> bool:
     """Confirm the resource group carries the broker's ownership tag.
 
-    Refuses deletion if the RG does not exist or was not created by this broker
-    (missing/incorrect ``managed-by`` tag), even when its name matches the prefix.
+    Refuses deletion if the RG was not created by this broker (missing/incorrect
+    ``managed-by`` tag), even when its name matches the prefix.
     """
-    rg = resource_client.resource_groups.get(name)
     tags = rg.tags or {}
     if tags.get(RG_OWNER_TAG) != RG_OWNER_TAG_VALUE:
         raise Exception(

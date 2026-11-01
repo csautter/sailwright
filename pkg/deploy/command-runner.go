@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"os/exec"
 	"regexp"
 	"sync"
 	"time"
+
+	"github.com/csautter/dev-alchemy/internal/winpsenv"
 )
 
 const (
@@ -35,9 +36,7 @@ func runCommandWithStreamingLogsWithEnv(workingDir string, timeout time.Duration
 	cmd := exec.CommandContext(ctx, executable, args...)
 	sanitizedArgs := sanitizeCommandArgsForLogs(args)
 	cmd.Dir = workingDir
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
+	cmd.Env = winpsenv.CommandEnv(executable, extraEnv)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -105,9 +104,7 @@ func runCommandWithCombinedOutputWithEnv(workingDir string, timeout time.Duratio
 	// #nosec G204,G702 -- callers provide explicit executables and argv slices; no shell interpretation occurs.
 	cmd := exec.CommandContext(ctx, executable, args...)
 	cmd.Dir = workingDir
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
+	cmd.Env = winpsenv.CommandEnv(executable, extraEnv)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {

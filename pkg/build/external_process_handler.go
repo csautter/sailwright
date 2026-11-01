@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/csautter/dev-alchemy/internal/winpsenv"
 )
 
 type RunProcessConfig struct {
@@ -79,9 +81,7 @@ func RunExternalProcess(config RunProcessConfig) (context.Context, error) {
 	cmd := exec.CommandContext(ctx, config.ExecutablePath, config.Args...)
 	configureCommandForCleanup(cmd)
 	cmd.Dir = config.WorkingDir
-	if len(config.Env) > 0 {
-		cmd.Env = append(os.Environ(), config.Env...)
-	}
+	cmd.Env = winpsenv.CommandEnv(config.ExecutablePath, config.Env)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -283,9 +283,7 @@ func RunCliCommandWithEnv(workdir string, command string, args []string, env []s
 	// #nosec G204 -- this helper executes known CLI tools with explicit argv slices, not shell strings.
 	cmd := exec.Command(command, args...)
 	cmd.Dir = workdir
-	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
-	}
+	cmd.Env = winpsenv.CommandEnv(command, env)
 	log.Printf("Running command: %s %s", command, strings.Join(sanitizeCommandArgs(args), " "))
 	output, err := cmd.CombinedOutput()
 	if err != nil {

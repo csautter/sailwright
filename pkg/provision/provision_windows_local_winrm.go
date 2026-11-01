@@ -11,6 +11,14 @@ const (
 	localWindowsWinRMInventoryTarget = "windows_host"
 	localWindowsWinRMHTTPSPort       = "5986"
 
+	// The first WinRM shell for the freshly created local Ansible account has
+	// to create its Windows user profile, which can exceed Ansible's default
+	// 20s operation timeout on slow hosts (e.g. GitHub-hosted runners) and
+	// surfaces as an UNREACHABLE "basic:" error. The read timeout must stay
+	// above the operation timeout.
+	localWindowsWinRMOperationTimeoutSec = "120"
+	localWindowsWinRMReadTimeoutSec      = "130"
+
 	localWindowsProvisionPasswordEnvVar   = "DEV_ALCHEMY_LOCAL_WINDOWS_ANSIBLE_PASSWORD" // #nosec G101 -- environment variable name, not an embedded credential.
 	localWindowsForceWinRMUninstallEnvVar = "DEV_ALCHEMY_LOCAL_WINDOWS_FORCE_WINRM_UNINSTALL"
 	localWindowsWinRMBootstrapLogPrefix   = "local:windows:winrm:bootstrap"
@@ -121,6 +129,9 @@ func setupLocalWindowsWinRMProvisionSession(projectDir string, options Provision
 			Port:                 localWindowsWinRMHTTPSPort,
 			WinrmScheme:          "https",
 			ServerCertValidation: "ignore",
+
+			WinrmOperationTimeoutSec: localWindowsWinRMOperationTimeoutSec,
+			WinrmReadTimeoutSec:      localWindowsWinRMReadTimeoutSec,
 		},
 		StatePath: statePath,
 	}, nil

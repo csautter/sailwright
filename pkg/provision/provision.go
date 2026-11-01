@@ -150,6 +150,12 @@ type windowsAnsibleConnectionConfig struct {
 	Port                 string
 	WinrmScheme          string
 	ServerCertValidation string
+	// WinrmOperationTimeoutSec and WinrmReadTimeoutSec map to
+	// ansible_winrm_operation_timeout_sec / ansible_winrm_read_timeout_sec.
+	// Empty keeps the Ansible defaults (20s / 30s). The read timeout must be
+	// greater than the operation timeout.
+	WinrmOperationTimeoutSec string
+	WinrmReadTimeoutSec      string
 }
 
 type windowsAnsibleConnectionEnvVars struct {
@@ -1366,6 +1372,12 @@ func buildWindowsProvisionExtraVars(connectionConfig windowsAnsibleConnectionCon
 	}
 	if connectionConfig.ServerCertValidation != "" {
 		extraVars["ansible_winrm_server_cert_validation"] = connectionConfig.ServerCertValidation
+	}
+	if connectionConfig.WinrmOperationTimeoutSec != "" {
+		extraVars["ansible_winrm_operation_timeout_sec"] = connectionConfig.WinrmOperationTimeoutSec
+	}
+	if connectionConfig.WinrmReadTimeoutSec != "" {
+		extraVars["ansible_winrm_read_timeout_sec"] = connectionConfig.WinrmReadTimeoutSec
 	}
 
 	return json.Marshal(extraVars)

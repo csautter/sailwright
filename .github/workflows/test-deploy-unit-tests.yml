@@ -7,6 +7,7 @@ on:
     paths:
       - "pkg/deploy/**"
       - "pkg/provision/**"
+      - "internal/winpsenv/**"
       - "cmd/main.go"
       - "cmd/cmd/provision.go"
       - "cmd/cmd/provision_test.go"
@@ -20,6 +21,7 @@ on:
     paths:
       - "pkg/deploy/**"
       - "pkg/provision/**"
+      - "internal/winpsenv/**"
       - "cmd/main.go"
       - "cmd/cmd/provision.go"
       - "cmd/cmd/provision_test.go"
