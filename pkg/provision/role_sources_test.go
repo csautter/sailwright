@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -38,7 +39,8 @@ func TestResolveAnsibleRolePathsRejectsMissingExplicitConfig(t *testing.T) {
 
 	if rolePaths, err := resolveAnsibleRolePaths(projectDir); err == nil {
 		t.Fatalf("expected error for missing explicit config, got role paths %q", rolePaths)
-	} else if !strings.Contains(err.Error(), ansibleRoleSourcesConfigEnvVar) || !strings.Contains(err.Error(), missingConfig) {
+	} else if !strings.Contains(err.Error(), ansibleRoleSourcesConfigEnvVar) || !strings.Contains(err.Error(), strconv.Quote(missingConfig)) {
+		// The error quotes the path with %q, which escapes Windows backslashes.
 		t.Fatalf("expected error to name %s and %q, got %v", ansibleRoleSourcesConfigEnvVar, missingConfig, err)
 	}
 
