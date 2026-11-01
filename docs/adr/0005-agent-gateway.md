@@ -107,4 +107,8 @@ Consequences of the amendment:
   `TestSharedAppDataMirrorsCLIDefaults`.
 - Tunnel destinations come only from the pinned CLI, but some engines learn
   them from the guest. A guest under agent control can therefore point the
-  tunnel at another LAN address on ports 22, 5985 or 5986.
+  tunnel at another LAN address on ports 22, 5985 or 5986. This is accepted:
+  the gateway's purpose is to keep the agent off the host OS, and the agent's
+  container normally has direct network access. On Hyper-V, where the guest
+  reports all addresses, the host-side switch and subnet decide which address
+  is used.

@@ -417,8 +417,9 @@ registry transfers acquire an exclusive lock covering all targets. A competing
 command exits with a `resource busy` error, immediately by default or after
 waiting up to `SAILWRIGHT_LOCK_TIMEOUT` (a Go duration such as `30s`), that
 names the holder, for example `held by pid 4242 (sailwright create
-ubuntu/server/amd64) since 14:03:12`. Gateway jobs wait up to 30 seconds. Locks are released on process exit; lock files
-remain in place and should not be removed.
+ubuntu/server/amd64) since 14:03:12`. Gateway jobs wait up to 30 seconds.
+Locks are released on process exit; lock files remain in place and should not
+be removed.
 
 At startup the gateway checks the pinned CLI's state schema and locking
 protocol, and compares them with `sailwright` on PATH when installed (skipped
@@ -523,11 +524,15 @@ source, Host, Origin and bearer checks as MCP. Only ports 22, 5985 and 5986 are
 allowed. The destination address comes exclusively from the pinned CLI,
 refreshed for every new tunnel. Some engines learn that address from the guest
 itself (libvirt guest agent, Hyper-V integration services), so a guest the
-agent controls can report another address on your network; the port allowlist
-and the checks below limit, but do not prevent, connections to other LAN hosts
-on those ports. Loopback, link-local, multicast, unspecified
+agent controls can report another address on your network, and the gateway then
+connects to it from the host on ports 22, 5985 or 5986. This is an accepted
+risk: the gateway protects the host OS from the agent, not your network, and an
+agent in a devcontainer usually reaches the LAN and the internet directly
+anyway. The port allowlist, the host-subnet check on Hyper-V and the checks
+below limit it. If you restrict the container's network, keep in mind that
+tunnels are a path around that restriction. Loopback, link-local, multicast, unspecified
 and host-owned addresses are rejected, including mapped IPv4 addresses.
-Bridged/LAN guests are allowed; bridged or unknown network modes produce a
+Bridged/LAN guests are allowed; `bridged` or `unknown` network modes produce a
 `LAN_OR_UNKNOWN_NETWORK` audit warning. There are at most `max_tunnels`
 connections; inactive streams close after `tunnel_idle_timeout`. Shutdown closes
 active streams. Audit events record denied requests, opening, closing, target,
