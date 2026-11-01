@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 )
@@ -47,6 +49,8 @@ type CLIManagedVMResolver struct {
 	Runner   *Runner
 	Work     string
 	Redactor *Redactor
+	// Console receives the reason of failed lookups for the operator; may be nil.
+	Console  io.Writer
 	mu       sync.Mutex
 	cache    map[string]cachedVM
 	inflight map[string]*vmLookup
@@ -107,6 +111,9 @@ func (r *CLIManagedVMResolver) resolve(ctx context.Context, osName, osType, arch
 // the other callers sharing the lookup; the CLI call has its own timeout.
 func (r *CLIManagedVMResolver) query(key string, lookup *vmLookup, osName, osType, arch string) {
 	lookup.vm, lookup.err = r.run(osName, osType, arch)
+	if lookup.err != nil && r.Console != nil {
+		fmt.Fprintf(r.Console, "vm info %s failed: %s\n", key, sanitizeForTerminal(lookup.err.Error()))
+	}
 	r.mu.Lock()
 	delete(r.inflight, key)
 	if lookup.err == nil {
@@ -131,8 +138,11 @@ func (r *CLIManagedVMResolver) run(osName, osType, arch string) (ManagedVM, erro
 	var output limitedBuffer
 	output.limit = maxInfoOutputBytes
 	code, err := r.Runner.Run(ctx, args, r.Work, &output)
-	if err != nil || code != 0 {
-		return ManagedVM{}, fmt.Errorf("%w: VM is not running or vm info failed (exit %d)", ErrVMAccessUnavailable, code)
+	if err != nil {
+		return ManagedVM{}, fmt.Errorf("%w: vm info did not run: %s", ErrVMAccessUnavailable, r.redact(err.Error()))
+	}
+	if code != 0 {
+		return ManagedVM{}, fmt.Errorf("%w: vm info exited with %d: %s", ErrVMAccessUnavailable, code, r.redact(errorSummary(output.String())))
 	}
 	var value struct {
 		SchemaVersion int    `json:"schema_version"`
@@ -148,25 +158,54 @@ func (r *CLIManagedVMResolver) run(osName, osType, arch string) (ManagedVM, erro
 		Username      string `json:"username"`
 		Password      string `json:"password"`
 	}
-	if err := json.Unmarshal([]byte(output.String()), &value); err != nil {
-		return ManagedVM{}, errors.New("invalid VM info response")
+	if err := json.Unmarshal([]byte(lastJSONLine(output.String())), &value); err != nil {
+		return ManagedVM{}, errors.New("invalid VM info response (no JSON document)")
 	}
-	if value.SchemaVersion != 1 || value.OS != osName || value.Type != osType || value.Arch != arch || value.State != "running" {
-		return ManagedVM{}, errors.New("unsupported VM info schema or mismatched target/state")
+	if value.SchemaVersion != 1 {
+		return ManagedVM{}, fmt.Errorf("unsupported VM info schema %d", value.SchemaVersion)
+	}
+	if value.OS != osName || value.Type != osType || value.Arch != arch {
+		return ManagedVM{}, fmt.Errorf("VM info answered for %s/%s/%s", value.OS, value.Type, value.Arch)
+	}
+	if value.State != "running" {
+		return ManagedVM{}, fmt.Errorf("%w: VM state is %q", ErrVMAccessUnavailable, value.State)
 	}
 	address, err := netip.ParseAddr(value.Address)
 	if err != nil {
-		return ManagedVM{}, errors.New("VM has no valid address")
+		return ManagedVM{}, fmt.Errorf("VM has no valid address (%q)", truncate(value.Address, 64))
 	}
 	if value.Protocol != "ssh" && value.Protocol != "winrm" {
-		return ManagedVM{}, errors.New("unsupported guest protocol")
+		return ManagedVM{}, fmt.Errorf("unsupported guest protocol %q", value.Protocol)
 	}
 	if value.Port < 1 || value.Port > 65535 {
-		return ManagedVM{}, errors.New("invalid guest port")
+		return ManagedVM{}, fmt.Errorf("invalid guest port %d", value.Port)
 	}
 	// Register the password only for a validated response, before anyone can see it.
 	if r.Redactor != nil {
 		r.Redactor.AddRequired(value.Password)
 	}
 	return ManagedVM{OS: osName, Type: osType, Arch: arch, Engine: value.Engine, Address: address.Unmap(), NetworkMode: value.NetworkMode, Protocol: value.Protocol, Port: value.Port, Username: value.Username, Password: value.Password}, nil
+}
+
+// redact hides known secrets and bounds a CLI error for agent and console.
+func (r *CLIManagedVMResolver) redact(value string) string {
+	if r.Redactor != nil {
+		value = r.Redactor.String(value)
+	}
+	return truncate(value, maxLookupErrorLength)
+}
+
+// maxLookupErrorLength bounds the CLI error text passed on from a failed lookup.
+const maxLookupErrorLength = 300
+
+// lastJSONLine returns the last line that holds a JSON object; the CLI may print
+// warnings (merged from stderr) before the document.
+func lastJSONLine(output string) string {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); strings.HasPrefix(line, "{") {
+			return line
+		}
+	}
+	return ""
 }

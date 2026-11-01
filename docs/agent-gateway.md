@@ -573,6 +573,9 @@ The tunnel transports SSH or WinRM; it never runs a host shell.
 
 Build the Ubuntu image on the host first, then use a target that does not
 already have a VM. With the gateway running and `ssh`, `scp`, `sshpass` and
+When a lookup fails, the gateway terminal shows the CLI's reason (redacted),
+for example `vm info ubuntu/server/amd64 failed: ... exited with 1: VM is not
+running`, and `vm_info` returns the same reason to the agent.
 `sailwright-gateway` installed in the container:
 
 ```bash

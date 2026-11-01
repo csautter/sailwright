@@ -91,6 +91,9 @@ func main() {
 		if delay, err := time.ParseDuration(os.Getenv("FAKE_VM_INFO_DELAY")); err == nil {
 			time.Sleep(delay)
 		}
+		if warning := os.Getenv("FAKE_VM_INFO_WARNING"); warning != "" {
+			fmt.Fprintln(os.Stderr, warning)
+		}
 		password := os.Getenv("FAKE_VM_PASSWORD")
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "os": args[2], "type": typ, "arch": arch, "engine": "qemu", "state": "running", "address": address, "network_mode": "unknown", "protocol": protocol, "port": port, "username": "packer", "password": password})
 		return

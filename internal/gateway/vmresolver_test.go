@@ -3,6 +3,7 @@ package gateway_test
 import (
 	"bufio"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,4 +105,32 @@ func countVMInfo(t *testing.T, path string) int {
 		}
 	}
 	return count
+}
+
+func TestCLIResolverReportsLookupFailures(t *testing.T) {
+	fake := gatewaytest.BuildFakeCLI(t)
+	state := t.TempDir()
+	pinned, err := gateway.PinBinary(fake, t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var console gatewaytest.SyncBuffer
+	resolver := &gateway.CLIManagedVMResolver{Runner: &gateway.Runner{Binary: pinned, Env: append(os.Environ(), "FAKE_CLI_STATE="+state, "FAKE_VM_INFO_WARNING=warning: guest agent slow")}, Work: t.TempDir(), Redactor: gateway.NewRedactor(), Console: &console}
+
+	// The CLI's own reason reaches the agent and the operator console.
+	_, err = resolver.ResolveFresh(context.Background(), "ubuntu", "server", "amd64")
+	if !errors.Is(err, gateway.ErrVMAccessUnavailable) || !strings.Contains(err.Error(), "exited with 1: VM is not running") {
+		t.Fatalf("lookup error: %v", err)
+	}
+	if !strings.Contains(console.String(), "vm info ubuntu/server/amd64 failed: ") || !strings.Contains(console.String(), "VM is not running") {
+		t.Fatalf("console: %q", console.String())
+	}
+
+	// Warnings printed before the JSON document do not break the lookup.
+	if err := os.WriteFile(filepath.Join(state, "ubuntu-server-amd64"), []byte("running"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.ResolveFresh(context.Background(), "ubuntu", "server", "amd64"); err != nil {
+		t.Fatalf("lookup with a leading warning: %v", err)
+	}
 }
