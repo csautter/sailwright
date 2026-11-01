@@ -31,3 +31,18 @@ func TestGatewayDefaultRedactionKeepsOrdinaryWords(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestDerivedRedactorSeesSecretsLearnedLater(t *testing.T) {
+	base := NewRedactor("existing-secret")
+	job := base.WithRequired("pw")
+	base.AddRequired("guest-learned-later")
+	if got := job.String("existing-secret pw guest-learned-later"); got != "*** *** ***" {
+		t.Fatalf("derived redactor missed a secret its parent learned later: %q", got)
+	}
+	if got := base.String("pw"); got != "pw" {
+		t.Fatalf("a derived secret leaked into the parent: %q", got)
+	}
+	if job.maxSecretLen() != len("guest-learned-later") {
+		t.Fatalf("max secret length ignores the parent: %d", job.maxSecretLen())
+	}
+}

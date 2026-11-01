@@ -4,6 +4,10 @@
 //
 // Special targets: os "failos" exits 3, os "slowos" sleeps for a minute.
 //
+// VMs carry an instance id in "<state>.instance" (create writes a new one), reported
+// by `vm info` and `vm identity`. A "create-fails-after-start" file in the state dir
+// makes create leave a stopped VM and fail after writing $SAILWRIGHT_CREATE_STARTED_FILE.
+//
 // build writes console frames like the real VNC recording into
 // $DEV_ALCHEMY_CACHE_DIR/<os>/qemu-out-<slug>-vncsnapshot.
 package main
@@ -61,6 +65,12 @@ func main() {
 		}
 		return
 	}
+	if len(args) > 2 && args[0] == "vm" && args[1] == "identity" {
+		id := targetID(append([]string{"identity"}, args[2:]...))
+		typ, arch := targetTypeArch(args)
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "os": args[2], "type": typ, "arch": arch, "engine": "qemu", "exists": readState(id) != "", "instance_id": readState(id + ".instance")})
+		return
+	}
 	if len(args) > 2 && args[0] == "vm" && args[1] == "info" {
 		targetArgs := append([]string{"info"}, args[2:]...)
 		id := targetID(targetArgs)
@@ -68,18 +78,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "VM is not running")
 			os.Exit(1)
 		}
-		typ, arch := "", "amd64"
-		if args[2] == "ubuntu" {
-			typ = "server"
-		}
-		for i := 3; i+1 < len(args); i++ {
-			if args[i] == "--type" {
-				typ = args[i+1]
-			}
-			if args[i] == "--arch" {
-				arch = args[i+1]
-			}
-		}
+		typ, arch := targetTypeArch(args)
 		address := os.Getenv("FAKE_VM_ADDRESS")
 		if address == "" {
 			address = "192.0.2.10"
@@ -95,7 +94,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, warning)
 		}
 		password := os.Getenv("FAKE_VM_PASSWORD")
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "os": args[2], "type": typ, "arch": arch, "engine": "qemu", "state": "running", "address": address, "network_mode": "unknown", "protocol": protocol, "port": port, "username": "packer", "password": password})
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "os": args[2], "type": typ, "arch": arch, "engine": "qemu", "state": "running", "address": address, "network_mode": "unknown", "protocol": protocol, "port": port, "username": "packer", "password": password, "instance_id": readState(id + ".instance")})
 		return
 	}
 	if args[0] == "__session" {
@@ -145,7 +144,15 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: VM for %s already exists\n", id)
 			os.Exit(1)
 		}
+		if marker := os.Getenv("SAILWRIGHT_CREATE_STARTED_FILE"); marker != "" {
+			_ = os.WriteFile(marker, []byte(id+"\n"), 0o600) // #nosec G703 -- test fixture.
+		}
 		writeState(id, "stopped")
+		writeState(id+".instance", fmt.Sprintf("fake-%d", time.Now().UnixNano()))
+		if readState("create-fails-after-start") != "" {
+			fmt.Fprintln(os.Stderr, "Error: deployment failed after the VM was defined")
+			os.Exit(4)
+		}
 		fmt.Println("created")
 	case "start":
 		writeState(id, "running")
@@ -218,6 +225,26 @@ func printListing(command string) {
 	out, _ := json.Marshal(map[string]any{"schema_version": 1, "targets": targets})
 	fmt.Println("diagnostic line before the document")
 	fmt.Println(string(out))
+}
+
+// targetTypeArch reads the CLI defaults and flags of `vm <info|identity> <os> ...`.
+func targetTypeArch(args []string) (string, string) {
+	typ, arch := "", "amd64"
+	if args[2] == "ubuntu" {
+		typ = "server"
+	}
+	for i := 3; i+1 < len(args); i++ {
+		if args[i] == "--type" {
+			typ = args[i+1]
+		}
+		if args[i] == "--arch" {
+			arch = args[i+1]
+		}
+	}
+	if args[2] != "ubuntu" {
+		typ = ""
+	}
+	return typ, arch
 }
 
 func targetID(args []string) string {
@@ -330,6 +357,7 @@ func removeState(id string) {
 	if path := stateFile(id); path != "" {
 		removeFile(path)
 		removeFile(path + ".provisioned")
+		removeFile(path + ".instance")
 	}
 }
 

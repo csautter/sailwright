@@ -232,3 +232,29 @@ func TestGetDirectoriesHonorsManagedOverrides(t *testing.T) {
 		t.Fatalf("managed overrides ignored: %+v", dirs)
 	}
 }
+
+func TestTargetTypeFollowsVMConfigurations(t *testing.T) {
+	typed := map[string]bool{}
+	for _, config := range AvailableVirtualMachineConfigs() {
+		if config.UbuntuType != "" {
+			typed[config.OS] = true
+		}
+	}
+	if !typed["ubuntu"] {
+		t.Fatal("expected ubuntu to have typed targets")
+	}
+	for _, config := range AvailableVirtualMachineConfigs() {
+		want := ""
+		if typed[config.OS] {
+			want = "desktop"
+		}
+		if got := TargetType(config.OS, "desktop"); got != want {
+			t.Errorf("TargetType(%s) = %q, want %q", config.OS, got, want)
+		}
+	}
+	for _, osName := range []string{"all", "local"} {
+		if got := TargetType(osName, "server"); got != "" {
+			t.Errorf("TargetType(%s) = %q", osName, got)
+		}
+	}
+}

@@ -69,9 +69,7 @@ func operationLockTarget(cmd *cobra.Command, args []string, transfer bool) (stri
 	}
 	typ, _ := cmd.Flags().GetString("type")
 	arch, _ := cmd.Flags().GetString("arch")
-	if args[0] != "ubuntu" {
-		typ = ""
-	}
+	typ = alchemy_build.TargetType(args[0], typ)
 	return args[0] + "/" + typ + "/" + arch, true
 }
 

@@ -39,13 +39,20 @@ func (g *Gateway) toolVMInfo(ctx context.Context, _ *mcp.CallToolRequest, in vmT
 	if err != nil {
 		return nil, VMInfoOutput{}, err
 	}
+	key := target.Key()
 	// Resolve first, so the operator is only asked about a VM that is running.
 	vm, err := g.vmResolver.Resolve(ctx, target.OS, target.Type, target.Arch)
 	if err != nil {
+		if !g.ownership.allowed(key) {
+			// The VM may be the operator's: its details stay on the operator console.
+			return nil, VMInfoOutput{}, fmt.Errorf("%w: VM %s is not running or cannot be inspected", ErrVMAccessUnavailable, key)
+		}
 		return nil, VMInfoOutput{}, err
 	}
-	if !g.ownership.allowed(vmKey(vm.OS, vm.Type, vm.Arch)) {
-		if err := g.requestVMAccess("vm_info", vm.OS, vm.Type, vm.Arch); err != nil {
+	allowed, err := g.ownership.confirm(key, vm.InstanceID)
+	g.recordOwnership(err)
+	if !allowed {
+		if err := g.requestVMAccess("vm_info", vm.OS, vm.Type, vm.Arch, vm.InstanceID); err != nil {
 			return nil, VMInfoOutput{}, err
 		}
 	}
@@ -56,7 +63,6 @@ func (g *Gateway) toolVMInfo(ctx context.Context, _ *mcp.CallToolRequest, in vmT
 		return nil, VMInfoOutput{}, fmt.Errorf("guest service port is outside the tunnel allowlist")
 	}
 	out := VMInfoOutput{OS: vm.OS, Type: vm.Type, Arch: vm.Arch, Engine: vm.Engine, Address: vm.Address.String(), NetworkMode: vm.NetworkMode, Protocol: vm.Protocol, Port: vm.Port, Username: vm.Username, Password: vm.Password}
-	key := target.Key()
 	alias := "sailwright-" + strings.ReplaceAll(key, "/", "-")
 	proxy := "sailwright-gateway vm tunnel " + key + " " + strconv.Itoa(vm.Port)
 	host := map[string]any{"ansible_user": vm.Username, "ansible_password": vm.Password, "ansible_port": vm.Port}

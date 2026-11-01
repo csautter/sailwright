@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+// createStartedFileEnv names the file the CLI's create writes once it has checked,
+// under the target lock, that no VM exists and deployment begins.
+const createStartedFileEnv = "SAILWRIGHT_CREATE_STARTED_FILE"
+
 const (
 	ownershipFileName      = "owned_vms.json"
 	ownershipSchemaVersion = 1
@@ -31,21 +35,33 @@ var ErrVMAccessPending = errors.New("VM access waits for operator approval")
 // nil *vmOwnership is the same as disabled.
 //
 // `sailwright create` fails for an existing VM, so a successful create job proves the
-// gateway made that VM. Ownership ends with a successful destroy job, or when a target
-// listing shows the VM is gone (the operator destroyed it).
+// gateway made that VM; a failed create counts too once the CLI reports, under its
+// target lock, that deployment began for a VM that did not exist. Ownership ends with
+// a successful destroy job, or when a target listing shows the VM is gone (the
+// operator destroyed it).
+//
+// Records carry the hypervisor's instance id where the engine has one, so a VM that
+// was destroyed and recreated under the same name between two listings is noticed
+// (confirm) instead of being taken for the gateway's.
 type vmOwnership struct {
 	enabled bool
 	path    string
 
 	mu      sync.Mutex
 	owned   map[string]ownedVM
-	granted map[string]time.Time
+	granted map[string]grantedVM
 	pending map[string]string // target -> approval id
 }
 
 type ownedVM struct {
-	CreatedAt time.Time `json:"created_at"`
-	JobID     string    `json:"job_id"`
+	CreatedAt  time.Time `json:"created_at"`
+	JobID      string    `json:"job_id"`
+	InstanceID string    `json:"instance_id,omitempty"`
+}
+
+type grantedVM struct {
+	at         time.Time
+	instanceID string
 }
 
 type ownershipFile struct {
@@ -58,7 +74,7 @@ func vmKey(osName, osType, arch string) string {
 }
 
 func loadVMOwnership(enabled bool, stateDir string) (*vmOwnership, error) {
-	o := &vmOwnership{enabled: enabled, path: filepath.Join(stateDir, ownershipFileName), owned: map[string]ownedVM{}, granted: map[string]time.Time{}, pending: map[string]string{}}
+	o := &vmOwnership{enabled: enabled, path: filepath.Join(stateDir, ownershipFileName), owned: map[string]ownedVM{}, granted: map[string]grantedVM{}, pending: map[string]string{}}
 	if !enabled {
 		return o, nil
 	}
@@ -91,14 +107,59 @@ func (o *vmOwnership) allowed(key string) bool {
 	return owned || granted
 }
 
-func (o *vmOwnership) created(key, jobID string) error {
+func (o *vmOwnership) created(key, jobID, instanceID string) error {
 	if o == nil || !o.enabled {
 		return nil
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.owned[key] = ownedVM{CreatedAt: time.Now().UTC(), JobID: jobID}
+	o.owned[key] = ownedVM{CreatedAt: time.Now().UTC(), JobID: jobID, InstanceID: instanceID}
 	return o.saveLocked()
+}
+
+// knowsInstance reports whether an allowed VM's record holds an instance id that
+// confirm can check.
+func (o *vmOwnership) knowsInstance(key string) bool {
+	if o == nil || !o.enabled {
+		return false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.owned[key].InstanceID != "" || o.granted[key].instanceID != ""
+}
+
+// confirm is allowed for the VM instance currently at key. A record whose instance
+// id differs from current belongs to a VM that no longer exists: it is dropped, and
+// the VM counts as the operator's. A record without an id adopts current, which only
+// happens when the id could not be read when the record was made. An empty current
+// (the engine has no id) cannot disprove a record.
+func (o *vmOwnership) confirm(key, current string) (bool, error) {
+	if o == nil || !o.enabled {
+		return true, nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	var saveErr error
+	owned, isOwned := o.owned[key]
+	if isOwned && current != "" {
+		switch owned.InstanceID {
+		case "":
+			owned.InstanceID = current
+			o.owned[key] = owned
+			saveErr = o.saveLocked()
+		case current:
+		default:
+			delete(o.owned, key)
+			isOwned = false
+			saveErr = o.saveLocked()
+		}
+	}
+	grant, isGranted := o.granted[key]
+	if isGranted && current != "" && grant.instanceID != "" && grant.instanceID != current {
+		delete(o.granted, key)
+		isGranted = false
+	}
+	return isOwned || isGranted, saveErr
 }
 
 func (o *vmOwnership) destroyed(key string) error {
@@ -132,7 +193,7 @@ func (o *vmOwnership) prune(createTargets []Target, listedAt time.Time) error {
 		if state := target.Fields["create"]; state == "" || state == createdState {
 			continue
 		}
-		if at, ok := o.granted[key]; ok && at.Before(listedAt) {
+		if grant, ok := o.granted[key]; ok && grant.at.Before(listedAt) {
 			delete(o.granted, key)
 		}
 		if vm, ok := o.owned[key]; ok && vm.CreatedAt.Before(listedAt) {
@@ -166,12 +227,14 @@ func (o *vmOwnership) beginRequest(key, id string) (pendingID string, ok bool) {
 	return id, true
 }
 
-func (o *vmOwnership) endRequest(key string, approved bool) {
+// endRequest settles a pending request. instanceID is the VM the operator was asked
+// about, so a grant never carries over to a recreated VM.
+func (o *vmOwnership) endRequest(key string, approved bool, instanceID string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	delete(o.pending, key)
 	if approved {
-		o.granted[key] = time.Now().UTC()
+		o.granted[key] = grantedVM{at: time.Now().UTC(), instanceID: instanceID}
 	}
 }
 
@@ -179,7 +242,7 @@ func (o *vmOwnership) endRequest(key string, approved bool) {
 // not create to the agent. It returns almost at once (nil only if the request was
 // decided as approved within busyProbe): an MCP call cannot wait for a human for the
 // full approval TTL without running into client timeouts.
-func (g *Gateway) requestVMAccess(tool, osName, osType, arch string) error {
+func (g *Gateway) requestVMAccess(tool, osName, osType, arch, instanceID string) error {
 	key := vmKey(osName, osType, arch)
 	if !g.approver.Enabled() {
 		return fmt.Errorf("VM %s was not created by this gateway and may belong to the operator; using it needs host approval, but the gateway has no approval console (start it in a foreground terminal, or create the VM through the gateway)", key)
@@ -194,7 +257,7 @@ func (g *Gateway) requestVMAccess(tool, osName, osType, arch string) error {
 	g.backgroundMu.Lock()
 	if g.closed {
 		g.backgroundMu.Unlock()
-		g.ownership.endRequest(key, false)
+		g.ownership.endRequest(key, false, "")
 		return errors.New("gateway is closing")
 	}
 	g.background.Add(1)
@@ -214,7 +277,7 @@ func (g *Gateway) requestVMAccess(tool, osName, osType, arch string) error {
 			NotSafe: fmt.Sprintf("VM %s was not created by this gateway and may be your own. Approving gives the agent its credentials and SSH/WinRM tunnels, and lets it start, stop, provision and destroy it until the gateway stops or the VM is destroyed", key),
 		})
 		approved := approval.Decision == DecisionApproved
-		g.ownership.endRequest(key, approved)
+		g.ownership.endRequest(key, approved, instanceID)
 		_ = g.audit.Record(AuditEvent{Event: "vm_access_decision", Tool: tool, JobID: id, Decision: string(approval.Decision), Params: map[string]any{"os": osName, "type": osType, "arch": arch}, Risk: []string{riskForeignVM}})
 		decided <- approval.Decision
 	}()
@@ -231,4 +294,62 @@ func (g *Gateway) requestVMAccess(tool, osName, osType, arch string) error {
 	case <-time.After(busyProbe):
 	}
 	return fmt.Errorf("%w: VM %s was not created by this gateway, so the operator must approve request %s on the host terminal; call %s again after approval", ErrVMAccessPending, key, id, tool)
+}
+
+// instanceAllowed reports whether the agent may use the VM at target without
+// approval. When the record names an instance, the current instance must match; a
+// failed identity lookup fails closed (the job then waits for approval). A missing
+// VM cannot be someone else's, and the CLI command fails for it anyway.
+func (g *Gateway) instanceAllowed(ctx context.Context, target VMTarget) bool {
+	key := target.Key()
+	if !g.ownership.allowed(key) {
+		return false
+	}
+	if !g.ownership.knowsInstance(key) {
+		return true
+	}
+	identity, err := g.vmResolver.Identify(ctx, target.OS, target.Type, target.Arch)
+	if err != nil {
+		fmt.Fprintf(g.console, "cannot confirm that VM %s is still the gateway's: %s\n", key, sanitizeForTerminal(err.Error()))
+		return false
+	}
+	if !identity.Exists {
+		return true
+	}
+	ok, err := g.ownership.confirm(key, identity.InstanceID)
+	g.recordOwnership(err)
+	return ok
+}
+
+// watchCreate makes a create job record ownership. The VM is the gateway's when the
+// job succeeds, or when it fails after the CLI reported that deployment began, which
+// can leave a partly created VM the agent must be able to destroy.
+func (g *Gateway) watchCreate(spec *JobSpec, target VMTarget) error {
+	token, err := newJobID()
+	if err != nil {
+		return err
+	}
+	marker := filepath.Join(g.dirs.Staging, "create-"+token+".started")
+	spec.Env = append(spec.Env, createStartedFileEnv+"="+marker)
+	spec.OnFinished = func(jobID string, succeeded bool) {
+		_, statErr := os.Stat(marker)
+		began := statErr == nil
+		_ = os.Remove(marker)
+		if !succeeded && !began {
+			return
+		}
+		instanceID := ""
+		identity, err := g.vmResolver.Identify(g.backgroundCtx, target.OS, target.Type, target.Arch)
+		switch {
+		case err == nil && identity.Exists:
+			instanceID = identity.InstanceID
+		case err == nil && !succeeded:
+			return // the failed create left nothing behind
+		case err != nil:
+			// The record adopts the id on first use (see confirm).
+			fmt.Fprintf(g.console, "warning: cannot read the instance id of new VM %s: %s\n", target.Key(), sanitizeForTerminal(err.Error()))
+		}
+		g.recordOwnership(g.ownership.created(target.Key(), jobID, instanceID))
+	}
+	return nil
 }

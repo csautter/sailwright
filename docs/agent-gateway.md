@@ -75,10 +75,17 @@ The agent, and everything it reads, is treated as untrusted.
   tunnels are refused, and `vm_info` shows an access request on the gateway
   terminal. Approving that request opens the VM (credentials, tunnels and
   lifecycle jobs) to the agent until the gateway stops or the VM is
-  destroyed. Ownership ends when the gateway destroys the VM, or when a target
-  listing shows that you destroyed it. A VM you destroy and recreate before the
-  gateway next lists targets (after any job, and at startup) is still treated
-  as the gateway's. Use `state_isolation: isolated` for complete separation.
+  destroyed. A gateway `create` that fails after deployment began still counts
+  as the gateway's, so the agent can destroy what it left behind; a `create`
+  refused because your VM already exists claims nothing. Ownership ends when the
+  gateway destroys the VM, or when a target listing shows that you destroyed it.
+  On libvirt and Hyper-V, records and grants also name the hypervisor instance
+  id (`sailwright vm identity`). A VM you destroy and recreate under the same
+  name is a new instance, so `vm_info`, tunnels and lifecycle jobs treat it as
+  yours even before the next target listing. UTM and Tart report no instance
+  id: there, a VM you destroy and recreate before the gateway next lists
+  targets (after any job, and at startup) is still treated as the gateway's.
+  Use `state_isolation: isolated` for complete separation.
 - **Transport.** Agents reach the gateway through a Unix socket in a
   dedicated agent folder (`~/.sailwright-gateway`) that you mount read-only
   into the devcontainer. Access is limited by file permissions (`0600`) and by
@@ -495,8 +502,9 @@ skipped), preferring the switch in `VAGRANT_HYPERV_SWITCH` (default
 This works for the Windows Default Switch (a random `172.x` subnet), for the CI
 runners' internal switch with NAT (`192.168.0.0/24`) and for external switches.
 Addresses of containers or other interfaces inside the guest are ignored. If
-Hyper-V reports no usable address yet, Vagrant discovery is tried and its
-answer must pass the same checks. Gateway jobs do not receive
+the Hyper-V query fails, takes longer than 10 seconds or reports no usable
+address yet, Vagrant discovery is tried and its answer must pass the same
+checks. `sailwright provision` on Hyper-V uses the same discovery. Gateway jobs do not receive
 `VAGRANT_HYPERV_SWITCH` or `TART_MACOS_BRIDGED_INTERFACE`; add them to
 `env_passthrough` if the agent's VMs should use the same network as yours.
 
@@ -518,10 +526,24 @@ ssh -F ./ssh_config sailwright-ubuntu-server-amd64
 scp -F ./ssh_config ./artifact sailwright-ubuntu-server-amd64:/tmp/artifact
 ```
 
-Supply the returned guest password at SSH's prompt or through your container's
-credential mechanism. SSH host keys are checked normally. For disposable VMs,
-use a dedicated `UserKnownHostsFile` and remove the old entry when recreating a
-guest; avoid changing your normal host keys.
+SSH asks for the returned guest password. Agents usually cannot answer a
+prompt, so pass it non-interactively, for example with `sshpass` (the password
+stays out of the process list with `-e`):
+
+```bash
+export SSHPASS='<password from vm_info>'
+sshpass -e ssh -F ./ssh_config -o UserKnownHostsFile=./known_hosts \
+  -o StrictHostKeyChecking=accept-new sailwright-ubuntu-server-amd64 true
+```
+
+Without `sshpass`, point `SSH_ASKPASS` at a script that prints the password
+and set `SSH_ASKPASS_REQUIRE=force`. Ansible uses `ansible_password` from the
+generated inventory and needs `sshpass` installed for SSH hosts.
+
+SSH host keys are checked normally. For disposable VMs, use a dedicated
+`UserKnownHostsFile` with `StrictHostKeyChecking=accept-new` as above, and
+remove the old entry when recreating a guest; avoid changing your normal host
+keys.
 
 The generated ProxyCommand is:
 

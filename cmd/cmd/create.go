@@ -105,9 +105,7 @@ Example:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		osName := args[0]
 
-		if osName != "ubuntu" {
-			osType = ""
-		}
+		osType = alchemy_build.TargetType(osName, osType)
 
 		if osName == "all" {
 			availableVMs := availableCreateVirtualMachines()
@@ -161,6 +159,9 @@ func runDeploy(vm alchemy_build.VirtualMachineConfig) error {
 			createCommandArguments(vm),
 		)
 	}
+	if err := markCreateStarted(os.Getenv(createStartedFileEnvVar), vm); err != nil {
+		return err
+	}
 
 	switch vm.VirtualizationEngine {
 	case alchemy_build.VirtualizationEngineUtm:
@@ -174,6 +175,23 @@ func runDeploy(vm alchemy_build.VirtualMachineConfig) error {
 	default:
 		return fmt.Errorf("❌ deploy is not implemented for virtualization engine: %s", vm.VirtualizationEngine)
 	}
+}
+
+// createStartedFileEnvVar names a file that create writes once it has confirmed,
+// under the target's operation lock, that no VM exists and deployment begins.
+// sailwright-gateway sets it so a failed create still counts as the gateway's VM.
+const createStartedFileEnvVar = "SAILWRIGHT_CREATE_STARTED_FILE"
+
+func markCreateStarted(path string, vm alchemy_build.VirtualMachineConfig) error {
+	if path == "" {
+		return nil
+	}
+	target := vm.OS + "/" + vm.UbuntuType + "/" + vm.Arch + "\n"
+	// #nosec G306 G703 -- the path is chosen by the gateway that started this process.
+	if err := os.WriteFile(path, []byte(target), 0o600); err != nil {
+		return fmt.Errorf("record create start for %s: %w", createStartedFileEnvVar, err)
+	}
+	return nil
 }
 
 func createCommandArguments(vm alchemy_build.VirtualMachineConfig) string {

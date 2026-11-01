@@ -480,15 +480,21 @@ func (g *Gateway) submitSafe(tool string, op Operation, req *mcp.CallToolRequest
 		RequiresFreeDisk: op.Kind == OpBuild || op.Kind == OpCreate || op.Kind == OpPull,
 		Target:           &JobTarget{Kind: op.Kind, OS: op.OS, Type: op.Type, Arch: op.Arch},
 	}
-	key := vmKey(op.OS, op.Type, op.Arch)
+	target := VMTarget{OS: op.OS, Type: op.Type, Arch: op.Arch}
+	key := target.Key()
 	switch op.Kind {
 	case OpCreate:
-		// create refuses an existing VM, so success means this gateway made it.
-		spec.OnSucceeded = func(jobID string) { g.recordOwnership(g.ownership.created(key, jobID)) }
+		if err := g.watchCreate(&spec, target); err != nil {
+			return nil, JobView{}, err
+		}
 	case OpDestroy:
-		spec.OnSucceeded = func(string) { g.recordOwnership(g.ownership.destroyed(key)) }
+		spec.OnFinished = func(_ string, succeeded bool) {
+			if succeeded {
+				g.recordOwnership(g.ownership.destroyed(key))
+			}
+		}
 	}
-	if vmInstanceOps[op.Kind] && !g.ownership.allowed(key) {
+	if vmInstanceOps[op.Kind] && !g.instanceAllowed(context.Background(), target) {
 		// Another VM in the shared state, possibly the operator's: ask first.
 		spec.Tier, spec.NeedsApproval = tierApproval, true
 		spec.Risk = []string{riskForeignVM}

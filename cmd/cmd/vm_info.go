@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 
+	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
 	alchemy_provision "github.com/csautter/dev-alchemy/pkg/provision"
 	"github.com/spf13/cobra"
 )
 
-var inspectVMInfo = alchemy_provision.InspectVM
+var (
+	inspectVMInfo     = alchemy_provision.InspectVM
+	inspectVMIdentity = alchemy_provision.InspectVMIdentity
+)
 
 const maskedPassword = "******** (use --show-password or --json)"
 
@@ -19,10 +23,7 @@ func newVMCommand() *cobra.Command {
 	info := &cobra.Command{
 		Use: "info <os>", Short: "Show connection details for a running VM", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			targetType := typ
-			if args[0] != "ubuntu" {
-				targetType = ""
-			}
+			targetType := alchemy_build.TargetType(args[0], typ)
 			for _, target := range availableCreateVirtualMachines() {
 				if target.OS == args[0] && target.UbuntuType == targetType && target.Arch == arch {
 					value, err := inspectVMInfo(target)
@@ -50,8 +51,33 @@ func newVMCommand() *cobra.Command {
 	info.Flags().StringVar(&arch, "arch", "amd64", "VM architecture")
 	info.Flags().BoolVar(&outputJSON, "json", false, "Print versioned JSON including guest credentials")
 	info.Flags().BoolVar(&showPassword, "show-password", false, "Show the guest password in text output (JSON always includes it)")
-	vm.AddCommand(info)
+	vm.AddCommand(info, newVMIdentityCommand())
 	return vm
+}
+
+// newVMIdentityCommand reports which VM instance exists for a target, also when it
+// is stopped. sailwright-gateway uses it to notice a VM recreated under a known name.
+func newVMIdentityCommand() *cobra.Command {
+	var typ, arch string
+	identity := &cobra.Command{
+		Use: "identity <os>", Short: "Print whether a VM exists and its hypervisor instance id as JSON", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			targetType := alchemy_build.TargetType(args[0], typ)
+			for _, target := range availableCreateVirtualMachines() {
+				if target.OS == args[0] && target.UbuntuType == targetType && target.Arch == arch {
+					value, err := inspectVMIdentity(target)
+					if err != nil {
+						return err
+					}
+					return json.NewEncoder(cmd.OutOrStdout()).Encode(value)
+				}
+			}
+			return fmt.Errorf("unknown managed VM: %s/%s/%s", args[0], targetType, arch)
+		},
+	}
+	identity.Flags().StringVar(&typ, "type", "server", "Ubuntu VM type")
+	identity.Flags().StringVar(&arch, "arch", "amd64", "VM architecture")
+	return identity
 }
 
 func init() { rootCmd.AddCommand(newVMCommand()) }

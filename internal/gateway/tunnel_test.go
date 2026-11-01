@@ -34,6 +34,10 @@ func (r *fixedVMResolver) ResolveFresh(ctx context.Context, osName, osType, arch
 	return r.Resolve(ctx, osName, osType, arch)
 }
 
+func (r *fixedVMResolver) Identify(context.Context, string, string, string) (VMIdentity, error) {
+	return VMIdentity{Exists: !r.unavailable}, nil
+}
+
 func tunnelFixture(t *testing.T) (*Gateway, client.Endpoint, *fixedVMResolver, string) {
 	t.Helper()
 	service, err := net.Listen("tcp", "127.0.0.1:0")
@@ -90,9 +94,14 @@ func TestTunnelCopiesLargePayloadAndAudits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"tunnel_opened", "tunnel_closed", "bytes_to_vm", "bytes_from_vm", "LAN_OR_UNKNOWN_NETWORK"} {
+	for _, want := range []string{"tunnel_opened", "tunnel_closed", "bytes_to_vm", "bytes_from_vm", "LAN_OR_UNKNOWN_NETWORK", `"network_mode":"bridged"`} {
 		if !strings.Contains(string(audit), want) {
 			t.Fatalf("audit lacks %s: %s", want, audit)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(audit)), "\n") {
+		if (strings.Contains(line, `"tunnel_opened"`) || strings.Contains(line, `"tunnel_closed"`)) && !strings.Contains(line, `"peer":"127.0.0.1:`) {
+			t.Fatalf("tunnel event without peer: %s", line)
 		}
 	}
 }

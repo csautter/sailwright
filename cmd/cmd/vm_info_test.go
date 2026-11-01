@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -60,5 +62,42 @@ func TestVMInfoOutputsAndFailures(t *testing.T) {
 	command.SetArgs([]string{"info", "unknown"})
 	if err := command.Execute(); err == nil {
 		t.Fatal("unknown VM accepted")
+	}
+}
+
+func TestVMIdentityReportsStoppedAndMissingVMs(t *testing.T) {
+	old := inspectVMIdentity
+	defer func() { inspectVMIdentity = old }()
+	inspectVMIdentity = func(vm alchemy_build.VirtualMachineConfig) (provision.VMIdentity, error) {
+		return provision.VMIdentity{SchemaVersion: 1, OS: vm.OS, Type: vm.UbuntuType, Arch: vm.Arch, Exists: true, InstanceID: "8f0c2a1e-3b4d-4c5e-9f60-718293a4b5c6"}, nil
+	}
+	command := newVMCommand()
+	var out bytes.Buffer
+	command.SetOut(&out)
+	// A type given for an untyped OS is dropped, as for every other command.
+	command.SetArgs([]string{"identity", "windows11", "--type", "server"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var value provision.VMIdentity
+	if err := json.Unmarshal(out.Bytes(), &value); err != nil || value.Type != "" || !value.Exists || value.InstanceID == "" {
+		t.Fatalf("identity: %+v %v (%s)", value, err, out.String())
+	}
+}
+
+func TestMarkCreateStarted(t *testing.T) {
+	vm := alchemy_build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "server", Arch: "amd64"}
+	if err := markCreateStarted("", vm); err != nil {
+		t.Fatalf("no marker requested: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "started")
+	if err := markCreateStarted(path, vm); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "ubuntu/server/amd64\n" {
+		t.Fatalf("marker: %q %v", data, err)
+	}
+	if err := markCreateStarted(filepath.Join(t.TempDir(), "missing", "started"), vm); err == nil {
+		t.Fatal("an unwritable marker must stop create before deployment")
 	}
 }

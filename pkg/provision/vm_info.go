@@ -23,6 +23,33 @@ type VMInfo struct {
 	Port          int    `json:"port"`
 	Username      string `json:"username"`
 	Password      string `json:"password"`
+	// InstanceID is the hypervisor's VM identifier (libvirt UUID, Hyper-V VM Id).
+	// It changes when a VM is recreated under the same name; empty when the engine
+	// has none sailwright reads.
+	InstanceID string `json:"instance_id,omitempty"`
+}
+
+// VMIdentity describes whether a target's VM exists and which instance it is. Unlike
+// VMInfo it is available for stopped VMs.
+type VMIdentity struct {
+	SchemaVersion int    `json:"schema_version"`
+	OS            string `json:"os"`
+	Type          string `json:"type"`
+	Arch          string `json:"arch"`
+	Engine        string `json:"engine"`
+	Exists        bool   `json:"exists"`
+	InstanceID    string `json:"instance_id,omitempty"`
+}
+
+var inspectInstanceID = alchemy_deploy.InspectInstanceID
+
+// InspectVMIdentity reports the target's VM instance without requiring it to run.
+func InspectVMIdentity(vm alchemy_build.VirtualMachineConfig) (VMIdentity, error) {
+	id, exists, err := inspectInstanceID(vm)
+	if err != nil {
+		return VMIdentity{}, err
+	}
+	return VMIdentity{SchemaVersion: 1, OS: vm.OS, Type: vm.UbuntuType, Arch: vm.Arch, Engine: string(vm.VirtualizationEngine), Exists: exists, InstanceID: id}, nil
 }
 
 // DiscoverLibvirtAddress uses the same lease/agent discovery as provisioning.
@@ -66,6 +93,14 @@ func InspectVM(vm alchemy_build.VirtualMachineConfig) (VMInfo, error) {
 	if err != nil {
 		return VMInfo{}, err
 	}
+	id, exists, err := inspectInstanceID(vm)
+	if err != nil {
+		return VMInfo{}, err
+	}
+	if !exists {
+		return VMInfo{}, fmt.Errorf("VM for OS=%s, type=%s, arch=%s disappeared during inspection", vm.OS, vm.UbuntuType, vm.Arch)
+	}
+	info.InstanceID = id
 	if vm.OS == "windows11" {
 		var connection windowsAnsibleConnectionConfig
 		switch info.Engine {

@@ -362,3 +362,24 @@ func GetVirtualMachineNameWithType(config VirtualMachineConfig) string {
 		return "Unknown OS"
 	}
 }
+
+// OSHasTypes reports whether osName has typed targets (such as ubuntu server and
+// desktop). It is derived from the VM configurations, so commands, locks and the
+// gateway agree on which targets carry a type.
+func OSHasTypes(osName string) bool {
+	for _, config := range AvailableVirtualMachineConfigs() {
+		if config.OS == osName && config.UbuntuType != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// TargetType returns the type a command uses for osName: requested for OSes with
+// typed targets and empty for all others, including "all" and "local".
+func TargetType(osName, requested string) string {
+	if !OSHasTypes(osName) {
+		return ""
+	}
+	return requested
+}

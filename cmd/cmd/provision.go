@@ -294,10 +294,7 @@ func executeProvision(cmd *cobra.Command, req provisionRequest) error {
 		return fmt.Errorf("❌ --ask-become-pass is only supported for local provisioning; Sailwright sets the credentials for VM targets")
 	}
 
-	osType := req.osType
-	if osName != "ubuntu" {
-		osType = ""
-	}
+	osType := alchemy_build.TargetType(osName, req.osType)
 	arch := req.arch
 
 	availableVirtualMachines := availableProvisionVirtualMachines()

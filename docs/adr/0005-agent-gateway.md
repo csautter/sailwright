@@ -97,8 +97,8 @@ Consequences of the amendment:
   for any other VM, lifecycle jobs need approval, tunnels are refused and
   `vm_info` raises an asynchronous access request whose approval lasts for the
   gateway run. Ownership is dropped on destroy or when `create list` reports the
-  VM gone, so an out-of-band destroy-and-recreate between listings is the
-  remaining gap; a per-instance identifier from `vm info` would close it.
+  VM gone. See the instance identity amendment for VMs recreated between
+  listings and for failed creates.
 - "Only the pinned copy runs" has one exception: at startup the gateway runs
   `sailwright --gateway-metadata` from PATH, without passthrough secrets, to
   compare state contracts. An installed CLI without the contract is a warning,
@@ -129,3 +129,26 @@ URI or network name. Failed queries and ambiguous modes remain unknown. Tart
 also reports unknown because the querying process environment cannot establish
 the network mode of an already running guest. Bridged and unknown modes continue
 to allow tunnels with the audit warning.
+
+## Amendment: VM instance identity and failed creates (2026-11-01)
+
+Ownership keyed only by target name could not tell a VM the operator destroyed
+and recreated between two listings from the one the gateway created. The CLI now
+reports the hypervisor instance id (libvirt domain UUID, Hyper-V VM Id) in
+`vm info --json` and in a new `vm identity` command that also answers for stopped
+VMs. The gateway stores the id with each ownership record and grant. `vm_info`
+and tunnels compare it with the id of their fresh lookup; lifecycle jobs on a
+VM whose record has an id run `vm identity` first, and a failed lookup there
+fails closed into an approval job. A different id drops the record, so the VM
+counts as the operator's. A record made without an id (the lookup after create
+failed) adopts the first id it sees. UTM and Tart expose no id that sailwright
+reads, so the listing-based gap remains on macOS hosts.
+
+A failed `create` used to leave a VM that was neither the gateway's nor
+deletable without approval. The gateway now passes each create job a private
+marker path in `SAILWRIGHT_CREATE_STARTED_FILE`. The CLI writes it after it has
+checked, while holding the target's operation lock, that no VM exists, and
+before deployment starts; it aborts the create if the marker cannot be written.
+A create job that fails after writing the marker records ownership when the VM
+exists afterwards. A create refused for an existing VM writes no marker and
+claims nothing. A pinned CLI without these features behaves as before.

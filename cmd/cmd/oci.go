@@ -148,9 +148,7 @@ func resolveOCIVirtualMachine(hostOsValue string, osName string, osTypeValue str
 	if osName == "" {
 		return alchemy_build.VirtualMachineConfig{}, fmt.Errorf("missing required --os value")
 	}
-	if osName != "ubuntu" {
-		osTypeValue = ""
-	}
+	osTypeValue = alchemy_build.TargetType(osName, osTypeValue)
 
 	var matches []alchemy_build.VirtualMachineConfig
 	for _, vm := range availableOCIVirtualMachinesForHostOS(hostOs) {

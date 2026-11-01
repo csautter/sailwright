@@ -88,25 +88,31 @@ func (g *Gateway) serveTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	defer upstream.Close()
 
-	params := map[string]any{"os": vm.OS, "type": vm.Type, "arch": vm.Arch, "address": vm.Address.String(), "port": port}
+	peer := r.Header.Get(peerHeader)
+	params := map[string]any{"os": vm.OS, "type": vm.Type, "arch": vm.Arch, "engine": vm.Engine, "network_mode": vm.NetworkMode, "address": vm.Address.String(), "port": port}
 	risk := []string{}
 	if lanReachable(vm.NetworkMode) {
 		risk = append(risk, "LAN_OR_UNKNOWN_NETWORK")
 	}
-	if err := g.audit.Record(AuditEvent{Event: "tunnel_opened", Params: params, Risk: risk}); err != nil {
+	if err := g.audit.Record(AuditEvent{Event: "tunnel_opened", Peer: peer, Params: params, Risk: risk}); err != nil {
 		http.Error(w, "audit unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	// Every recorded tunnel_opened gets a tunnel_closed, also when the upgrade fails.
+	started := time.Now()
+	closeErr := ""
+	defer func() {
+		_ = g.audit.Record(AuditEvent{Event: "tunnel_closed", Peer: peer, Params: params, Error: closeErr, DurationMS: time.Since(started).Milliseconds()})
+	}()
 	downstream, buffered, err := http.NewResponseController(w).Hijack()
 	if err != nil {
-		deny(tunnelRefusal{http.StatusInternalServerError, "HTTP upgrade unavailable"})
+		closeErr = "HTTP upgrade unavailable"
+		http.Error(w, closeErr, http.StatusInternalServerError)
 		return
 	}
 	defer downstream.Close()
-	started := time.Now()
 	sent, received := g.relayTunnel(downstream, buffered, upstream)
 	params["bytes_to_vm"], params["bytes_from_vm"] = sent, received
-	_ = g.audit.Record(AuditEvent{Event: "tunnel_closed", Params: params, DurationMS: time.Since(started).Milliseconds()})
 }
 
 // enterBackground registers work that Close waits for; false once closing.
@@ -153,6 +159,11 @@ func (g *Gateway) authorizeTunnel(ctx context.Context, target VMTarget) (Managed
 	if err != nil {
 		// The detailed reason goes to the operator console (see CLIManagedVMResolver).
 		return ManagedVM{}, &tunnelRefusal{http.StatusNotFound, "managed VM is unavailable or not running"}
+	}
+	allowed, err := g.ownership.confirm(target.Key(), vm.InstanceID)
+	g.recordOwnership(err)
+	if !allowed {
+		return ManagedVM{}, &tunnelRefusal{http.StatusForbidden, "VM was recreated outside this gateway; call vm_info to request operator approval"}
 	}
 	if err := allowedTunnelAddress(vm.Address); err != nil {
 		return ManagedVM{}, &tunnelRefusal{http.StatusForbidden, err.Error()}

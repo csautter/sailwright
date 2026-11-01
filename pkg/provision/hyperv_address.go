@@ -17,7 +17,7 @@ const (
 	// hypervSwitchEnvVar selects the switch in the Hyper-V Vagrantfiles.
 	hypervSwitchEnvVar     = "VAGRANT_HYPERV_SWITCH"
 	hypervDefaultSwitch    = "Default Switch"
-	hypervAdapterQueryTime = 30 * time.Second
+	hypervAdapterQueryTime = 10 * time.Second
 )
 
 // hypervAdapter is one VM network adapter as reported by hypervAdapterScript.

@@ -22,6 +22,13 @@ type Runner struct {
 	Env    []string
 }
 
+// WithEnv returns a runner whose child environment also holds the given NAME=value
+// entries; r is not changed.
+func (r *Runner) WithEnv(extra ...string) *Runner {
+	env := append(append([]string{}, r.Env...), extra...)
+	return &Runner{Binary: r.Binary, Env: env}
+}
+
 // Run executes argv in dir, streaming combined output to out. Cancelling ctx
 // terminates the whole process tree. It returns the exit code (or -1 when the process
 // could not be started or was killed by a signal).

@@ -56,8 +56,11 @@ type JobSpec struct {
 	BecomeWarning string
 	// Target is the VM of a safe-set operation; build jobs record console frames for it.
 	Target *JobTarget
-	// OnSucceeded runs after the command exits 0, before the job is reported done.
-	OnSucceeded func(jobID string)
+	// Env adds NAME=value entries to this job's child environment.
+	Env []string
+	// OnFinished runs after the command ran, before the job is reported done.
+	// succeeded is true only for exit code 0.
+	OnFinished func(jobID string, succeeded bool)
 }
 
 // JobView is the agent-visible state of a job.
@@ -372,10 +375,17 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 
 	runCtx, cancelTimeout := context.WithTimeout(ctx, spec.Timeout)
 	defer cancelTimeout()
-	code, err := m.runner.Run(runCtx, argv, spec.Dir, writer)
+	runner := m.runner
+	if len(spec.Env) > 0 {
+		runner = runner.WithEnv(spec.Env...)
+	}
+	code, err := runner.Run(runCtx, argv, spec.Dir, writer)
 	_ = writer.Flush()
 	// Keep the final frame before the job is reported as finished.
 	stopScreens()
+	if spec.OnFinished != nil {
+		spec.OnFinished(id, err == nil && code == 0)
+	}
 
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
@@ -385,9 +395,6 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 	case err != nil:
 		m.finish(j, JobFailed, &code, err.Error(), started)
 	case code == 0:
-		if spec.OnSucceeded != nil {
-			spec.OnSucceeded(id)
-		}
 		m.finish(j, JobSucceeded, &code, "", started)
 	default:
 		m.finish(j, JobFailed, &code, fmt.Sprintf("exit code %d", code), started)

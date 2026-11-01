@@ -24,11 +24,41 @@ const (
 // ansiPattern matches terminal escape sequences (CSI, OSC and single-character escapes).
 var ansiPattern = regexp.MustCompile(`\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-Z\\-_])`)
 
-// Redactor replaces known secret values with a marker.
+// Redactor replaces known secret values with a marker. A redactor derived with With
+// or WithRequired also applies its parent's current secrets, so secrets the parent
+// learns later (AddRequired) are hidden in derived output too.
 type Redactor struct {
 	mu      sync.RWMutex
 	secrets []string
 	minLen  int // shortest optional value With accepts; accepted secrets are always kept
+	parent  *Redactor
+}
+
+// all returns the secrets of r and its ancestors, longest first.
+func (r *Redactor) all() []string {
+	r.mu.RLock()
+	own := r.secrets
+	r.mu.RUnlock()
+	if r.parent == nil {
+		return own
+	}
+	return mergeSecrets(r.parent.all(), own)
+}
+
+// mergeSecrets combines accepted secret lists without re-escaping them.
+func mergeSecrets(lists ...[]string) []string {
+	seen := map[string]bool{}
+	var merged []string
+	for _, list := range lists {
+		for _, secret := range list {
+			if !seen[secret] {
+				seen[secret] = true
+				merged = append(merged, secret)
+			}
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool { return len(merged[i]) > len(merged[j]) })
+	return merged
 }
 
 // NewRedactor builds a redactor; very short values are ignored to avoid mangling output.
@@ -71,12 +101,11 @@ func (r *Redactor) maxSecretLen() int {
 	if r == nil {
 		return 0
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if len(r.secrets) == 0 {
+	secrets := r.all()
+	if len(secrets) == 0 {
 		return 0
 	}
-	return len(r.secrets[0]) // sorted longest first
+	return len(secrets[0]) // sorted longest first
 }
 
 // safeCut moves cut back to the start of any secret occurrence that straddles it, so
@@ -85,11 +114,10 @@ func (r *Redactor) safeCut(buf []byte, cut int) int {
 	if r == nil {
 		return cut
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	secrets := r.all()
 	for moved := true; moved; {
 		moved = false
-		for _, secret := range r.secrets {
+		for _, secret := range secrets {
 			from := max(0, cut-len(secret)+1)
 			if i := bytes.Index(buf[from:], []byte(secret)); i >= 0 && from+i < cut && from+i+len(secret) > cut {
 				cut, moved = from+i, true
@@ -104,9 +132,9 @@ func (r *Redactor) With(secrets ...string) *Redactor {
 	if r == nil {
 		return NewRedactor(secrets...)
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return newRedactor(r.minLen, r.secrets, r.minLen, secrets)
+	derived := newRedactor(r.minLen, nil, r.minLen, secrets)
+	derived.parent = r
+	return derived
 }
 
 // WithRequired is like With but also hides short values. Use it for secrets that must
@@ -115,9 +143,9 @@ func (r *Redactor) WithRequired(secrets ...string) *Redactor {
 	if r == nil {
 		return newRedactor(minRedactedSecret, nil, 1, secrets)
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return newRedactor(r.minLen, r.secrets, 1, secrets)
+	derived := newRedactor(r.minLen, nil, 1, secrets)
+	derived.parent = r
+	return derived
 }
 
 // String redacts a string. A nil redactor returns the value unchanged.
@@ -125,9 +153,7 @@ func (r *Redactor) String(value string) string {
 	if r == nil {
 		return value
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	for _, secret := range r.secrets {
+	for _, secret := range r.all() {
 		value = strings.ReplaceAll(value, secret, redactedMarker)
 	}
 	return value
