@@ -27,6 +27,26 @@ func TestResolveAnsibleRolePathsReturnsDefaultWhenConfigMissing(t *testing.T) {
 	}
 }
 
+func TestResolveAnsibleRolePathsRejectsMissingExplicitConfig(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, "roles"), 0o755); err != nil {
+		t.Fatalf("failed to create default roles directory: %v", err)
+	}
+	withIsolatedAlchemyDirectories(t, projectDir)
+	missingConfig := filepath.Join(t.TempDir(), "missing-role-sources.yml")
+	t.Setenv(ansibleRoleSourcesConfigEnvVar, missingConfig)
+
+	if rolePaths, err := resolveAnsibleRolePaths(projectDir); err == nil {
+		t.Fatalf("expected error for missing explicit config, got role paths %q", rolePaths)
+	} else if !strings.Contains(err.Error(), ansibleRoleSourcesConfigEnvVar) || !strings.Contains(err.Error(), missingConfig) {
+		t.Fatalf("expected error to name %s and %q, got %v", ansibleRoleSourcesConfigEnvVar, missingConfig, err)
+	}
+
+	if _, _, err := resolveConfiguredProvisionPlaybookPath(projectDir); err == nil {
+		t.Fatal("expected playbook resolution to reject missing explicit config")
+	}
+}
+
 func TestResolveAnsibleRolePathsLayersLocalSourcesBeforeDefault(t *testing.T) {
 	projectDir := t.TempDir()
 	dirs := withIsolatedAlchemyDirectories(t, projectDir)

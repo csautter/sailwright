@@ -53,12 +53,14 @@ type roleSourceGitCommandRunner func(workingDir string, timeout time.Duration, e
 var runRoleSourceGitCommand roleSourceGitCommandRunner = runCommandWithCombinedOutput
 var runtimeGOOS = runtime.GOOS
 
-func ansibleRoleSourcesConfigPath(directories *alchemy_build.Directories) string {
+// ansibleRoleSourcesConfigPath returns the role-source config path and whether
+// it was set explicitly through DEV_ALCHEMY_ROLE_SOURCES_CONFIG.
+func ansibleRoleSourcesConfigPath(directories *alchemy_build.Directories) (string, bool) {
 	if override := strings.TrimSpace(os.Getenv(ansibleRoleSourcesConfigEnvVar)); override != "" {
-		return filepath.Clean(override)
+		return filepath.Clean(override), true
 	}
 
-	return directories.ConfigPath(ansibleRoleSourcesConfigFile)
+	return directories.ConfigPath(ansibleRoleSourcesConfigFile), false
 }
 
 func resolveAnsibleRolePaths(projectDir string) ([]string, error) {
@@ -161,9 +163,13 @@ func hasConfiguredPlaybookSources(config ansibleRoleSourcesConfig) bool {
 
 func loadCurrentAnsibleRoleSourcesConfig() (ansibleRoleSourcesConfig, string, bool, error) {
 	directories := alchemy_build.GetDirectoriesInstance()
-	configPath := ansibleRoleSourcesConfigPath(directories)
+	configPath, explicit := ansibleRoleSourcesConfigPath(directories)
 
 	config, exists, err := loadAnsibleRoleSourcesConfig(configPath)
+	if err == nil && !exists && explicit {
+		// An explicitly selected config must not silently fall back to the bundled roles.
+		return ansibleRoleSourcesConfig{}, configPath, false, fmt.Errorf("%s points at %q, which does not exist", ansibleRoleSourcesConfigEnvVar, configPath)
+	}
 	return config, configPath, exists, err
 }
 

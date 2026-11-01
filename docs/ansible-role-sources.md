@@ -15,7 +15,9 @@ config directory:
 - Linux: `${XDG_CONFIG_HOME:-~/.config}/dev-alchemy/ansible-role-sources.yml`
 
 Set `DEV_ALCHEMY_CONFIG_DIR` to move the config directory, or set
-`DEV_ALCHEMY_ROLE_SOURCES_CONFIG` to point at one specific config file.
+`DEV_ALCHEMY_ROLE_SOURCES_CONFIG` to point at one specific config file. If
+`DEV_ALCHEMY_ROLE_SOURCES_CONFIG` names a file that does not exist, Sailwright
+fails with an error instead of falling back to the bundled roles.
 
 ## Layering model
 
@@ -23,7 +25,7 @@ Sources are applied in the order they appear in the file. Ansible uses the
 first matching role name it finds, so put specific override roles before base
 role collections.
 
-If the config file is missing, Sailwright keeps the old behavior and uses the
+If the default config file is missing, Sailwright keeps the old behavior and uses the
 bundled `./roles` directory. When the config file exists,
 `include_default_roles` defaults to `true`, so configured sources are placed
 before the bundled roles.
