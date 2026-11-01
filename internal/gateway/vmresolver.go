@@ -46,6 +46,8 @@ var ErrVMAccessUnavailable = errors.New("managed VM access is unavailable")
 // Lookups for different targets run concurrently; concurrent lookups for the same
 // target share one CLI invocation.
 type CLIManagedVMResolver struct {
+	// Context bounds all lookups to the owner lifetime; nil uses Background.
+	Context  context.Context
 	Runner   *Runner
 	Work     string
 	Redactor *Redactor
@@ -54,6 +56,10 @@ type CLIManagedVMResolver struct {
 	mu       sync.Mutex
 	cache    map[string]cachedVM
 	inflight map[string]*vmLookup
+	lifetime context.Context
+	cancel   context.CancelFunc
+	closed   bool
+	workers  sync.WaitGroup
 }
 
 type cachedVM struct {
@@ -82,7 +88,25 @@ func (r *CLIManagedVMResolver) resolve(ctx context.Context, osName, osType, arch
 		return ManagedVM{}, errors.New("invalid VM target")
 	}
 	key := osName + "/" + osType + "/" + arch
+	if err := ctx.Err(); err != nil {
+		return ManagedVM{}, err
+	}
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return ManagedVM{}, context.Canceled
+	}
+	if r.lifetime == nil {
+		parent := r.Context
+		if parent == nil {
+			parent = context.Background()
+		}
+		r.lifetime, r.cancel = context.WithCancel(parent)
+	}
+	if err := r.lifetime.Err(); err != nil {
+		r.mu.Unlock()
+		return ManagedVM{}, err
+	}
 	if value, ok := r.cache[key]; cached && ok && time.Now().Before(value.expires) {
 		r.mu.Unlock()
 		return value.vm, nil
@@ -96,6 +120,7 @@ func (r *CLIManagedVMResolver) resolve(ctx context.Context, osName, osType, arch
 			r.inflight = map[string]*vmLookup{}
 		}
 		r.inflight[key] = lookup
+		r.workers.Add(1)
 		go r.query(key, lookup, osName, osType, arch)
 	}
 	r.mu.Unlock()
@@ -107,10 +132,24 @@ func (r *CLIManagedVMResolver) resolve(ctx context.Context, osName, osType, arch
 	}
 }
 
+// Close prevents new lookups, cancels CLI processes and waits for their exit.
+func (r *CLIManagedVMResolver) Close() error {
+	r.mu.Lock()
+	r.closed = true
+	if r.cancel != nil {
+		r.cancel()
+	}
+	r.mu.Unlock()
+	// Add happens under mu before closed is set, so no Add can race with Wait.
+	r.workers.Wait()
+	return nil
+}
+
 // query runs detached from any single caller so a cancelled request does not fail
-// the other callers sharing the lookup; the CLI call has its own timeout.
+// the other callers sharing the lookup; the owner lifetime and timeout bound it.
 func (r *CLIManagedVMResolver) query(key string, lookup *vmLookup, osName, osType, arch string) {
-	lookup.vm, lookup.err = r.run(osName, osType, arch)
+	defer r.workers.Done()
+	lookup.vm, lookup.err = r.run(r.lifetime, osName, osType, arch)
 	if lookup.err != nil && r.Console != nil {
 		fmt.Fprintf(r.Console, "vm info %s failed: %s\n", key, sanitizeForTerminal(lookup.err.Error()))
 	}
@@ -128,8 +167,8 @@ func (r *CLIManagedVMResolver) query(key string, lookup *vmLookup, osName, osTyp
 	close(lookup.done)
 }
 
-func (r *CLIManagedVMResolver) run(osName, osType, arch string) (ManagedVM, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func (r *CLIManagedVMResolver) run(parent context.Context, osName, osType, arch string) (ManagedVM, error) {
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	args := []string{"vm", "info", osName, "--arch", arch, "--json"}
 	if osType != "" {

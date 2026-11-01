@@ -137,8 +137,8 @@ func New(opts Options) (*Gateway, error) {
 	}
 	g.tunnelSlots = make(chan struct{}, cfg.MaxTunnels)
 	g.tunnelDial = (&net.Dialer{}).DialContext
-	g.vmResolver = &CLIManagedVMResolver{Runner: g.runner, Work: dirs.Work, Redactor: redactor, Console: opts.Console}
 	g.backgroundCtx, g.backgroundCancel = context.WithCancel(context.Background())
+	g.vmResolver = &CLIManagedVMResolver{Context: g.backgroundCtx, Runner: g.runner, Work: dirs.Work, Redactor: redactor, Console: opts.Console}
 	g.jobs = NewJobManager(JobManagerOptions{
 		Runner:      g.runner,
 		Approver:    g.approver,
@@ -169,6 +169,9 @@ func (g *Gateway) Close() error {
 	g.closed = true
 	g.backgroundMu.Unlock()
 	g.backgroundCancel()
+	if resolver, ok := g.vmResolver.(io.Closer); ok {
+		_ = resolver.Close()
+	}
 	g.jobs.CancelAll()
 	g.jobs.WaitAll()
 	g.background.Wait()

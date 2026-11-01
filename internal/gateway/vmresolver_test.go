@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/csautter/dev-alchemy/internal/gateway"
 	"github.com/csautter/dev-alchemy/internal/gateway/gatewaytest"
@@ -60,12 +61,29 @@ func TestCLIResolverSharesConcurrentLookupsPerTarget(t *testing.T) {
 		t.Fatalf("validated guest password not registered: %q", got)
 	}
 
-	// A cancelled caller returns promptly without failing the shared lookup.
+	// Cancelling one in-flight caller must not cancel another caller's shared CLI.
+	before := countVMInfo(t, record)
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := resolver.ResolveFresh(ctx, "ubuntu", "server", "amd64"); err == nil {
-		t.Fatal("cancelled lookup succeeded")
+	cancelled := make(chan error, 1)
+	go func() { _, err := resolver.ResolveFresh(ctx, "ubuntu", "server", "amd64"); cancelled <- err }()
+	deadline := time.Now().Add(5 * time.Second)
+	for countVMInfo(t, record) == before {
+		if time.Now().After(deadline) {
+			t.Fatal("lookup did not start")
+		}
+		time.Sleep(time.Millisecond)
 	}
+	cancel()
+	if err := <-cancelled; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled caller: %v", err)
+	}
+	if _, err := resolver.ResolveFresh(context.Background(), "ubuntu", "server", "amd64"); err != nil {
+		t.Fatalf("shared lookup: %v", err)
+	}
+	if got := countVMInfo(t, record); got != before+1 {
+		t.Fatalf("shared lookup ran %d CLI calls", got-before)
+	}
+
 }
 
 func TestCLIResolverDoesNotLearnSecretsFromInvalidResponses(t *testing.T) {
