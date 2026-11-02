@@ -206,8 +206,8 @@ Vagrant is installed in a pinned version through Chocolatey and added to the
 ## Updating
 
 Check the installed version with `sailwright --version`. `sailwright version`
-also shows OS/architecture, installation type, and the effective automatic
-check setting.
+also shows OS/architecture, installation type, the effective automatic
+check setting, and the signature verification policy.
 
 - **Homebrew:** `brew upgrade sailwright` and, if installed,
   `brew upgrade sailwright-gateway`. Self-update refuses Homebrew paths,
@@ -233,32 +233,49 @@ sailwright update --yes --require-signature
 latest), **2** means an update is available, **1** means an error. An explicit
 `--version` permits a downgrade only with a terminal on stdin and an explicit
 confirmation, even with `--yes`; otherwise the updater never downgrades.
-Only stable release versions are supported.
-
-Downloads use the same asset names, SHA-256 checksums, and optional cosign
-verification as the install scripts, including checksum entries prefixed
-with `dist/`. If cosign is installed, signature verification must succeed
-before installation; it can contact public Sigstore services. Use
-`--require-signature` to fail when cosign is unavailable, or set
-`"require_signature": true` in `update.json` in the config directory to require
-it for every update. Invalid settings stop updates rather than bypassing this
-policy. Downloads reject insecure redirects, except HTTP loopback redirects
-when using an explicit local fixture source. The updater
-prints whether the signature was verified or only checksums were checked. Both archives
-are verified and staged before either binary is replaced. Files are staged
-in the installation directory with the existing executable permissions.
-Each replacement uses an atomic rename on Linux/macOS. Windows renames the
-old executable to `.old`; the next CLI invocation removes these backups.
-A failed replacement restores previous binaries; an in-use Windows gateway
-may require stopping it before retrying. The target directory must be
-writable; the updater never invokes sudo or requests administrator rights.
-The `.update-lock` file remains in the installation directory; its OS lock
-is released automatically when the updater exits, including after a crash.
-Do not delete it while an updater is running. On Unix, recover any interrupted
-update before deleting leftover `.old` backups and retrying.
+Only stable release versions are supported. Downgrading to a release older
+than the first one with `sailwright update` removes the command; rerun the
+install script to return to a newer release.
 
 The first release containing `update` can update itself. For an earlier
 release, rerun the install script once to gain the command.
+The trust model and replacement strategy are recorded in
+[ADR 0007](./adr/0007-cli-self-update.md).
+
+### Verification
+
+- Downloads use the same asset names and SHA-256 checksums as the install
+  scripts, including checksum entries prefixed with `dist/`.
+- **Without cosign, only checksums are checked.** The checksum manifest comes
+  from the same GitHub release as the archives, so this detects corrupted
+  downloads but does not prove the release was published by the Sailwright
+  release workflow. The updater prints a warning in that case.
+- If cosign is installed, the manifest signature must verify against the
+  release workflow identity before installation; this can contact public
+  Sigstore services.
+- To require the signature, pass `--require-signature` or set
+  `"require_signature": true` in `update.json` in the config directory. The
+  update then fails when cosign is unavailable. This is recommended.
+  Invalid settings stop updates rather than bypassing this policy.
+- Downloads reject insecure redirects, except HTTP loopback redirects when
+  using an explicit local fixture source.
+
+### Replacement and recovery
+
+- Both archives are verified and staged before either binary is replaced.
+  Files are staged in the installation directory with the existing
+  executable permissions.
+- Each replacement uses an atomic rename on Linux/macOS. Windows renames the
+  old executable to `.old`; the next CLI invocation removes these backups.
+- A failed replacement restores previous binaries; an in-use Windows gateway
+  may require stopping it before retrying.
+- The target directory must be writable; the updater never invokes sudo or
+  requests administrator rights.
+- The `.update-lock` file remains in the installation directory; its OS lock
+  is released automatically when the updater exits, including after a crash.
+  Do not delete it while an updater is running.
+- On Unix, recover any interrupted update before deleting leftover `.old`
+  backups and retrying.
 
 ## Optional update notices
 
@@ -287,13 +304,16 @@ later invocation. There is no automatic installation, daemon, or background serv
 
 No check or notice occurs for `update`, `version`, `--version`, `help`,
 completion, development builds, when stderr has no TTY, or when `CI` is set.
-Failures are silent and still count toward the interval. Notices for an
+A completed check starts the interval, including a failed one; failures are
+silent. A check that had not completed when the command exited is retried
+after five minutes, so quick commands do not suppress checks for a whole
+interval. Notices for an
 available version occur at most once per interval; stdout stays unchanged.
 The gateway does not perform checks.
 
 Settings are stored in `update.json` (for example
 `{"enabled":true,"interval":"1h"}`) in the existing configuration directory;
-check time, last seen version, and notice time are in `update-check.json` in
+check and attempt times, last seen version, and notice time are in `update-check.json` in
 the existing cache directory. Defaults are:
 
 | Platform | Configuration directory | Cache directory |
@@ -305,8 +325,8 @@ the existing cache directory. Defaults are:
 The existing `DEV_ALCHEMY_CONFIG_DIR`, `DEV_ALCHEMY_APP_DATA_DIR`, and
 `DEV_ALCHEMY_CACHE_DIR` overrides apply. `sailwright version` shows the resolved
 settings path and effective enablement, including environment overrides. An
-unreadable or invalid `update.json` disables checks; `sailwright version`
-reports the problem, and `sailwright update --auto-check on|off` replaces the
+unreadable or invalid `update.json` disables checks, even when
+`SAILWRIGHT_UPDATE_CHECK=1` is set; `sailwright version` reports the problem, and `sailwright update --auto-check on|off` replaces the
 file with valid settings.
 
 For local integration tests only, `SAILWRIGHT_UPDATE_BASE_URL` replaces the
