@@ -243,7 +243,10 @@ func (r *CLIManagedVMResolver) run(parent context.Context, osName, osType, arch 
 		return ManagedVM{}, errors.New("invalid VM instance id")
 	}
 	// Register the password only for a validated response, before anyone can see it.
-	if r.Redactor != nil {
+	// A password equal to the username (vagrant/vagrant, packer/packer) is not a
+	// secret: the username is printed in ssh_config and logs anyway, and hiding it
+	// would turn the word into *** everywhere in later output, paths included.
+	if r.Redactor != nil && value.Password != value.Username {
 		r.Redactor.AddRequired(value.Password)
 	}
 	return ManagedVM{OS: osName, Type: osType, Arch: arch, Engine: value.Engine, Address: address.Unmap(), NetworkMode: value.NetworkMode, Protocol: value.Protocol, Port: value.Port, Username: value.Username, Password: value.Password, InstanceID: value.InstanceID}, nil

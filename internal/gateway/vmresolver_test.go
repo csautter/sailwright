@@ -152,3 +152,25 @@ func TestCLIResolverReportsLookupFailures(t *testing.T) {
 		t.Fatalf("lookup with a leading warning: %v", err)
 	}
 }
+
+func TestCLIResolverDoesNotRedactPasswordEqualToUsername(t *testing.T) {
+	fake := gatewaytest.BuildFakeCLI(t)
+	state := t.TempDir()
+	pinned, err := gateway.PinBinary(fake, t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "ubuntu-server-amd64"), []byte("running"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The fake CLI reports the username "packer".
+	env := append(os.Environ(), "FAKE_CLI_STATE="+state, "FAKE_VM_PASSWORD=packer")
+	redactor := gateway.NewRedactor()
+	resolver := &gateway.CLIManagedVMResolver{Runner: &gateway.Runner{Binary: pinned, Env: env}, Work: t.TempDir(), Redactor: redactor}
+	if _, err := resolver.Resolve(context.Background(), "ubuntu", "server", "amd64"); err != nil {
+		t.Fatal(err)
+	}
+	if got := redactor.String("/home/packer/packer_cache"); got != "/home/packer/packer_cache" {
+		t.Fatalf("username-equal password mangled output: %q", got)
+	}
+}
