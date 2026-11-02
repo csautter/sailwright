@@ -58,8 +58,13 @@ func AssessRisk(args []string, bundleRoot string) []string {
 	}
 
 	switch command {
-	case "install", "update":
+	case "install":
 		flags[RiskHostModifying] = true
+	case "update":
+		// --check only reads the latest release tag; settings and installs modify the host.
+		if !containsString(args, "--check") {
+			flags[RiskHostModifying] = true
+		}
 	case "push":
 		flags[RiskNetworkWrite] = true
 	case "provision":

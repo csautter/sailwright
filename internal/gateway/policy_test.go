@@ -230,6 +230,11 @@ func TestAssessRisk(t *testing.T) {
 		want   []string
 	}{
 		{[]string{"install"}, "", []string{RiskHostModifying}},
+		{[]string{"update", "--yes"}, "", []string{RiskHostModifying}},
+		{[]string{"update", "--auto-check", "on"}, "", []string{RiskHostModifying}},
+		{[]string{"update", "--check"}, "", nil},
+		{[]string{"update", "--version", "all", "--no-gateway", "--require-signature"}, "", []string{RiskHostModifying}},
+		{[]string{"update", "--no-gateway", "all"}, "", []string{RiskAllTargets, RiskHostModifying}},
 		{[]string{"provision", "local"}, "", []string{RiskHostCode, RiskHostModifying}},
 		{[]string{"provision", "local", "--check"}, "", []string{RiskHostCode}},
 		{[]string{"provision", "--ask-become-pass", "local"}, "", []string{RiskHostCode, RiskHostModifying}},
