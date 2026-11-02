@@ -54,6 +54,7 @@ override.tf.json
 terraform.rc
 
 .terragrunt-cache/
+.trivy-cache/
 **/modules/**/.terraform.lock.hcl
 
 env_local.hcl

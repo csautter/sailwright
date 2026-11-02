@@ -40,6 +40,7 @@ def _install_stubs():
         "azure.mgmt": types.ModuleType("azure.mgmt"),
         "azure.mgmt.compute": types.ModuleType("azure.mgmt.compute"),
         "azure.mgmt.resource": types.ModuleType("azure.mgmt.resource"),
+        "azure.mgmt.resource.resources": types.ModuleType("azure.mgmt.resource.resources"),
         "azure.mgmt.network": types.ModuleType("azure.mgmt.network"),
         "requests": types.ModuleType("requests"),
     }
@@ -52,7 +53,7 @@ def _install_stubs():
     modules["azure.identity"].DefaultAzureCredential = mock.Mock()
     modules["azure.keyvault.secrets"].SecretClient = mock.Mock()
     modules["azure.mgmt.compute"].ComputeManagementClient = mock.Mock()
-    modules["azure.mgmt.resource"].ResourceManagementClient = mock.Mock()
+    modules["azure.mgmt.resource.resources"].ResourceManagementClient = mock.Mock()
     modules["azure.mgmt.network"].NetworkManagementClient = mock.Mock()
     for name, module in modules.items():
         sys.modules.setdefault(name, module)

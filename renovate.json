@@ -65,6 +65,16 @@
     },
     {
       "customType": "regex",
+      "description": "Update Azure Functions Core Tools devcontainer version pin",
+      "managerFilePatterns": [
+        "/(^|/)\\.devcontainer/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+versioning=(?<versioning>\\S+)\\s+ENV\\s+AZURE_FUNCTIONS_CORE_TOOLS_VERSION=\"(?<currentValue>[^\"]+)\""
+      ]
+    },
+    {
+      "customType": "regex",
       "description": "Update annotated custom dependency pins in Go and shell scripts",
       "managerFilePatterns": [
         "/(^|/)\\.github/runners/prepare-tart-base\\.sh$/",

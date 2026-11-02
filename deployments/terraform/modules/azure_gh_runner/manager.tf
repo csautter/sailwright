@@ -17,6 +17,10 @@ resource "azurerm_resource_group" "gh_runner_manager" {
   location = "francecentral"
 }
 
+# Accepted trivy finding:
+# AZU-0013: the consumption-plan function app has no fixed outbound IPs and is not a trusted
+#   Azure service for Key Vault, so a default-deny ACL would block it. Access is RBAC-only.
+#trivy:ignore:AZU-0013
 resource "azurerm_key_vault" "gh_runner_kv" {
   name                       = "gh-runner-kv-b-${random_integer.suffix.result}"
   location                   = azurerm_resource_group.gh_runner_manager.location
@@ -43,6 +47,16 @@ resource "azurerm_role_assignment" "keyvault_secrets_officer" {
   role_definition_name = "Key Vault Secrets Officer"
   principal_id         = data.azurerm_client_config.current.object_id
 }
+# Accepted trivy findings:
+# AZU-0012: the Y1 consumption plan has no VNet integration or fixed outbound IPs, so a
+#   default-deny network rule would cut the function app off from its own storage.
+# AZU-0057: classic storage analytics logging is not worth the cost for function storage.
+# AZU-0058: LRS is sufficient; the account only holds function runtime data.
+# AZU-0061: infrastructure_encryption_enabled forces replacement, which prevent_destroy blocks.
+#trivy:ignore:AZU-0012
+#trivy:ignore:AZU-0057
+#trivy:ignore:AZU-0058
+#trivy:ignore:AZU-0061
 resource "azurerm_storage_account" "gh_runner_storage" {
   name                            = "ghrunnerstorage${random_integer.suffix.result}"
   resource_group_name             = azurerm_resource_group.gh_runner_manager.name
@@ -73,6 +87,7 @@ resource "azurerm_linux_function_app" "gh_runner_func_app" {
   storage_account_name                           = azurerm_storage_account.gh_runner_storage.name
   storage_account_access_key                     = azurerm_storage_account.gh_runner_storage.primary_access_key
   service_plan_id                                = azurerm_service_plan.gh_runner_func_plan.id
+  https_only                                     = true
   builtin_logging_enabled                        = false
   ftp_publish_basic_authentication_enabled       = false
   webdeploy_publish_basic_authentication_enabled = false
