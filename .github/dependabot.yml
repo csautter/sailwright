@@ -69,3 +69,9 @@ updates:
     directory: "/scripts/gh-runner-func"
     schedule:
       interval: weekly
+    ignore:
+      # azure-functions 2.x requires Python >= 3.13, but the Function App runs
+      # Python 3.11 (deployments/terraform/modules/azure_gh_runner/manager.tf).
+      # Drop this rule when the Function App moves to Python 3.13.
+      - dependency-name: "azure-functions"
+        versions: [">=2"]
