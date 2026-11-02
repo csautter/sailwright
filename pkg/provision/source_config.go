@@ -230,7 +230,7 @@ func readConfigDocument(path string) (*yaml.Node, error) {
 	if _, _, err := loadAnsibleRoleSourcesConfig(path); err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- the operator selects the config file via --config, env, CWD or OS default
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -276,8 +276,7 @@ func writeConfigDocument(path string, doc *yaml.Node) error {
 	}
 	defer os.Remove(file.Name())
 	if _, err := file.Write(out.Bytes()); err != nil {
-		file.Close()
-		return err
+		return errors.Join(err, file.Close())
 	}
 	if err := file.Close(); err != nil {
 		return err

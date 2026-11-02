@@ -1,6 +1,7 @@
 package provision
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -130,7 +131,7 @@ func Catalog(targetOS string, refresh bool) ([]CatalogEntry, error) {
 				if !isRegularFile(meta) {
 					meta = filepath.Join(path, "meta/main.yaml")
 				}
-				if data, err := os.ReadFile(meta); err == nil {
+				if data, err := os.ReadFile(meta); err == nil { // #nosec G304 -- metadata of a role inside an operator-configured source root
 					var doc struct {
 						GalaxyInfo struct {
 							Description string `yaml:"description"`
@@ -282,7 +283,7 @@ func PrepareSelection(roles []string, playbook string) (string, func(), error) {
 	}
 	cleanup = func() { _ = os.Remove(file.Name()) }
 	if _, err = file.Write(data); err != nil {
-		file.Close()
+		err = errors.Join(err, file.Close())
 		cleanup()
 		return "", func() {}, err
 	}
