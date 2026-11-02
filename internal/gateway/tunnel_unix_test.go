@@ -7,6 +7,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -15,7 +16,14 @@ import (
 
 func TestTunnelOverAgentSocket(t *testing.T) {
 	g, _, _, _ := tunnelFixture(t)
-	socket := filepath.Join(t.TempDir(), "gateway.sock")
+	// Not t.TempDir(): on macOS its path plus the socket name gets close to the
+	// 104-byte sun_path limit.
+	dir, err := os.MkdirTemp("", "swt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "gateway.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
