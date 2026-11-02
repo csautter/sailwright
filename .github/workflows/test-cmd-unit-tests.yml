@@ -147,6 +147,21 @@ jobs:
       - name: Run gh-runner Function App tests
         run: python3 -I -m unittest discover -s scripts/gh-runner-func -v
 
+      # The Function App runs Python 3.11
+      # (deployments/terraform/modules/azure_gh_runner/manager.tf).
+      - name: Set up Python for gh-runner Function App contract tests
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scripts/gh-runner-func/requirements.txt
+
+      - name: Run gh-runner Function App contract tests
+        run: |
+          python -m venv "${RUNNER_TEMP}/gh-runner-func-venv"
+          "${RUNNER_TEMP}/gh-runner-func-venv/bin/pip" install --require-hashes -r scripts/gh-runner-func/requirements.txt
+          "${RUNNER_TEMP}/gh-runner-func-venv/bin/python" -I -m unittest discover -s scripts/gh-runner-func -p 'contract_test*.py' -v
+
   oci-integration:
     name: Run OCI registry integration test
     runs-on: ubuntu-latest

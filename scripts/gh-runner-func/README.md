@@ -369,6 +369,17 @@ Unit tests for the handlers stub the Azure SDKs and need only Python 3:
 python3 -m unittest discover -s scripts/gh-runner-func
 ```
 
+Contract tests check the JSON request bodies the real, pinned Azure SDKs send to
+ARM, so a wrong model field name or an SDK serialization change shows up before
+deployment. Run them in a separate virtual environment with the lock installed.
+The stub-based tests above must not run in the same process:
+
+```bash
+python3.11 -m venv /tmp/gh-runner-func-venv
+/tmp/gh-runner-func-venv/bin/pip install --require-hashes -r scripts/gh-runner-func/requirements.txt
+/tmp/gh-runner-func-venv/bin/python -I -m unittest discover -s scripts/gh-runner-func -p 'contract_test*.py'
+```
+
 To call the deployed endpoints, use the provided `test-endpoints.sh` script. It automatically resolves the function app name and API client ID from Terragrunt output or the Azure CLI.
 
 ```bash
