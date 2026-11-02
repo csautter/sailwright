@@ -22,9 +22,8 @@ func TestProvisionWithoutTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer input.Close()
-	oldInput := provisionCmd.InOrStdin()
 	provisionCmd.SetIn(input)
-	defer provisionCmd.SetIn(oldInput)
+	defer provisionCmd.SetIn(nil)
 	err = provisionCmd.RunE(provisionCmd, nil)
 	if err == nil || !strings.Contains(err.Error(), "provision local --check") || !provisionCmd.SilenceUsage {
 		t.Fatalf("unexpected result: %v", err)
@@ -95,12 +94,17 @@ func testWizardFlow(t *testing.T, preview, apply bool) {
 		return nil
 	}
 	var output bytes.Buffer
-	previousOutput, previousInput := provisionCmd.OutOrStdout(), provisionCmd.InOrStdin()
-	defer func() { provisionCmd.SetOut(previousOutput); provisionCmd.SetIn(previousInput) }()
+	defer func() { provisionCmd.SetOut(nil); provisionCmd.SetIn(nil) }()
 	provisionCmd.SetOut(&output)
 	provisionCmd.SetIn(strings.NewReader(""))
+	oldNeedsSudo := wizardNeedsSudoPasswordFunc
+	defer func() { wizardNeedsSudoPasswordFunc = oldNeedsSudo }()
+	wizardNeedsSudoPasswordFunc = func() bool { return false }
 	if err := provisionWizard(provisionCmd); err != nil {
 		t.Fatal(err)
+	}
+	if len(selectedRoles) != 0 || playbookPath != "" || check || assumeYes || askBecomePass {
+		t.Fatalf("wizard changed flag globals: roles=%v playbook=%q check=%t yes=%t ask=%t", selectedRoles, playbookPath, check, assumeYes, askBecomePass)
 	}
 	expected := []bool{}
 	if preview {

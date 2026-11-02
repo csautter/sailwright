@@ -123,7 +123,7 @@ func Catalog(targetOS string, refresh bool) ([]CatalogEntry, error) {
 			path := filepath.Join(root.path, file.Name())
 			entry := CatalogEntry{Kind: root.kind, Name: file.Name(), Source: root.source, Path: path, Compatible: true, Platforms: []string{}, Shadows: []string{}}
 			if root.kind == "role" {
-				if !file.IsDir() || (!isRegularFile(filepath.Join(path, "tasks/main.yml")) && !isRegularFile(filepath.Join(path, "tasks/main.yaml"))) {
+				if !file.IsDir() || !isAnsibleRoleDir(path) {
 					continue
 				}
 				meta := filepath.Join(path, "meta/main.yml")
@@ -151,24 +151,14 @@ func Catalog(targetOS string, refresh bool) ([]CatalogEntry, error) {
 				}
 				entry.Compatible = compatiblePlatforms(entry.Platforms, targetOS)
 			} else {
-				if file.IsDir() || (filepath.Ext(path) != ".yml" && filepath.Ext(path) != ".yaml") || file.Name() == "role-sources-test.yml" {
+				if file.IsDir() || file.Name() == "role-sources-test.yml" {
 					continue
 				}
-				data, err := os.ReadFile(path)
+				data, ok, err := readAnsiblePlaybook(path)
 				if err != nil {
 					return nil, err
 				}
-				var plays []map[string]interface{}
-				if yaml.Unmarshal(data, &plays) != nil || len(plays) == 0 {
-					continue
-				}
-				valid := true
-				for _, p := range plays {
-					if _, ok := p["hosts"]; !ok {
-						valid = false
-					}
-				}
-				if !valid {
+				if !ok {
 					continue
 				}
 				entry.Name = strings.TrimSuffix(file.Name(), filepath.Ext(path))
@@ -189,6 +179,33 @@ func Catalog(targetOS string, refresh bool) ([]CatalogEntry, error) {
 		}
 	}
 	return result, nil
+}
+
+// isAnsibleRoleDir reports whether path is a role directory with tasks/main.
+func isAnsibleRoleDir(path string) bool {
+	return isRegularFile(filepath.Join(path, "tasks", "main.yml")) || isRegularFile(filepath.Join(path, "tasks", "main.yaml"))
+}
+
+// readAnsiblePlaybook reads a .yml/.yaml file and reports whether it is a
+// playbook: a non-empty top-level list whose plays all declare hosts.
+func readAnsiblePlaybook(path string) ([]byte, bool, error) {
+	if ext := filepath.Ext(path); ext != ".yml" && ext != ".yaml" {
+		return nil, false, nil
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- path is inside an operator-configured source root
+	if err != nil {
+		return nil, false, err
+	}
+	var plays []map[string]interface{}
+	if yaml.Unmarshal(data, &plays) != nil || len(plays) == 0 {
+		return data, false, nil
+	}
+	for _, play := range plays {
+		if _, ok := play["hosts"]; !ok {
+			return data, false, nil
+		}
+	}
+	return data, true, nil
 }
 
 func compatiblePlatforms(platforms []string, target string) bool {

@@ -34,10 +34,33 @@ func ConfigLocation() (string, string) {
 	return dirs.ConfigPath(ansibleRoleSourcesConfigFile), "default"
 }
 
-// ConfigSources returns sources in their configured precedence order.
-func ConfigSources() ([]ansibleRoleSourceConfig, []ansibleRoleSourceConfig, error) {
+// ConfiguredSource is a read-only view of one configured role or playbook source.
+type ConfiguredSource struct {
+	Name          string
+	Type          string
+	Path          string
+	URL           string
+	Ref           string
+	RolesPath     string
+	PlaybooksPath string
+}
+
+// ConfigSources returns role sources and playbook-only sources in their
+// configured precedence order.
+func ConfigSources() (roleSources []ConfiguredSource, playbookSources []ConfiguredSource, err error) {
 	config, _, _, err := loadCurrentAnsibleRoleSourcesConfig()
-	return config.Sources, config.PlaybookSources, err
+	if err != nil {
+		return nil, nil, err
+	}
+	return toConfiguredSources(config.Sources), toConfiguredSources(config.PlaybookSources), nil
+}
+
+func toConfiguredSources(sources []ansibleRoleSourceConfig) []ConfiguredSource {
+	out := make([]ConfiguredSource, 0, len(sources))
+	for _, s := range sources {
+		out = append(out, ConfiguredSource{Name: s.Name, Type: s.Type, Path: s.Path, URL: s.URL, Ref: s.Ref, RolesPath: s.RolesPath, PlaybooksPath: s.PlaybooksPath})
+	}
+	return out
 }
 
 // AddConfigSource detects role/playbook roots, refusing duplicate names.
@@ -109,25 +132,16 @@ func AddConfigSource(location, name, ref string) error {
 		}
 		for _, entry := range entries {
 			p := filepath.Join(root, entry.Name())
-			if entry.IsDir() && (isRegularFile(filepath.Join(p, "tasks/main.yml")) || isRegularFile(filepath.Join(p, "tasks/main.yaml"))) {
+			if entry.IsDir() && isAnsibleRoleDir(p) {
 				directRoles = true
 			}
-			if !entry.IsDir() && (filepath.Ext(p) == ".yml" || filepath.Ext(p) == ".yaml") {
-				data, err := os.ReadFile(p)
+			if !entry.IsDir() {
+				_, ok, err := readAnsiblePlaybook(p)
 				if err != nil {
 					return err
 				}
-				var plays []map[string]interface{}
-				if yaml.Unmarshal(data, &plays) == nil && len(plays) > 0 {
-					valid := true
-					for _, play := range plays {
-						if _, ok := play["hosts"]; !ok {
-							valid = false
-						}
-					}
-					if valid {
-						directPlaybooks = true
-					}
+				if ok {
+					directPlaybooks = true
 				}
 			}
 		}
