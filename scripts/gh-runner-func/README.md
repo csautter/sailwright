@@ -303,6 +303,23 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+### Dependencies
+
+`requirements.in` lists the direct dependencies, pinned to exact versions.
+`requirements.txt` is the hash-pinned lock generated from it, and it's what the
+Function App deployment installs. Dependabot proposes upgrades to both. To
+change a dependency by hand, edit `requirements.in` and regenerate the lock with
+Python 3.11, the Function App runtime:
+
+```bash
+pip install pip-tools
+pip-compile --generate-hashes --strip-extras requirements.in
+```
+
+Build ARM request bodies from SDK model classes (`azure.mgmt.*.models`), never
+plain dicts: current Azure SDKs send dict bodies to ARM unchanged, without mapping
+snake_case keys to the camelCase `properties` payload.
+
 ### Configure local settings
 Copy `local.settings.json.example` to `local.settings.json` and fill in the required values:
 

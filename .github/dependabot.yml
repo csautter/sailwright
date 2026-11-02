@@ -67,6 +67,8 @@ updates:
 
   - package-ecosystem: pip
     directory: "/scripts/gh-runner-func"
+    # requirements.txt is a pip-compile lock of requirements.in; Dependabot
+    # updates both files together.
     schedule:
       interval: weekly
     ignore:
