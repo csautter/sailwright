@@ -11,8 +11,16 @@ from azure.core.exceptions import ResourceNotFoundError
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 from azure.mgmt.compute import ComputeManagementClient
+from azure.mgmt.compute import models as compute_models
 from azure.mgmt.resource.resources import ResourceManagementClient
+from azure.mgmt.resource.resources.models import ResourceGroup
 from azure.mgmt.network import NetworkManagementClient
+from azure.mgmt.network import models as network_models
+
+# Request bodies are built from SDK model objects, never plain dicts: since
+# azure-mgmt-network 31 and azure-mgmt-compute 38 the SDKs send dict bodies to
+# ARM verbatim, so snake_case keys are no longer mapped to the camelCase
+# "properties" payload and ARM rejects the request (InvalidRequestContent).
 
 app = func.FunctionApp()
 
@@ -253,16 +261,18 @@ def handle_request_runner(req: func.HttpRequest) -> func.HttpResponse:
     # unrelated resource group.
     resource_client.resource_groups.create_or_update(
         resource_group,
-        {
-            "location": os.environ["LOCATION"],
-            "tags": {RG_OWNER_TAG: RG_OWNER_TAG_VALUE},
-        },
+        ResourceGroup(
+            location=os.environ["LOCATION"],
+            tags={RG_OWNER_TAG: RG_OWNER_TAG_VALUE},
+        ),
     )
 
     # Support custom image via environment variable (expects ARM resource ID)
     custom_image_id = os.environ.get("CUSTOM_IMAGE_ID")
     if custom_image_id:
-        image_reference = {"id": custom_image_id + "-" + virtualization_flavor}
+        image_reference = compute_models.ImageReference(
+            id=custom_image_id + "-" + virtualization_flavor
+        )
     else:
         # throw error if no custom image provided
         return func.HttpResponse(
@@ -293,10 +303,12 @@ def handle_request_runner(req: func.HttpRequest) -> func.HttpResponse:
         vnet = network_client.virtual_networks.begin_create_or_update(
             resource_group,
             vnet_name,
-            {
-                "location": location,
-                "address_space": {"address_prefixes": ["10.0.0.0/16"]},
-            },
+            network_models.VirtualNetwork(
+                location=location,
+                address_space=network_models.AddressSpace(
+                    address_prefixes=["10.0.0.0/16"]
+                ),
+            ),
         ).result()
 
         # Create Subnet if not exists
@@ -304,18 +316,18 @@ def handle_request_runner(req: func.HttpRequest) -> func.HttpResponse:
             resource_group,
             vnet_name,
             subnet_name,
-            {"address_prefix": "10.0.0.0/24"},
+            network_models.Subnet(address_prefix="10.0.0.0/24"),
         ).result()
 
         # Create Public IP
         public_ip = network_client.public_ip_addresses.begin_create_or_update(
             resource_group,
             ip_name,
-            {
-                "location": location,
-                "public_ip_allocation_method": "Static",
-                "sku": {"name": "Standard"},
-            },
+            network_models.PublicIPAddress(
+                location=location,
+                public_ip_allocation_method="Static",
+                sku=network_models.PublicIPAddressSku(name="Standard"),
+            ),
         ).result()
 
         # Create NSG (if not exists).
@@ -331,78 +343,94 @@ def handle_request_runner(req: func.HttpRequest) -> func.HttpResponse:
         nsg = network_client.network_security_groups.begin_create_or_update(
             resource_group,
             nsg_name,
-            {
-                "location": location,
-            },
+            network_models.NetworkSecurityGroup(location=location),
         ).result()
 
         # Create NIC and associate NSG
         nic = network_client.network_interfaces.begin_create_or_update(
             resource_group,
             nic_name,
-            {
-                "location": location,
-                "ip_configurations": [
-                    {
-                        "name": "ipconfig1",
-                        "subnet": {"id": subnet.id},
-                        "public_ip_address": {"id": public_ip.id},
-                    }
+            network_models.NetworkInterface(
+                location=location,
+                ip_configurations=[
+                    network_models.NetworkInterfaceIPConfiguration(
+                        name="ipconfig1",
+                        subnet=network_models.Subnet(id=subnet.id),
+                        public_ip_address=network_models.PublicIPAddress(
+                            id=public_ip.id
+                        ),
+                    )
                 ],
-                "network_security_group": {"id": nsg.id},
-            },
+                network_security_group=network_models.NetworkSecurityGroup(
+                    id=nsg.id
+                ),
+            ),
         ).result()
 
+        # Keyword arguments for compute_models.VirtualMachine; the model is built
+        # per attempt so the spot fallback can drop the spot-only fields.
         vm_params = {
             "location": location,
-            "hardware_profile": {"vm_size": os.environ["VM_SIZE"]},
-            "storage_profile": {
-                "image_reference": image_reference,
-                "os_disk": {
-                    "create_option": "FromImage",
+            "hardware_profile": compute_models.HardwareProfile(
+                vm_size=os.environ["VM_SIZE"]
+            ),
+            "storage_profile": compute_models.StorageProfile(
+                image_reference=image_reference,
+                os_disk=compute_models.OSDisk(
+                    create_option="FromImage",
                     # disk size needs to be at minium 128GB - defined by the image size
-                    # "disk_size_gb": int(os.environ.get("OS_DISK_SIZE_GB", "80")),
-                    "managed_disk": {"storage_account_type": "Premium_LRS"},
-                },
-            },
-            "os_profile": {
+                    # disk_size_gb=int(os.environ.get("OS_DISK_SIZE_GB", "80")),
+                    managed_disk=compute_models.ManagedDiskParameters(
+                        storage_account_type="Premium_LRS"
+                    ),
+                ),
+            ),
+            "os_profile": compute_models.OSProfile(
                 # Windows computer names must be ≤15 chars
-                "computer_name": runner_name[:15],
-                "admin_username": os.environ["ADMIN_USERNAME"],
-                "admin_password": admin_password,
-                "custom_data": custom_data,
-            },
-            "network_profile": {"network_interfaces": [{"id": nic.id}]},
+                computer_name=runner_name[:15],
+                admin_username=os.environ["ADMIN_USERNAME"],
+                admin_password=admin_password,
+                custom_data=custom_data,
+            ),
+            "network_profile": compute_models.NetworkProfile(
+                network_interfaces=[
+                    compute_models.NetworkInterfaceReference(id=nic.id)
+                ]
+            ),
         }
 
         # Configure spot VM if enabled
         use_spot = os.environ.get("VM_USE_SPOT", "false").lower() == "true"
         if use_spot:
-            vm_params["priority"] = "Spot"
-            vm_params["eviction_policy"] = "Deallocate"
-            vm_params["billing_profile"] = {
-                "max_price": -1
-            }  # -1 means pay up to on-demand price
+            spot_params = {
+                "priority": "Spot",
+                "eviction_policy": "Deallocate",
+                # -1 means pay up to on-demand price
+                "billing_profile": compute_models.BillingProfile(max_price=-1),
+            }
 
             try:
                 logging.info("Attempting to create spot VM")
                 compute.virtual_machines.begin_create_or_update(
-                    resource_group, os.environ["VM_NAME"], vm_params
+                    resource_group,
+                    os.environ["VM_NAME"],
+                    compute_models.VirtualMachine(**vm_params, **spot_params),
                 )
             except Exception as spot_error:
                 logging.warning(
                     f"Spot VM creation failed: {str(spot_error)}. Retrying with regular VM."
                 )
-                # Remove spot configuration and retry
-                vm_params.pop("priority", None)
-                vm_params.pop("eviction_policy", None)
-                vm_params.pop("billing_profile", None)
+                # Retry without the spot configuration
                 compute.virtual_machines.begin_create_or_update(
-                    resource_group, os.environ["VM_NAME"], vm_params
+                    resource_group,
+                    os.environ["VM_NAME"],
+                    compute_models.VirtualMachine(**vm_params),
                 )
         else:
             compute.virtual_machines.begin_create_or_update(
-                resource_group, os.environ["VM_NAME"], vm_params
+                resource_group,
+                os.environ["VM_NAME"],
+                compute_models.VirtualMachine(**vm_params),
             )
     except Exception as e:
         logging.error("Error creating VM: %s", e)
