@@ -557,6 +557,8 @@ func linuxLibvirtVirtInstallArgs(config alchemy_build.VirtualMachineConfig, uri 
 		args = append(args, "--virt-type", "qemu")
 	}
 
+	args = append(args, linuxLibvirtWindowsHypervArgs(config)...)
+
 	switch config.Arch {
 	case "arm64":
 		args = append(args,
@@ -680,6 +682,33 @@ func linuxLibvirtVideoArg(config alchemy_build.VirtualMachineConfig) string {
 		return "model.type=qxl,model.ram=65536,model.vram=65536,model.vgamem=65536,model.heads=1"
 	}
 	return "model.type=virtio"
+}
+
+// linuxLibvirtWindowsHypervArgs enables Hyper-V enlightenments for KVM-accelerated
+// Windows amd64 guests. Without them Windows falls back to slow spinlocks, APIC and
+// timer emulation, which makes the desktop noticeably laggy.
+func linuxLibvirtWindowsHypervArgs(config alchemy_build.VirtualMachineConfig) []string {
+	if config.OS != "windows11" || config.Arch != "amd64" || !linuxLibvirtUsesNativeArch(config) {
+		return nil
+	}
+	return []string{
+		"--features", strings.Join([]string{
+			"acpi=on",
+			"apic=on",
+			"hyperv.relaxed.state=on",
+			"hyperv.vapic.state=on",
+			"hyperv.spinlocks.state=on",
+			"hyperv.spinlocks.retries=8191",
+			"hyperv.vpindex.state=on",
+			"hyperv.runtime.state=on",
+			"hyperv.synic.state=on",
+			"hyperv.stimer.state=on",
+			"hyperv.frequencies.state=on",
+			"hyperv.tlbflush.state=on",
+			"hyperv.ipi.state=on",
+		}, ","),
+		"--clock", "hypervclock_present=yes,rtc_tickpolicy=catchup,pit_tickpolicy=delay,hpet_present=no",
+	}
 }
 
 func linuxLibvirtCPUArg(config alchemy_build.VirtualMachineConfig) string {

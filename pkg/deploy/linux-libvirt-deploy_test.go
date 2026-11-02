@@ -440,10 +440,41 @@ func TestLinuxLibvirtVirtInstallArgsUseWindowsAmd64Devices(t *testing.T) {
 		"--network user,model=e1000",
 		"--video model.type=qxl",
 		"--machine q35",
+		"hyperv.relaxed.state=on",
+		"hyperv.spinlocks.retries=8191",
+		"hyperv.synic.state=on,hyperv.stimer.state=on",
+		"--clock hypervclock_present=yes,rtc_tickpolicy=catchup,pit_tickpolicy=delay,hpet_present=no",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("expected Windows virt-install args to contain %q, got %q", want, joined)
 		}
+	}
+}
+
+func TestLinuxLibvirtVirtInstallArgsOmitHypervWhenNotApplicable(t *testing.T) {
+	previousLinuxLibvirtRuntimeGOARCH := linuxLibvirtRuntimeGOARCH
+	t.Cleanup(func() {
+		linuxLibvirtRuntimeGOARCH = previousLinuxLibvirtRuntimeGOARCH
+	})
+
+	for _, tc := range []struct {
+		name     string
+		hostArch string
+		config   alchemy_build.VirtualMachineConfig
+	}{
+		{"ubuntu guest", "amd64", alchemy_build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "desktop", Arch: "amd64"}},
+		{"emulated windows amd64", "arm64", alchemy_build.VirtualMachineConfig{OS: "windows11", Arch: "amd64"}},
+		{"windows arm64", "arm64", alchemy_build.VirtualMachineConfig{OS: "windows11", Arch: "arm64"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			linuxLibvirtRuntimeGOARCH = func() string {
+				return tc.hostArch
+			}
+			joined := strings.Join(linuxLibvirtVirtInstallArgs(tc.config, "qemu:///session", "/tmp/test.qcow2"), " ")
+			if strings.Contains(joined, "hyperv.") || strings.Contains(joined, "--clock") {
+				t.Fatalf("did not expect Hyper-V enlightenments, got %q", joined)
+			}
+		})
 	}
 }
 
