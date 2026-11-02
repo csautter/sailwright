@@ -276,6 +276,15 @@ sailwright provision local
 For platform defaults, configured playbook resolution, advanced flags, and
 Windows cleanup behavior, use [Local Provisioning](./local-provisioning.md).
 
+The `Test Ask Become Pass` workflow (`.github/workflows/test-ask-become-pass.yml`)
+covers `sailwright provision local -K` end to end on GitHub-hosted Linux and
+macOS runners. It creates a user whose sudo needs a password and runs
+`test/askbecomepass` as that user in a pseudo-terminal: Ansible's become prompt
+must reach the terminal despite Sailwright's line-prefixed output, it must be
+asked exactly once, and the become tasks must then run as root. The tests change
+the host, so they only run when `SAILWRIGHT_ASKPASS_BIN` is set; see the module
+docstring for running them on a disposable machine.
+
 ## System-Agnostic Docker Workflow
 
 ### Ubuntu role tests on Linux, WSL, Windows, or macOS

@@ -857,6 +857,24 @@ func TestProvisionCommandRejectsAskBecomePassForWindowsLocal(t *testing.T) {
 	}
 }
 
+func TestProvisionHelpListsAskBecomePass(t *testing.T) {
+	flag := provisionCmd.Flags().Lookup("ask-become-pass")
+	if flag == nil {
+		t.Fatal("expected provision to define --ask-become-pass")
+	}
+	if flag.Shorthand != "K" {
+		t.Fatalf("expected -K as shorthand for --ask-become-pass, got %q", flag.Shorthand)
+	}
+	for _, want := range []string{
+		"-K, --ask-become-pass",
+		"sailwright provision local --ask-become-pass",
+	} {
+		if !strings.Contains(provisionCmd.Long, want) {
+			t.Fatalf("expected provision help to contain %q", want)
+		}
+	}
+}
+
 func TestProvisionCommandRejectsAskBecomePassForVMTargets(t *testing.T) {
 	restoreAskBecomePassState(t)
 	askBecomePass = true

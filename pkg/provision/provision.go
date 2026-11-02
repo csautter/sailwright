@@ -371,6 +371,10 @@ func runLocalProvision(vm alchemy_build.VirtualMachineConfig, options ProvisionO
 		return err
 	}
 
+	if options.AskBecomePass {
+		warnIfAnsibleCoreHangsOnWrongBecomePassword()
+	}
+
 	if err := runAnsibleProvisionCommandFunc(projectDir, args, 90*time.Minute, fmt.Sprintf("local:%s:provision", vm.HostOs)); err != nil {
 		return fmt.Errorf("ansible provisioning failed for local host %s: %w", vm.HostOs, err)
 	}

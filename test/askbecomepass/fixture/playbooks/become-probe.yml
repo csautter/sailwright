@@ -1,0 +1,5 @@
+- name: Prove that the become password from --ask-become-pass reaches sudo
+  hosts: all
+  gather_facts: true
+  roles:
+    - role: become_probe

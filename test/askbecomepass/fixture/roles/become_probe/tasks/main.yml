@@ -1,0 +1,44 @@
+- name: Require a run token
+  ansible.builtin.assert:
+    that: become_probe_token | length > 0
+    fail_msg: Pass -e become_probe_token=<value>.
+
+- name: Read the uid without become
+  ansible.builtin.command: id -u
+  register: become_probe_plain_uid
+  changed_when: false
+  check_mode: false
+
+- name: Read the uid with become
+  ansible.builtin.command: id -u
+  become: true
+  register: become_probe_root_uid
+  changed_when: false
+  check_mode: false
+
+- name: Check that become switched to root
+  ansible.builtin.assert:
+    that:
+      - become_probe_plain_uid.stdout != "0"
+      - become_probe_root_uid.stdout == "0"
+    fail_msg: >-
+      Expected an unprivileged connection user and root with become, got
+      uid {{ become_probe_plain_uid.stdout }} and {{ become_probe_root_uid.stdout }}.
+
+- name: Write the marker as root
+  ansible.builtin.copy:
+    dest: "{{ become_probe_marker }}"
+    content: "{{ become_probe_token }}\n"
+    owner: root
+    group: "{{ 'wheel' if ansible_facts.system == 'Darwin' else 'root' }}"
+    mode: "0644"
+  become: true
+
+- name: Install a package with apt
+  ansible.builtin.apt:
+    name: "{{ become_probe_apt_package }}"
+    update_cache: true
+  become: true
+  when:
+    - ansible_facts.os_family == "Debian"
+    - become_probe_apt_package | length > 0
