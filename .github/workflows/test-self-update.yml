@@ -10,6 +10,7 @@ on:
       - 'test/selfupdate/**'
       - 'Makefile'
       - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/test-self-update.yml'
   workflow_dispatch:
 

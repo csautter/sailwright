@@ -18,7 +18,7 @@ RELEASE_ASSET_BASENAME = sailwright_$(PACKAGE_VERSION)_$(GOOS)_$(GOARCH)
 TARGET_GATEWAY_BINARY_NAME = $(GATEWAY_BINARY_NAME)$(if $(filter windows,$(GOOS)),.exe,)
 GATEWAY_RELEASE_ASSET_BASENAME = $(GATEWAY_BINARY_NAME)_$(PACKAGE_VERSION)_$(GOOS)_$(GOARCH)
 
-.PHONY: build build-cli-local build-gateway-local test-e2e-smoke test-e2e build-cli-target build-cli-release package-cli-target package-cli-release \
+.PHONY: test-self-update build build-cli-local build-gateway-local test-e2e-smoke test-e2e build-cli-target build-cli-release package-cli-target package-cli-release \
 	build-gateway-target package-gateway-target clean-dist \
 	test-build-runner test-build test-deploy test-provision test-deploy-windows-hyperv test-clean-testcache \
 	test-build-integration test-build-specific test-macos-tart-runner test-gh-runner-func-request test-gh-runner-func-delete \
@@ -111,6 +111,12 @@ test-provision:
 
 test-deploy-windows-hyperv:
 	RUN_INTEGRATION_TESTS=1 RUN_WINDOWS_HYPERV_DEPLOY_SMOKE=1 go test -timeout 60m -v ./pkg/deploy -run "TestGetHypervWindowsBoxPath_UsesExpectedBuildArtifact|TestGetHypervWindowsBoxPath_FallsBackToCachePath|TestRunHypervVagrantDeployOnWindows_Smoke"
+
+# Updater unit tests plus the installer/updater fixture tests (needs Python 3).
+test-self-update:
+	go test -race ./internal/selfupdate/...
+	go test -race ./cmd/cmd/ -run 'Update|Confirm'
+	python3 -m unittest discover -s test/selfupdate -v
 
 # Deterministic E2E scenarios (test/e2e). test-e2e-smoke needs no hypervisor.
 # Run other scenarios with E2E_RUN='TestScenarios/vm-lifecycle' E2E_TARGET=ubuntu/server/amd64.
