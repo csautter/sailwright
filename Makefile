@@ -183,7 +183,7 @@ deploy-az-func-app:
 	# Usage:
 	# make deploy-az-func-app FUNCTION_APP_NAME=<function-app-name>
 	cd ./scripts/gh-runner-func/ && \
-	func azure functionapp publish $(FUNCTION_APP_NAME)
+	func azure functionapp publish $(FUNCTION_APP_NAME) --python
 
 quickstart:
 	bash ./scripts/quickstart.sh --os $(OS) --type $(TYPE) --arch $(ARCH) $(QUICKSTART_ARGS)
