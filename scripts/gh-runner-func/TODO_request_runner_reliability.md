@@ -90,6 +90,16 @@ Minimum test matrix:
 4. Name collision/concurrency simulation -> no silent generic 500.
 5. Missing env var -> deterministic config error.
 
+## TODO 8: Detect VM provisioning failures after the create request is accepted
+Problem:
+- `compute.virtual_machines.begin_create_or_update(...)` returns a poller that is never awaited.
+- Only errors on the initial PUT reach the spot fallback or the `500` path. Failures during the long-running operation (for example `OverconstrainedAllocationRequest`, or a spot VM evicted while provisioning) still return `202`, and the caller waits for a runner that never registers.
+
+Instructions:
+1. Keep returning `202` quickly: the Consumption plan's HTTP timeout rules out blocking on `.result()` for a full Windows VM provisioning.
+2. Either poll the spot attempt briefly (bounded `poller.wait(timeout=...)`) so early allocation failures still fall back to a regular VM, or expose VM provisioning state through a status endpoint, like `delete_resource_group` does for deletion.
+3. Log the ARM error code (`HttpResponseError.error.code`) when provisioning fails.
+
 ## Acceptance Criteria
 1. No unhandled exceptions in `request_runner` happy-path dependencies.
 2. Intermittent external failures produce deterministic, diagnosable responses.

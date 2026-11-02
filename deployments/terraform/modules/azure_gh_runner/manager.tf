@@ -96,6 +96,10 @@ resource "azurerm_linux_function_app" "gh_runner_func_app" {
     ftps_state                             = "FtpsOnly"
     application_insights_connection_string = azurerm_application_insights.gh_runner_func_app.connection_string
     application_stack {
+      # When moving to Python 3.13, drop the azure-functions ">=2" ignore rule in
+      # .github/dependabot.yml, regenerate scripts/gh-runner-func/requirements.txt
+      # with the new version, and update the contract test Python version in
+      # .github/workflows/test-cmd-unit-tests.yml.
       python_version = "3.11"
     }
   }
