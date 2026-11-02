@@ -38,7 +38,9 @@ terraform {
   }
   before_hook "trivy" {
     commands = local.trivy_hook_enabled ? ["apply", "plan"] : []
-    execute  = ["trivy", "config", "."]
+    # Per-unit cache dir: units run in parallel and would otherwise race on
+    # extracting the checks bundle into the shared ~/.cache/trivy.
+    execute = ["trivy", "config", "--cache-dir", "${get_terragrunt_dir()}/.trivy-cache", "."]
   }
 }
 
