@@ -49,7 +49,7 @@ func AssessRisk(args []string, bundleRoot string) []string {
 		if containsString(credentialFlags, name) {
 			flags[RiskCredentials] = true
 		}
-		if name == "--playbook" || name == "--inventory-path" {
+		if name == "--playbook" || name == "--inventory-path" || name == "--role" || name == "--config" {
 			flags[RiskHostCode] = true
 		}
 		if looksLikeAbsolutePath(arg) && !insideAgentRoot(arg, bundleRoot) {

@@ -7,8 +7,13 @@ roles and playbooks you are actively developing.
 
 ## Config location
 
-By default, Sailwright reads `ansible-role-sources.yml` from the OS-specific
-config directory:
+Sailwright selects the config file in this order: `--config PATH`, then
+`DEV_ALCHEMY_ROLE_SOURCES_CONFIG`, then `ansible-role-sources.yml` in the
+current directory, then the OS-specific default below. A config file in the
+current directory therefore overrides the OS-level config; Sailwright prints a
+notice on stderr when it uses one.
+
+The OS-specific default location is:
 
 - macOS: `~/Library/Application Support/dev-alchemy/ansible-role-sources.yml`
 - Windows: `%APPDATA%\dev-alchemy\ansible-role-sources.yml`
@@ -152,8 +157,12 @@ sailwright config sources remove shared
 Adding a source detects `roles/` and `playbooks/`, or a directory containing
 roles or playbooks directly. Git sources are cloned into the application cache
 for detection. Source names must be unique; adding an existing name fails.
-Removing a source keeps its files and cached checkout. Edits preserve existing
-YAML comments and key order and replace the file atomically.
+Removing a source keeps its files and cached checkout. Git checkouts are cached
+by source name, and Sailwright refuses to use a cached checkout whose `origin`
+differs from the configured URL. If you re-add a name with a different
+repository, delete the old cache directory named in the error or pick another
+name. Edits preserve existing YAML comments and key order and replace the file
+atomically.
 
 Configuration precedence, highest first:
 
@@ -181,7 +190,8 @@ sailwright provision local --role java --role kubectl --check
 sailwright provision local --playbook setup --check
 ```
 
-The catalog includes configured sources and built-in examples. It detects roles
+The catalog includes configured sources and the built-in examples enabled by
+`include_default_roles` and `include_default_playbooks`. It detects roles
 by `tasks/main.yml` or `tasks/main.yaml` and playbooks by a top-level YAML list
 whose plays contain `hosts`. The built-in smoke playbook and test-role folders
 are excluded. Role descriptions and platforms come from `meta/main.yml` (or

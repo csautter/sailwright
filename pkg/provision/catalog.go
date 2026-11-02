@@ -58,7 +58,7 @@ func Catalog(targetOS string, refresh bool) ([]CatalogEntry, error) {
 				} else if statErr != nil {
 					err = statErr
 				} else {
-					err = validateGitCheckout(root)
+					err = validateGitCheckout(root, source.URL)
 				}
 			}
 		}
@@ -96,12 +96,27 @@ func Catalog(targetOS string, refresh bool) ([]CatalogEntry, error) {
 			}
 		}
 	}
-	roots = append(roots, catalogRoot{filepath.Join(dirs.ProjectDir, "roles"), "built-in (example)", "role"}, catalogRoot{filepath.Join(dirs.ProjectDir, "playbooks"), "built-in (example)", "playbook"})
+	// Built-in examples follow the same inclusion rules as execution, so the
+	// picker never offers content that provisioning would not use.
+	builtIn := map[string]bool{}
+	if includeDefaultAnsibleRoles(config) {
+		path := filepath.Join(dirs.ProjectDir, "roles")
+		builtIn[path] = true
+		roots = append(roots, catalogRoot{path, "built-in (example)", "role"})
+	}
+	if includeDefaultAnsiblePlaybooks(config) {
+		path := filepath.Join(dirs.ProjectDir, "playbooks")
+		builtIn[path] = true
+		roots = append(roots, catalogRoot{path, "built-in (example)", "playbook"})
+	}
 	result := []CatalogEntry{}
 	seen := map[string]int{}
 	for _, root := range roots {
 		files, err := os.ReadDir(root.path)
 		if err != nil {
+			if builtIn[root.path] && os.IsNotExist(err) {
+				continue
+			}
 			return nil, fmt.Errorf("read catalog source %s: %w", root.source, err)
 		}
 		for _, file := range files {
@@ -190,13 +205,20 @@ func compatiblePlatforms(platforms []string, target string) bool {
 	return false
 }
 
+// isPlaybookPath reports whether a --playbook value is an explicit file path
+// rather than a catalog name. Names may contain dots (for example setup.v2).
+func isPlaybookPath(value string) bool {
+	ext := strings.ToLower(filepath.Ext(value))
+	return ext == ".yml" || ext == ".yaml" || filepath.IsAbs(value) || strings.ContainsAny(value, `/\`)
+}
+
 // PrepareSelection resolves catalog names and creates a private, disposable role playbook.
 func PrepareSelection(roles []string, playbook string) (string, func(), error) {
 	cleanup := func() {}
 	if len(roles) > 0 && playbook != "" {
 		return "", cleanup, fmt.Errorf("choose roles or a playbook, not both")
 	}
-	if len(roles) == 0 && (playbook == "" || filepath.Ext(playbook) != "" || strings.ContainsAny(playbook, `/\`)) {
+	if len(roles) == 0 && (playbook == "" || isPlaybookPath(playbook)) {
 		return playbook, cleanup, nil
 	}
 	entries, err := Catalog("", false)
