@@ -8,8 +8,21 @@ import (
 	"testing"
 )
 
+// socketTempDir returns a short temporary directory. t.TempDir() embeds the
+// test name, which pushes Unix socket paths past macOS's 104-byte sun_path
+// limit ("bind: invalid argument").
+func socketTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "swd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 func TestDiscoveryKeepsContainerCredentialsAheadOfLocalGateway(t *testing.T) {
-	mounted, local := t.TempDir(), t.TempDir()
+	mounted, local := t.TempDir(), socketTempDir(t)
 	for dir, token := range map[string]string{mounted: "mounted-token", local: "local-token"} {
 		if err := os.WriteFile(filepath.Join(dir, tokenName), []byte(token), 0o600); err != nil {
 			t.Fatal(err)
