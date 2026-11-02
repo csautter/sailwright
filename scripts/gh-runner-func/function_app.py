@@ -367,8 +367,8 @@ def handle_request_runner(req: func.HttpRequest) -> func.HttpResponse:
             ),
         ).result()
 
-        # Keyword arguments for compute_models.VirtualMachine; the model is built
-        # per attempt so the spot fallback can drop the spot-only fields.
+        # Keyword arguments shared by the regular and the spot VirtualMachine, so
+        # the spot fallback sends none of the spot-only fields.
         vm_params = {
             "location": location,
             "hardware_profile": compute_models.HardwareProfile(
@@ -401,20 +401,22 @@ def handle_request_runner(req: func.HttpRequest) -> func.HttpResponse:
 
         # Configure spot VM if enabled
         use_spot = os.environ.get("VM_USE_SPOT", "false").lower() == "true"
+        regular_vm = compute_models.VirtualMachine(**vm_params)
         if use_spot:
-            spot_params = {
-                "priority": "Spot",
-                "eviction_policy": "Deallocate",
+            # Built before the try below: a model error is a code bug and must not
+            # be mistaken for missing spot capacity and fall back to a regular VM.
+            spot_vm = compute_models.VirtualMachine(
+                **vm_params,
+                priority="Spot",
+                eviction_policy="Deallocate",
                 # -1 means pay up to on-demand price
-                "billing_profile": compute_models.BillingProfile(max_price=-1),
-            }
+                billing_profile=compute_models.BillingProfile(max_price=-1),
+            )
 
             try:
                 logging.info("Attempting to create spot VM")
                 compute.virtual_machines.begin_create_or_update(
-                    resource_group,
-                    os.environ["VM_NAME"],
-                    compute_models.VirtualMachine(**vm_params, **spot_params),
+                    resource_group, os.environ["VM_NAME"], spot_vm
                 )
             except Exception as spot_error:
                 logging.warning(
@@ -422,15 +424,11 @@ def handle_request_runner(req: func.HttpRequest) -> func.HttpResponse:
                 )
                 # Retry without the spot configuration
                 compute.virtual_machines.begin_create_or_update(
-                    resource_group,
-                    os.environ["VM_NAME"],
-                    compute_models.VirtualMachine(**vm_params),
+                    resource_group, os.environ["VM_NAME"], regular_vm
                 )
         else:
             compute.virtual_machines.begin_create_or_update(
-                resource_group,
-                os.environ["VM_NAME"],
-                compute_models.VirtualMachine(**vm_params),
+                resource_group, os.environ["VM_NAME"], regular_vm
             )
     except Exception as e:
         logging.error("Error creating VM: %s", e)

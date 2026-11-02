@@ -257,8 +257,34 @@ class RequestRunnerTest(unittest.TestCase):
         self.assertEqual(response.status_code, 202)
         spot_vm, regular_vm = self._bodies()["VirtualMachine"]
         self.assertEqual(spot_vm.priority, "Spot")
+        self.assertEqual(spot_vm.eviction_policy, "Deallocate")
+        self.assertEqual(spot_vm.billing_profile.max_price, -1)
         for field in ("priority", "eviction_policy", "billing_profile"):
             self.assertFalse(hasattr(regular_vm, field), field)
+
+    def test_regular_vm_has_no_spot_settings(self):
+        response = self._request_runner()
+
+        self.assertEqual(response.status_code, 202)
+        (vm,) = self._bodies()["VirtualMachine"]
+        for field in ("priority", "eviction_policy", "billing_profile"):
+            self.assertFalse(hasattr(vm, field), field)
+
+    def test_spot_model_error_does_not_fall_back_to_regular_vm(self):
+        virtual_machine = function_app.compute_models.VirtualMachine
+
+        def build(**kwargs):
+            if "priority" in kwargs:
+                raise TypeError("unexpected keyword argument")
+            return virtual_machine(**kwargs)
+
+        with mock.patch.dict(os.environ, {"VM_USE_SPOT": "true"}), \
+                mock.patch.object(function_app.compute_models, "VirtualMachine", side_effect=build), \
+                self.assertLogs(level="ERROR"):
+            response = self._request_runner()
+
+        self.assertEqual(response.status_code, 500)
+        self.compute.virtual_machines.begin_create_or_update.assert_not_called()
 
 
 if __name__ == "__main__":
