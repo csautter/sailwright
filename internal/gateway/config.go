@@ -81,6 +81,9 @@ type Config struct {
 	MaxTunnels             int                `yaml:"max_tunnels"`
 	TunnelIdleTimeout      string             `yaml:"tunnel_idle_timeout"`
 	TunnelIdleTimeoutValue time.Duration      `yaml:"-"`
+	// TunnelAllowedCIDRs adds guest networks a tunnel may reach besides the
+	// subnets of the host's own interfaces, for routed guest networks.
+	TunnelAllowedCIDRs []string `yaml:"tunnel_allowed_cidrs"`
 	// ViewListen is the loopback address of the live view for build screenshots
 	// ("off" disables it); port 0 picks a free port.
 	ViewListen string `yaml:"view_listen"`
@@ -103,6 +106,7 @@ type Config struct {
 	ListenAddr            netip.AddrPort `yaml:"-"` // invalid when the TCP listener is off
 	ViewAddr              netip.AddrPort `yaml:"-"` // invalid when the live view is off
 	SourcePrefixes        []netip.Prefix `yaml:"-"`
+	TunnelPrefixes        []netip.Prefix `yaml:"-"`
 	JobTimeoutValue       time.Duration  `yaml:"-"`
 	ApprovalTTLValue      time.Duration  `yaml:"-"`
 	ScreenStuckAfterValue time.Duration  `yaml:"-"`
@@ -297,6 +301,17 @@ func (c *Config) Resolve() error {
 	}
 	if c.MaxTunnels < 1 || c.MaxTunnels > 1024 {
 		return fmt.Errorf("max_tunnels must be between 1 and 1024")
+	}
+	c.TunnelPrefixes = nil
+	for _, cidr := range c.TunnelAllowedCIDRs {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(cidr))
+		if err != nil {
+			return fmt.Errorf("invalid tunnel_allowed_cidrs entry %q: %w", cidr, err)
+		}
+		if prefix.Bits() == 0 {
+			return fmt.Errorf("tunnel_allowed_cidrs entry %q would allow every address", cidr)
+		}
+		c.TunnelPrefixes = append(c.TunnelPrefixes, prefix.Masked())
 	}
 	c.TunnelIdleTimeoutValue, err = parseDurationDefault(c.TunnelIdleTimeout, 5*time.Minute)
 	if err != nil || c.TunnelIdleTimeoutValue <= 0 {

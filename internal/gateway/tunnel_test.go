@@ -20,6 +20,7 @@ import (
 
 type fixedVMResolver struct {
 	address     netip.Addr
+	protocol    string
 	unavailable bool
 }
 
@@ -27,7 +28,11 @@ func (r *fixedVMResolver) Resolve(context.Context, string, string, string) (Mana
 	if r.unavailable {
 		return ManagedVM{}, ErrVMAccessUnavailable
 	}
-	return ManagedVM{OS: "ubuntu", Type: "server", Arch: "amd64", Address: r.address, NetworkMode: "bridged"}, nil
+	protocol := r.protocol
+	if protocol == "" {
+		protocol = "ssh"
+	}
+	return ManagedVM{OS: "ubuntu", Type: "server", Arch: "amd64", Address: r.address, NetworkMode: "bridged", Protocol: protocol}, nil
 }
 
 func (r *fixedVMResolver) ResolveFresh(ctx context.Context, osName, osType, arch string) (ManagedVM, error) {
@@ -63,7 +68,7 @@ func tunnelFixture(t *testing.T) (*Gateway, client.Endpoint, *fixedVMResolver, s
 	resolver := &fixedVMResolver{address: netip.MustParseAddr("192.0.2.10")}
 	catalog := NewTargetCatalog()
 	catalog.Set(vmAccessListing, []Target{{OS: "ubuntu", Type: "server", Arch: "amd64", Engine: "qemu"}}, nil)
-	g := &Gateway{cfg: Config{MaxTunnels: 1, TunnelIdleTimeoutValue: 300 * time.Millisecond}, catalog: catalog, vmResolver: resolver, audit: audit, backgroundCtx: ctx, backgroundCancel: cancel, tunnelSlots: make(chan struct{}, 1), token: "test-token"}
+	g := &Gateway{cfg: Config{MaxTunnels: 1, TunnelIdleTimeoutValue: 300 * time.Millisecond, TunnelPrefixes: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}}, catalog: catalog, vmResolver: resolver, audit: audit, backgroundCtx: ctx, backgroundCancel: cancel, tunnelSlots: make(chan struct{}, 1), token: "test-token"}
 	// Substitute only the network dial: the resolver and production address checks
 	// still run, while the fake guest service is reachable on loopback in tests.
 	g.tunnelDial = func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -113,18 +118,23 @@ func TestTunnelRejectsUnauthorizedPortsAddressesAndStoppedVMs(t *testing.T) {
 		port                 int
 		stopped              bool
 		status               int
+		protocol             string
 	}{
-		{"token", "bad", "192.0.2.10", 22, false, 401},
-		{"port", endpoint.Token, "192.0.2.10", 80, false, 403},
-		{"loopback", endpoint.Token, "127.0.0.1", 22, false, 403},
-		{"mapped-loopback", endpoint.Token, "::ffff:127.0.0.1", 22, false, 403},
-		{"link-local", endpoint.Token, "169.254.1.1", 22, false, 403},
-		{"multicast", endpoint.Token, "224.0.0.1", 22, false, 403},
-		{"unspecified", endpoint.Token, "0.0.0.0", 22, false, 403},
-		{"stopped", endpoint.Token, "192.0.2.10", 22, true, 404},
+		{"token", "bad", "192.0.2.10", 22, false, 401, ""},
+		{"port", endpoint.Token, "192.0.2.10", 80, false, 403, ""},
+		{"loopback", endpoint.Token, "127.0.0.1", 22, false, 403, ""},
+		{"mapped-loopback", endpoint.Token, "::ffff:127.0.0.1", 22, false, 403, ""},
+		{"link-local", endpoint.Token, "169.254.1.1", 22, false, 403, ""},
+		{"multicast", endpoint.Token, "224.0.0.1", 22, false, 403, ""},
+		{"unspecified", endpoint.Token, "0.0.0.0", 22, false, 403, ""},
+		{"stopped", endpoint.Token, "192.0.2.10", 22, true, 404, ""},
+		{"off-link", endpoint.Token, "198.51.100.7", 22, false, 403, ""},
+		{"public", endpoint.Token, "8.8.8.8", 22, false, 403, ""},
+		{"winrm-port-to-ssh-guest", endpoint.Token, "192.0.2.10", 5985, false, 403, "ssh"},
+		{"ssh-port-to-winrm-guest", endpoint.Token, "192.0.2.10", 22, false, 403, "winrm"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resolver.address, resolver.unavailable = netip.MustParseAddr(tc.address), tc.stopped
+			resolver.address, resolver.unavailable, resolver.protocol = netip.MustParseAddr(tc.address), tc.stopped, tc.protocol
 			// Use raw HTTP here so the client-side port validation cannot mask a server bug.
 			req, _ := http.NewRequest("GET", strings.TrimSuffix(endpoint.URL, "/mcp")+"/tunnel?os=ubuntu&port="+strconv.Itoa(tc.port), nil)
 			req.Header.Set("Authorization", "Bearer "+tc.token)
@@ -182,8 +192,61 @@ func TestTunnelRejectsHostAddresses(t *testing.T) {
 	}
 	for _, value := range addresses {
 		prefix, err := netip.ParsePrefix(value.String())
-		if err == nil && allowedTunnelAddress(prefix.Addr()) == nil {
+		if err == nil && allowedTunnelAddress(prefix.Addr(), nil) == nil {
 			t.Fatalf("host address allowed: %s", prefix.Addr())
 		}
+	}
+}
+
+func TestTunnelAllowsWinRMPortsForWinRMGuests(t *testing.T) {
+	g, endpoint, resolver, _ := tunnelFixture(t)
+	resolver.protocol = "winrm"
+	for _, port := range []int{5985, 5986} {
+		conn, err := endpoint.OpenTunnel(context.Background(), "ubuntu", "server", "amd64", port)
+		if err != nil {
+			t.Fatalf("port %d: %v", port, err)
+		}
+		conn.Close()
+		// The fixture allows one tunnel; wait until the gateway frees its slot.
+		g.background.Wait()
+	}
+}
+
+func TestTunnelAllowsAddressesOnHostSubnets(t *testing.T) {
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range addresses {
+		prefix, err := netip.ParsePrefix(value.String())
+		if err != nil || !prefix.Addr().Is4() || prefix.Addr().IsLoopback() || prefix.Bits() > 30 {
+			continue
+		}
+		// Pick a neighbor of the host address inside the same subnet.
+		neighbor := prefix.Addr().Next()
+		if !prefix.Contains(neighbor) || !neighbor.IsGlobalUnicast() {
+			neighbor = prefix.Addr().Prev()
+		}
+		if !prefix.Masked().Contains(neighbor) || neighbor == prefix.Masked().Addr() {
+			continue
+		}
+		if err := allowedTunnelAddress(neighbor, nil); err != nil {
+			// The neighbor may itself be another host address.
+			if !strings.Contains(err.Error(), "belongs to the host") {
+				t.Fatalf("on-link address %s refused: %v", neighbor, err)
+			}
+		}
+		return
+	}
+	t.Skip("no IPv4 host subnet to test")
+}
+
+func TestTunnelAllowedCIDRsExtendOnLinkSubnets(t *testing.T) {
+	address := netip.MustParseAddr("198.51.100.7")
+	if err := allowedTunnelAddress(address, nil); err == nil {
+		t.Skip("documentation network is on-link on this host")
+	}
+	if err := allowedTunnelAddress(address, []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}); err != nil {
+		t.Fatal(err)
 	}
 }

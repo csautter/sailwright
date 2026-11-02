@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func allowedTunnelAddress(address netip.Addr) error {
+func allowedTunnelAddress(address netip.Addr, extra []netip.Prefix) error {
 	address = address.Unmap()
 	if !address.IsValid() || !address.IsGlobalUnicast() || address.IsLoopback() || address.IsLinkLocalUnicast() || address.Zone() != "" {
 		return fmt.Errorf("VM address is not an allowed unicast guest address")
@@ -22,6 +22,7 @@ func allowedTunnelAddress(address netip.Addr) error {
 	if err != nil {
 		return fmt.Errorf("cannot check host addresses")
 	}
+	onLink := false
 	for _, value := range local {
 		prefix, err := netip.ParsePrefix(value.String())
 		if err != nil {
@@ -30,12 +31,30 @@ func allowedTunnelAddress(address netip.Addr) error {
 		if prefix.Addr().Unmap() == address {
 			return fmt.Errorf("VM address belongs to the host")
 		}
+		// A guest the host reaches directly shares a subnet with one of its
+		// interfaces (the hypervisor bridge or switch, or the LAN for bridged
+		// guests). Anything else would be routed, so a guest that reports a
+		// foreign address cannot turn the tunnel into a path to other networks.
+		if !prefix.Addr().IsLoopback() && prefix.Masked().Contains(address) {
+			onLink = true
+		}
+	}
+	for _, prefix := range extra {
+		if prefix.Contains(address) {
+			onLink = true
+		}
+	}
+	if !onLink {
+		return fmt.Errorf("VM address is outside the host's directly connected subnets; add its network to tunnel_allowed_cidrs if the guest is routed")
 	}
 	return nil
 }
 
 // tunnelPorts are the guest services a tunnel may reach.
 var tunnelPorts = map[int]bool{22: true, 5985: true, 5986: true}
+
+// protocolPorts are the ports a tunnel may use for each guest protocol.
+var protocolPorts = map[string]map[int]bool{"ssh": {22: true}, "winrm": {5985: true, 5986: true}}
 
 // tunnelDialTimeout bounds the connection to the guest service.
 const tunnelDialTimeout = 10 * time.Second
@@ -74,7 +93,7 @@ func (g *Gateway) serveTunnel(w http.ResponseWriter, r *http.Request) {
 		deny(tunnelRefusal{http.StatusTooManyRequests, "tunnel limit reached"})
 		return
 	}
-	vm, refusal := g.authorizeTunnel(ctx, target)
+	vm, refusal := g.authorizeTunnel(ctx, target, port)
 	if refusal != nil {
 		deny(*refusal)
 		return
@@ -151,7 +170,7 @@ func (g *Gateway) parseTunnelRequest(r *http.Request) (VMTarget, int, *tunnelRef
 
 // authorizeTunnel decides whether the agent may reach the VM now and returns its
 // current address.
-func (g *Gateway) authorizeTunnel(ctx context.Context, target VMTarget) (ManagedVM, *tunnelRefusal) {
+func (g *Gateway) authorizeTunnel(ctx context.Context, target VMTarget, port int) (ManagedVM, *tunnelRefusal) {
 	if !g.ownership.allowed(target.Key()) {
 		return ManagedVM{}, &tunnelRefusal{http.StatusForbidden, "VM was not created by this gateway; call vm_info to request operator approval"}
 	}
@@ -165,8 +184,11 @@ func (g *Gateway) authorizeTunnel(ctx context.Context, target VMTarget) (Managed
 	if !allowed {
 		return ManagedVM{}, &tunnelRefusal{http.StatusForbidden, "VM was recreated outside this gateway; call vm_info to request operator approval"}
 	}
-	if err := allowedTunnelAddress(vm.Address); err != nil {
+	if err := allowedTunnelAddress(vm.Address, g.cfg.TunnelPrefixes); err != nil {
 		return ManagedVM{}, &tunnelRefusal{http.StatusForbidden, err.Error()}
+	}
+	if !protocolPorts[vm.Protocol][port] {
+		return ManagedVM{}, &tunnelRefusal{http.StatusForbidden, "port does not match the VM's guest protocol"}
 	}
 	return vm, nil
 }

@@ -124,6 +124,8 @@ func Start(t testing.TB, opts Options) *Harness {
 		ApprovalTTL:     durationString(opts.ApprovalTTL),
 		MinFreeDiskGB:   -1,
 		AgentDir:        agentDir,
+		// The fake CLI reports guests on TEST-NET-1, which is not on-link.
+		TunnelAllowedCIDRs: []string{"192.0.2.0/24"},
 	}
 	if err := cfg.Resolve(); err != nil {
 		t.Fatal(err)

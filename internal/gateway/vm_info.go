@@ -56,10 +56,10 @@ func (g *Gateway) toolVMInfo(ctx context.Context, _ *mcp.CallToolRequest, in vmT
 			return nil, VMInfoOutput{}, err
 		}
 	}
-	if err := allowedTunnelAddress(vm.Address); err != nil {
+	if err := allowedTunnelAddress(vm.Address, g.cfg.TunnelPrefixes); err != nil {
 		return nil, VMInfoOutput{}, err
 	}
-	if !tunnelPorts[vm.Port] {
+	if !protocolPorts[vm.Protocol][vm.Port] {
 		return nil, VMInfoOutput{}, fmt.Errorf("guest service port is outside the tunnel allowlist")
 	}
 	out := VMInfoOutput{OS: vm.OS, Type: vm.Type, Arch: vm.Arch, Engine: vm.Engine, Address: vm.Address.String(), NetworkMode: vm.NetworkMode, Protocol: vm.Protocol, Port: vm.Port, Username: vm.Username, Password: vm.Password}
