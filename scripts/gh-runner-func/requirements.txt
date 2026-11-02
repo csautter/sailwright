@@ -6,7 +6,7 @@ azure-functions
 azure-identity
 azure-keyvault-secrets
 azure-mgmt-compute
-azure-mgmt-resource
+azure-mgmt-resource>=26.0.0
 azure-mgmt-network
 requests
 playwright==1.64.1
