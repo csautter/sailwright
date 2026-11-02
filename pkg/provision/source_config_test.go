@@ -124,3 +124,13 @@ func TestConfigEditRefusesMultipleDocuments(t *testing.T) {
 		t.Fatal("changed multi-document config")
 	}
 }
+
+func TestMissingConfigSelectedByFlagFails(t *testing.T) {
+	withIsolatedAlchemyDirectories(t, t.TempDir())
+	previous := ConfigOverride
+	t.Cleanup(func() { ConfigOverride = previous })
+	ConfigOverride = filepath.Join(t.TempDir(), "typo.yml")
+	if _, err := Catalog("linux", false); err == nil || !strings.Contains(err.Error(), "--config points at") {
+		t.Fatalf("expected missing --config error, got %v", err)
+	}
+}

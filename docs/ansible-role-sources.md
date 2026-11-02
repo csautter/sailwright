@@ -21,8 +21,9 @@ The OS-specific default location is:
 
 Set `DEV_ALCHEMY_CONFIG_DIR` to move the config directory, or set
 `DEV_ALCHEMY_ROLE_SOURCES_CONFIG` to point at one specific config file. If
-`DEV_ALCHEMY_ROLE_SOURCES_CONFIG` names a file that does not exist, Sailwright
-fails with an error instead of falling back to the bundled roles.
+`--config` or `DEV_ALCHEMY_ROLE_SOURCES_CONFIG` names a file that does not
+exist, provisioning and the catalog fail with an error instead of falling back
+to the bundled roles. `config sources add` creates that file.
 
 ## Layering model
 
