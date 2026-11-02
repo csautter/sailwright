@@ -134,7 +134,7 @@ func TestSignatureVerification(t *testing.T) {
 				_, _ = w.Write([]byte("signed fixture"))
 			}))
 			defer s.Close()
-			data, signed, err := (Releases{BaseURL: s.URL}).Checksums(context.Background(), "v1.0.0")
+			data, signed, err := (Releases{BaseURL: s.URL, RequireSignature: true}).Checksums(context.Background(), "v1.0.0")
 			if (err != nil) != tc.wantErr || signed != tc.wantSigned {
 				t.Fatalf("signed=%t err=%v", signed, err)
 			}
@@ -200,3 +200,51 @@ func TestInvalidRedirect(t *testing.T) {
 		})
 	}
 }
+
+func TestRequiredSignatureWithoutCosign(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("manifest")) }))
+	defer server.Close()
+	data, signed, err := (Releases{BaseURL: server.URL, RequireSignature: true}).Checksums(context.Background(), "v1.0.0")
+	if err == nil || !strings.Contains(err.Error(), "signature verification required") || signed || data != nil {
+		t.Fatalf("data=%q signed=%t err=%v", data, signed, err)
+	}
+}
+
+func TestRejectInsecureRedirect(t *testing.T) {
+	hits := 0
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++; _, _ = w.Write([]byte("manifest")) }))
+	defer plain.Close()
+	tls := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+"/releases/tag/v1.0.0", http.StatusFound)
+	}))
+	defer tls.Close()
+	// Use the TLS fixture transport for the production URL, preserving production
+	// redirect policy (no explicit loopback override).
+	client := tls.Client()
+	transport := client.Transport
+	client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		copy := req.Clone(req.Context())
+		u := *req.URL
+		copy.URL = &u
+		copy.URL.Host = strings.TrimPrefix(tls.URL, "https://")
+		return transport.RoundTrip(copy)
+	})
+	release := Releases{Client: client}
+	if _, err := release.Latest(context.Background()); err == nil || !strings.Contains(err.Error(), "insecure release redirect") {
+		t.Fatalf("Latest: %v", err)
+	}
+	if _, err := release.download(context.Background(), "v1.0.0", "manifest", 1024); err == nil || !strings.Contains(err.Error(), "insecure release redirect") {
+		t.Fatalf("download: %v", err)
+	}
+	if hits != 0 {
+		t.Fatalf("insecure server received %d requests", hits)
+	}
+	if client.CheckRedirect != nil {
+		t.Fatal("caller client was modified")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

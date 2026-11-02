@@ -225,18 +225,25 @@ asking for confirmation. Without a terminal on stdin, pass `--yes`:
 ```bash
 sailwright update --yes
 sailwright update --check
-sailwright update --version v1.2.3 --yes
+sailwright update --version v1.2.3
+sailwright update --yes --require-signature
 ```
 
 `--check` installs nothing: exit **0** means already current (or newer than
 latest), **2** means an update is available, **1** means an error. An explicit
-`--version` permits a downgrade; otherwise the updater never downgrades.
+`--version` permits a downgrade only with a terminal on stdin and an explicit
+confirmation, even with `--yes`; otherwise the updater never downgrades.
 Only stable release versions are supported.
 
 Downloads use the same asset names, SHA-256 checksums, and optional cosign
 verification as the install scripts, including checksum entries prefixed
 with `dist/`. If cosign is installed, signature verification must succeed
-before installation; it can contact public Sigstore services. The updater
+before installation; it can contact public Sigstore services. Use
+`--require-signature` to fail when cosign is unavailable, or set
+`"require_signature": true` in `update.json` in the config directory to require
+it for every update. Invalid settings stop updates rather than bypassing this
+policy. Downloads reject insecure redirects, except HTTP loopback redirects
+when using an explicit local fixture source. The updater
 prints whether the signature was verified or only checksums were checked. Both archives
 are verified and staged before either binary is replaced. Files are staged
 in the installation directory with the existing executable permissions.
@@ -245,8 +252,10 @@ old executable to `.old`; the next CLI invocation removes these backups.
 A failed replacement restores previous binaries; an in-use Windows gateway
 may require stopping it before retrying. The target directory must be
 writable; the updater never invokes sudo or requests administrator rights.
-If an interrupted update leaves an `.update-lock`, check that no updater is
-running before removing that file and retrying.
+The `.update-lock` file remains in the installation directory; its OS lock
+is released automatically when the updater exits, including after a crash.
+Do not delete it while an updater is running. On Unix, recover any interrupted
+update before deleting leftover `.old` backups and retrying.
 
 The first release containing `update` can update itself. For an earlier
 release, rerun the install script once to gain the command.

@@ -101,7 +101,7 @@ class UpdateTest(unittest.TestCase):
         gateway = subprocess.run([str(self.bin / ("sailwright-gateway" + EXE)), "--version"], capture_output=True, text=True, check=True)
         self.assertIn(version, gateway.stdout)
 
-    def test_update_and_explicit_downgrade(self):
+    def test_update_and_reject_noninteractive_downgrade(self):
         self.assert_version("v1.0.0")
         self.run_cli("update", "--check", code=2)
         self.run_cli("update", code=1)
@@ -110,8 +110,47 @@ class UpdateTest(unittest.TestCase):
         self.assert_version("v1.0.1")
         self.run_cli("update", "--yes")
         self.run_cli("update", "--check")
-        self.run_cli("update", "--yes", "--version", "v1.0.0")
+        self.assertIn("downgrades require an interactive terminal",
+                      self.run_cli("update", "--yes", "--version", "v1.0.0", code=1).stderr)
+        self.assert_version("v1.0.1")
+
+    @unittest.skipIf(GOOS == "windows", "Unix pseudo-terminal")
+    def test_interactive_downgrade_requires_confirmation_even_with_yes(self):
+        import pty
+        self.run_cli("update", "--yes")
+        for reply in (b"n\n", b"y\n"):
+            master, slave = pty.openpty()
+            try:
+                with subprocess.Popen([str(self.cli), "update", "--yes", "--version", "v1.0.0"],
+                                      env=self.env, stdin=slave, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE) as process:
+                    os.write(master, reply)
+                    stdout, stderr = process.communicate(timeout=60)
+                    self.assertIn(b"Install this release?", stderr)
+                    self.assertEqual(process.returncode, 1 if reply == b"n\n" else 0, stdout + stderr)
+            finally:
+                os.close(slave)
+                os.close(master)
+            self.assert_version("v1.0.1" if reply == b"n\n" else "v1.0.0")
+
+    def test_require_signature_leaves_binaries_unchanged(self):
+        self.assertIn("signature verification required", self.run_cli("update", "--yes", "--require-signature", code=1).stderr)
         self.assert_version("v1.0.0")
+        config = Path(self.work.name) / "config"
+        config.mkdir(parents=True, exist_ok=True)
+        (config / "update.json").write_text('{"require_signature":true}')
+        self.assertIn("signature verification required", self.run_cli("update", "--yes", code=1).stderr)
+        self.run_cli("update", "--auto-check", "on")
+        self.assertIn('"require_signature":true', (config / "update.json").read_text())
+        self.assert_version("v1.0.0")
+
+    def test_gateway_preflight_before_network(self):
+        gateway = self.bin / ("sailwright-gateway" + EXE)
+        gateway.unlink()
+        gateway.mkdir()
+        self.env["SAILWRIGHT_UPDATE_BASE_URL"] = "http://127.0.0.1:1"
+        self.assertIn("gateway must be a regular file", self.run_cli("update", "--yes", code=1).stderr)
+        self.assertIn("v1.0.0", self.run_cli("--version").stdout)
 
     def test_tamper_and_missing_asset_leave_both_binaries_unchanged(self):
         release = self.serve / "releases/download/v1.0.1"

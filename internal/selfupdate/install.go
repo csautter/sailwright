@@ -79,13 +79,11 @@ func replace(items []Replacement, rename, link func(string, string) error) (resu
 	if len(items) == 0 {
 		return nil
 	}
-	lock := items[0].Path + ".update-lock"
-	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 -- path derived from os.Executable(), not from untrusted input.
+	unlock, err := updateLock(items[0].Path)
 	if err != nil {
-		return fmt.Errorf("another update or a leftover update lock exists at %s: %w", lock, err)
+		return err
 	}
-	_ = f.Close()
-	defer os.Remove(lock)
+	defer unlock()
 	type staged struct {
 		target, temp, backup string
 		backed, installed    bool
@@ -135,7 +133,10 @@ func replace(items []Replacement, rename, link func(string, string) error) (resu
 		}
 		backup := item.Path + ".old"
 		if _, err := os.Lstat(backup); err == nil {
-			return fmt.Errorf("previous backup exists at %s; stop the gateway and restart the CLI to clean it up", backup)
+			if runtime.GOOS == "windows" {
+				return fmt.Errorf("previous backup exists at %s; stop the gateway and restart the CLI to clean it up", backup)
+			}
+			return fmt.Errorf("previous backup exists at %s; recover any interrupted update, then delete this backup file and retry", backup)
 		} else if !os.IsNotExist(err) {
 			return err
 		}
@@ -197,14 +198,27 @@ func Cleanup(executable string) {
 	if runtime.GOOS != "windows" || executable == "" {
 		return
 	}
-	lock := executable + ".update-lock"
-	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 -- path derived from os.Executable(), not from untrusted input.
+	unlock, err := updateLock(executable)
 	if err != nil {
 		return
 	}
-	_ = f.Close()
-	defer os.Remove(lock)
+	defer unlock()
 	for _, name := range []string{executable + ".old", filepath.Join(filepath.Dir(executable), "sailwright-gateway.exe.old")} {
 		_ = os.Remove(name)
 	}
+}
+
+// updateLock keeps a persistent lock file: deleting it could let another process
+// lock a different inode. The OS releases the lock even if the updater is killed.
+func updateLock(executable string) (func(), error) {
+	lock := executable + ".update-lock"
+	f, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0600) // #nosec G304 -- path derived from os.Executable(), not from untrusted input.
+	if err != nil {
+		return nil, err
+	}
+	if err := lockFile(f); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("another update is running or cannot lock %s: %w", lock, err)
+	}
+	return func() { _ = f.Close() }, nil
 }

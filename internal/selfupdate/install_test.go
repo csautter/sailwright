@@ -1,8 +1,10 @@
 package selfupdate
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -71,6 +73,9 @@ func TestReplaceAndRollback(t *testing.T) {
 				t.Fatalf("cli: %s", b)
 			}
 			if fail {
+				if runtime.GOOS != "windows" && !strings.Contains(err.Error(), "delete this backup file") {
+					t.Fatalf("unclear backup recovery: %v", err)
+				}
 				b, _ := os.ReadFile(gw + ".old")
 				if string(b) != "keep backup" {
 					t.Fatal("existing backup lost")
@@ -163,4 +168,74 @@ func TestReplaceWithoutHardLinks(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpdateLock(t *testing.T) {
+	executable := filepath.Join(t.TempDir(), "sailwright")
+	// An old exclusive-create lock must not block a later update.
+	if err := os.WriteFile(executable+".update-lock", nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := updateLock(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if release, err := updateLock(executable); err == nil {
+		release()
+		t.Fatal("concurrent updater acquired lock")
+	}
+	unlock()
+	release, err := updateLock(executable)
+	if err != nil {
+		t.Fatalf("lock not recovered: %v", err)
+	}
+	release()
+}
+
+func TestUpdateLockReleasedAfterCrash(t *testing.T) {
+	if executable := os.Getenv("SAILWRIGHT_TEST_LOCK_TARGET"); executable != "" {
+		unlock, err := updateLock(executable)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unlock()
+		fmt.Println("locked")
+		// Block until the parent kills this process, without deferred cleanup.
+		_, _ = os.Stdin.Read(make([]byte, 1))
+		return
+	}
+	executable := filepath.Join(t.TempDir(), "sailwright")
+	child := exec.Command(os.Args[0], "-test.run=^TestUpdateLockReleasedAfterCrash$")
+	child.Env = append(os.Environ(), "SAILWRIGHT_TEST_LOCK_TARGET="+executable)
+	stdin, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	stdout, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = child.Process.Kill(); _ = child.Wait() }()
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil || line != "locked\n" {
+		t.Fatalf("child: %q %v", line, err)
+	}
+	if unlock, err := updateLock(executable); err == nil {
+		unlock()
+		t.Fatal("live child lock ignored")
+	}
+	if err := child.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = child.Wait()
+	unlock, err := updateLock(executable)
+	if err != nil {
+		t.Fatalf("killed updater still blocks updates: %v", err)
+	}
+	unlock()
 }

@@ -17,18 +17,20 @@ const MinimumInterval = 15 * time.Minute
 var noticeGrace = 150 * time.Millisecond
 
 type Settings struct {
-	Enabled  bool
-	Interval time.Duration
+	Enabled          bool
+	Interval         time.Duration
+	RequireSignature bool
 }
 
 // settingsFile is the on-disk form; the interval uses Go duration syntax ("1h").
 type settingsFile struct {
-	Enabled  bool   `json:"enabled"`
-	Interval string `json:"interval,omitempty"`
+	Enabled          bool   `json:"enabled"`
+	RequireSignature bool   `json:"require_signature,omitempty"`
+	Interval         string `json:"interval,omitempty"`
 }
 
 func (s Settings) MarshalJSON() ([]byte, error) {
-	return json.Marshal(settingsFile{Enabled: s.Enabled, Interval: s.Interval.String()})
+	return json.Marshal(settingsFile{Enabled: s.Enabled, Interval: s.Interval.String(), RequireSignature: s.RequireSignature})
 }
 
 func (s *Settings) UnmarshalJSON(b []byte) error {
@@ -37,6 +39,7 @@ func (s *Settings) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	s.Enabled = f.Enabled
+	s.RequireSignature = f.RequireSignature
 	if f.Interval != "" {
 		d, err := time.ParseDuration(f.Interval)
 		if err != nil {

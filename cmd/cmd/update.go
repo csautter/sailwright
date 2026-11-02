@@ -54,11 +54,12 @@ func init() {
 		_, err = fmt.Fprintf(cmd.OutOrStdout(), "sailwright %s\nPlatform: %s/%s\nInstallation: %s (%s)\nAutomatic update checks: %s\nSettings: %s\n", version, runtime.GOOS, runtime.GOARCH, selfupdate.Installation(executable, version), executable, checks, config)
 		return err
 	}})
-	var check, yes, noGateway bool
+	var check, yes, noGateway, requireSignature bool
 	var target, auto string
 	var interval time.Duration
 	update := &cobra.Command{Use: "update", Short: "Update Sailwright from a verified release", Args: cobra.NoArgs}
 	update.Flags().BoolVar(&check, "check", false, "Only check (exit 0: current, 2: update available, 1: error)")
+	update.Flags().BoolVar(&requireSignature, "require-signature", false, "Require cosign signature verification (fails if cosign is unavailable)")
 	update.Flags().BoolVar(&yes, "yes", false, "Update without confirmation")
 	update.Flags().BoolVar(&noGateway, "no-gateway", false, "Do not update the adjacent gateway")
 	update.Flags().StringVar(&target, "version", "", "Install a specific stable release (allows downgrade)")
@@ -66,7 +67,7 @@ func init() {
 	update.Flags().DurationVar(&interval, "auto-check-interval", selfupdate.DefaultInterval, "Automatic check interval (minimum 15m)")
 	update.RunE = func(cmd *cobra.Command, _ []string) error {
 		if cmd.Flags().Changed("auto-check") || cmd.Flags().Changed("auto-check-interval") {
-			if check || yes || noGateway || target != "" {
+			if check || yes || noGateway || requireSignature || target != "" {
 				return fmt.Errorf("update settings cannot be combined with release update options")
 			}
 			config, _, err := settingsPaths()
@@ -118,7 +119,39 @@ func init() {
 				return err
 			}
 		}
+		names := []string{"sailwright"}
+		paths := []string{executable}
+		if !noGateway {
+			name := "sailwright-gateway"
+			if runtime.GOOS == "windows" {
+				name += ".exe"
+			}
+			gateway := filepath.Join(filepath.Dir(executable), name)
+			if info, err := os.Lstat(gateway); err == nil {
+				if !info.Mode().IsRegular() {
+					return fmt.Errorf("gateway must be a regular file in the same directory; use --no-gateway to skip it")
+				}
+				if !check {
+					if err := selfupdate.Writable(gateway); err != nil {
+						return err
+					}
+				}
+				names = append(names, "sailwright-gateway")
+				paths = append(paths, gateway)
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+		}
 		release := releases()
+		config, _, err := settingsPaths()
+		if err != nil {
+			return err
+		}
+		settings, err := selfupdate.LoadSettings(config)
+		if err != nil {
+			return err
+		}
+		release.RequireSignature = requireSignature || settings.RequireSignature
 		if err := selfupdate.ValidateBaseURL(release.BaseURL); err != nil {
 			return err
 		}
@@ -146,8 +179,13 @@ func init() {
 			cmd.SilenceUsage = true
 			return updateAvailableError{}
 		}
-		if !yes {
-			if !term.IsTerminal(int(os.Stdin.Fd())) {
+		downgrade := cmp < 0
+		interactive := term.IsTerminal(int(os.Stdin.Fd()))
+		if downgrade && !interactive {
+			return fmt.Errorf("downgrades require an interactive terminal and confirmation")
+		}
+		if !yes || downgrade {
+			if !interactive {
 				return fmt.Errorf("confirmation requires a terminal; pass --yes to update non-interactively")
 			}
 			fmt.Fprint(cmd.ErrOrStderr(), "Install this release? [y/N] ")
@@ -169,24 +207,6 @@ func init() {
 			fmt.Fprintln(cmd.ErrOrStderr(), "Checksum manifest signature verified with cosign.")
 		} else {
 			fmt.Fprintln(cmd.ErrOrStderr(), "Note: cosign not found; verifying SHA-256 checksums only (signature not checked).")
-		}
-		names := []string{"sailwright"}
-		paths := []string{executable}
-		if !noGateway {
-			name := "sailwright-gateway"
-			if runtime.GOOS == "windows" {
-				name += ".exe"
-			}
-			gateway := filepath.Join(filepath.Dir(executable), name)
-			if info, err := os.Lstat(gateway); err == nil {
-				if !info.Mode().IsRegular() {
-					return fmt.Errorf("gateway must be a regular file in the same directory; use --no-gateway to skip it")
-				}
-				names = append(names, "sailwright-gateway")
-				paths = append(paths, gateway)
-			} else if !os.IsNotExist(err) {
-				return err
-			}
 		}
 		replacements := make([]selfupdate.Replacement, 0, len(names))
 		for i, name := range names {

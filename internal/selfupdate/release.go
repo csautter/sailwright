@@ -62,9 +62,10 @@ func Compare(a, b string) int {
 }
 
 type Releases struct {
-	BaseURL string // Repository URL; override only for local release fixtures.
-	Client  *http.Client
-	Version string
+	BaseURL          string // Repository URL; override only for local release fixtures.
+	Client           *http.Client
+	Version          string
+	RequireSignature bool
 }
 
 func (r Releases) base() (string, error) {
@@ -93,10 +94,36 @@ func ValidateBaseURL(raw string) error {
 	return fmt.Errorf("SAILWRIGHT_UPDATE_BASE_URL must be an http(s) URL on a loopback address for local test fixtures, got %q; unset it to use %s", raw, Repository)
 }
 func (r Releases) client() *http.Client {
+	client := &http.Client{Timeout: 2 * time.Minute}
 	if r.Client != nil {
-		return r.Client
+		copy := *r.Client
+		client = &copy
 	}
-	return &http.Client{Timeout: 2 * time.Minute}
+	previous := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if err := r.validateRedirect(req.URL); err != nil {
+			return err
+		}
+		if previous != nil {
+			return previous(req, via)
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return client
+}
+
+func (r Releases) validateRedirect(u *url.URL) error {
+	if u.Scheme == "https" {
+		return nil
+	}
+	// Plain HTTP is only supported within an explicitly selected local fixture.
+	if r.BaseURL != "" && u.Scheme == "http" && ValidateBaseURL(u.String()) == nil {
+		return nil
+	}
+	return fmt.Errorf("refusing insecure release redirect to %s", u)
 }
 
 // Latest reads just the redirect, without downloading the release HTML or calling the API.
@@ -122,6 +149,9 @@ func (r Releases) Latest(ctx context.Context) (string, error) {
 	}
 	location, err := resp.Location()
 	if err != nil {
+		return "", err
+	}
+	if err := r.validateRedirect(location); err != nil {
 		return "", err
 	}
 	tag := path.Base(location.Path)
@@ -160,7 +190,8 @@ func (r Releases) download(ctx context.Context, tag, name string, limit int64) (
 }
 
 // Checksums downloads the checksum manifest and verifies its signature whenever
-// cosign is installed. signed reports whether the signature was verified.
+// cosign is installed. RequireSignature fails closed if cosign is unavailable.
+// signed reports whether the signature was verified.
 func (r Releases) Checksums(ctx context.Context, tag string) (data []byte, signed bool, err error) {
 	name := "sailwright_" + strings.TrimPrefix(tag, "v") + "_checksums.txt"
 	data, err = r.download(ctx, tag, name, 1<<20)
@@ -169,6 +200,9 @@ func (r Releases) Checksums(ctx context.Context, tag string) (data []byte, signe
 	}
 	cosign, lookErr := exec.LookPath("cosign")
 	if lookErr != nil {
+		if r.RequireSignature {
+			return nil, false, fmt.Errorf("signature verification required; install cosign and retry: %w", lookErr)
+		}
 		return data, false, nil
 	}
 	dir, err := os.MkdirTemp("", "sailwright-signature-*")
