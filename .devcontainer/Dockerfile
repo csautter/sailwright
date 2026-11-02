@@ -6,6 +6,8 @@ ENV NODE_VERSION=24.22.0
 ENV RENOVATE_VERSION="44.168.3"
 # renovate: datasource=npm depName=@openai/codex versioning=npm
 ENV CODEX_VERSION="0.164.0"
+# renovate: datasource=npm depName=azure-functions-core-tools versioning=npm
+ENV AZURE_FUNCTIONS_CORE_TOOLS_VERSION="4.16.0"
 # renovate: datasource=custom.powershell-linux-x64 depName=PowerShell/PowerShell versioning=semver
 ENV POWERSHELL_VERSION="7.6.7"
 ENV POWERSHELL_SHA256_X64="6896f9e3a6b0a354bf470835a96da76d2f801cd50dcf047ad7c4563bf93bf431"
@@ -88,6 +90,10 @@ RUN npm install --global "renovate@${RENOVATE_VERSION}" \
 
 RUN npm install --global "@openai/codex@${CODEX_VERSION}" \
     && codex --version \
+    && npm cache clean --force
+
+RUN npm install --global "azure-functions-core-tools@${AZURE_FUNCTIONS_CORE_TOOLS_VERSION}" --unsafe-perm true \
+    && func --version \
     && npm cache clean --force
 
 RUN arch="$(dpkg --print-architecture)" \
