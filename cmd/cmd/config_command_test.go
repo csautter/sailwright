@@ -195,7 +195,8 @@ func TestProvisionCatalogAndSelectionThroughCommands(t *testing.T) {
 	if !strings.HasPrefix(captured[0].PlaybookPath, filepath.Join(team, "playbooks/setup.v2.yml")+"\n") || !captured[0].PlaybookPathExplicit || !captured[0].Check {
 		t.Fatalf("dotted playbook options: %+v", captured[0])
 	}
-	if !strings.Contains(captured[1].PlaybookPath, filepath.Join(team, "roles/tool")) || !captured[1].PlaybookPathExplicit {
+	// Compare a slash suffix: on Windows the role path is rewritten to /cygdrive/... for Ansible.
+	if !strings.Contains(captured[1].PlaybookPath, "team/roles/tool") || !captured[1].PlaybookPathExplicit {
 		t.Fatalf("role options: %+v", captured[1])
 	}
 }

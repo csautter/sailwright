@@ -53,7 +53,12 @@ func TestCatalogPrecedenceMetadataAndSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	var plays []map[string]interface{}
-	if yaml.Unmarshal(data, &plays) != nil || len(plays) != 1 || !strings.Contains(string(data), filepath.Join(first, "roles/tool")) {
+	// On Windows the role path is converted to the Cygwin form Ansible runs with.
+	wantRole, err := ansibleRolePathForRuntime(filepath.Join(first, "roles", "tool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if yaml.Unmarshal(data, &plays) != nil || len(plays) != 1 || !strings.Contains(string(data), wantRole) {
 		t.Fatalf("playbook: %s", data)
 	}
 	cleanup()
