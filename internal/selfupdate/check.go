@@ -114,10 +114,16 @@ func Eligible(command, version string, tty bool, getenv func(string) string) boo
 	return true
 }
 
+// retryAfter bounds how soon a check that never completed (for example because
+// the command exited first) is attempted again. Completed checks, including
+// failed ones, wait the full interval.
+var retryAfter = 5 * time.Minute
+
 type checkCache struct {
-	LastCheck  time.Time `json:"last_check"`
-	Latest     string    `json:"latest"`
-	LastNotice time.Time `json:"last_notice"`
+	LastCheck   time.Time `json:"last_check"`
+	LastAttempt time.Time `json:"last_attempt,omitempty"`
+	Latest      string    `json:"latest"`
+	LastNotice  time.Time `json:"last_notice"`
 }
 
 type Checker struct {
@@ -127,8 +133,11 @@ type Checker struct {
 	Now       func() time.Time
 }
 
-// Start reserves the interval before launching a bounded request. Finish waits at
-// most noticeGrace for a pending request; a later result is used on the next run.
+// Start reserves a short retry window before launching a bounded request. The
+// interval starts only once a request completes, so a command that exits before
+// the response arrives does not suppress checks for a whole interval. Finish
+// waits at most noticeGrace for a pending request; a later result is used on the
+// next run.
 func (c Checker) Start() func() string {
 	empty := func() string { return "" }
 	if !c.Settings.Enabled || c.Settings.Interval < MinimumInterval {
@@ -157,7 +166,7 @@ func (c Checker) Start() func() string {
 		state.LastNotice = now
 		return state.Latest
 	}
-	if now.Sub(cache.LastCheck) < c.Settings.Interval {
+	if now.Sub(cache.LastCheck) < c.Settings.Interval || now.Sub(cache.LastAttempt) < retryAfter {
 		latest := notice(&cache)
 		if latest != "" {
 			if writeJSON(c.CacheFile, cache) != nil {
@@ -166,9 +175,22 @@ func (c Checker) Start() func() string {
 		}
 		return func() string { return latest }
 	}
-	cache.LastCheck = now
+	cache.LastAttempt = now
 	if err := writeJSON(c.CacheFile, cache); err != nil {
 		return empty
+	}
+	// record merges a completed check under the cross-process lock. A failure
+	// stores no version but still starts the interval.
+	record := func(latest string, state *checkCache) bool {
+		b, err := os.ReadFile(c.CacheFile)
+		if err != nil || json.Unmarshal(b, state) != nil {
+			return false
+		}
+		state.LastCheck = now
+		if latest != "" {
+			state.Latest = latest
+		}
+		return true
 	}
 	done := make(chan string, 1)
 	go func() {
@@ -176,14 +198,11 @@ func (c Checker) Start() func() string {
 		defer cancel()
 		latest, err := c.Releases.Latest(ctx)
 		if err != nil {
-			done <- ""
-			return
+			latest = ""
 		}
-		// Read and merge under the same cross-process lock as interval reservation.
 		if unlock, ok := checkLock(c.CacheFile); ok {
 			var state checkCache
-			if b, err := os.ReadFile(c.CacheFile); err == nil && json.Unmarshal(b, &state) == nil {
-				state.Latest = latest
+			if record(latest, &state) {
 				_ = writeJSON(c.CacheFile, state)
 			}
 			unlock()
@@ -202,11 +221,9 @@ func (c Checker) Start() func() string {
 			}
 			defer unlock()
 			var state checkCache
-			b, err := os.ReadFile(c.CacheFile)
-			if err != nil || json.Unmarshal(b, &state) != nil {
+			if !record(latest, &state) {
 				return ""
 			}
-			state.Latest = latest
 			result := notice(&state)
 			if writeJSON(c.CacheFile, state) != nil {
 				return ""
@@ -218,16 +235,16 @@ func (c Checker) Start() func() string {
 	}
 }
 
-// Locks are held only for local cache I/O. Recover a lock left by a killed CLI.
+// checkLock guards local cache I/O with an OS lock on a persistent file, so a
+// killed CLI never leaves a stale lock behind. Contention skips the check.
 func checkLock(file string) (func(), bool) {
-	lock := file + ".lock"
-	if info, err := os.Stat(lock); err == nil && time.Since(info.ModTime()) > time.Minute {
-		_ = os.Remove(lock)
-	}
-	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 -- path in the user config/cache directory, not from untrusted input.
+	f, err := os.OpenFile(file+".lock", os.O_CREATE|os.O_RDWR, 0600) // #nosec G304 -- path in the user config/cache directory, not from untrusted input.
 	if err != nil {
 		return nil, false
 	}
-	_ = f.Close()
-	return func() { _ = os.Remove(lock) }, true
+	if err := lockFile(f); err != nil {
+		_ = f.Close()
+		return nil, false
+	}
+	return func() { _ = f.Close() }, true
 }

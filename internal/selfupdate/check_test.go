@@ -128,12 +128,29 @@ func TestCheckerIntervalAndNotice(t *testing.T) {
 		t.Fatal("missing next check")
 	}
 }
+func readCache(t *testing.T, file string) checkCache {
+	t.Helper()
+	b, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cache checkCache
+	if err := json.Unmarshal(b, &cache); err != nil {
+		t.Fatal(err)
+	}
+	return cache
+}
 func TestCheckerNeverWaitsAndCachesFailure(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(entered); <-release; http.Error(w, "offline", 503) }))
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		close(entered)
+		<-release
+		http.Error(w, "offline", 503)
+	}))
 	defer server.Close()
-	defer close(release)
 	now := time.Now()
 	file := filepath.Join(t.TempDir(), "cache.json")
 	c := Checker{Releases: Releases{BaseURL: server.URL, Version: "v1.0.0"}, Settings: Settings{Enabled: true, Interval: time.Hour}, CacheFile: file, Now: func() time.Time { return now }}
@@ -143,20 +160,71 @@ func TestCheckerNeverWaitsAndCachesFailure(t *testing.T) {
 		t.Fatal("check delayed command beyond the grace period")
 	}
 	<-entered
-	if c.Start()() != "" {
-		t.Fatal("unexpected notice")
+	if c.Start()() != "" || requests.Load() != 1 {
+		t.Fatal("pending check not throttled")
 	}
-	b, err := os.ReadFile(file)
-	if err != nil {
+	if cache := readCache(t, file); !cache.LastAttempt.Equal(now) || !cache.LastCheck.IsZero() {
+		t.Fatalf("pending check: %+v", cache)
+	}
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for !readCache(t, file).LastCheck.Equal(now) {
+		if time.Now().After(deadline) {
+			t.Fatal("failed check did not start the interval")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Past the retry window but within the interval: a failure still counts.
+	now = now.Add(retryAfter + time.Minute)
+	if c.Start()() != "" || requests.Load() != 1 {
+		t.Fatal("failed check retried within the interval")
+	}
+}
+func TestCheckerRetriesUnfinishedCheck(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Redirect(w, r, "/releases/tag/v2.0.0", 302)
+	}))
+	defer server.Close()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	file := filepath.Join(t.TempDir(), "cache.json")
+	// A previous CLI reserved an attempt and exited before the response arrived.
+	if err := writeJSON(file, checkCache{LastAttempt: now}); err != nil {
 		t.Fatal(err)
 	}
-	var cache checkCache
-	if err := json.Unmarshal(b, &cache); err != nil {
-		t.Fatal(err)
+	c := Checker{Releases: Releases{BaseURL: server.URL, Version: "v1.0.0"}, Settings: Settings{Enabled: true, Interval: time.Hour}, CacheFile: file, Now: func() time.Time { return now }}
+	if c.Start()() != "" || requests.Load() != 0 {
+		t.Fatal("retried inside the retry window")
 	}
-	if !cache.LastCheck.Equal(now) {
-		t.Fatal("failed check not throttled")
+	now = now.Add(retryAfter)
+	finish := c.Start()
+	deadline := time.Now().Add(5 * time.Second)
+	for finish() == "" {
+		if time.Now().After(deadline) {
+			t.Fatal("unfinished check was not retried")
+		}
+		time.Sleep(time.Millisecond)
 	}
+	if cache := readCache(t, file); !cache.LastCheck.Equal(now) || cache.Latest != "v2.0.0" {
+		t.Fatalf("retried check not recorded: %+v", cache)
+	}
+}
+func TestCheckLockReleasedOnClose(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cache.json")
+	unlock, ok := checkLock(file)
+	if !ok {
+		t.Fatal("lock failed")
+	}
+	if _, ok := checkLock(file); ok {
+		t.Fatal("second lock acquired while held")
+	}
+	unlock()
+	unlock, ok = checkLock(file)
+	if !ok {
+		t.Fatal("lock not released")
+	}
+	unlock()
 }
 func TestCheckerGracePeriodForQuickCommands(t *testing.T) {
 	// A generous grace period keeps this deterministic on slow CI runners.
