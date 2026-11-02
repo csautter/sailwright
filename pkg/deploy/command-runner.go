@@ -55,14 +55,7 @@ func runCommandWithStreamingLogsWithEnv(workingDir string, timeout time.Duration
 
 	streamOutput := func(output io.Reader, streamName string) {
 		defer streamsWG.Done()
-		scanner := bufio.NewScanner(output)
-		scanner.Buffer(make([]byte, scannerInitialBufferSize), scannerMaxBufferSize)
-		for scanner.Scan() {
-			log.Printf("%s %s: %s", logPrefix, streamName, scanner.Text())
-		}
-		if err := scanner.Err(); err != nil {
-			log.Printf("%s %s scanner error: %v", logPrefix, streamName, err)
-		}
+		logStreamLines(output, logPrefix, streamName)
 	}
 
 	streamsWG.Add(2)
@@ -90,6 +83,45 @@ func runCommandWithStreamingLogsWithEnv(workingDir string, timeout time.Duration
 		<-streamsDone
 		_ = cmd.Wait()
 		return fmt.Errorf("command terminated due to timeout or interruption (%s %v): %w", executable, sanitizedArgs, ctx.Err())
+	}
+}
+
+// logStreamLines logs every line of output. Lines longer than
+// scannerMaxBufferSize (Ansible prints whole module results at -vvv) are
+// truncated instead of aborting, so the pipe is always drained and the child
+// process never blocks on a full pipe.
+func logStreamLines(output io.Reader, logPrefix, streamName string) {
+	reader := bufio.NewReaderSize(output, scannerInitialBufferSize)
+	var line []byte
+	truncated := false
+	for {
+		chunk, isPrefix, err := reader.ReadLine()
+		if len(line) < scannerMaxBufferSize {
+			line = append(line, chunk...)
+		} else if len(chunk) > 0 {
+			truncated = true
+		}
+		if err == nil && isPrefix {
+			continue
+		}
+		if len(line) > 0 || truncated || err == nil {
+			if len(line) > scannerMaxBufferSize {
+				line = line[:scannerMaxBufferSize]
+				truncated = true
+			}
+			suffix := ""
+			if truncated {
+				suffix = " [line truncated]"
+			}
+			log.Printf("%s %s: %s%s", logPrefix, streamName, line, suffix)
+		}
+		line, truncated = line[:0], false
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("%s %s read error: %v", logPrefix, streamName, err)
+			}
+			return
+		}
 	}
 }
 
