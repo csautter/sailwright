@@ -218,7 +218,7 @@ source "qemu" "win11" {
   accelerator    = var.arch == "amd64" ? local.amd64_accelerator : null
   cpu_model      = var.arch == "amd64" ? local.amd64_cpu_model : null
   qemu_binary    = var.arch == "arm64" ? "qemu-system-aarch64" : "qemu-system-x86_64"
-  disk_size      = "64G"
+  disk_size      = "200G"
   disk_interface = var.arch == "amd64" ? "ide" : null
   format         = "qcow2"
   net_device     = var.arch == "amd64" ? "e1000" : "virtio-net-pci"

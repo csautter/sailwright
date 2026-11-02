@@ -587,7 +587,7 @@ if [[ -z "$artifact_output_path" ]]; then
 fi
 mkdir -p "$(dirname "$artifact_output_path")"
 rm -f "$artifact_output_path"
-qemu-img create -f qcow2 -o compression_type=zstd "$artifact_output_path" 64G
+qemu-img create -f qcow2 -o compression_type=zstd "$artifact_output_path" 200G
 qemu-img info "$artifact_output_path"
 
 packer_file="build/packer/windows/windows11-qemu.pkr.hcl"
