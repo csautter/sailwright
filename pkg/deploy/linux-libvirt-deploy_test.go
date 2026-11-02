@@ -442,7 +442,10 @@ func TestLinuxLibvirtVirtInstallArgsUseWindowsAmd64Devices(t *testing.T) {
 		"--machine q35",
 		"hyperv.relaxed.state=on",
 		"hyperv.spinlocks.retries=8191",
-		"hyperv.synic.state=on,hyperv.stimer.state=on",
+		"hyperv.synic.state=on",
+		"--xml ./features/hyperv/vpindex/@state=on",
+		"--xml ./features/hyperv/stimer/@state=on",
+		"--xml ./features/hyperv/ipi/@state=on",
 		"--clock hypervclock_present=yes,rtc_tickpolicy=catchup,pit_tickpolicy=delay,hpet_present=no",
 	} {
 		if !strings.Contains(joined, want) {
@@ -471,7 +474,7 @@ func TestLinuxLibvirtVirtInstallArgsOmitHypervWhenNotApplicable(t *testing.T) {
 				return tc.hostArch
 			}
 			joined := strings.Join(linuxLibvirtVirtInstallArgs(tc.config, "qemu:///session", "/tmp/test.qcow2"), " ")
-			if strings.Contains(joined, "hyperv.") || strings.Contains(joined, "--clock") {
+			if strings.Contains(joined, "hyperv") || strings.Contains(joined, "--clock") {
 				t.Fatalf("did not expect Hyper-V enlightenments, got %q", joined)
 			}
 		})

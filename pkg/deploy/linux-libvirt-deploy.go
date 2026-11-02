@@ -687,11 +687,15 @@ func linuxLibvirtVideoArg(config alchemy_build.VirtualMachineConfig) string {
 // linuxLibvirtWindowsHypervArgs enables Hyper-V enlightenments for KVM-accelerated
 // Windows amd64 guests. Without them Windows falls back to slow spinlocks, APIC and
 // timer emulation, which makes the desktop noticeably laggy.
+//
+// virt-install's --features only knows relaxed, vapic, spinlocks and synic on
+// older releases (e.g. Ubuntu 24.04), so the remaining enlightenments are set
+// through the generic --xml XPath option, which every virt-install >= 3.0 accepts.
 func linuxLibvirtWindowsHypervArgs(config alchemy_build.VirtualMachineConfig) []string {
 	if config.OS != "windows11" || config.Arch != "amd64" || !linuxLibvirtUsesNativeArch(config) {
 		return nil
 	}
-	return []string{
+	args := []string{
 		"--features", strings.Join([]string{
 			"acpi=on",
 			"apic=on",
@@ -699,16 +703,15 @@ func linuxLibvirtWindowsHypervArgs(config alchemy_build.VirtualMachineConfig) []
 			"hyperv.vapic.state=on",
 			"hyperv.spinlocks.state=on",
 			"hyperv.spinlocks.retries=8191",
-			"hyperv.vpindex.state=on",
-			"hyperv.runtime.state=on",
 			"hyperv.synic.state=on",
-			"hyperv.stimer.state=on",
-			"hyperv.frequencies.state=on",
-			"hyperv.tlbflush.state=on",
-			"hyperv.ipi.state=on",
 		}, ","),
-		"--clock", "hypervclock_present=yes,rtc_tickpolicy=catchup,pit_tickpolicy=delay,hpet_present=no",
 	}
+	for _, enlightenment := range []string{"vpindex", "runtime", "stimer", "frequencies", "tlbflush", "ipi"} {
+		args = append(args, "--xml", fmt.Sprintf("./features/hyperv/%s/@state=on", enlightenment))
+	}
+	return append(args,
+		"--clock", "hypervclock_present=yes,rtc_tickpolicy=catchup,pit_tickpolicy=delay,hpet_present=no",
+	)
 }
 
 func linuxLibvirtCPUArg(config alchemy_build.VirtualMachineConfig) string {
