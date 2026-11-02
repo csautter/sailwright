@@ -107,11 +107,17 @@ Consequences of the amendment:
   `TestSharedAppDataMirrorsCLIDefaults`.
 - Tunnel destinations come only from the pinned CLI, but some engines learn
   them from the guest. A guest under agent control can therefore point the
-  tunnel at another LAN address on ports 22, 5985 or 5986. This is accepted:
-  the gateway's purpose is to keep the agent off the host OS, and the agent's
-  container normally has direct network access. On Hyper-V, where the guest
-  reports all addresses, the host-side switch and subnet decide which address
-  is used.
+  tunnel at another address on ports 22, 5985 or 5986. The tunnel amendment
+  below limits this to the host's directly connected subnets; the remainder is
+  accepted: the gateway's purpose is to keep the agent off the host OS, and the
+  agent's container normally has direct network access.
+- Shared mode lets the agent replace the operator's cached images with
+  `vm_build` and `artifact_pull`. This is accepted and they stay in the safe
+  set: builds run only the templates embedded in the pinned binary and pulls
+  only allowlisted references, so the agent cannot put content of its own into
+  an image. It can only replace an image with another build or allowlisted
+  artifact, such as an older tag. Operators who need their cache untouched
+  use `state_isolation: isolated`.
 
 ## Amendment: lock protocol version 2 (2026-11-01)
 
@@ -152,3 +158,20 @@ before deployment starts; it aborts the create if the marker cannot be written.
 A create job that fails after writing the marker records ownership when the VM
 exists afterwards. A create refused for an existing VM writes no marker and
 claims nothing. A pinned CLI without these features behaves as before.
+
+## Amendment: tunnel destinations and guest password redaction (2026-11-02)
+
+Tunnels only connect to guest addresses inside a subnet of one of the host's
+own interfaces, plus the operator's `tunnel_allowed_cidrs` for routed guest
+networks. This covers NAT bridges and switches (libvirt, Hyper-V, UTM, Tart)
+and bridged guests on the LAN, and removes routed destinations, such as the
+internet and other VLANs, that a guest reporting a forged address could
+otherwise reach. On Hyper-V, where the CLI accepts any reported address when
+the host has no address on the switch, such a guest is now unreachable through
+a tunnel unless its network is listed. A tunnel's port must also match the
+guest protocol (22 for SSH, 5985 and 5986 for WinRM).
+
+Guest passwords stay in the gateway's redactor for the whole run, at any
+length, except a password equal to the guest username. Such a password is not
+secret and would otherwise turn common words such as `vagrant` or `packer`
+into the redaction marker in all later output.
