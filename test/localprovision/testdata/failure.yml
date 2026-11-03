@@ -1,0 +1,8 @@
+---
+- name: Exercise failure propagation
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Fail deliberately
+      ansible.builtin.fail:
+        msg: local-provision-failure-marker

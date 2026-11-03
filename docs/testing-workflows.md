@@ -3,6 +3,30 @@
 This guide collects the platform-specific testing workflows that used to live in the main `README.md`.
 Use the cross-platform matrix in the root [README](../README.md) for a quick support overview, then use the sections below for concrete commands.
 
+## Local provisioning integration
+
+On Linux or macOS with `ansible-playbook` on PATH, run:
+
+```bash
+SAILWRIGHT_LOCAL_INTEGRATION=1 go test ./test/localprovision -count=1 -v -timeout 5m
+```
+
+These tests build the CLI once, run it outside the checkout using the embedded
+localhost inventory, and use a small fixture that only writes into a temporary
+directory. They verify check mode leaves the file absent, a real run creates it,
+the second run reports `changed=0`, Ansible stdout reaches the CLI output, and
+an Ansible failure produces a nonzero CLI exit with the original exit status.
+They skip by default and when Ansible is missing. Set
+`SAILWRIGHT_LOCAL_TEST_BIN` to reuse an existing binary.
+
+The **Test Ansible Roles** workflow runs these tests and then the full bundled
+`playbooks/setup.yml` through the built CLI on Ubuntu 24.04 LTS (amd64 and arm64)
+and macOS 15 (Apple Silicon and Intel). It requires successful check and apply
+runs, followed by a second apply with `changed=0` for every host in the recap.
+Changed tasks are printed on failure and provisioning logs are uploaded as
+artifacts. Spotify's upstream Linux packages support amd64 only; the role
+explicitly reports that limitation on arm64.
+
 ## Unified VM Workflow
 
 Most VM-backed test flows follow the same lifecycle from the repository root:
