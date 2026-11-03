@@ -74,7 +74,11 @@ func RunHypervVagrantDeployOnWindows(config alchemy_build.VirtualMachineConfig) 
 		return err
 	}
 
-	releaseBox, err := operationlock.AcquireWithin(filepath.Join(alchemy_build.GetDirectoriesInstance().AppDataDir, "provider-box-locks"), settings.BoxName, "register box", 45*time.Minute)
+	hostCache, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("resolve host-global Vagrant box lock directory: %w", err)
+	}
+	releaseBox, err := operationlock.AcquireWithin(filepath.Join(hostCache, "sailwright", "provider-box-locks"), settings.BoxName, "register box", 45*time.Minute)
 	if err != nil {
 		return err
 	}

@@ -152,3 +152,9 @@ func TestStopAndDestroyBulkExcludeNamesByDefault(t *testing.T) {
 		command.Flags().Set("all-instances", oldAll)
 	}
 }
+
+func TestNamedProvisionCannotSelectLocalHost(t *testing.T) {
+	if err := executeProvision(&cobra.Command{}, provisionRequest{target: "local", name: "work"}); err == nil {
+		t.Fatal("named wizard selection reached local provisioning")
+	}
+}
