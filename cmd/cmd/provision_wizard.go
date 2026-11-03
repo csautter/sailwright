@@ -168,6 +168,7 @@ func wizardConfirmExecution(cmd *cobra.Command, sel *wizardSelection) error {
 func wizardExecute(cmd *cobra.Command, sel wizardSelection) error {
 	request := func(check bool) provisionRequest {
 		return provisionRequest{
+			name:             commandInstanceName(cmd),
 			target:           sel.vm.OS,
 			roles:            sel.roles,
 			playbook:         sel.playbook,
@@ -213,6 +214,9 @@ func wizardCommand(cmd *cobra.Command, vm alchemy_build.VirtualMachineConfig, ro
 	args := []string{"sailwright", "provision", vm.OS}
 	if vm.OS != "local" {
 		args = append(args, "--arch", vm.Arch)
+		if name := commandInstanceName(cmd); name != "" {
+			args = append(args, "--name", name)
+		}
 		if vm.UbuntuType != "" {
 			args = append(args, "--type", vm.UbuntuType)
 		}

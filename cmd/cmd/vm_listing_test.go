@@ -191,7 +191,7 @@ func TestPrintVirtualMachineCombinationTableWritesEmptyJSONTargets(t *testing.T)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if strings.TrimSpace(buf.String()) != `{"schema_version":1,"targets":[]}` {
+	if strings.TrimSpace(buf.String()) != `{"schema_version":2,"targets":[]}` {
 		t.Fatalf("unexpected output %q", buf.String())
 	}
 }

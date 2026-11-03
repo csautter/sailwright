@@ -18,7 +18,7 @@ type vmTableRowBuilder func(vm alchemy_build.VirtualMachineConfig) ([]string, er
 type vmExistsReporter func(vm alchemy_build.VirtualMachineConfig) *bool
 
 // vmListingSchemaVersion is the version of the JSON document printed by `<command> list --json`.
-const vmListingSchemaVersion = 1
+const vmListingSchemaVersion = 2
 
 // listOutputJSON is bound to the --json flag of every list subcommand.
 var listOutputJSON bool
@@ -29,6 +29,7 @@ type vmListingJSON struct {
 }
 
 type vmListingTargetJSON struct {
+	Name   string            `json:"name"`
 	OS     string            `json:"os"`
 	Type   string            `json:"type"`
 	Arch   string            `json:"arch"`
@@ -114,6 +115,7 @@ func writeVirtualMachineCombinationJSON(
 			exists = existsOf(vm)
 		}
 		listing.Targets = append(listing.Targets, vmListingTargetJSON{
+			Name:   vm.Name,
 			OS:     vm.OS,
 			Type:   vm.UbuntuType,
 			Arch:   listingArch(vm.Arch),
@@ -149,13 +151,17 @@ func writeVirtualMachineTable(
 	rowBuilder vmTableRowBuilder,
 ) error {
 	tw := tabwriter.NewWriter(writer, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, strings.Join(headers, "\t"))
+	fmt.Fprintln(tw, strings.Join(append(append([]string{}, headers...), "Name"), "\t"))
 	for _, vm := range vms {
 		row, err := rowBuilder(vm)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(tw, strings.Join(row, "\t"))
+		name := vm.Name
+		if name == "" {
+			name = "default"
+		}
+		fmt.Fprintln(tw, strings.Join(append(row, name), "\t"))
 	}
 	return tw.Flush()
 }
