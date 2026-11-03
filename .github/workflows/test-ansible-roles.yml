@@ -10,19 +10,18 @@ on:
       - "roles_test_2/**"
       - "playbooks/**"
       - "inventory/**"
+      # Local provisioning only: the CLI entrypoint, the provision command and
+      # engine, and the embedded Ansible assets it runs. Other embedded assets
+      # (Packer, Vagrant, UTM, VM scripts) are not used by this workflow.
       - "go.mod"
       - "go.sum"
-      - "cmd/**"
-      - "pkg/**"
-      - "internal/**"
+      - "cmd/main.go"
+      - "cmd/cmd/root.go"
+      - "cmd/cmd/provision*.go"
+      - "pkg/provision/**"
       - "test/localprovision/**"
       - "ansible.cfg"
-      - "build/packer/**"
-      - "deployments/vagrant/**"
-      - "deployments/utm/**"
-      - "scripts/linux/**"
-      - "scripts/macos/**"
-      - "scripts/windows/**"
+      - "scripts/windows/local-windows-provision-*.ps1"
       - "runtimeassets.go"
       - ".github/workflows/test-ansible-roles.yml"
   pull_request:
@@ -33,19 +32,18 @@ on:
       - "roles_test_2/**"
       - "playbooks/**"
       - "inventory/**"
+      # Local provisioning only: the CLI entrypoint, the provision command and
+      # engine, and the embedded Ansible assets it runs. Other embedded assets
+      # (Packer, Vagrant, UTM, VM scripts) are not used by this workflow.
       - "go.mod"
       - "go.sum"
-      - "cmd/**"
-      - "pkg/**"
-      - "internal/**"
+      - "cmd/main.go"
+      - "cmd/cmd/root.go"
+      - "cmd/cmd/provision*.go"
+      - "pkg/provision/**"
       - "test/localprovision/**"
       - "ansible.cfg"
-      - "build/packer/**"
-      - "deployments/vagrant/**"
-      - "deployments/utm/**"
-      - "scripts/linux/**"
-      - "scripts/macos/**"
-      - "scripts/windows/**"
+      - "scripts/windows/local-windows-provision-*.ps1"
       - "runtimeassets.go"
       - ".github/workflows/test-ansible-roles.yml"
 
@@ -88,8 +86,7 @@ jobs:
           python-version: "3.13"
         if: runner.os != 'Windows'
 
-      - name: Set up Go for local provisioning
-        if: runner.os != 'Windows'
+      - name: Set up Go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -101,13 +98,6 @@ jobs:
         run: |
           CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/sailwright" ./cmd/main.go
           echo "SAILWRIGHT_LOCAL_TEST_BIN=$RUNNER_TEMP/sailwright" >> "$GITHUB_ENV"
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-        if: runner.os == 'Windows'
 
       - name: Windows install cygwin
         uses: cygwin/cygwin-install-action@v7
