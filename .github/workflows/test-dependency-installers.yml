@@ -94,7 +94,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo rm -f /usr/local/bin/ansible /usr/local/bin/ansible-*
-          echo "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" >> "$GITHUB_ENV"
+          echo "PATH=$(dirname "$(command -v go)"):/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" >> "$GITHUB_ENV"
 
       - name: Remove the runner's preinstalled Ansible
         if: runner.os == 'macOS'
@@ -115,7 +115,6 @@ jobs:
 
       - name: Check the installer-provided ansible-core
         run: |
-          ansible-playbook --version | tee "$RUNNER_TEMP/ansible-version"
           source scripts/common/ansible-core.sh
           check_ansible_core python3
           echo "ANSIBLE_BIN_DIR=$(dirname "$(command -v ansible-playbook)")" >> "$GITHUB_ENV"
@@ -225,7 +224,7 @@ jobs:
       - name: Install the distribution Python and pipx
         run: |
           apt-get update
-          apt-get install -y python3 python3-venv pipx
+          apt-get install -y ca-certificates python3 python3-venv pipx
       - name: Validate installer version checks
         run: python3 -m unittest discover -s test/dependencies -v
       - name: Install and upgrade Ansible through the Linux installer component
