@@ -68,8 +68,11 @@ Use `--playbook` to point at a different playbook file. Use
 - Windows uses `inventory/localhost_windows_winrm.yml` by default.
 - Windows `--proto ssh` switches to `inventory/localhost_windows_ssh.yml`.
 
-The macOS/Linux local target is currently marked unstable until it has been
-validated end-to-end.
+Local provisioning supports macOS and Debian/Ubuntu Linux. CI validates the
+full bundled `playbooks/setup.yml` on macOS 15 (Apple Silicon and Intel) and
+Ubuntu 24.04 LTS (amd64 and arm64), including check mode and an idempotent
+second run. Other Linux distributions are not validated local targets. The
+Spotify role supports Linux amd64 only and reports that limitation on arm64.
 
 ## sudo password on macOS and Linux
 
