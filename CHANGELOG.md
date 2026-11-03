@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0](https://github.com/csautter/sailwright/compare/v0.25.0...v0.26.0) (2026-11-03)
+
+
+### Added
+
+* **provision:** interactive provisioning picker, catalog and source management ([739a7a2](https://github.com/csautter/sailwright/commit/739a7a22d21379a78651f96b7d5ed78ec0cd8a53))
+
+
+### Fixed
+
+* **gh-runner-func:** build ARM request bodies from SDK models ([5635ff0](https://github.com/csautter/sailwright/commit/5635ff0a5e2e4f1dc2b84faca5876ccccfba250e))
+
 ## [0.25.0](https://github.com/csautter/sailwright/compare/v0.24.2...v0.25.0) (2026-11-02)
 
 
