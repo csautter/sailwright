@@ -164,7 +164,7 @@
         "/(^|/)\\.github/workflows/test-build-(linux|macos)\\.yml$/"
       ],
       "matchStrings": [
-        "virtio-win-(?<currentValue>0\\.1\\.[0-9]+-[0-9]+)\\.iso"
+        "virtio-win-(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+-[0-9]+)\\.iso"
       ],
       "depNameTemplate": "virtio-win",
       "datasourceTemplate": "custom.virtio-win",

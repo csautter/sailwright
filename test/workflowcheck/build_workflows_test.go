@@ -17,7 +17,7 @@ var buildWorkflows = []string{linuxBuildWorkflow, macOSBuildWorkflow}
 // versionedVirtioWinISOCachePathRE matches the virtio-win ISO cached under its full release version.
 // An unversioned name would keep restoring an outdated ISO from the build cache after a version
 // bump. TestVirtioWinPinsStayInSync in pkg/build checks the version against the Go pin.
-var versionedVirtioWinISOCachePathRE = regexp.MustCompile(`^\./\.dev-alchemy/cache/windows/virtio-win-0\.1\.[0-9]+-[0-9]+\.iso$`)
+var versionedVirtioWinISOCachePathRE = regexp.MustCompile(`^\./\.dev-alchemy/cache/windows/virtio-win-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.iso$`)
 
 func TestBuildWorkflowMatrixEntriesReferenceExistingTests(t *testing.T) {
 	t.Parallel()

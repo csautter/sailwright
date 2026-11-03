@@ -562,8 +562,8 @@ fi
 download_windows_iso_if_missing "$arch" "$windows_source_iso_path"
 
 bash "${project_root}/scripts/macos/download-utm-guest-tools.sh"
-bash "${project_root}/scripts/macos/download-virtio-win-iso.sh"
 virtio_win_iso_name="$(bash "${project_root}/scripts/macos/download-virtio-win-iso.sh" --print-file-name)" || exit 1
+bash "${project_root}/scripts/macos/download-virtio-win-iso.sh"
 
 if [[ "$arch" == "arm64" ]]; then
 	if ! bash "${project_root}/scripts/macos/download-arm64-uefi.sh"; then

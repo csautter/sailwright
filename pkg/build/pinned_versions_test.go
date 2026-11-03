@@ -2,8 +2,10 @@ package build
 
 import (
 	"encoding/json"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -98,6 +100,30 @@ func TestVirtioWinCacheFileNamesFollowPin(t *testing.T) {
 			}
 		}
 		assertRenovateUpdatesVirtioWinReferences(t, workflowPath, content, len(matches))
+	}
+}
+
+// TestVirtioWinDownloadScriptPrintsCacheFileName runs the download script in --print-file-name mode,
+// which windows11-qemu.sh uses to pass the cache file name to Packer. It must print the Go cache file
+// name and nothing else, without touching the network.
+func TestVirtioWinDownloadScriptPrintsCacheFileName(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("the shell build scripts run on Linux and macOS hosts only")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	cmd := exec.Command(bash, repoPath(t, "scripts/macos/download-virtio-win-iso.sh"), "--print-file-name")
+	cmd.Env = append(cmd.Environ(), "DEV_ALCHEMY_CACHE_DIR="+t.TempDir())
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("download-virtio-win-iso.sh --print-file-name failed: %v\n%s", err, out)
+	}
+	if got, want := string(out), virtioWinISOCacheFileName(virtioWinVersion)+"\n"; got != want {
+		t.Fatalf("download-virtio-win-iso.sh --print-file-name printed %q, want %q", got, want)
 	}
 }
 

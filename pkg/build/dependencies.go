@@ -144,6 +144,9 @@ type WebFileDependency struct {
 	RelatedVmConfigs []VirtualMachineConfig
 	// BeforeHook is a function that is called before downloading the dependency. It can be used to modify the Source URL dynamically.
 	BeforeHook func(ctx context.Context) (string, error)
+	// PrepareHook runs during dependency reconciliation before the existence check, whether or not a
+	// download follows. It can migrate or clean up related files in the cache.
+	PrepareHook func()
 	// FailureHint is appended to the error when every source fails.
 	FailureHint string
 }
@@ -232,29 +235,51 @@ func virtioWinISOCachePath(version string) string {
 // of the name.
 const virtioWinLegacyISOFileName = "virtio-win.iso"
 
-// migrateLegacyVirtioWinISO moves an ISO cached under the unversioned name to destination when it
-// matches checksum and deletes it otherwise, so it neither triggers a re-download nor stays behind
-// as an orphan. It reports whether destination now holds the verified ISO.
-// scripts/macos/download-virtio-win-iso.sh does the same for the shell build scripts.
-func migrateLegacyVirtioWinISO(destination, checksum string) bool {
-	legacyPath := filepath.Join(filepath.Dir(destination), virtioWinLegacyISOFileName)
-	if _, err := os.Stat(legacyPath); err != nil {
+// prepareVirtioWinISOCache removes every virtio-win ISO in the directory of destination except
+// destination itself, so outdated versions do not pile up after a version bump. An ISO cached under
+// the unversioned legacy name is moved to destination instead when destination is missing and the
+// ISO matches checksum. scripts/macos/download-virtio-win-iso.sh does the same for the shell build
+// scripts.
+func prepareVirtioWinISOCache(destination, checksum string) {
+	dir := filepath.Dir(destination)
+	paths, err := filepath.Glob(filepath.Join(dir, "virtio-win*.iso"))
+	if err != nil {
+		log.Printf("Warning: could not list cached virtio-win ISOs in %s: %v", dir, err)
+		return
+	}
+	legacyPath := filepath.Join(dir, virtioWinLegacyISOFileName)
+	for _, path := range paths {
+		if path == destination {
+			continue
+		}
+		if path == legacyPath && migrateLegacyVirtioWinISO(legacyPath, destination, checksum) {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			log.Printf("Warning: could not remove outdated virtio-win ISO %s: %v", path, err)
+			continue
+		}
+		log.Printf("Removed outdated virtio-win ISO %s", path)
+	}
+}
+
+// migrateLegacyVirtioWinISO moves the ISO at legacyPath to destination when destination is missing
+// and the ISO matches checksum. It reports whether legacyPath must be kept: true when it was moved
+// or when the move failed, so verified bytes are not thrown away; false when it is outdated or
+// destination already exists.
+func migrateLegacyVirtioWinISO(legacyPath, destination, checksum string) bool {
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
 		return false
 	}
-	if checkIfWebFileDependencyExists(WebFileDependency{LocalPath: legacyPath, Checksum: checksum}) {
-		err := os.Rename(legacyPath, destination)
-		if err == nil {
-			log.Printf("Moved cached virtio-win ISO %s to %s", legacyPath, destination)
-			return true
-		}
+	if !checkIfWebFileDependencyExists(WebFileDependency{LocalPath: legacyPath, Checksum: checksum}) {
+		return false
+	}
+	if err := os.Rename(legacyPath, destination); err != nil {
 		log.Printf("Warning: could not move cached virtio-win ISO %s to %s: %v", legacyPath, destination, err)
+		return true
 	}
-	if err := os.Remove(legacyPath); err != nil {
-		log.Printf("Warning: could not remove outdated virtio-win ISO %s: %v", legacyPath, err)
-	} else {
-		log.Printf("Removed outdated virtio-win ISO %s", legacyPath)
-	}
-	return false
+	log.Printf("Moved cached virtio-win ISO %s to %s", legacyPath, destination)
+	return true
 }
 
 func virtioWinISOURLFromArchive(archiveURL, version string) string {
@@ -454,6 +479,9 @@ func reconcileWebFileDependency(ctx context.Context, p *mpb.Progress, dep WebFil
 		return fmt.Errorf("download of %s stopped: %w", dep.LocalPath, err)
 	}
 	defer unlock()
+	if dep.PrepareHook != nil {
+		dep.PrepareHook()
+	}
 	if checkIfWebFileDependencyExists(dep) {
 		return nil
 	}
@@ -492,8 +520,10 @@ func lockWebFileDependency(ctx context.Context, localPath string) (func(), error
 }
 
 // removeStaleWebFileDependency deletes a local file that failed the existence check, typically
-// an outdated file restored from a cache. Downloading onto it lets go-getter verify the stale
-// content and spend a checksum attempt before the file is replaced.
+// an outdated file restored from a cache. go-getter's HTTP getter resumes onto an existing file
+// with a Range request: a stale file at least as large as the remote one skips the transfer, a
+// smaller one gets the remote tail appended. Either way the attempt fails the checksum instead of
+// downloading a fresh copy.
 func removeStaleWebFileDependency(dep WebFileDependency) {
 	if _, err := os.Stat(dep.LocalPath); err != nil {
 		return
@@ -973,10 +1003,10 @@ func getWebFileDependencies() []WebFileDependency {
 			Source:          virtioWinISOURLFromArchive(virtioWinFedoraArchiveURL, virtioWinVersion),
 			FallbackSources: virtioWinISOURLs(virtioWinVersion),
 			BeforeHook: func(ctx context.Context) (string, error) {
-				if migrateLegacyVirtioWinISO(virtioWinISOCachePath(virtioWinVersion), "sha256:"+virtioWinSHA256) {
-					return "", nil
-				}
 				return selectFastestVirtioWinISOURL(ctx, virtioWinVersion)
+			},
+			PrepareHook: func() {
+				prepareVirtioWinISOCache(virtioWinISOCachePath(virtioWinVersion), "sha256:"+virtioWinSHA256)
 			},
 			RelatedVmConfigs: []VirtualMachineConfig{
 				{

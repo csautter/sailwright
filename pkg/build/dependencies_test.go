@@ -407,49 +407,120 @@ func TestWindows11Amd64LinuxQemuDependencyReconciliationIncludesVirtioWinISO(t *
 	t.Fatalf("expected dependency reconciliation for Windows 11 amd64 Linux QEMU to include %s, got %v", wantPath, gotPaths)
 }
 
-func TestMigrateLegacyVirtioWinISOMovesMatchingISO(t *testing.T) {
-	dir := t.TempDir()
-	content := []byte("virtio-win")
-	legacyPath := filepath.Join(dir, virtioWinLegacyISOFileName)
-	if err := os.WriteFile(legacyPath, content, 0o600); err != nil {
+func writeTestBytes(t *testing.T, path string, content []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatal(err)
-	}
-	destination := filepath.Join(dir, virtioWinISOCacheFileName("0.1.302-1"))
-
-	if !migrateLegacyVirtioWinISO(destination, fmt.Sprintf("sha256:%x", sha256.Sum256(content))) {
-		t.Fatal("expected the matching legacy ISO to be migrated")
-	}
-	if got, err := os.ReadFile(destination); err != nil || string(got) != string(content) {
-		t.Fatalf("expected %s to hold the legacy ISO, got %q, %v", destination, got, err)
-	}
-	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
-		t.Fatalf("expected %s to be gone, got %v", legacyPath, err)
 	}
 }
 
-func TestMigrateLegacyVirtioWinISORemovesOutdatedISO(t *testing.T) {
-	dir := t.TempDir()
-	legacyPath := filepath.Join(dir, virtioWinLegacyISOFileName)
-	if err := os.WriteFile(legacyPath, []byte("old virtio-win"), 0o600); err != nil {
-		t.Fatal(err)
+func assertFileContent(t *testing.T, path string, want []byte) {
+	t.Helper()
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(want) {
+		t.Fatalf("expected %s to hold %q, got %q, %v", path, want, got, err)
 	}
-	destination := filepath.Join(dir, virtioWinISOCacheFileName("0.1.302-1"))
+}
 
-	if migrateLegacyVirtioWinISO(destination, fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("new virtio-win")))) {
-		t.Fatal("expected an outdated legacy ISO not to be migrated")
-	}
-	for _, path := range []string{legacyPath, destination} {
+func assertFilesMissing(t *testing.T, paths ...string) {
+	t.Helper()
+	for _, path := range paths {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("expected %s not to exist, got %v", path, err)
 		}
 	}
 }
 
-func TestMigrateLegacyVirtioWinISOWithoutLegacyFile(t *testing.T) {
-	destination := filepath.Join(t.TempDir(), virtioWinISOCacheFileName("0.1.302-1"))
-	if migrateLegacyVirtioWinISO(destination, "sha256:00") {
-		t.Fatal("expected no migration without a legacy ISO")
+func TestPrepareVirtioWinISOCacheMovesMatchingLegacyISO(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("virtio-win")
+	legacyPath := filepath.Join(dir, virtioWinLegacyISOFileName)
+	writeTestBytes(t, legacyPath, content)
+	destination := filepath.Join(dir, virtioWinISOCacheFileName("0.1.302-1"))
+
+	prepareVirtioWinISOCache(destination, fmt.Sprintf("sha256:%x", sha256.Sum256(content)))
+
+	assertFileContent(t, destination, content)
+	assertFilesMissing(t, legacyPath)
+}
+
+func TestPrepareVirtioWinISOCacheRemovesOutdatedLegacyISO(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, virtioWinLegacyISOFileName)
+	writeTestBytes(t, legacyPath, []byte("old virtio-win"))
+	destination := filepath.Join(dir, virtioWinISOCacheFileName("0.1.302-1"))
+
+	prepareVirtioWinISOCache(destination, fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("new virtio-win"))))
+
+	assertFilesMissing(t, legacyPath, destination)
+}
+
+func TestPrepareVirtioWinISOCacheRemovesLegacyISOWhenDestinationExists(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("virtio-win")
+	legacyPath := filepath.Join(dir, virtioWinLegacyISOFileName)
+	writeTestBytes(t, legacyPath, content)
+	destination := filepath.Join(dir, virtioWinISOCacheFileName("0.1.302-1"))
+	writeTestBytes(t, destination, content)
+
+	prepareVirtioWinISOCache(destination, fmt.Sprintf("sha256:%x", sha256.Sum256(content)))
+
+	assertFileContent(t, destination, content)
+	assertFilesMissing(t, legacyPath)
+}
+
+func TestPrepareVirtioWinISOCacheRemovesOlderVersionsOnly(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("virtio-win")
+	destination := filepath.Join(dir, virtioWinISOCacheFileName("0.1.310-1"))
+	writeTestBytes(t, destination, content)
+	olderPath := filepath.Join(dir, virtioWinISOCacheFileName("0.1.302-1"))
+	writeTestBytes(t, olderPath, []byte("older virtio-win"))
+	tmpPath := destination + ".tmp"
+	writeTestBytes(t, tmpPath, []byte("partial"))
+	unrelatedPath := filepath.Join(dir, "win11_amd64.iso")
+	writeTestBytes(t, unrelatedPath, []byte("windows"))
+
+	prepareVirtioWinISOCache(destination, fmt.Sprintf("sha256:%x", sha256.Sum256(content)))
+
+	assertFileContent(t, destination, content)
+	assertFilesMissing(t, olderPath)
+	for _, path := range []string{tmpPath, unrelatedPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s to be kept, got %v", path, err)
+		}
 	}
+}
+
+func TestPrepareVirtioWinISOCacheWithoutCachedISOs(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), virtioWinISOCacheFileName("0.1.302-1"))
+	prepareVirtioWinISOCache(destination, "sha256:00")
+	assertFilesMissing(t, destination)
+}
+
+func TestMigrateLegacyVirtioWinISOKeepsISOWhenMoveFails(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("virtio-win")
+	legacyPath := filepath.Join(dir, virtioWinLegacyISOFileName)
+	writeTestBytes(t, legacyPath, content)
+	// The destination directory does not exist, so the rename fails.
+	destination := filepath.Join(dir, "missing", virtioWinISOCacheFileName("0.1.302-1"))
+
+	if !migrateLegacyVirtioWinISO(legacyPath, destination, fmt.Sprintf("sha256:%x", sha256.Sum256(content))) {
+		t.Fatal("expected a verified legacy ISO to be kept when the move fails")
+	}
+	assertFileContent(t, legacyPath, content)
+}
+
+func TestVirtioWinDependencyPreparesCache(t *testing.T) {
+	for _, dep := range getWebFileDependencies() {
+		if dep.LocalPath == virtioWinISOCachePath(virtioWinVersion) {
+			if dep.PrepareHook == nil {
+				t.Fatal("expected the virtio-win dependency to prepare its cache directory")
+			}
+			return
+		}
+	}
+	t.Fatal("virtio-win dependency not found")
 }
 
 func TestRemoveStaleWebFileDependencyDeletesExistingFile(t *testing.T) {

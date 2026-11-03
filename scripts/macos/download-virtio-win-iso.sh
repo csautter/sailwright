@@ -1,6 +1,10 @@
 #!/bin/bash
 
-set -ex
+set -e
+# --print-file-name prints the cache file name only; keep its stdout and stderr free of xtrace noise.
+if [ "${1:-}" != "--print-file-name" ]; then
+	set -x
+fi
 
 host_os="$(uname -s)"
 if [ "$host_os" = "Darwin" ]; then
@@ -53,16 +57,20 @@ cleanup_tmp() {
 
 trap cleanup_tmp EXIT
 
-# One-time migration of the unversioned file; mirrors migrateLegacyVirtioWinISO in pkg/build/dependencies.go.
-if [ -f "$legacy_virtio_iso_path" ]; then
-	if [ ! -f "$virtio_iso_path" ] && verify_sha256 "$legacy_virtio_iso_path"; then
-		echo "Moving $legacy_virtio_iso_path to $virtio_iso_path"
-		mv "$legacy_virtio_iso_path" "$virtio_iso_path"
-	else
-		echo "Removing outdated $legacy_virtio_iso_path"
-		rm -f "$legacy_virtio_iso_path"
+# Remove every other virtio-win ISO so outdated versions do not pile up after a version bump. The
+# unversioned legacy file is moved into place instead when it matches the checksum.
+# Mirrors prepareVirtioWinISOCache in pkg/build/dependencies.go.
+for cached_iso_path in "$CACHE_DIR"/windows/virtio-win*.iso; do
+	[ -f "$cached_iso_path" ] || continue
+	[ "$cached_iso_path" = "$virtio_iso_path" ] && continue
+	if [ "$cached_iso_path" = "$legacy_virtio_iso_path" ] && [ ! -e "$virtio_iso_path" ] && verify_sha256 "$cached_iso_path"; then
+		echo "Moving $cached_iso_path to $virtio_iso_path"
+		mv "$cached_iso_path" "$virtio_iso_path" || echo "Warning: could not move $cached_iso_path, keeping it" >&2
+		continue
 	fi
-fi
+	echo "Removing outdated $cached_iso_path"
+	rm -f "$cached_iso_path"
+done
 
 if [ -f "$virtio_iso_path" ]; then
 	if verify_sha256 "$virtio_iso_path"; then

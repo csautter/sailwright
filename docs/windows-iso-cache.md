@@ -239,6 +239,17 @@ object through `blob-name` while no manifest exists. Merging is therefore safe b
 Until step 4, rolling back only requires reverting the build-workflow descriptors: the legacy
 objects are still in place.
 
+## virtio-win ISO
+
+The virtio-win driver ISO is not part of the manifest scheme. Build jobs cache it as a flat object
+named after the pinned version, `virtio-win-<version>.iso` (the `cache_files` of the build
+workflows; Renovate updates the name together with the pins). A version bump therefore uploads a
+new object instead of restoring a stale one. Nothing prunes old objects: after a bump, delete the
+previous `virtio-win-*.iso` (and the pre-versioning `virtio-win.iso`) from the build cache by hand.
+Local caches prune themselves: the Go dependency reconciliation and
+`scripts/macos/download-virtio-win-iso.sh` remove every other `virtio-win*.iso` and move a valid
+unversioned `virtio-win.iso` into place.
+
 ## Tests
 
 - `go test ./pkg/build/... ./tools/...`: naming, due rule, manifest validation, deduplication,
