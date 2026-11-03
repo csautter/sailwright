@@ -4,7 +4,10 @@ labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: Include the smallest configuration or playbook that reproduces the problem. Remove credentials and other private data from commands and logs.
+      value: |
+        Include the smallest configuration or playbook that reproduces the problem. Remove credentials and other private data from commands and logs.
+
+        Do not report security vulnerabilities here; follow [SECURITY.md](https://github.com/csautter/sailwright/blob/main/SECURITY.md) instead.
   - type: input
     id: host-os
     attributes:
@@ -12,18 +15,39 @@ body:
       placeholder: Ubuntu 24.04.3, macOS 26.1, or Windows 11 25H2
     validations:
       required: true
-  - type: input
+  - type: dropdown
     id: architecture
     attributes:
       label: Host architecture
-      placeholder: arm64 or amd64 (uname -m on Unix)
+      description: "`uname -m` prints `arm64`/`aarch64` or `x86_64`; on Windows, check Settings > System > About."
+      options:
+        - arm64 (aarch64)
+        - amd64 (x86_64)
     validations:
       required: true
-  - type: textarea
+  - type: input
     id: sailwright-version
     attributes:
       label: Sailwright version
-      description: Paste the output of `sailwright --version`. If your build does not support this flag, include the release tag or source commit and how you installed it.
+      description: The release tag (for example `v0.26.0`) or source commit, and how you installed it.
+      placeholder: v0.26.0 via Homebrew, install script, release archive, or source build at <commit>
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: VM backend
+      description: Choose "not applicable" for problems with installation, Homebrew, or commands that do not use a backend.
+      options:
+        - Tart
+        - UTM
+        - Hyper-V
+        - VirtualBox
+        - QEMU/KVM (libvirt)
+        - Docker
+        - local provisioning
+        - other
+        - not applicable
     validations:
       required: true
   - type: textarea
@@ -31,29 +55,6 @@ body:
     attributes:
       label: Exact command and reproduction steps
       description: Include all flags, relevant configuration or a minimal playbook, and the steps needed to reproduce the problem.
-      render: shell
-    validations:
-      required: true
-  - type: dropdown
-    id: backend
-    attributes:
-      label: VM backend
-      options:
-        - Tart
-        - UTM
-        - Hyper-V
-        - VirtualBox
-        - QEMU
-        - Docker
-        - local provisioning
-        - other
-    validations:
-      required: true
-  - type: textarea
-    id: logs
-    attributes:
-      label: Output and logs
-      description: Paste the complete relevant output, including the error. For provisioning issues, include `ansible-playbook --version` output.
       render: shell
     validations:
       required: true
@@ -67,5 +68,14 @@ body:
     id: actual
     attributes:
       label: Actual behaviour
+      description: Describe what happened in a sentence or two. Paste the full output in the next field.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output and logs
+      description: Paste the complete relevant output, including the error. For provisioning issues, include `ansible-playbook --version` output.
+      render: shell
     validations:
       required: true

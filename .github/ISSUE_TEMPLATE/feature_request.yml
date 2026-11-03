@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a change to the CLI, backends, workflows, or documentation.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: To request an Ansible role for a specific tool, use the Role request form instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: Describe what you are trying to do and what currently prevents it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the behaviour, command, or documentation you would like.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you use today or other approaches you considered.
+    validations:
+      required: false
