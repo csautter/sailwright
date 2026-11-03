@@ -47,7 +47,7 @@ func newVMCommand() *cobra.Command {
 					if showPassword {
 						password = value.Password
 					}
-					_, err = fmt.Fprintf(cmd.OutOrStdout(), "VM: %s/%s/%s\nState: %s\nEngine: %s\nAddress: %s\nNetwork: %s\nProtocol: %s\nPort: %d\nUsername: %s\nPassword: %s\n", value.OS, value.Type, value.Arch, value.State, value.Engine, value.Address, value.NetworkMode, value.Protocol, value.Port, value.Username, password)
+					_, err = fmt.Fprintf(cmd.OutOrStdout(), "VM: %s\nState: %s\nEngine: %s\nAddress: %s\nNetwork: %s\nProtocol: %s\nPort: %d\nUsername: %s\nPassword: %s\n", alchemy_build.InstanceKey(target), value.State, value.Engine, value.Address, value.NetworkMode, value.Protocol, value.Port, value.Username, password)
 					return err
 				}
 			}

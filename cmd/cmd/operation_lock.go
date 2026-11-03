@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,24 @@ func wrapOperationLocks(commands []*cobra.Command, appData func() string) {
 			if cmd == createCmd && commandInstanceName(cmd) != "" {
 				image := strings.TrimSuffix(target, "/"+commandInstanceName(cmd))
 				releaseImage, err := operationlock.AcquireSharedWithin(appData(), image, "clone image", timeout)
+				if err != nil {
+					return err
+				}
+				defer releaseImage()
+			}
+
+			if cmd == createCmd || cmd == buildCmd || cmd == pullCmd || cmd == pushCmd {
+				imageTarget := target
+				if name := commandInstanceName(cmd); name != "" {
+					imageTarget = strings.TrimSuffix(imageTarget, "/"+name)
+				}
+				cacheLocks := filepath.Join(alchemy_build.GetDirectoriesInstance().CacheDir, "image-operation-locks")
+				var releaseImage func()
+				if cmd == createCmd {
+					releaseImage, err = operationlock.AcquireSharedWithin(cacheLocks, imageTarget, "clone image", timeout)
+				} else {
+					releaseImage, err = operationlock.AcquireWithin(cacheLocks, imageTarget, cmd.Name()+" image", timeout)
+				}
 				if err != nil {
 					return err
 				}

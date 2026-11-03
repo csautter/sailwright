@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"errors"
+	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -81,5 +83,39 @@ func TestWrappedOperationReportsBusyTarget(t *testing.T) {
 	ran = false
 	if err := command.RunE(command, []string{"ubuntu"}); err != nil || !ran {
 		t.Fatalf("released target still busy: %v", err)
+	}
+}
+
+func TestSharedCacheLocksSpanAppDataDirectories(t *testing.T) {
+	oldBuild, oldCreate := buildCmd, createCmd
+	dirs := alchemy_build.GetDirectoriesInstance()
+	oldCache := dirs.CacheDir
+	dirs.CacheDir = t.TempDir()
+	defer func() { buildCmd = oldBuild; createCmd = oldCreate; dirs.CacheDir = oldCache }()
+	t.Setenv(lockTimeoutEnvVar, "0s")
+	command := func(verb string, run func(*cobra.Command, []string) error) *cobra.Command {
+		c := &cobra.Command{Use: verb, RunE: run}
+		c.Flags().String("type", "server", "")
+		c.Flags().String("arch", "amd64", "")
+		return c
+	}
+	built, cloned := false, false
+	buildCmd = command("build", func(*cobra.Command, []string) error { built = true; return nil })
+	createCmd = command("create", func(*cobra.Command, []string) error { cloned = true; return nil })
+	addInstanceFlag(createCmd)
+	createCmd.Flags().Set("name", "b")
+	appA, appB := t.TempDir(), t.TempDir()
+	wrapOperationLocks([]*cobra.Command{buildCmd}, func() string { return appA })
+	wrapOperationLocks([]*cobra.Command{createCmd}, func() string { return appB })
+	release, err := operationlock.AcquireShared(filepath.Join(dirs.CacheDir, "image-operation-locks"), "ubuntu/server/amd64", "clone a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := buildCmd.RunE(buildCmd, []string{"ubuntu"}); !errors.Is(err, operationlock.ErrBusy) || built {
+		t.Fatalf("build ignored shared cache reader: %v", err)
+	}
+	if err := createCmd.RunE(createCmd, []string{"ubuntu"}); err != nil || !cloned {
+		t.Fatalf("independent clone blocked: %v", err)
 	}
 }
