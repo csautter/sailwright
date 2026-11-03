@@ -23,6 +23,15 @@ Under that root, Sailwright manages:
     successfully or not, and at the start of the next build for the same target,
     so it is safe to delete after an interrupted build. Older versions wrote it to
     `/tmp/dev-alchemy/qemu-out-*`; those leftovers can be deleted.
+  - `<artifact>.sailwright-complete` is the completion marker of a build artifact.
+    A build or `oci pull` writes it after the artifact reached its final path;
+    `build list` reports an artifact without a marker as `unverified`.
+  - `<name>.dev-alchemy-build-<n>.<ext>` are staged artifacts of a running or
+    interrupted build, and `<artifact>.dev-alchemy-*backup-<n>` are backups of a
+    running or interrupted replacement. The next build of the same target restores
+    a lone backup and removes the rest.
+  - `<download>.part` is a download in progress. It is renamed to its final name
+    only after it completed and its checksum matched.
 - `.vagrant/` for isolated Vagrant state
 - `packer_cache/` for Packer plugin and download cache
 - `project/` for the embedded runtime project, used whenever the working

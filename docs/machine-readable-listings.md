@@ -20,6 +20,18 @@ whether the VM exists. Tools should use it rather than the display text in
 `fields.create` (such as `already created`), which may change. Other listings
 omit `exists`.
 
+The `build` field of `build list` is one of:
+
+| Value | Meaning | Used by builds and VM commands |
+|---|---|---|
+| `exists` | Completed by a successful build or pull | yes |
+| `unverified` | Present without a completion marker, e.g. built by an older version | yes |
+| `incomplete` | A build or pull is running or was interrupted, or the artifact no longer matches its completion marker | no, rebuilt |
+| `missing` | No artifact | no |
+
+Treat values you do not know as not usable; new values may be added within
+schema version `1`.
+
 ## VM connection details and identity
 
 `sailwright vm info <os> [--type T] [--arch A]` shows how to reach a running
