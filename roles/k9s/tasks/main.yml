@@ -14,14 +14,21 @@
       failed_when: false
       check_mode: false
 
-    - name: Resolve k9s Linux architecture
+    - name: Ensure k9s supports the Linux architecture
+      ansible.builtin.assert:
+        that: ansible_facts['architecture'] in ['x86_64', 'aarch64', 'arm64']
+        fail_msg: "Unsupported architecture for k9s: {{ ansible_facts['architecture'] }}"
+        quiet: true
+
+    - name: Resolve k9s Linux architecture and installed version
       ansible.builtin.set_fact:
         k9s_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'arm64': 'arm64'}[ansible_facts['architecture']] }}"
+        k9s_installed_version: "{{ k9s_installed.stdout | default('') | regex_search('(?<![0-9.])v?([0-9]+[.][0-9]+[.][0-9]+)(?![0-9.])', '\\1') | default([''], true) | first }}"
 
     - name: Install the pinned k9s release
       when:
         - not ansible_check_mode
-        - k9s_installed.rc != 0 or k9s_version not in k9s_installed.stdout
+        - k9s_installed_version != k9s_version
       block:
         - name: Download and extract k9s binary
           ansible.builtin.unarchive:
@@ -36,7 +43,7 @@
     - name: Report pending k9s installation in check mode
       ansible.builtin.debug:
         msg: "Would install k9s {{ k9s_version }} for {{ k9s_arch }}."
-      changed_when: k9s_installed.rc != 0 or k9s_version not in k9s_installed.stdout
+      changed_when: k9s_installed_version != k9s_version
       when: ansible_check_mode
 
 # WINDOWS SECTION

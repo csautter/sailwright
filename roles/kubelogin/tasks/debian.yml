@@ -62,47 +62,47 @@
   failed_when: false
   check_mode: false
 
+- name: Read the installed kubelogin version
+  ansible.builtin.set_fact:
+    kubelogin_installed_version: "{{ kubelogin_installed.stdout | default('') | regex_search('(?<![0-9.])v?([0-9]+[.][0-9]+[.][0-9]+)(?![0-9.])', '\\1') | default([''], true) | first }}"
+
 - name: Install the resolved kubelogin release
   when:
     - not ansible_check_mode
-    - kubelogin_resolved_version not in kubelogin_installed.stdout | default('')
+    - kubelogin_installed_version != kubelogin_resolved_version | regex_replace('^v', '')
   block:
     - name: Create temporary directory for kubelogin
       tempfile:
         state: directory
         suffix: kubelogin
       register: kubelogin_tmp
-      when: not ansible_check_mode
 
-    - name: Download kubelogin binary
-      get_url:
-        url: "{{ kubelogin_url }}"
-        dest: "{{ kubelogin_tmp.path }}/kubelogin.zip"
-        mode: '0644'
-      when: not ansible_check_mode
+    - name: Download and install kubelogin
+      block:
+        - name: Download kubelogin binary
+          get_url:
+            url: "{{ kubelogin_url }}"
+            dest: "{{ kubelogin_tmp.path }}/kubelogin.zip"
+            mode: '0644'
 
-    - name: Unarchive kubelogin
-      unarchive:
-        src: "{{ kubelogin_tmp.path }}/kubelogin.zip"
-        dest: "{{ kubelogin_tmp.path }}"
-        remote_src: yes
-      when: not ansible_check_mode
+        - name: Unarchive kubelogin
+          unarchive:
+            src: "{{ kubelogin_tmp.path }}/kubelogin.zip"
+            dest: "{{ kubelogin_tmp.path }}"
+            remote_src: yes
 
-    - name: Install kubelogin binary
-      copy:
-        src: "{{ kubelogin_tmp.path }}/kubelogin"
-        dest: /usr/local/bin/kubelogin
-        mode: '0755'
-        remote_src: yes
-      become: true
-      when: not ansible_check_mode
-
-    - name: Clean up temporary directory
-      file:
-        path: "{{ kubelogin_tmp.path }}"
-        state: absent
-      when: not ansible_check_mode
-
+        - name: Install kubelogin binary
+          copy:
+            src: "{{ kubelogin_tmp.path }}/kubelogin"
+            dest: /usr/local/bin/kubelogin
+            mode: '0755'
+            remote_src: yes
+          become: true
+      always:
+        - name: Clean up temporary directory
+          file:
+            path: "{{ kubelogin_tmp.path }}"
+            state: absent
 
 - name: Skip kubelogin installation in check mode
   debug:
