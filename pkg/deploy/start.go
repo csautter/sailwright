@@ -31,6 +31,9 @@ func SupportsStart(config alchemy_build.VirtualMachineConfig) bool {
 }
 
 func InspectStartTarget(config alchemy_build.VirtualMachineConfig) (VirtualMachineState, error) {
+	if err := alchemy_build.ValidateInstanceName(config.Name); err != nil {
+		return VirtualMachineState{}, err
+	}
 	switch {
 	case isUtmDeployTarget(config):
 		return inspectUtmStartTarget(config)

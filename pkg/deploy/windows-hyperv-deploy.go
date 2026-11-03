@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/csautter/dev-alchemy/internal/operationlock"
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
 )
 
@@ -73,6 +74,11 @@ func RunHypervVagrantDeployOnWindows(config alchemy_build.VirtualMachineConfig) 
 		return err
 	}
 
+	releaseBox, err := operationlock.AcquireWithin(filepath.Join(alchemy_build.GetDirectoriesInstance().AppDataDir, "provider-box-locks"), settings.BoxName, "register box", 45*time.Minute)
+	if err != nil {
+		return err
+	}
+	defer releaseBox()
 	if err := runCommandWithStreamingLogs(
 		projectDir,
 		45*time.Minute,
@@ -206,6 +212,9 @@ func RunHypervVagrantDestroyOnWindows(config alchemy_build.VirtualMachineConfig)
 	if err != nil {
 		return err
 	}
+	if exists && config.Name != "" && !hasHypervVagrantInstanceState(config) {
+		return runNamedHypervAction(config, "destroy")
+	}
 	if exists {
 		if err := runHypervVagrantCommandWithEnv(
 			settings.VagrantDir,
@@ -260,6 +269,9 @@ func RunHypervVagrantStartOnWindows(config alchemy_build.VirtualMachineConfig) e
 		return nil
 	}
 
+	if config.Name != "" && !hasHypervVagrantInstanceState(config) {
+		return runNamedHypervAction(config, "start")
+	}
 	projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
 	settings, err := resolveHypervVagrantDeploySettings(config, projectDir)
 	if err != nil {
@@ -308,6 +320,9 @@ func RunHypervVagrantStopOnWindows(config alchemy_build.VirtualMachineConfig) er
 		gracefulErr = fmt.Errorf("graceful stop completed but VM is still running after %s", hypervVagrantStopSettleTimeout)
 	}
 
+	if config.Name != "" && !hasHypervVagrantInstanceState(config) {
+		return runNamedHypervAction(config, "stop")
+	}
 	forceErr := runHypervVagrantCommandWithEnv(
 		settings.VagrantDir,
 		20*time.Minute,
@@ -473,10 +488,14 @@ func hypervVagrantDotfilePath(vmName string) string {
 }
 
 func buildHypervVagrantResourceEnv(config alchemy_build.VirtualMachineConfig) []string {
-	return []string{
+	env := []string{
 		hypervVagrantCpuEnvVar + "=" + strconv.Itoa(alchemy_build.GetVmCpuCount(config)),
 		hypervVagrantMemoryEnvVar + "=" + strconv.Itoa(alchemy_build.GetVmMemoryMB(config)),
 	}
+	if config.Name != "" {
+		env = append(env, "VAGRANT_INSTANCE_HOSTNAME="+alchemy_build.InstanceHostname(config))
+	}
+	return env
 }
 
 func hypervVagrantMachineExists(vagrantDir string, env []string) (bool, error) {

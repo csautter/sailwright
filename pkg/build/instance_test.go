@@ -56,3 +56,19 @@ func TestValidateInstanceName(t *testing.T) {
 		t.Fatal("accepted Tart override with named instance")
 	}
 }
+
+func TestInstanceHostnamesFitGuestLimits(t *testing.T) {
+	vm := VirtualMachineConfig{OS: "windows11", Arch: "amd64", Name: strings.Repeat("a", 24)}
+	a := InstanceHostname(vm)
+	vm.Name = "b"
+	b := InstanceHostname(vm)
+	if len(a) > 15 || len(b) > 15 || a == b {
+		t.Fatal(a, b)
+	}
+	vm.OS = "ubuntu"
+	vm.UbuntuType = "desktop"
+	vm.Name = strings.Repeat("a", 24)
+	if name := InstanceHostname(vm); len(name) > 63 {
+		t.Fatal(name)
+	}
+}
