@@ -35,7 +35,9 @@ Read `docs/agent-gateway.md` once if you have not seen it.
   `stuck_suspected` is set, tell the user and suggest the live view in the
   gateway terminal; do not cancel the build on your own.
 - Every VM you create must be destroyed again before you finish, even after
-  failures.
+  failures. Always give disposable VMs an explicit unique `name` (CLI `--name`);
+  reuse that name for every lifecycle call, `vm_info`, and the fourth tunnel
+  component. Never claim or clean up an existing default VM.
 - For a separate host, the binary is pinned by the human: ask them to rebuild
   and restart after code changes. In an explicitly authorized development VM
   you may rebuild and restart locally, passing the actual binary SHA-256.
@@ -59,8 +61,8 @@ Read `docs/agent-gateway.md` once if you have not seen it.
    SAILWRIGHT_E2E_EXECUTOR=gateway go test -tags e2e ./test/e2e \
      -run 'TestScenarios/smoke' -count=1 -v
    SAILWRIGHT_E2E_EXECUTOR=gateway SAILWRIGHT_E2E_TARGET=ubuntu/server/amd64 \
-     go test -tags e2e ./test/e2e -run 'TestScenarios/(vm-lifecycle|destroy-idempotent)' \
-     -count=1 -timeout 6h -v
+     SAILWRIGHT_NAMED_VM_E2E=1 go test -tags e2e ./test/e2e \
+     -run '^TestNamedVMInstances$' -count=1 -timeout 1h -v
    ```
 
    `local-check` needs an approval on the host; run it only when asked to
@@ -113,7 +115,12 @@ compatibility mode solely because CPU flags indicate a virtualized host.
 5. Destroy the guest through `vm_destroy` in cleanup, including after failures.
    Report the host binary hash, target, guest build and observed results.
 
-The opt-in `TestVMAccess` scenario in `test/e2e` verifies SSH and scp and
+The opt-in `TestNamedVMInstances` test creates two named Ubuntu guests, checks
+independent SSH and hostnames, destroys one and verifies the other. Run it with
+`SAILWRIGHT_NAMED_VM_E2E=1` as documented in `docs/testing-workflows.md`.
+
+The opt-in `TestVMAccess` scenario in `test/e2e` uses the `agent-access` instance
+(override with `SAILWRIGHT_E2E_NAME`), verifies SSH and scp, and
 performs cleanup. See `docs/agent-gateway.md` for its invocation. Never include
 passwords from `vm_info` in reports, shell arguments or committed files.
 
@@ -141,7 +148,8 @@ on Windows (Windows OpenSSH with `SSH_ASKPASS`, no connection sharing). Follow
 
 ## Develop roles with an Ansible controller in the container
 
-1. Create/start a disposable guest as above and call `vm_info`.
+1. Create/start a disposable guest with an explicit `name` as above and call
+   `vm_info` with that same name.
 2. Write its `ansible_inventory` to an owner-only file outside committed
    content. For SSH it already contains a ProxyCommand. Install `sshpass`
    in the container when using password authentication.

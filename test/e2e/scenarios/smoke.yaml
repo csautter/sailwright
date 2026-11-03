@@ -10,7 +10,7 @@ steps:
   - name: build targets as JSON
     op: list
     with: {command: build}
-    expect: {output_regex: '"schema_version":1'}
+    expect: {output_regex: '"schema_version":2'}
   - name: provision targets include the local host
     op: list
     with: {command: provision}
@@ -18,11 +18,11 @@ steps:
   - name: pull targets as JSON
     op: list
     with: {command: pull}
-    expect: {output_regex: '"schema_version":1'}
+    expect: {output_regex: '"schema_version":2'}
   - name: push targets as JSON
     op: list
     with: {command: push}
-    expect: {output_regex: '"schema_version":1'}
+    expect: {output_regex: '"schema_version":2'}
   - name: invalid build target exits non-zero
     op: cli
     # Through the gateway this call is outside the safe set and would need approval.

@@ -123,6 +123,7 @@ Use "all" to create all stable VM configurations.
 
 Example:
   sailwright create ubuntu --type server --arch amd64
+  sailwright create ubuntu --type server --arch amd64 --name work
   sailwright create macos --arch arm64
   sailwright create windows11 --arch arm64
   sailwright create all

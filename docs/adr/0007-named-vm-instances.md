@@ -24,7 +24,10 @@ The common provider name is
 `ubuntu-server-amd64-work-dev-alchemy`. Parse known OS/type/architecture prefixes
 and the fixed suffix, keeping the entire remainder as the name (including
 hyphens). A future version is inserted immediately after the OS, never into the
-instance name. Names and image slugs without a version remain unchanged.
+instance name. Reserve a compact numeric version token, such as `2604`, so
+`ubuntu-2604-server-amd64-work-dev-alchemy` remains unambiguous and fits host
+limits. Version support and versioned image slugs are separate additions. Names
+and image slugs without a version remain unchanged.
 
 Default provider identities remain byte-for-byte compatible. Tart keeps its
 legacy `tahoe-base-alchemy` default (and `TART_MACOS_VM_NAME` override); named Tart
@@ -42,6 +45,12 @@ for that instance. Bulk stop/destroy continue to select only defaults unless
 `--all-instances` is supplied. Operation locks include the instance name; image
 preparation uses a shared image lock. Gateway targets accept an optional fourth
 component, `<os>/<type>/<arch>[/<name>]`.
+
+Named guest hostnames follow the provider name on Unix. Windows computer names
+use `sw-` plus twelve hexadecimal digits from the logical identity hash to meet
+the 15-character limit. Defaults retain their existing guest hostnames. Provider
+MAC addresses and display endpoints are allocated per VM; build VNC ports remain
+image-scoped. Hyper-V box registration/import is serialized separately.
 
 ## Consequences
 

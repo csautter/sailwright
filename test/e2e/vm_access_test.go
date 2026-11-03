@@ -145,7 +145,11 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 	if len(parts) != 3 || (!windowsGuest && parts[0] != "ubuntu") || (windowsGuest && (parts[0] != "windows11" || parts[1] != "")) {
 		t.Fatal("use ubuntu/server/<arch> for SSH or windows11//<arch> for WinRM")
 	}
-	args := map[string]any{"os": parts[0], "type": parts[1], "arch": parts[2]}
+	name := os.Getenv("SAILWRIGHT_E2E_NAME")
+	if name == "" {
+		name = "agent-access"
+	}
+	args := map[string]any{"os": parts[0], "type": parts[1], "arch": parts[2], "name": name}
 	endpoint, err := client.Discover(os.Getenv)
 	if err != nil {
 		t.Fatal(err)
@@ -202,7 +206,7 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 	for _, vm := range listing.Targets {
 		if vm.OS == parts[0] && vm.Type == parts[1] && vm.Arch == parts[2] {
 			found = true
-			if vm.Fields["state"] != "missing" {
+			if vm.Name == name && vm.Fields["state"] != "missing" {
 				t.Fatal("selected VM already exists; refusing to touch it")
 			}
 		}
@@ -298,7 +302,7 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 	if err := os.WriteFile(config, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	alias := "sailwright-" + strings.ReplaceAll(target, "/", "-")
+	alias := "sailwright-" + strings.ReplaceAll(target+"/"+name, "/", "-")
 	// Close the shared connection before destroying the guest, so audit byte counts
 	// and tunnel_closed are flushed and no background SSH client outlives the test.
 	defer func() {

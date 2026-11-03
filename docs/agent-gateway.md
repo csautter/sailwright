@@ -136,9 +136,9 @@ The agent, and everything it reads, is treated as untrusted.
   `audit.jsonl` in the state directory.
 
 > **Caveat:** hypervisor VM names are global. If you also use Sailwright
-> yourself on the same host, an agent's `vm_destroy` for `ubuntu/server/amd64`
-> affects the same VM name as your own. Use a separate host user or machine
-> when that matters.
+> yourself on the same host, `ubuntu/server/amd64` still addresses your default
+> VM. Give disposable agent VMs their own `name`, such as `agent-test`, to work
+> alongside your VMs. Ownership and access grants are separate for every name.
 
 ## Quick start
 
@@ -314,6 +314,7 @@ clean_prompt_min_gb: 20            # offer to delete the cache on Ctrl+C from th
 output_limit_bytes: 8388608
 snapshot_max_bytes: 52428800
 snapshot_max_files: 5000
+max_instances: 4                 # managed VMs on this host, including pending creates; -1 disables
 max_tunnels: 16                   # simultaneous SSH/WinRM streams
 tunnel_idle_timeout: 5m
 # tunnel_allowed_cidrs: [10.20.0.0/16]   # routed guest networks; host-interface subnets are always allowed
@@ -337,6 +338,22 @@ screen_stuck_after: 15m            # hint when console and output stay unchanged
 | `run_cli` | safe or approval | any command line; safe if it parses into the safe set |
 | `job_status`, `job_output`, `job_cancel`, `job_list` | control | job handling |
 | `job_screenshot` | safe | VM console image of a build job (read-only) |
+
+VM lifecycle tools (`vm_create`, `vm_start`, `vm_stop`, `vm_destroy`,
+`vm_provision`, `vm_info`) accept an optional `name`. Omit it for the default
+instance. For example, `vm_create` with
+`{"os":"ubuntu","type":"server","arch":"amd64","name":"agent-test"}`
+creates a separate clone of the same shared image. `run_cli` recognizes `--name`
+in the safe grammar. Build and pull operations still address images and take no
+instance name. Bulk `all` operations remain outside the safe set.
+
+`max_instances` defaults to four; `-1` disables it. Before a safe create starts,
+the gateway checks a fresh provider listing and reserves its pending slot.
+For a conservative host budget, all visible managed VMs count, including the
+operator's defaults and named VMs from other app-data directories. Destroy an
+unused instance or change the host setting to make room. CLI creates and other
+gateway processes are outside this per-process reservation; it is not a global
+hypervisor quota. Audit target parameters include `name`.
 
 Operations run as jobs. Poll `job_status` and read `job_output` from
 `next_offset`. Only one job runs at a time. Once `job_status` reports a final
@@ -599,8 +616,9 @@ sailwright-gateway vm tunnel ubuntu/server/amd64 22
 ```
 
 It writes only guest bytes to stdout, and discovers the gateway and token in
-the same way as `connect`. Targets always have three slash-separated fields;
-Windows and macOS have an empty type, for example `windows11//amd64`.
+the same way as `connect`. Default targets have three slash-separated fields. Named targets add a fourth,
+for example `ubuntu/server/amd64/agent-test`. Windows and macOS keep an empty type,
+for example `windows11//amd64/agent-test`.
 
 For SSH Ansible, save `ansible_inventory` as an owner-only JSON file (JSON is
 also valid YAML) and run your playbook from the container:
@@ -731,8 +749,7 @@ and [Windows #303](https://github.com/csautter/sailwright/issues/303).
 
 ### Testing disposable guest access
 
-Build the Ubuntu image on the host first, then use a target that does not
-already have a VM. With the gateway running and `ssh`, `scp`, `sshpass` and
+Build the Ubuntu image on the host first, then choose an unused instance name. With the gateway running and `ssh`, `scp`, `sshpass` and
 `sailwright-gateway` installed in the container:
 
 ```bash
@@ -740,7 +757,8 @@ SAILWRIGHT_VM_ACCESS_E2E=1 SAILWRIGHT_E2E_TARGET=ubuntu/server/amd64 \
   go test -tags e2e ./test/e2e -run '^TestVMAccess$' -count=1 -timeout 1h -v
 ```
 
-This preflights existing state, creates and starts the VM, obtains `vm_info`,
+This preflights existing state for `agent-access` (override with
+`SAILWRIGHT_E2E_NAME`), creates and starts that named VM, obtains `vm_info`,
 runs `uname -a` through SSH, copies a file with scp, verifies it in the guest,
 and destroys the VM even after failure. It needs a real host gateway and is
 skipped unless explicitly enabled. The ordinary gateway suite uses a fake CLI
