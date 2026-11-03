@@ -1,6 +1,7 @@
 package build
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"regexp"
@@ -84,4 +85,13 @@ func ParseInstanceName(providerName string, base VirtualMachineConfig) (VirtualM
 	}
 	base.Name = name
 	return base, true
+}
+
+// InstanceHostname obeys Windows' 15-character computer-name limit. Unix guests
+// use the full provider name, which fits the DNS label limit.
+func InstanceHostname(vm VirtualMachineConfig) string {
+	if vm.OS == "windows11" {
+		return fmt.Sprintf("sw-%x", sha256.Sum256([]byte(InstanceKey(vm))))[:15]
+	}
+	return InstanceName(vm)
 }

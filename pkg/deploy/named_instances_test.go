@@ -120,3 +120,20 @@ func TestInstanceRegistry(t *testing.T) {
 		}
 	}
 }
+
+func TestNamedHypervFallbackUsesExactProviderName(t *testing.T) {
+	vm := build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "server", Arch: "amd64", Name: "work", VirtualizationEngine: build.VirtualizationEngineHyperv}
+	for _, action := range []string{"start", "stop", "destroy"} {
+		script, err := namedHypervActionScript(vm, action)
+		if err != nil || !strings.Contains(script, "Get-VM -Name 'ubuntu-server-amd64-work-dev-alchemy'") {
+			t.Fatal(script, err)
+		}
+		if action == "destroy" && !strings.Contains(script, "$users.Count -eq 0") {
+			t.Fatal("shared disk deletion guard missing")
+		}
+	}
+	vm.Name = ""
+	if err := runNamedHypervAction(vm, "destroy"); err == nil {
+		t.Fatal("direct action accepted a default instance")
+	}
+}

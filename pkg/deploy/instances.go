@@ -173,3 +173,20 @@ func RemoveInstanceRecord(vm build.VirtualMachineConfig) error {
 	}
 	return err
 }
+
+// InstanceStorageDirectory selects the filesystem used for the new clone.
+func InstanceStorageDirectory(vm build.VirtualMachineConfig) string {
+	switch vm.VirtualizationEngine {
+	case build.VirtualizationEngineQemu:
+		return linuxLibvirtImageDir()
+	case build.VirtualizationEngineUtm:
+		if path, err := utmVirtualMachinePath(vm); err == nil {
+			return filepath.Dir(path)
+		}
+	case build.VirtualizationEngineTart:
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, ".tart", "vms")
+		}
+	}
+	return build.GetDirectoriesInstance().AppDataDir
+}

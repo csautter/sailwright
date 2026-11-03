@@ -21,6 +21,9 @@ func SupportsCreate(config alchemy_build.VirtualMachineConfig) bool {
 }
 
 func CreateTargetExists(config alchemy_build.VirtualMachineConfig) (bool, error) {
+	if err := alchemy_build.ValidateInstanceName(config.Name); err != nil {
+		return false, err
+	}
 	switch {
 	case isUtmDeployTarget(config):
 		vmPath, err := utmVirtualMachinePath(config)
