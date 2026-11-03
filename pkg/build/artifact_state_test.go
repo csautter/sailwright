@@ -169,3 +169,36 @@ func TestIncompleteArtifactIsRebuiltWithoutNoCache(t *testing.T) {
 		t.Fatal("an incomplete artifact must not be a cache hit")
 	}
 }
+
+func TestInterruptedReplacementBackupIsRestoredInsteadOfDeleted(t *testing.T) {
+	dir := t.TempDir()
+	artifact := filepath.Join(dir, "disk.qcow2")
+	// A crash between the two renames of a replacement: the previous artifact exists
+	// only as backups, the final path is missing.
+	older := artifact + replaceArtifactBackupInfix + "100"
+	newer := artifact + ociPullArtifactBackupInfix + "200"
+	staged := stagedBuildArtifactPath(artifact, 300)
+	writeTestFile(t, older, "older image")
+	writeTestFile(t, newer, "previous image")
+	writeTestFile(t, staged, "partial")
+	assertArtifactState(t, ArtifactStateIncomplete, artifact)
+
+	skip, _, err := prepareBuildArtifactsForBuild(VirtualMachineConfig{
+		ExpectedBuildArtifacts: []string{artifact},
+		StagedBuildArtifacts:   []string{stagedBuildArtifactPath(artifact, 400)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !skip {
+		t.Fatal("the restored previous artifact must be a cache hit")
+	}
+	data, err := os.ReadFile(artifact)
+	if err != nil {
+		t.Fatalf("expected the newest backup to be restored: %v", err)
+	}
+	if string(data) != "previous image" {
+		t.Fatalf("expected the newest backup to be restored, got %q", data)
+	}
+	assertArtifactState(t, ArtifactStateUnverified, artifact)
+}

@@ -90,6 +90,21 @@ func TestPostProcessingContextWithoutHandlerIsNotCancelled(t *testing.T) {
 	}
 }
 
+func TestPostProcessingContextReusesHandler(t *testing.T) {
+	h, ctx := newInterruptHandler(context.Background(), nil, func(int) {})
+	postCtx := postProcessingContext(ctx)
+	if got := interruptHandlerFromContext(postCtx); got != h {
+		t.Fatal("expected the post-processing context to carry the build's interrupt handler")
+	}
+	// Helper processes started for post-processing (ffmpeg) must not install a second
+	// signal handler.
+	reused, stop := ensureInterruptHandling(postCtx)
+	defer stop()
+	if reused != postCtx {
+		t.Fatal("expected ensureInterruptHandling to reuse the post-processing context")
+	}
+}
+
 func TestTrackProcessGroupCountsRegistrations(t *testing.T) {
 	const id = 987654321
 	untrackA := trackProcessGroup(id)

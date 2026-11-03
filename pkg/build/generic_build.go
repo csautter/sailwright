@@ -133,8 +133,7 @@ func RunBuildScript(ctx context.Context, config VirtualMachineConfig, executable
 	case waitErr = <-done:
 	case <-buildCtx.Done():
 		log.Printf("Stopping build process group: %v", context.Cause(buildCtx))
-		terminateProcessGroup(processGroupID, buildProcessGracePeriod)
-		waitErr = <-done
+		waitErr = stopBuildProcess(cmd, processGroupID, done, buildProcessGracePeriod)
 	}
 	// Take the terminal back right away, so that Ctrl+C reaches this process again
 	// during cleanup and post-processing.
@@ -179,6 +178,26 @@ func RunBuildScript(ctx context.Context, config VirtualMachineConfig, executable
 		log.Printf("Script failed: %v", decision.err)
 	}
 	return decision.err
+}
+
+// stopBuildProcess stops a cancelled build and returns its wait error. On Unix the
+// build's process group gets SIGTERM and SIGKILL after the grace period. Windows has
+// no process group to signal, so the build process itself is killed once the grace
+// period is over; without this a timed-out build would wait for Packer forever.
+func stopBuildProcess(cmd *exec.Cmd, processGroupID int, done <-chan error, gracePeriod time.Duration) error {
+	terminateProcessGroup(processGroupID, gracePeriod)
+	timer := time.NewTimer(gracePeriod)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+	}
+	if cmd.Process != nil {
+		log.Printf("Build process %d did not stop within %s; killing it", cmd.Process.Pid, gracePeriod)
+		_ = cmd.Process.Kill()
+	}
+	return <-done
 }
 
 // buildContextError returns the error for a build that must not start or continue.
@@ -401,6 +420,16 @@ func deferBuildArtifactCleanup(cleanup func(bool) error, buildSucceeded *bool) f
 }
 
 func prepareBuildArtifactsForBuild(config VirtualMachineConfig) (bool, func(bool) error, error) {
+	artifacts, err := resolveExpectedBuildArtifacts(config)
+	if err != nil {
+		return false, nil, err
+	}
+	// Restore a previous artifact that an interrupted replacement left only as a backup
+	// before the leftovers below are removed.
+	if err := recoverBuildArtifactBackups(artifacts); err != nil {
+		return false, nil, err
+	}
+
 	if !config.NoCache {
 		buildArtifactExists, err := checkIfBuildArtifactsExist(config)
 		if err != nil {
@@ -411,10 +440,6 @@ func prepareBuildArtifactsForBuild(config VirtualMachineConfig) (bool, func(bool
 		}
 	}
 
-	artifacts, err := resolveExpectedBuildArtifacts(config)
-	if err != nil {
-		return false, nil, err
-	}
 	if err := removeBuildArtifactLeftovers(artifacts); err != nil {
 		return false, nil, err
 	}

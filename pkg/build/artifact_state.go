@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -235,6 +236,58 @@ func buildArtifactLeftovers(artifact string) ([]string, error) {
 		leftovers = append(leftovers, filepath.Join(dir, name))
 	}
 	return leftovers, nil
+}
+
+// recoverBuildArtifactBackups puts the previous artifact back when an interrupted
+// build or pull left it only as a backup next to a missing final path, e.g. after a
+// crash between the two renames of a replacement. Without this, the leftover cleanup
+// would delete the only copy. The restored artifact has no completion marker, so it is
+// unverified but usable.
+func recoverBuildArtifactBackups(artifacts []string) error {
+	var errs []error
+	for _, artifact := range artifacts {
+		if _, err := os.Lstat(artifact); err == nil || !os.IsNotExist(err) {
+			continue
+		}
+		leftovers, err := buildArtifactLeftovers(artifact)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		backup, ok := newestBuildArtifactBackup(artifact, leftovers)
+		if !ok {
+			continue
+		}
+		log.Printf("Restoring the previous build artifact from the backup of an interrupted build or pull: %s -> %s", backup, artifact)
+		if err := os.Rename(backup, artifact); err != nil {
+			errs = append(errs, fmt.Errorf("restore build artifact backup %s: %w", backup, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// newestBuildArtifactBackup returns the most recent backup among leftovers. Backup
+// names end with a UnixNano timestamp.
+func newestBuildArtifactBackup(artifact string, leftovers []string) (string, bool) {
+	base := filepath.Base(artifact)
+	newest, newestStamp := "", int64(-1)
+	for _, leftover := range leftovers {
+		name := filepath.Base(leftover)
+		for _, infix := range []string{buildArtifactBackupInfix, replaceArtifactBackupInfix, ociPullArtifactBackupInfix} {
+			suffix, found := strings.CutPrefix(name, base+infix)
+			if !found {
+				continue
+			}
+			stamp, err := strconv.ParseInt(suffix, 10, 64)
+			if err != nil {
+				continue
+			}
+			if stamp > newestStamp {
+				newest, newestStamp = leftover, stamp
+			}
+		}
+	}
+	return newest, newestStamp >= 0
 }
 
 // removeBuildArtifactLeftovers removes staging and backup files of earlier interrupted

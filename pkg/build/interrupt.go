@@ -54,7 +54,9 @@ func newInterruptHandler(parent context.Context, out io.Writer, exit func(int)) 
 	postCtx, cancelPost := context.WithCancelCause(context.WithoutCancel(parent))
 	h.cancelBuild = cancelBuild
 	h.cancelPost = cancelPost
-	h.postCtx = postCtx
+	// Post-processing carries the handler too, so that helper processes started from it
+	// (e.g. ffmpeg) reuse it instead of installing a second signal handler.
+	h.postCtx = context.WithValue(postCtx, interruptHandlerKey{}, h)
 	return h, context.WithValue(buildCtx, interruptHandlerKey{}, h)
 }
 
