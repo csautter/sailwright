@@ -6,77 +6,59 @@
     install_options: cask
   when: ansible_facts['os_family'] == 'Darwin'
 
-- name: Ensure dependencies for JetBrains Toolbox (Linux)
-  apt:
-    name: unzip
-    state: present
-  become: true
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
+- name: Install JetBrains Toolbox on Linux
+  when: ansible_facts['os_family'] == 'Debian'
+  block:
+    - name: Read JetBrains Toolbox release metadata
+      ansible.builtin.uri:
+        url: "https://data.services.jetbrains.com/products/releases?code=TBA&latest=true&type=release"
+        return_content: true
+      register: toolbox_release
+      check_mode: false
 
-- name: Download JetBrains Toolbox archive (Linux)
-  get_url:
-    url: "https://data.services.jetbrains.com/products/releases?code=TBA&latest=true&type=release"
-    dest: /tmp/jetbrains_toolbox_release.json
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
+    - name: Resolve the Toolbox archive
+      ansible.builtin.set_fact:
+        toolbox_download: "{{ toolbox_release.json.TBA[0].downloads['linuxARM64' if ansible_facts['architecture'] == 'aarch64' else 'linux'] }}"
 
-- name: Load JetBrains Toolbox release JSON (Linux)
-  slurp:
-    src: /tmp/jetbrains_toolbox_release.json
-  register: toolbox_release_json_raw
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
+    - name: Resolve the extracted Toolbox directory
+      ansible.builtin.set_fact:
+        toolbox_directory: "/opt/{{ toolbox_download.link | basename | regex_replace('[.]tar[.]gz$', '') }}"
 
-- name: Parse JetBrains Toolbox release JSON (Linux)
-  set_fact:
-    jetbrains_toolbox_release_json: "{{ toolbox_release_json_raw.content | b64decode | from_json }}"
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
+    - name: Check whether the Toolbox release is extracted
+      ansible.builtin.stat:
+        path: "{{ toolbox_directory }}/bin/jetbrains-toolbox"
+      register: toolbox_binary
 
-- name: Parse release JSON and get download URL (Linux) - x86_64
-  set_fact:
-    jetbrains_toolbox_url: "{{ jetbrains_toolbox_release_json.TBA[0].downloads.linux.link }}"
-  when: ansible_facts['os_family'] == 'Debian' and ansible_architecture == 'x86_64' and not ansible_check_mode
+    - name: Download JetBrains Toolbox archive
+      ansible.builtin.get_url:
+        url: "{{ toolbox_download.link }}"
+        checksum: "sha256:{{ toolbox_download.checksumLink }}"
+        dest: "/tmp/{{ toolbox_download.link | basename }}"
+        mode: "0644"
+      when: not toolbox_binary.stat.exists and not ansible_check_mode
 
-- name: Parse release JSON and get download URL (Linux) - ARM64
-  set_fact:
-    jetbrains_toolbox_url: "{{ jetbrains_toolbox_release_json.TBA[0].downloads.linuxARM64.link }}"
-  when: ansible_facts['os_family'] == 'Debian' and ansible_architecture == 'aarch64' and not ansible_check_mode
+    - name: Extract JetBrains Toolbox archive
+      ansible.builtin.unarchive:
+        src: "/tmp/{{ toolbox_download.link | basename }}"
+        dest: /opt
+        remote_src: true
+        creates: "{{ toolbox_directory }}/bin/jetbrains-toolbox"
+      become: true
+      when: not toolbox_binary.stat.exists and not ansible_check_mode
 
-- name: Download JetBrains Toolbox archive from resolved URL (Linux)
-  get_url:
-    url: "{{ jetbrains_toolbox_url }}"
-    dest: "/tmp/jetbrains-toolbox.tar.gz"
-    mode: "0755"
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
+    - name: Report pending Toolbox extraction in check mode
+      ansible.builtin.debug:
+        msg: "Would install {{ toolbox_download.link }}."
+      changed_when: not toolbox_binary.stat.exists
+      when: ansible_check_mode
 
-- name: Extract JetBrains Toolbox archive (Linux)
-  unarchive:
-    src: "/tmp/jetbrains-toolbox.tar.gz"
-    dest: "/opt/"
-    remote_src: yes
-  become: true
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
-
-- name: Find extracted JetBrains Toolbox directory (Linux)
-  find:
-    paths: "/opt/"
-    patterns: "jetbrains-toolbox-*"
-    file_type: directory
-    recurse: no
-  register: toolbox_dirs
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
-
-- name: Symlink JetBrains Toolbox to /usr/local/bin (Linux)
-  file:
-    src: "{{ toolbox_dirs.files[0].path }}/jetbrains-toolbox"
-    dest: /usr/local/bin/jetbrains-toolbox
-    state: link
-    force: yes
-  become: true
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
-
-- name: Skip JetBrains Toolbox installation in check mode (Linux)
-  debug:
-    msg: "Skipping JetBrains Toolbox installation in check mode."
-  when: ansible_facts['os_family'] == 'Debian' and ansible_check_mode
+    - name: Symlink JetBrains Toolbox to /usr/local/bin
+      ansible.builtin.file:
+        src: "{{ toolbox_directory }}/bin/jetbrains-toolbox"
+        dest: /usr/local/bin/jetbrains-toolbox
+        state: link
+        force: true
+      become: true
 
 - name: Install JetBrains Toolbox on Windows (via Chocolatey)
   win_chocolatey:

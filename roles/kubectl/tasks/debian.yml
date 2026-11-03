@@ -25,6 +25,8 @@
         state: directory
         suffix: kubernetes-apt
       register: kubectl_apt_tmp
+      # Staging files are transient; the keyring copy and repository tasks report changes.
+      changed_when: false
 
     - name: Set primary Kubernetes apt repository URL
       ansible.builtin.set_fact:
@@ -124,6 +126,7 @@
         state: absent
       become: true
       when: kubectl_apt_tmp.path is defined
+      changed_when: false
   when: not ansible_check_mode
 
 - name: Install kubectl on Debian/Ubuntu

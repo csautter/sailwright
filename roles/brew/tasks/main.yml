@@ -1,54 +1,61 @@
 ---
+- name: Select the Homebrew prefix for the host architecture
+  ansible.builtin.set_fact:
+    brew_prefix: "{{ '/opt/homebrew' if ansible_facts['architecture'] == 'arm64' else '/usr/local' }}"
+  when: ansible_facts['os_family'] == 'Darwin'
+
 - name: Check if Homebrew is installed
   stat:
-    path: /opt/homebrew/bin/brew
+    path: "{{ brew_prefix }}/bin/brew"
   register: brew_stat
   when: ansible_facts['os_family'] == 'Darwin'
 
 - name: Get current user
   ansible.builtin.command: whoami
   register: current_user
+  changed_when: false
+  check_mode: false
   when: ansible_facts['os_family'] == 'Darwin' and not brew_stat.stat.exists
 
 - set_fact:
     ansible_user: "{{ current_user.stdout }}"
   when: ansible_facts['os_family'] == 'Darwin' and not brew_stat.stat.exists and ansible_user is not defined
 
-- name: Clone Homebrew repository to /opt/homebrew
+- name: Clone Homebrew repository to {{ brew_prefix }}
   git:
     repo: https://github.com/Homebrew/brew
-    dest: /opt/homebrew
+    dest: "{{ brew_prefix }}"
     clone: yes
     update: no
     depth: 1
   when: ansible_facts['os_family'] == 'Darwin' and not brew_stat.stat.exists
   become: true
 
-- name: Change owner of /opt/homebrew to ansible user
+- name: Change owner of {{ brew_prefix }} to ansible user
   file:
-    path: /opt/homebrew
+    path: "{{ brew_prefix }}"
     owner: "{{ ansible_user }}"
     recurse: yes
   when: ansible_facts['os_family'] == 'Darwin' and not brew_stat.stat.exists
   become: true
 
 - name: Evaluate Homebrew shell environment
-  shell: eval "$(/opt/homebrew/bin/brew shellenv)"
+  shell: eval "$({{ brew_prefix }}/bin/brew shellenv)"
   environment:
-    PATH: "/opt/homebrew/bin:{{ ansible_env.PATH }}"
+    PATH: "{{ brew_prefix }}/bin:{{ ansible_env.PATH }}"
   when: ansible_facts['os_family'] == 'Darwin' and not brew_stat.stat.exists
   become: true
 
 - name: Update Homebrew quietly and forcefully
-  shell: /opt/homebrew/bin/brew update --force --quiet
+  shell: "{{ brew_prefix }}/bin/brew update --force --quiet"
   environment:
-    PATH: "/opt/homebrew/bin:{{ ansible_env.PATH }}"
+    PATH: "{{ brew_prefix }}/bin:{{ ansible_env.PATH }}"
   when: ansible_facts['os_family'] == 'Darwin' and not brew_stat.stat.exists
 
 - name: Remove group and world write permissions from Homebrew zsh share directory
-  shell: chmod -R go-w "$(/opt/homebrew/bin/brew --prefix)/share/zsh"
+  shell: chmod -R go-w "$({{ brew_prefix }}/bin/brew --prefix)/share/zsh"
   environment:
-    PATH: "/opt/homebrew/bin:{{ ansible_env.PATH }}"
+    PATH: "{{ brew_prefix }}/bin:{{ ansible_env.PATH }}"
   when: ansible_facts['os_family'] == 'Darwin' and not brew_stat.stat.exists
   become: true
 
@@ -62,7 +69,7 @@
 - name: Ensure Homebrew is in the PATH
   lineinfile:
     path: ~/.bash_profile
-    line: 'eval "$(/opt/homebrew/bin/brew shellenv)"'
+    line: 'eval "$({{ brew_prefix }}/bin/brew shellenv)"'
     state: present
   when: ansible_facts['os_family'] == 'Darwin' and not brew_stat.stat.exists
 

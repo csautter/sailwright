@@ -4,55 +4,40 @@
     state: present
   when: ansible_facts['os_family'] == "Darwin"
 
-- name: Try install k9s from package manager on Debian/Ubuntu
-  apt:
-    name: k9s
-    state: present
-    update_cache: yes
-  register: k9s_apt
-  failed_when: false
-  when: ansible_facts['os_family'] == "Debian"
-
-- name: Try install k9s from package manager on RedHat/Fedora
-  package:
-    name: k9s
-    state: present
-  register: k9s_rpm
-  failed_when: false
-  when: ansible_facts['os_family'] in ["RedHat", "Rocky", "AlmaLinux", "Fedora"]
-
-- name: Fallback install on Linux if package manager failed
+- name: Install k9s on Linux
+  when: ansible_facts['system'] == 'Linux'
   block:
-    - name: Set k9s arch
-      set_fact:
-        k9s_arch: >-
-          {% if ansible_facts['architecture'] == 'x86_64' %}
-            x86_64
-          {% elif ansible_facts['architecture'] == 'arm64' %}
-            arm64
-          {% else %}
-            x86_64
-          {% endif %}
+    - name: Check installed k9s version
+      ansible.builtin.command: /usr/local/bin/k9s version --short
+      register: k9s_installed
+      changed_when: false
+      failed_when: false
+      check_mode: false
 
-    - name: Set OS suffix for download
-      set_fact:
-        k9s_os: >-
-          {% if ansible_facts['os_family'] == 'Debian' or ansible_facts['os_family'] in ['RedHat', 'Rocky', 'AlmaLinux', 'Fedora'] %}
-            Linux
-          {% else %}
-            Darwin
-          {% endif %}
+    - name: Resolve k9s Linux architecture
+      ansible.builtin.set_fact:
+        k9s_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'arm64': 'arm64'}[ansible_facts['architecture']] }}"
 
-    - name: Download and extract k9s binary
-      ansible.builtin.unarchive:
-        src: "https://github.com/derailed/k9s/releases/download/v{{ k9s_version }}/k9s_{{ k9s_os }}_{{ k9s_arch }}.tar.gz"
-        dest: /usr/local/bin
-        remote_src: yes
-        mode: '0755'
+    - name: Install the pinned k9s release
       when:
-        - ansible_facts['os_family'] != "Darwin"
-        - (ansible_facts['os_family'] == "Debian" and k9s_apt is failed) or
-          (ansible_facts['os_family'] in ["RedHat", "Rocky", "AlmaLinux", "Fedora"] and k9s_rpm is failed)
+        - not ansible_check_mode
+        - k9s_installed.rc != 0 or k9s_version not in k9s_installed.stdout
+      block:
+        - name: Download and extract k9s binary
+          ansible.builtin.unarchive:
+            src: "https://github.com/derailed/k9s/releases/download/v{{ k9s_version }}/k9s_Linux_{{ k9s_arch }}.tar.gz"
+            dest: /usr/local/bin
+            remote_src: true
+            include:
+              - k9s
+            mode: '0755'
+          become: true
+
+    - name: Report pending k9s installation in check mode
+      ansible.builtin.debug:
+        msg: "Would install k9s {{ k9s_version }} for {{ k9s_arch }}."
+      changed_when: k9s_installed.rc != 0 or k9s_version not in k9s_installed.stdout
+      when: ansible_check_mode
 
 # WINDOWS SECTION
 

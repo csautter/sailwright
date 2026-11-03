@@ -1,6 +1,6 @@
 - name: Check if Homebrew is installed
   stat:
-    path: /opt/homebrew/bin/brew
+    path: "{{ '/opt/homebrew' if ansible_facts['architecture'] == 'arm64' else '/usr/local' }}/bin/brew"
   register: brew_check
 
 - name: Install kind via Homebrew (if available)

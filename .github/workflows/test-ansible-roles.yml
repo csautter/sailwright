@@ -3,7 +3,7 @@ name: Test Ansible Roles
 
 on:
   push:
-    branches: [main, feat*, fix/local-provision-stability]
+    branches: [main, feat*]
     paths:
       - "roles/**"
       - "roles_test_1/**"
