@@ -24,6 +24,10 @@
     creates: /etc/apt/sources.list.d/adoptium.list
   become: true
 
+- name: Resolve the Temurin Debian architecture
+  ansible.builtin.set_fact:
+    temurin_deb_arch: "{{ {'aarch64': 'arm64', 'x86_64': 'amd64'}.get(ansible_facts['architecture'], ansible_facts['architecture']) }}"
+
 - name: Install Temurin JDK on Debian/Ubuntu
   apt:
     name: "temurin-{{ item }}-jdk"
@@ -38,7 +42,7 @@
   alternatives:
     name: java
     link: /usr/bin/java
-    path: "/usr/lib/jvm/temurin-{{ item }}-jdk-{{ (ansible_architecture == 'aarch64') | ternary('arm64', (ansible_architecture == 'x86_64') | ternary('amd64', ansible_architecture)) }}/bin/java"
+    path: "/usr/lib/jvm/temurin-{{ item }}-jdk-{{ temurin_deb_arch }}/bin/java"
     priority: "{{ item }}"
     state: present
   loop: "{{ jdk_versions }}"
@@ -50,7 +54,7 @@
   alternatives:
     name: javac
     link: /usr/bin/javac
-    path: "/usr/lib/jvm/temurin-{{ item }}-jdk-{{ (ansible_architecture == 'aarch64') | ternary('arm64', (ansible_architecture == 'x86_64') | ternary('amd64', ansible_architecture)) }}/bin/javac"
+    path: "/usr/lib/jvm/temurin-{{ item }}-jdk-{{ temurin_deb_arch }}/bin/javac"
     priority: "{{ item }}"
     state: present
   loop: "{{ jdk_versions }}"
@@ -60,7 +64,7 @@
 - name: Select the default Java and Javac alternatives
   community.general.alternatives:
     name: "{{ item }}"
-    path: "/usr/lib/jvm/temurin-{{ jdk_default_version }}-jdk-{{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}/bin/{{ item }}"
+    path: "/usr/lib/jvm/temurin-{{ jdk_default_version }}-jdk-{{ temurin_deb_arch }}/bin/{{ item }}"
     state: selected
   loop:
     - java

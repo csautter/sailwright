@@ -14,16 +14,31 @@
     - ansible_facts['architecture'] == 'arm64'
     - rosetta_installed is not defined or not rosetta_installed
 
-- name: Install Homebrew Temurin casks
-  community.general.homebrew_cask:
-    name: "{{ 'temurin@' ~ item }}"
-    state: present
+# Temurin JDKs come from Adoptium .pkg installers instead of Homebrew casks:
+# casks run their own sudo, which neither --ask-become-pass nor a become
+# password file reaches. Existing cask installs use the same JDK paths.
+- name: Check installed Temurin JDKs
+  ansible.builtin.stat:
+    path: "/Library/Java/JavaVirtualMachines/temurin-{{ item }}.jdk/Contents/Home/bin/java"
   loop: "{{ jdk_versions }}"
-  when: item != 24
+  register: temurin_binaries
 
-- name: Install archived Temurin 24 on macOS
-  ansible.builtin.include_tasks: darwin_temurin24.yml
-  when: 24 in jdk_versions
+- name: Collect missing Temurin JDKs
+  ansible.builtin.set_fact:
+    temurin_missing: "{{ temurin_binaries.results | rejectattr('stat.exists') | map(attribute='item') | list }}"
+
+- name: Install missing Temurin JDKs
+  ansible.builtin.include_tasks: darwin_temurin.yml
+  loop: "{{ temurin_missing }}"
+  loop_control:
+    loop_var: temurin_version
+  when: not ansible_check_mode
+
+- name: Report pending Temurin installations in check mode
+  ansible.builtin.debug:
+    msg: "Would install Temurin {{ temurin_missing | join(', ') }}."
+  changed_when: true
+  when: ansible_check_mode and temurin_missing | length > 0
 
 - name: Install jenv with Homebrew
   community.general.homebrew:
