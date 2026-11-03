@@ -373,10 +373,9 @@ func TestResolveAnsibleRolePathsUpdatesExistingGitBranch(t *testing.T) {
 	projectDir := t.TempDir()
 	dirs := withIsolatedAlchemyDirectories(t, projectDir)
 	checkoutDir := filepath.Join(dirs.CacheDir, ansibleRoleSourcesCacheDir, "public-base")
-	for _, path := range []string{filepath.Join(checkoutDir, ".git"), filepath.Join(checkoutDir, "roles")} {
-		if err := os.MkdirAll(path, 0o755); err != nil {
-			t.Fatalf("failed to create fake checkout path %q: %v", path, err)
-		}
+	writeFakeGitCheckout(t, checkoutDir, "https://example.test/dev-alchemy-roles.git")
+	if err := os.MkdirAll(filepath.Join(checkoutDir, "roles"), 0o755); err != nil {
+		t.Fatalf("failed to create fake roles dir: %v", err)
 	}
 	writeRoleSourcesConfig(t, dirs.ConfigDir, strings.Join([]string{
 		"include_default_roles: false",
@@ -429,9 +428,7 @@ func TestResolveAnsibleRolePathsRejectsEscapingGitRolesPath(t *testing.T) {
 	projectDir := t.TempDir()
 	dirs := withIsolatedAlchemyDirectories(t, projectDir)
 	checkoutDir := filepath.Join(dirs.CacheDir, ansibleRoleSourcesCacheDir, "bad-source")
-	if err := os.MkdirAll(filepath.Join(checkoutDir, ".git"), 0o755); err != nil {
-		t.Fatalf("failed to create fake checkout: %v", err)
-	}
+	writeFakeGitCheckout(t, checkoutDir, "https://example.test/dev-alchemy-roles.git")
 	writeRoleSourcesConfig(t, dirs.ConfigDir, strings.Join([]string{
 		"include_default_roles: false",
 		"sources:",
@@ -660,4 +657,59 @@ func gitCallsContain(calls []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// writeFakeGitCheckout creates a minimal cached checkout whose origin is url.
+func writeFakeGitCheckout(t *testing.T, checkoutDir string, url string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(checkoutDir, ".git"), 0o755); err != nil {
+		t.Fatalf("failed to create fake checkout: %v", err)
+	}
+	config := "[core]\n\tbare = false\n[remote \"origin\"]\n\turl = " + url + "\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+	if err := os.WriteFile(filepath.Join(checkoutDir, ".git", "config"), []byte(config), 0o600); err != nil {
+		t.Fatalf("failed to write fake git config: %v", err)
+	}
+}
+
+func TestEnsureGitRoleSourceRejectsCachedCheckoutFromOtherRepository(t *testing.T) {
+	checkoutDir := filepath.Join(t.TempDir(), "team")
+	writeFakeGitCheckout(t, checkoutDir, "https://token@example.test/old.git")
+	calls := fakeRoleSourceGit(t, nil)
+	pull := true
+	err := ensureGitRoleSource(ansibleRoleSourceConfig{Name: "team", URL: "https://example.test/new.git", Pull: &pull}, checkoutDir)
+	if err == nil || !strings.Contains(err.Error(), "was cloned from") || !strings.Contains(err.Error(), "new.git") {
+		t.Fatalf("expected repository mismatch error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "token") {
+		t.Fatalf("expected credentials to be redacted, got %v", err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("expected no git commands on mismatch, got %v", *calls)
+	}
+}
+
+func TestValidateGitCheckoutAcceptsTrailingSlashDifference(t *testing.T) {
+	checkoutDir := filepath.Join(t.TempDir(), "team")
+	writeFakeGitCheckout(t, checkoutDir, "https://example.test/team.git")
+	if err := validateGitCheckout(checkoutDir, " https://example.test/team.git/ "); err != nil {
+		t.Fatalf("expected matching origin, got %v", err)
+	}
+}
+
+func TestCatalogRejectsCachedCheckoutAfterSourceURLChange(t *testing.T) {
+	project := t.TempDir()
+	dirs := withIsolatedAlchemyDirectories(t, project)
+	cached := dirs.CachePath(ansibleRoleSourcesCacheDir, "team")
+	writeFakeGitCheckout(t, cached, "https://example.test/old.git")
+	if err := os.MkdirAll(filepath.Join(cached, "roles/oldtool/tasks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRoleSourcesConfig(t, dirs.ConfigDir, "sources:\n  - name: team\n    type: git\n    url: https://example.test/new.git\n    roles_path: roles\n")
+	fakeRoleSourceGit(t, func(string, time.Duration, string, []string) (string, error) {
+		t.Fatal("catalog ran git for a cached source")
+		return "", nil
+	})
+	if _, err := Catalog("linux", false); err == nil || !strings.Contains(err.Error(), "was cloned from") {
+		t.Fatalf("expected repository mismatch, got %v", err)
+	}
 }

@@ -21,7 +21,7 @@ func TestRunProvisionReturnsErrorForUnsupportedConfig(t *testing.T) {
 		VirtualizationEngine: alchemy_build.VirtualizationEngineVirtualBox,
 	}
 
-	err := runProvision(vm, alchemy_provision.ProvisionOptions{Verbosity: 3})
+	err := runProvision(vm, nil, alchemy_provision.ProvisionOptions{Verbosity: 3})
 	if err == nil {
 		t.Fatal("expected runProvision to return an error for unsupported vm configuration")
 	}
@@ -460,7 +460,7 @@ func TestConfirmProvisionIntentRequiresYesForNonInteractiveWindowsLocal(t *testi
 	err = confirmProvisionIntent(command, alchemy_build.VirtualMachineConfig{
 		OS:     "local",
 		HostOs: alchemy_build.HostOsWindows,
-	}, alchemy_provision.ProvisionOptions{LocalWindowsProtocol: alchemy_provision.LocalWindowsProvisionProtocolWinRM})
+	}, alchemy_provision.ProvisionOptions{LocalWindowsProtocol: alchemy_provision.LocalWindowsProvisionProtocolWinRM}, assumeYes)
 	if err == nil {
 		t.Fatal("expected non-interactive windows local provisioning to require --yes")
 	}
@@ -484,7 +484,7 @@ func TestConfirmProvisionIntentPromptsForInteractiveWindowsLocal(t *testing.T) {
 	if err := confirmProvisionIntent(command, alchemy_build.VirtualMachineConfig{
 		OS:     "local",
 		HostOs: alchemy_build.HostOsWindows,
-	}, alchemy_provision.ProvisionOptions{LocalWindowsProtocol: alchemy_provision.LocalWindowsProvisionProtocolWinRM}); err != nil {
+	}, alchemy_provision.ProvisionOptions{LocalWindowsProtocol: alchemy_provision.LocalWindowsProvisionProtocolWinRM}, assumeYes); err != nil {
 		t.Fatalf("expected interactive confirmation to succeed, got: %v", err)
 	}
 	if !strings.Contains(output.String(), "Continue? [y/N]:") {
@@ -513,7 +513,7 @@ func TestConfirmProvisionIntentSkipsPromptWhenYesFlagIsSet(t *testing.T) {
 	if err := confirmProvisionIntent(command, alchemy_build.VirtualMachineConfig{
 		OS:     "local",
 		HostOs: alchemy_build.HostOsWindows,
-	}, alchemy_provision.ProvisionOptions{LocalWindowsProtocol: alchemy_provision.LocalWindowsProvisionProtocolWinRM}); err != nil {
+	}, alchemy_provision.ProvisionOptions{LocalWindowsProtocol: alchemy_provision.LocalWindowsProvisionProtocolWinRM}, assumeYes); err != nil {
 		t.Fatalf("expected --yes to skip confirmation, got: %v", err)
 	}
 }
@@ -536,7 +536,7 @@ func TestConfirmProvisionIntentMentionsForceWinRMUninstall(t *testing.T) {
 	}, alchemy_provision.ProvisionOptions{
 		LocalWindowsProtocol:            alchemy_provision.LocalWindowsProvisionProtocolWinRM,
 		LocalWindowsForceWinRMUninstall: true,
-	}); err != nil {
+	}, assumeYes); err != nil {
 		t.Fatalf("expected interactive confirmation to succeed, got: %v", err)
 	}
 	if !strings.Contains(output.String(), "--force-winrm-uninstall") {
@@ -561,7 +561,7 @@ func TestConfirmProvisionIntentMentionsSSHBootstrap(t *testing.T) {
 		HostOs: alchemy_build.HostOsWindows,
 	}, alchemy_provision.ProvisionOptions{
 		LocalWindowsProtocol: alchemy_provision.LocalWindowsProvisionProtocolSSH,
-	}); err != nil {
+	}, assumeYes); err != nil {
 		t.Fatalf("expected interactive ssh confirmation to succeed, got: %v", err)
 	}
 	if !strings.Contains(output.String(), "OpenSSH Server") {
@@ -590,7 +590,7 @@ func TestConfirmProvisionIntentMentionsForceSSHUninstall(t *testing.T) {
 	}, alchemy_provision.ProvisionOptions{
 		LocalWindowsProtocol:          alchemy_provision.LocalWindowsProvisionProtocolSSH,
 		LocalWindowsForceSSHUninstall: true,
-	}); err != nil {
+	}, assumeYes); err != nil {
 		t.Fatalf("expected interactive ssh confirmation to succeed, got: %v", err)
 	}
 	if !strings.Contains(output.String(), "--force-ssh-uninstall") {
@@ -619,7 +619,7 @@ func TestRunProvisionPassesOptionsThrough(t *testing.T) {
 		return nil
 	}
 
-	if err := runProvision(alchemy_build.VirtualMachineConfig{OS: "local", HostOs: alchemy_build.HostOsWindows}, expectedOptions); err != nil {
+	if err := runProvision(alchemy_build.VirtualMachineConfig{OS: "local", HostOs: alchemy_build.HostOsWindows}, nil, expectedOptions); err != nil {
 		t.Fatalf("expected runProvision to succeed, got: %v", err)
 	}
 	if !reflect.DeepEqual(capturedOptions, expectedOptions) {

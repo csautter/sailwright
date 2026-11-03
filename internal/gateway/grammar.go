@@ -254,7 +254,7 @@ var safeFlags = map[OpKind][]flagSpec{
 	OpStart:     {{name: "arch", short: "a"}, {name: "type", short: "t"}},
 	OpStop:      {{name: "arch", short: "a"}, {name: "type", short: "t"}},
 	OpDestroy:   {{name: "arch", short: "a"}, {name: "type", short: "t"}},
-	OpProvision: {{name: "arch", short: "a"}, {name: "type", short: "t"}, {name: "check", bool: true}, {name: "verbosity"}, {name: "playbook"}},
+	OpProvision: {{name: "arch", short: "a"}, {name: "type", short: "t"}, {name: "check", bool: true}, {name: "verbosity"}, {name: "playbook"}, {name: "role"}, {name: "config"}},
 	OpPull: {
 		{name: "os"}, {name: "arch", short: "a"}, {name: "type", short: "t"}, {name: "engine"},
 		{name: "yes", short: "y", bool: true}, {name: "no-docker-credentials", bool: true},
@@ -273,6 +273,10 @@ func ParseSafe(args []string, ctx GrammarContext) (Operation, error) {
 	for _, arg := range args {
 		if len(arg) > maxArgLength {
 			return Operation{}, fmt.Errorf("argument longer than %d bytes", maxArgLength)
+		}
+		flagName, _, _ := strings.Cut(arg, "=")
+		if flagName == "--role" || flagName == "--config" {
+			return Operation{}, errors.New("custom roles and source configurations run Ansible code and need host approval")
 		}
 		if arg == "--" {
 			return Operation{}, errors.New("passthrough arguments after -- are not in the safe set")

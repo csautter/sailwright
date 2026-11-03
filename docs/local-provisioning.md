@@ -13,6 +13,29 @@ directly, pass `--playbook ./playbooks/setup.yml`.
 Start with the root [README](../README.md) for installation and discovery, then
 use this guide for wrapper-specific behavior and flags.
 
+## Install tools without knowing Ansible
+
+Run `sailwright provision` in a terminal. Choose this computer or a VM, then
+choose tools (roles) or a complete setup (playbook). The wizard offers a preview
+by default and asks before applying it. For local Linux and macOS targets it
+requests the sudo password through Ansible when passwordless sudo is unavailable.
+Local Windows runs explain temporary system setup and UAC elevation; `--yes`
+skips that confirmation.
+
+If no configuration exists, the wizard offers to add a folder or Git URL;
+leave it empty to use the built-in examples. After running, it prints a command
+that repeats the selection without the wizard. For example:
+
+```bash
+sailwright provision local --role java --role kubectl --check
+```
+
+Without a terminal, supply a target explicitly. Use
+`sailwright provision catalog` to discover available tools and setups, and
+`sailwright config sources add ~/src/my-tools` to add your own. See
+[Ansible Role Sources](ansible-role-sources.md) for configuration precedence,
+catalog JSON fields, and Git caching.
+
 ## Quick examples
 
 ```bash

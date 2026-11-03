@@ -49,7 +49,7 @@ func AssessRisk(args []string, bundleRoot string) []string {
 		if containsString(credentialFlags, name) {
 			flags[RiskCredentials] = true
 		}
-		if name == "--playbook" || name == "--inventory-path" {
+		if name == "--playbook" || name == "--inventory-path" || name == "--role" || name == "--config" {
 			flags[RiskHostCode] = true
 		}
 		if looksLikeAbsolutePath(arg) && !insideAgentRoot(arg, bundleRoot) {
@@ -97,7 +97,7 @@ func isFlagValue(args []string, i int) bool {
 	switch previous {
 	case "--check", "--dry-run", "--yes", "-y", "--headless", "--verbose", "-v", "--no-cache",
 		"--force-winrm-uninstall", "--force-ssh-uninstall", "--plain-http", "--insecure-skip-tls-verify",
-		"--password-stdin", "--no-docker-credentials", "--with-go", "--virtualbox", "--json",
+		"--password-stdin", "--no-docker-credentials", "--with-go", "--virtualbox", "--refresh", "--json",
 		"--no-prebuilt", "--ask-become-pass", "-K":
 		return false
 	}

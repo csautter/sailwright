@@ -238,6 +238,8 @@ func TestAssessRisk(t *testing.T) {
 		{[]string{"provision", "ubuntu", "--", "-e", "x=1"}, "", []string{RiskHostCode, RiskPassthroughArgs}},
 		{[]string{"provision", "ubuntu", "--playbook", "/w/a/site.yml"}, "/w/a", []string{RiskHostCode}},
 		{[]string{"provision", "ubuntu", "--playbook", "/etc/site.yml"}, "/w/a", []string{RiskExternalPaths, RiskHostCode}},
+		{[]string{"provision", "local", "--role", "java", "--check"}, "", []string{RiskHostCode}},
+		{[]string{"provision", "ubuntu", "--config=/w/a/sources.yml"}, "/w/a", []string{RiskHostCode}},
 		{[]string{"push", "ghcr.io/x/y:z", "--password", "p"}, "", []string{RiskCredentials, RiskNetworkWrite}},
 		{[]string{"destroy", "all"}, "", []string{RiskAllTargets}},
 		{[]string{"create", "ubuntu", "--arch", "all"}, "", nil},

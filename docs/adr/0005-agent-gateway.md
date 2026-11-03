@@ -33,6 +33,8 @@ policy on the host.
   operations run with an argv re-rendered by the gateway (no shell, rebuilt
   environment). Everything else, notably anything that executes Ansible content
   from the agent, waits for approval typed on the gateway's own host terminal.
+  Catalog role selection (`--role`) and alternate source configurations
+  (`--config`) execute Ansible content and therefore require that approval.
 - **Snapshots.** Agent-provided files are used only through `bundle_root`, which
   must resolve inside a configured agent workspace. The gateway copies it into
   a read-only snapshot and runs the snapshot.

@@ -15,6 +15,7 @@ import (
 )
 
 var (
+	selectedRoles       []string
 	check               bool
 	assumeYes           bool
 	forceWinRMUninstall bool
@@ -125,9 +126,12 @@ func printAvailableProvisionCombinations() error {
 }
 
 var provisionCmd = &cobra.Command{
-	Use:   "provision <osname|local> [flags] [-- <ansible args...>]",
+	Use:   "provision [osname|local] [flags] [-- <ansible args...>]",
 	Short: "Provision and test Ansible configuration against a VM or the local host",
 	Long: `Runs Ansible provisioning against VM targets or the current host.
+
+With no target, opens an interactive tool installation wizard.
+Use sailwright provision catalog to discover tools and setups.
 
 Important Ansible options exposed directly:
   --check, --dry-run      Run ansible-playbook with --check.
@@ -136,7 +140,8 @@ Important Ansible options exposed directly:
   --force-winrm-uninstall For local Windows WinRM provisioning, force cleanup to disable WinRM.
   --force-ssh-uninstall   For local Windows SSH provisioning, force cleanup to disable sshd, remove SSH firewall rules, and remove the transient user without uninstalling OpenSSH Server.
   --verbosity N           Set Ansible verbosity. The default is 3, equivalent to -vvv.
-  --playbook PATH         Override the playbook path. Without this flag, ansible-role-sources.yml can set the effective default; otherwise Sailwright falls back to ./playbooks/role-sources-test.yml.
+  --role NAME             Install a catalog role (repeatable; choose roles or a playbook).
+  --playbook PATH|NAME    Select a playbook path or catalog name. Without this flag, ansible-role-sources.yml can set the effective default; otherwise Sailwright falls back to ./playbooks/role-sources-test.yml.
   --inventory-path PATH   Override the default inventory file for local provisioning.
 
 Pass any other ansible-playbook flags after --.
@@ -158,127 +163,164 @@ Examples:
 `,
 	Args: validateProvisionCommandArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		cmd.SilenceUsage = true
+		if len(args) == 0 {
+			return provisionWizard(cmd)
+		}
 		osName, extraAnsibleArgs := splitProvisionArgs(cmd, args)
-		options := alchemy_provision.ProvisionOptions{
-			Check:                           check,
-			AskBecomePass:                   askBecomePass,
-			Verbosity:                       ansibleVerbosity,
-			PlaybookPath:                    strings.TrimSpace(playbookPath),
-			PlaybookPathExplicit:            cmd.Flags().Changed("playbook"),
-			InventoryPath:                   strings.TrimSpace(inventoryPath),
-			ExtraArgs:                       extraAnsibleArgs,
-			LocalWindowsProtocol:            alchemy_provision.LocalWindowsProvisionProtocol(strings.TrimSpace(localProvisionProto)),
-			LocalWindowsForceWinRMUninstall: forceWinRMUninstall,
-			LocalWindowsForceSSHUninstall:   forceSSHUninstall,
-		}
-		if err := alchemy_provision.ValidateProvisionVerbosity(options.Verbosity); err != nil {
-			return err
-		}
-		if err := alchemy_provision.ValidateLocalWindowsProvisionProtocol(options.LocalWindowsProtocol); err != nil {
-			return err
-		}
+		return executeProvision(cmd, provisionRequest{
+			target:           osName,
+			extraArgs:        extraAnsibleArgs,
+			roles:            selectedRoles,
+			playbook:         playbookPath,
+			playbookExplicit: cmd.Flags().Changed("playbook"),
+			arch:             arch,
+			osType:           osType,
+			check:            check,
+			assumeYes:        assumeYes,
+			askBecomePass:    askBecomePass,
+		})
+	},
+}
 
-		if osName == "all" {
-			return fmt.Errorf("❌ \"all\" is not supported for provision; provide one target, for example: sailwright provision windows11 --arch amd64 --check")
-		}
+// provisionRequest describes one provisioning run. The command builds it from
+// flags and the wizard from answers, so neither mutates package-level flags.
+type provisionRequest struct {
+	target           string
+	extraArgs        []string
+	roles            []string
+	playbook         string
+	playbookExplicit bool
+	arch             string
+	osType           string
+	check            bool
+	assumeYes        bool
+	askBecomePass    bool
+}
 
-		if osName == "local" {
-			if cmd.Flags().Changed("arch") || cmd.Flags().Changed("type") {
-				return fmt.Errorf("❌ local provisioning does not accept --arch or --type; use `sailwright provision local [--check]`")
-			}
+func executeProvision(cmd *cobra.Command, req provisionRequest) error {
+	osName := req.target
+	options := alchemy_provision.ProvisionOptions{
+		Check:                           req.check,
+		AskBecomePass:                   req.askBecomePass,
+		Verbosity:                       ansibleVerbosity,
+		PlaybookPath:                    strings.TrimSpace(req.playbook),
+		PlaybookPathExplicit:            req.playbookExplicit,
+		InventoryPath:                   strings.TrimSpace(inventoryPath),
+		ExtraArgs:                       req.extraArgs,
+		LocalWindowsProtocol:            alchemy_provision.LocalWindowsProvisionProtocol(strings.TrimSpace(localProvisionProto)),
+		LocalWindowsForceWinRMUninstall: forceWinRMUninstall,
+		LocalWindowsForceSSHUninstall:   forceSSHUninstall,
+	}
+	if err := alchemy_provision.ValidateProvisionVerbosity(options.Verbosity); err != nil {
+		return err
+	}
+	if err := alchemy_provision.ValidateLocalWindowsProvisionProtocol(options.LocalWindowsProtocol); err != nil {
+		return err
+	}
 
-			selectedVM, ok := currentHostLocalProvisionVirtualMachineFunc()
-			if !ok {
-				return fmt.Errorf("❌ local provisioning is not available for host OS: %s", alchemy_build.GetCurrentHostOs())
-			}
-			if forceWinRMUninstall && selectedVM.HostOs != alchemy_build.HostOsWindows {
-				return fmt.Errorf("❌ --force-winrm-uninstall is only supported for local Windows provisioning")
-			}
-			if forceSSHUninstall && selectedVM.HostOs != alchemy_build.HostOsWindows {
-				return fmt.Errorf("❌ --force-ssh-uninstall is only supported for local Windows provisioning")
-			}
-			if cmd.Flags().Changed("proto") && selectedVM.HostOs != alchemy_build.HostOsWindows {
-				return fmt.Errorf("❌ --proto is only supported for local Windows provisioning")
-			}
-			if askBecomePass {
-				if selectedVM.HostOs == alchemy_build.HostOsWindows {
-					return fmt.Errorf("❌ --ask-become-pass is not supported for local Windows provisioning; Sailwright connects with a temporary administrator account")
-				}
-				if !isInteractiveInput(cmd.InOrStdin()) {
-					return fmt.Errorf("❌ --ask-become-pass needs an interactive terminal; pass `-- --become-password-file <path>` instead")
-				}
-				if hasBecomePasswordFileArg(extraAnsibleArgs) {
-					return fmt.Errorf("❌ --ask-become-pass cannot be combined with --become-password-file; use one of them")
-				}
-			}
-			if selectedVM.HostOs == alchemy_build.HostOsWindows &&
-				options.LocalWindowsProtocol == alchemy_provision.LocalWindowsProvisionProtocolSSH &&
-				forceWinRMUninstall {
-				return fmt.Errorf("❌ --force-winrm-uninstall is only supported with local Windows --proto winrm")
-			}
-			if selectedVM.HostOs == alchemy_build.HostOsWindows &&
-				options.LocalWindowsProtocol == alchemy_provision.LocalWindowsProvisionProtocolWinRM &&
-				forceSSHUninstall {
-				return fmt.Errorf("❌ --force-ssh-uninstall is only supported with local Windows --proto ssh")
-			}
+	if osName == "all" {
+		return fmt.Errorf("❌ \"all\" is not supported for provision; provide one target, for example: sailwright provision windows11 --arch amd64 --check")
+	}
 
-			if isLocalProvisionUnstable(selectedVM.HostOs) {
-				fmt.Printf("⚠️ Local provisioning on host OS %s is currently marked unstable and has not been validated end-to-end yet.\n", selectedVM.HostOs)
-			}
-			if err := confirmProvisionIntent(cmd, selectedVM, options); err != nil {
-				return err
-			}
-
-			fmt.Printf("🔧 Provisioning local host for OS: %s (proto=%s, check=%t)\n", selectedVM.HostOs, options.LocalWindowsProtocol, check)
-			if err := runProvision(selectedVM, options); err != nil {
-				return fmt.Errorf("failed provisioning local host for host_os=%s: %w", selectedVM.HostOs, err)
-			}
-
-			return nil
+	if osName == "local" {
+		if cmd.Flags().Changed("arch") || cmd.Flags().Changed("type") {
+			return fmt.Errorf("❌ local provisioning does not accept --arch or --type; use `sailwright provision local [--check]`")
 		}
 
-		if cmd.Flags().Changed("inventory-path") {
-			return fmt.Errorf("❌ --inventory-path is only supported for local provisioning; for VM targets, pass manual ansible inventory flags after `--` if needed")
+		selectedVM, ok := currentHostLocalProvisionVirtualMachineFunc()
+		if !ok {
+			return fmt.Errorf("❌ local provisioning is not available for host OS: %s", alchemy_build.GetCurrentHostOs())
 		}
-		if cmd.Flags().Changed("proto") {
-			return fmt.Errorf("❌ --proto is only supported for local Windows provisioning")
-		}
-		if forceWinRMUninstall {
+		if forceWinRMUninstall && selectedVM.HostOs != alchemy_build.HostOsWindows {
 			return fmt.Errorf("❌ --force-winrm-uninstall is only supported for local Windows provisioning")
 		}
-		if forceSSHUninstall {
+		if forceSSHUninstall && selectedVM.HostOs != alchemy_build.HostOsWindows {
 			return fmt.Errorf("❌ --force-ssh-uninstall is only supported for local Windows provisioning")
 		}
-		if askBecomePass {
-			return fmt.Errorf("❌ --ask-become-pass is only supported for local provisioning; Sailwright sets the credentials for VM targets")
+		if cmd.Flags().Changed("proto") && selectedVM.HostOs != alchemy_build.HostOsWindows {
+			return fmt.Errorf("❌ --proto is only supported for local Windows provisioning")
 		}
-
-		if osName != "ubuntu" {
-			osType = ""
-		}
-
-		availableVirtualMachines := availableProvisionVirtualMachines()
-		var selectedVM alchemy_build.VirtualMachineConfig
-		valid := false
-		for _, vm := range availableVirtualMachines {
-			if vm.OS == osName && vm.UbuntuType == osType && vm.Arch == arch {
-				selectedVM = vm
-				valid = true
-				break
+		if req.askBecomePass {
+			if selectedVM.HostOs == alchemy_build.HostOsWindows {
+				return fmt.Errorf("❌ --ask-become-pass is not supported for local Windows provisioning; Sailwright connects with a temporary administrator account")
+			}
+			if !isInteractiveInput(cmd.InOrStdin()) {
+				return fmt.Errorf("❌ --ask-become-pass needs an interactive terminal; pass `-- --become-password-file <path>` instead")
+			}
+			if hasBecomePasswordFileArg(req.extraArgs) {
+				return fmt.Errorf("❌ --ask-become-pass cannot be combined with --become-password-file; use one of them")
 			}
 		}
-		if !valid {
-			return fmt.Errorf("❌ invalid combination: OS=%s, Type=%s, Arch=%s", osName, osType, arch)
+		if selectedVM.HostOs == alchemy_build.HostOsWindows &&
+			options.LocalWindowsProtocol == alchemy_provision.LocalWindowsProvisionProtocolSSH &&
+			forceWinRMUninstall {
+			return fmt.Errorf("❌ --force-winrm-uninstall is only supported with local Windows --proto winrm")
+		}
+		if selectedVM.HostOs == alchemy_build.HostOsWindows &&
+			options.LocalWindowsProtocol == alchemy_provision.LocalWindowsProvisionProtocolWinRM &&
+			forceSSHUninstall {
+			return fmt.Errorf("❌ --force-ssh-uninstall is only supported with local Windows --proto ssh")
 		}
 
-		fmt.Printf("🔧 Provisioning VM for OS: %s, Type: %s, Architecture: %s (check=%t)\n", osName, osType, arch, check)
-		printUnstableTargetWarning(selectedVM)
-		if err := runProvision(selectedVM, options); err != nil {
-			return fmt.Errorf("failed provisioning for OS=%s, type=%s, arch=%s: %w", osName, osType, arch, err)
+		if isLocalProvisionUnstable(selectedVM.HostOs) {
+			fmt.Printf("⚠️ Local provisioning on host OS %s is currently marked unstable and has not been validated end-to-end yet.\n", selectedVM.HostOs)
+		}
+		if err := confirmProvisionIntent(cmd, selectedVM, options, req.assumeYes); err != nil {
+			return err
+		}
+
+		fmt.Printf("🔧 Provisioning local host for OS: %s (proto=%s, check=%t)\n", selectedVM.HostOs, options.LocalWindowsProtocol, req.check)
+		if err := runProvision(selectedVM, req.roles, options); err != nil {
+			return fmt.Errorf("failed provisioning local host for host_os=%s: %w", selectedVM.HostOs, err)
 		}
 
 		return nil
-	},
+	}
+
+	if cmd.Flags().Changed("inventory-path") {
+		return fmt.Errorf("❌ --inventory-path is only supported for local provisioning; for VM targets, pass manual ansible inventory flags after `--` if needed")
+	}
+	if cmd.Flags().Changed("proto") {
+		return fmt.Errorf("❌ --proto is only supported for local Windows provisioning")
+	}
+	if forceWinRMUninstall {
+		return fmt.Errorf("❌ --force-winrm-uninstall is only supported for local Windows provisioning")
+	}
+	if forceSSHUninstall {
+		return fmt.Errorf("❌ --force-ssh-uninstall is only supported for local Windows provisioning")
+	}
+	if req.askBecomePass {
+		return fmt.Errorf("❌ --ask-become-pass is only supported for local provisioning; Sailwright sets the credentials for VM targets")
+	}
+
+	osType := req.osType
+	if osName != "ubuntu" {
+		osType = ""
+	}
+	arch := req.arch
+
+	availableVirtualMachines := availableProvisionVirtualMachines()
+	var selectedVM alchemy_build.VirtualMachineConfig
+	valid := false
+	for _, vm := range availableVirtualMachines {
+		if vm.OS == osName && vm.UbuntuType == osType && vm.Arch == arch {
+			selectedVM = vm
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return fmt.Errorf("❌ invalid combination: OS=%s, Type=%s, Arch=%s", osName, osType, arch)
+	}
+
+	fmt.Printf("🔧 Provisioning VM for OS: %s, Type: %s, Architecture: %s (check=%t)\n", osName, osType, arch, req.check)
+	printUnstableTargetWarning(selectedVM)
+	if err := runProvision(selectedVM, req.roles, options); err != nil {
+		return fmt.Errorf("failed provisioning for OS=%s, type=%s, arch=%s: %w", osName, osType, arch, err)
+	}
+
+	return nil
 }
 
 var provisionListCmd = &cobra.Command{
@@ -290,7 +332,16 @@ var provisionListCmd = &cobra.Command{
 	},
 }
 
-func runProvision(vm alchemy_build.VirtualMachineConfig, options alchemy_provision.ProvisionOptions) error {
+func runProvision(vm alchemy_build.VirtualMachineConfig, roles []string, options alchemy_provision.ProvisionOptions) error {
+	path, cleanup, err := alchemy_provision.PrepareSelection(roles, options.PlaybookPath)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if path != options.PlaybookPath {
+		options.PlaybookPath = path
+		options.PlaybookPathExplicit = true
+	}
 	return runProvisionFunc(vm, options)
 }
 
@@ -306,7 +357,8 @@ func init() {
 	provisionCmd.Flags().BoolVarP(&askBecomePass, "ask-become-pass", "K", false, "Ask for the sudo password that tasks with become need (local macOS and Linux provisioning only)")
 	provisionCmd.Flags().StringVar(&localProvisionProto, "proto", string(alchemy_provision.DefaultLocalWindowsProvisionProtocol()), "Local Windows provision transport: winrm or ssh")
 	provisionCmd.Flags().IntVar(&ansibleVerbosity, "verbosity", 3, "Ansible verbosity level (0-4). Default 3 is equivalent to -vvv")
-	provisionCmd.Flags().StringVar(&playbookPath, "playbook", "", "Override the Ansible playbook path")
+	provisionCmd.Flags().StringArrayVar(&selectedRoles, "role", nil, "Install a role from the catalog (repeatable; cannot be combined with --playbook)")
+	provisionCmd.Flags().StringVar(&playbookPath, "playbook", "", "Playbook path or catalog name")
 	provisionCmd.Flags().StringVar(&inventoryPath, "inventory-path", "", "Override the default inventory file for local provisioning; pass -- --limit <host-pattern> if your custom inventory needs a target")
 	provisionCmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Skip confirmation prompts for operations that change local system state")
 	provisionCmd.Flags().BoolVar(&forceWinRMUninstall, "force-winrm-uninstall", false, "For local Windows provisioning, force cleanup to disable WinRM and remove transient setup after the run")
@@ -319,7 +371,10 @@ func validateProvisionCommandArgs(cmd *cobra.Command, args []string) error {
 	if dashIndex := cmd.ArgsLenAtDash(); dashIndex >= 0 {
 		positionalArgCount = dashIndex
 	}
-	if positionalArgCount != 1 {
+	if positionalArgCount == 0 && len(args) > 0 {
+		return fmt.Errorf("Ansible arguments require a target; run `sailwright provision local --check`")
+	}
+	if positionalArgCount > 1 {
 		return fmt.Errorf("accepts 1 arg(s), received %d", positionalArgCount)
 	}
 
@@ -352,7 +407,7 @@ func hasBecomePasswordFileArg(args []string) bool {
 	return false
 }
 
-func confirmProvisionIntent(cmd *cobra.Command, vm alchemy_build.VirtualMachineConfig, options alchemy_provision.ProvisionOptions) error {
+func confirmProvisionIntent(cmd *cobra.Command, vm alchemy_build.VirtualMachineConfig, options alchemy_provision.ProvisionOptions, assumeYes bool) error {
 	if assumeYes || !requiresProvisionConfirmation(vm) {
 		return nil
 	}

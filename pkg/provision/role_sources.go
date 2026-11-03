@@ -53,14 +53,18 @@ type roleSourceGitCommandRunner func(workingDir string, timeout time.Duration, e
 var runRoleSourceGitCommand roleSourceGitCommandRunner = runCommandWithCombinedOutput
 var runtimeGOOS = runtime.GOOS
 
-// ansibleRoleSourcesConfigPath returns the role-source config path and whether
-// it was set explicitly through DEV_ALCHEMY_ROLE_SOURCES_CONFIG.
-func ansibleRoleSourcesConfigPath(directories *alchemy_build.Directories) (string, bool) {
-	if override := strings.TrimSpace(os.Getenv(ansibleRoleSourcesConfigEnvVar)); override != "" {
-		return filepath.Clean(override), true
+// ansibleRoleSourcesConfigPath returns the effective role-source config path
+// and, when it was selected explicitly (--config or
+// DEV_ALCHEMY_ROLE_SOURCES_CONFIG), the name of that selector.
+func ansibleRoleSourcesConfigPath(_ *alchemy_build.Directories) (string, string) {
+	path, origin := ConfigLocation()
+	switch origin {
+	case "flag":
+		return path, "--config"
+	case ansibleRoleSourcesConfigEnvVar:
+		return path, ansibleRoleSourcesConfigEnvVar
 	}
-
-	return directories.ConfigPath(ansibleRoleSourcesConfigFile), false
+	return path, ""
 }
 
 func resolveAnsibleRolePaths(projectDir string) ([]string, error) {
@@ -163,12 +167,12 @@ func hasConfiguredPlaybookSources(config ansibleRoleSourcesConfig) bool {
 
 func loadCurrentAnsibleRoleSourcesConfig() (ansibleRoleSourcesConfig, string, bool, error) {
 	directories := alchemy_build.GetDirectoriesInstance()
-	configPath, explicit := ansibleRoleSourcesConfigPath(directories)
+	configPath, explicitSelector := ansibleRoleSourcesConfigPath(directories)
 
 	config, exists, err := loadAnsibleRoleSourcesConfig(configPath)
-	if err == nil && !exists && explicit {
+	if err == nil && !exists && explicitSelector != "" {
 		// An explicitly selected config must not silently fall back to the bundled roles.
-		return ansibleRoleSourcesConfig{}, configPath, false, fmt.Errorf("%s points at %q, which does not exist", ansibleRoleSourcesConfigEnvVar, configPath)
+		return ansibleRoleSourcesConfig{}, configPath, false, fmt.Errorf("%s points at %q, which does not exist", explicitSelector, configPath)
 	}
 	return config, configPath, exists, err
 }
@@ -462,7 +466,7 @@ func ensureGitRoleSource(source ansibleRoleSourceConfig, checkoutDir string) err
 		return nil
 	}
 
-	if err := validateGitCheckout(checkoutDir); err != nil {
+	if err := validateGitCheckout(checkoutDir, source.URL); err != nil {
 		return err
 	}
 
@@ -483,7 +487,10 @@ func ensureGitRoleSource(source ansibleRoleSourceConfig, checkoutDir string) err
 	return nil
 }
 
-func validateGitCheckout(checkoutDir string) error {
+// validateGitCheckout confirms that checkoutDir is a Git checkout cloned from
+// expectedURL. Cache directories are keyed by source name, so a reused name
+// must not silently keep serving a different repository.
+func validateGitCheckout(checkoutDir string, expectedURL string) error {
 	info, err := os.Stat(filepath.Join(checkoutDir, ".git"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -494,7 +501,45 @@ func validateGitCheckout(checkoutDir string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("checkout path %q has an invalid .git entry", checkoutDir)
 	}
+	origin, err := gitCheckoutOriginURL(checkoutDir)
+	if err != nil {
+		return err
+	}
+	if normalizeGitSourceURL(origin) != normalizeGitSourceURL(expectedURL) {
+		redacted := sanitizeCommandArgsForLogs([]string{origin, expectedURL})
+		return fmt.Errorf("cached checkout %q was cloned from %s, but the source is configured with %s; delete that directory or choose a different source name", checkoutDir, redacted[0], redacted[1])
+	}
 	return nil
+}
+
+// gitCheckoutOriginURL reads remote.origin.url from .git/config without
+// running git, so cached catalog reads stay offline and command-free.
+func gitCheckoutOriginURL(checkoutDir string) (string, error) {
+	configPath := filepath.Join(checkoutDir, ".git", "config")
+	data, err := os.ReadFile(configPath) // #nosec G304 -- path is inside the managed cache checkout
+	if err != nil {
+		return "", fmt.Errorf("read git config of cached checkout %q: %w", checkoutDir, err)
+	}
+	inOrigin := false
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			inOrigin = strings.EqualFold(strings.Join(strings.Fields(line), " "), `[remote "origin"]`)
+			continue
+		}
+		if !inOrigin {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if ok && strings.EqualFold(strings.TrimSpace(key), "url") {
+			return strings.TrimSpace(value), nil
+		}
+	}
+	return "", fmt.Errorf("cached checkout %q has no origin remote", checkoutDir)
+}
+
+func normalizeGitSourceURL(url string) string {
+	return strings.TrimRight(strings.TrimSpace(url), "/")
 }
 
 func shouldUpdateGitRoleSource(source ansibleRoleSourceConfig) bool {
