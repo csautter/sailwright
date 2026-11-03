@@ -1,0 +1,18 @@
+# Direct dependencies of the Function App. requirements.txt is the hash-pinned
+# lock generated from this file; after changing it, regenerate the lock with
+# Python 3.11 (the Function App runtime, see manager.tf):
+#   pip-compile --generate-hashes --strip-extras requirements.in
+
+# Uncomment to enable Azure Monitor OpenTelemetry
+# Ref: aka.ms/functions-azure-monitor-python
+# azure-monitor-opentelemetry
+
+azure-functions==1.25.0
+azure-identity==1.27.0
+azure-keyvault-secrets==4.12.0
+azure-mgmt-compute==39.0.0
+azure-mgmt-resource==26.0.0
+azure-mgmt-network==33.1.0
+requests==2.34.2
+playwright==1.64.1
+playwright-stealth==2.0.3
