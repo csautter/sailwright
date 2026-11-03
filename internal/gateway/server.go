@@ -43,24 +43,26 @@ type Options struct {
 
 // Gateway wires policy, execution, jobs and the MCP server together.
 type Gateway struct {
-	cfg         Config
-	dirs        ManagedDirs
-	pinned      PinnedBinary
-	runner      *Runner
-	catalog     *TargetCatalog
-	jobs        *JobManager
-	approver    Approver
-	audit       *AuditLog
-	redactor    *Redactor
-	vmResolver  ManagedVMResolver
-	ownership   *vmOwnership
-	tunnelSlots chan struct{}
-	tunnelDial  func(context.Context, string, string) (net.Conn, error)
-	token       string
-	viewToken   string
-	console     io.Writer
-	version     string
-	server      *mcp.Server
+	instanceMu       sync.Mutex
+	pendingInstances map[string]bool
+	cfg              Config
+	dirs             ManagedDirs
+	pinned           PinnedBinary
+	runner           *Runner
+	catalog          *TargetCatalog
+	jobs             *JobManager
+	approver         Approver
+	audit            *AuditLog
+	redactor         *Redactor
+	vmResolver       ManagedVMResolver
+	ownership        *vmOwnership
+	tunnelSlots      chan struct{}
+	tunnelDial       func(context.Context, string, string) (net.Conn, error)
+	token            string
+	viewToken        string
+	console          io.Writer
+	version          string
+	server           *mcp.Server
 
 	backgroundMu     sync.Mutex
 	background       sync.WaitGroup

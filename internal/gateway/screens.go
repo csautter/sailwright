@@ -51,6 +51,7 @@ var vncFramePattern = regexp.MustCompile(`^qemu\.vnc[0-9]*\.jpg$`)
 
 // JobTarget is the VM a job operates on, taken from the validated Operation.
 type JobTarget struct {
+	Name string
 	Kind OpKind
 	OS   string
 	Type string
