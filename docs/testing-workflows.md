@@ -37,6 +37,14 @@ sailwright stop list
 sailwright destroy list
 ```
 
+The `Build` column of `build list` shows `exists` for artifacts completed by a
+successful build or pull, `incomplete` while a build runs or after an interrupted
+one, `missing`, and `unverified` for artifacts without a completion marker (for
+example built by an older sailwright version). Builds skip `exists` and
+`unverified` artifacts; rebuild an `unverified` one with `--no-cache` if it is
+broken. Ctrl+C stops all running builds and downloads, a second Ctrl+C skips the
+VNC video post-processing, and a third one exits immediately.
+
 Use `--help` on the root command or any subcommand to inspect supported flags and usage details:
 
 ```bash
@@ -155,6 +163,11 @@ steps:
   - name: only where the target can be built
     op: build
     when_listed: build       # skip if the target is not in `build list`
+  - name: cancel a running build
+    op: build
+    cancel_after: 3m         # cancel like job_cancel; passes if still running then
+    expect:                  # only state is checked after a cancel
+      state: {command: build, field: build, regex: "^(missing|incomplete)$"}
 always:
   - name: cleanup
     op: destroy
