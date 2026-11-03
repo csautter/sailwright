@@ -6,6 +6,7 @@ set -e
 # Manual argument parsing for portability
 arch="arm64"
 os="windows11"
+instance_name=""
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -29,6 +30,10 @@ while [[ $# -gt 0 ]]; do
 			echo "Invalid value for --os: $2. Allowed values are 'windows11', 'ubuntu-desktop', or 'ubuntu-server'." >&2
 			exit 1
 		fi
+		;;
+	--name)
+		instance_name="$2"
+		shift 2
 		;;
 	--verbose)
 		set -x
@@ -60,7 +65,8 @@ if [[ "$os" == ubuntu* ]]; then
 	qemu_img="$cache_dir/ubuntu/qemu-$os-packer-$arch.qcow2"
 fi
 
-mkdir -p "$utm_vm_dir/$os-$arch-dev-alchemy.utm/Data"
+vm_name="$os-$arch${instance_name:+-$instance_name}-dev-alchemy"
+mkdir -p "$utm_vm_dir/$vm_name.utm/Data"
 
 if [ "$os" = "Windows11" ] && [ ! -f "$qemu_img" ]; then
 	echo "The required qcow2 image for Windows 11 $arch is missing. Please run the create-qemu-qcow2-disk.sh script first."
@@ -92,19 +98,19 @@ generate_uuid() {
 os_lower=$(echo "$os" | awk '{print tolower($0)}')
 os_lower_first_part=$(echo "$os_lower" | cut -d'-' -f1)
 
-if [ ! -f "$utm_vm_dir/$os-$arch-dev-alchemy.utm/config.plist" ]; then
+if [ ! -f "$utm_vm_dir/$vm_name.utm/config.plist" ]; then
 	echo "Creating UTM VM config..."
 
 	QCOW_IMAGE="$os-$arch.qcow2" \
-		VM_NAME="$os-$arch-dev-alchemy" \
+		VM_NAME="$vm_name" \
 		MAC_ADDRESS="$mac_address" \
 		UUID="$(generate_uuid)" \
 		UUID_CD="$(generate_uuid)" \
 		UUID_DISK="$(generate_uuid)" \
-		envsubst <"$project_root/deployments/utm/$os_lower_first_part-$arch/config.plist" >"$utm_vm_dir/$os-$arch-dev-alchemy.utm/config.plist"
+		envsubst <"$project_root/deployments/utm/$os_lower_first_part-$arch/config.plist" >"$utm_vm_dir/$vm_name.utm/config.plist"
 fi
 
-utm_qcow2="$utm_vm_dir/$os-$arch-dev-alchemy.utm/Data/$os_lower-$arch.qcow2"
+utm_qcow2="$utm_vm_dir/$vm_name.utm/Data/$os_lower-$arch.qcow2"
 if [ ! -f "$utm_qcow2" ]; then
 	echo "Copying the qcow2 image to UTM VM directory..."
 	# An APFS clone shares the image's blocks with the cache until either file

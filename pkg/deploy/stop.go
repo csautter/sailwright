@@ -26,6 +26,9 @@ func InspectStopTarget(config alchemy_build.VirtualMachineConfig) (VirtualMachin
 }
 
 func RunStop(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	switch {
 	case isUtmDeployTarget(config):
 		return RunUtmStopOnMacOS(config)

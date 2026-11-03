@@ -64,6 +64,9 @@ type tartReachabilityWaitOptions struct {
 }
 
 func RunTartDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isTartMacOSDeployTarget(config) {
 		return fmt.Errorf("Tart deploy is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -115,6 +118,9 @@ func RunTartDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 }
 
 func RunTartDestroyOnMacOS(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isTartMacOSDeployTarget(config) {
 		return fmt.Errorf("Tart destroy is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -158,6 +164,9 @@ func RunTartDestroyOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 }
 
 func RunTartStartOnMacOS(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isTartMacOSDeployTarget(config) {
 		return fmt.Errorf("Tart start is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -191,6 +200,9 @@ func RunTartStartOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 }
 
 func RunTartStopOnMacOS(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isTartMacOSDeployTarget(config) {
 		return fmt.Errorf("Tart stop is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -256,8 +268,8 @@ func resolveTartMacOSImageReference() string {
 	return defaultIfEmpty(strings.TrimSpace(os.Getenv(tartMacOSImageEnvVar)), tartMacOSDefaultImageReference)
 }
 
-func tartMacOSVMName(_ alchemy_build.VirtualMachineConfig) string {
-	return defaultIfEmpty(strings.TrimSpace(os.Getenv(tartMacOSVMNameEnvVar)), tartMacOSDefaultVMName)
+func tartMacOSVMName(config alchemy_build.VirtualMachineConfig) string {
+	return alchemy_build.InstanceName(config)
 }
 
 func ensureLocalTartVM(projectDir string, vmName string) error {

@@ -26,6 +26,8 @@ const (
 )
 
 type VirtualMachineConfig struct {
+	// Name selects an independent instance; empty preserves the legacy default.
+	Name                   string
 	OS                     string
 	Arch                   string
 	UbuntuType             string

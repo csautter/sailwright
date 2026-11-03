@@ -57,6 +57,9 @@ func isLinuxLibvirtTarget(config alchemy_build.VirtualMachineConfig) bool {
 }
 
 func RunLinuxQemuDeployOnLinux(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isLinuxLibvirtTarget(config) {
 		return fmt.Errorf("linux libvirt deploy is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -157,6 +160,9 @@ func RunLinuxQemuDeployOnLinux(config alchemy_build.VirtualMachineConfig) error 
 }
 
 func RunLinuxQemuStartOnLinux(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isLinuxLibvirtTarget(config) {
 		return fmt.Errorf("linux libvirt start is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -197,6 +203,9 @@ func RunLinuxQemuStartOnLinux(config alchemy_build.VirtualMachineConfig) error {
 }
 
 func RunLinuxQemuStopOnLinux(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isLinuxLibvirtTarget(config) {
 		return fmt.Errorf("linux libvirt stop is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -249,6 +258,9 @@ func RunLinuxQemuStopOnLinux(config alchemy_build.VirtualMachineConfig) error {
 }
 
 func RunLinuxQemuDestroyOnLinux(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isLinuxLibvirtTarget(config) {
 		return fmt.Errorf("linux libvirt destroy is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -359,7 +371,7 @@ func waitForLinuxLibvirtStop(config alchemy_build.VirtualMachineConfig, timeout 
 }
 
 func linuxLibvirtDomainName(config alchemy_build.VirtualMachineConfig) string {
-	return fmt.Sprintf("%s-%s-dev-alchemy", alchemy_build.GetVirtualMachineNameWithType(config), config.Arch)
+	return alchemy_build.InstanceName(config)
 }
 
 // LinuxLibvirtDomainName returns the managed libvirt domain name for a VM config.
