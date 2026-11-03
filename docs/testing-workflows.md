@@ -777,3 +777,41 @@ If you need to inspect the discovered IP manually:
 ```bash
 bash ./deployments/utm/determine-vm-ip-address.sh --arch $arch --os "ubuntu-$type"
 ```
+
+
+## Named instance host checks
+
+After building the Ubuntu image and starting a gateway pinned to the matching
+CLI, run the opt-in two-guest test:
+
+```bash
+SAILWRIGHT_NAMED_VM_E2E=1 SAILWRIGHT_E2E_TARGET=ubuntu/server/amd64 \
+  go test -tags e2e ./test/e2e -run '^TestNamedVMInstances$' -count=1 -timeout 1h -v
+```
+
+This refuses pre-existing `e2e-a`/`e2e-b`, creates and starts both from one image,
+checks distinct addresses and hostnames through SSH tunnels, checks both list
+rows, destroys `e2e-a`, and checks SSH to `e2e-b` and unchanged default state.
+Cleanup destroys both test names even after failures. Allow enough RAM/disk and
+room under `max_instances` for two guests. It requires `ssh`, `sshpass`, and
+`sailwright-gateway` on the controller PATH.
+
+Portable tests cover all four providers' names/paths and legacy defaults. Before
+releasing on real macOS/Windows hosts, verify two named instances and a legacy
+default together, including create/start/info/provision/stop/destroy:
+
+- UTM: bundle registration, fresh UUID/MAC, guest-agent hostname setup and bridged
+  DHCP leases. Verify both architectures supported by the host.
+- Tart: independent clones/MACs, configured SSH hostname setup, bridged mode where
+  used, and rejection of `TART_MACOS_VM_NAME` together with `--name`.
+- Hyper-V: distinct Vagrant state and VM disks, switch/address discovery through
+  `Get-VMNetworkAdapter`, hostname/reboot behavior, and management from a second
+  app-data directory with no Vagrant state. Verify another VM's shared disk is
+  retained by the direct destroy fallback.
+- Linux libvirt: simultaneous SSH, independent DHCP identities (especially with
+  older images), dynamically allocated SPICE endpoints, and clone/build locking.
+
+Creation metadata lives under app-data `instances/<engine>/` with schema version
+1, logical identity, provider name/ID, creation time, and image version. An unknown
+image version is an empty string. It is supplemental: deleting this metadata must
+not hide a VM from discovery, and stale metadata never proves a VM still exists.

@@ -57,7 +57,8 @@ var destroyCmd = &cobra.Command{
 	Use:   "destroy <osname>",
 	Short: "Destroy a VM previously created on your system",
 	Long: `Destroys a VM previously created on your system.
-Use "all" to destroy all available VM configurations for the current host OS.
+Use "all" to destroy default VM instances for the current host OS.
+Add --all-instances to include named instances.
 
 Examples:
   sailwright destroy ubuntu --type server --arch amd64

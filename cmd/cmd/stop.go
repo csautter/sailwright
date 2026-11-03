@@ -67,7 +67,8 @@ var stopCmd = &cobra.Command{
 	Use:   "stop <osname>",
 	Short: "Stop an existing VM on your system",
 	Long: `Stops an existing VM on your system without deleting it.
-Use "all" to stop all available VM configurations for the current host OS.
+Use "all" to stop default VM instances for the current host OS.
+Add --all-instances to include named instances.
 
 Examples:
   sailwright stop ubuntu --type server --arch amd64
