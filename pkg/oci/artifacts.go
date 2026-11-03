@@ -61,6 +61,14 @@ func Push(ctx context.Context, vm alchemy_build.VirtualMachineConfig, reference 
 		return TransferResult{}, err
 	}
 
+	state, err := alchemy_build.BuildArtifactState(vm)
+	if err != nil {
+		return TransferResult{}, err
+	}
+	if !state.Usable() {
+		return TransferResult{}, fmt.Errorf("local build artifact is %s; build it again before pushing", state)
+	}
+
 	reportTransferStatus(opts.Progress, "Parsing OCI reference %s", reference)
 	remoteRef, err := parsePushReference(reference)
 	if err != nil {
@@ -163,7 +171,18 @@ func Pull(ctx context.Context, vm alchemy_build.VirtualMachineConfig, reference 
 	}
 
 	reportTransferStatus(opts.Progress, "Promoting pulled artifacts into the local cache")
+	finalPaths := make([]string, 0, len(layout.files))
+	for _, artifact := range layout.files {
+		finalPaths = append(finalPaths, artifact.Path)
+	}
+	if err := alchemy_build.RemoveBuildArtifactCompletionMarkers(finalPaths); err != nil {
+		return TransferResult{}, err
+	}
 	if err := promotePulledArtifacts(stagingRoot, layout.files); err != nil {
+		return TransferResult{}, err
+	}
+	// The layers were verified against their digests, so the artifacts are complete.
+	if err := alchemy_build.MarkBuildArtifactsComplete(finalPaths); err != nil {
 		return TransferResult{}, err
 	}
 

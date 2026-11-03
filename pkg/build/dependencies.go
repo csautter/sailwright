@@ -142,7 +142,7 @@ type WebFileDependency struct {
 	FallbackSources  []string
 	RelatedVmConfigs []VirtualMachineConfig
 	// BeforeHook is a function that is called before downloading the dependency. It can be used to modify the Source URL dynamically.
-	BeforeHook func() (string, error)
+	BeforeHook func(ctx context.Context) (string, error)
 	// FailureHint is appended to the error when every source fails.
 	FailureHint string
 }
@@ -231,8 +231,11 @@ func virtioWinISOURLs(version string) []string {
 	}
 }
 
-func selectFastestVirtioWinISOURL(version string) (string, error) {
-	selected := selectFastestDownloadURLOrDefault(virtioWinISOURLs(version), virtioWinProbeBytes, virtioWinProbeTimeout)
+func selectFastestVirtioWinISOURL(ctx context.Context, version string) (string, error) {
+	selected := selectFastestDownloadURLOrDefaultContext(ctx, virtioWinISOURLs(version), virtioWinProbeBytes, virtioWinProbeTimeout)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	log.Printf("Selected virtio-win download URL: %s", selected)
 	return selected, nil
 }
@@ -241,7 +244,11 @@ func selectFastestVirtioWinISOURL(version string) (string, error) {
 // fails: a slow or briefly unreachable mirror must not abort the build, because the download
 // itself still tries all sources in order.
 func selectFastestDownloadURLOrDefault(urls []string, probeBytes int64, timeout time.Duration) string {
-	selected, err := selectFastestDownloadURL(urls, probeBytes, timeout)
+	return selectFastestDownloadURLOrDefaultContext(context.Background(), urls, probeBytes, timeout)
+}
+
+func selectFastestDownloadURLOrDefaultContext(ctx context.Context, urls []string, probeBytes int64, timeout time.Duration) string {
+	selected, err := selectFastestDownloadURLContext(ctx, urls, probeBytes, timeout)
 	if err != nil && len(urls) > 0 {
 		log.Printf("Could not select fastest download URL, using default source order: %v", err)
 		return urls[0]
@@ -257,11 +264,15 @@ type downloadProbeResult struct {
 }
 
 func selectFastestDownloadURL(urls []string, probeBytes int64, timeout time.Duration) (string, error) {
+	return selectFastestDownloadURLContext(context.Background(), urls, probeBytes, timeout)
+}
+
+func selectFastestDownloadURLContext(parent context.Context, urls []string, probeBytes int64, timeout time.Duration) (string, error) {
 	if len(urls) == 0 {
 		return "", fmt.Errorf("no download URLs to probe")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	results := make(chan downloadProbeResult, len(urls))
@@ -371,18 +382,29 @@ func qemuEfiAarch64Dependency(related ...VirtualMachineConfig) WebFileDependency
 	}
 }
 
-func DependencyReconciliation(vmconfig VirtualMachineConfig) {
+// DependencyReconciliation downloads the missing web file dependencies of vmconfig.
+// Cancelling ctx (e.g. Ctrl+C) aborts the running download.
+func DependencyReconciliation(ctx context.Context, vmconfig VirtualMachineConfig) error {
+	ctx, stopInterruptHandling := ensureInterruptHandling(ctx)
+	defer stopInterruptHandling()
+
 	p := mpb.New(mpb.WithWidth(80))
 	defer p.Wait()
 
 	for _, dep := range webFileDependenciesForVMConfig(vmconfig) {
+		if err := buildContextError(ctx); err != nil {
+			return err
+		}
 		if !checkIfWebFileDependencyExists(dep) {
-			err := downloadWebFileDependency(p, dep)
-			if err != nil {
-				log.Fatalf("Failed to download web file dependency: %v", err)
+			if err := downloadWebFileDependency(ctx, p, dep); err != nil {
+				if ctxErr := buildContextError(ctx); ctxErr != nil {
+					return fmt.Errorf("download of %s stopped: %w", dep.LocalPath, ctxErr)
+				}
+				return fmt.Errorf("failed to download web file dependency: %w", err)
 			}
 		}
 	}
+	return nil
 }
 
 func webFileDependenciesForVMConfig(vmconfig VirtualMachineConfig) []WebFileDependency {
@@ -659,6 +681,10 @@ func missingPythonVenvExecutables(workdir string) ([]string, error) {
 }
 
 func getWindows11Download(arch string, savePath string, download bool) (string, error) {
+	return getWindows11DownloadContext(context.Background(), arch, savePath, download)
+}
+
+func getWindows11DownloadContext(ctx context.Context, arch string, savePath string, download bool) (string, error) {
 
 	_, err := os.Stat(savePath)
 	if err != nil && os.IsNotExist(err) {
@@ -707,6 +733,7 @@ func getWindows11Download(arch string, savePath string, download bool) (string, 
 		Args:           args,
 		Env:            GetDirectoriesInstance().ManagedEnv(),
 		Timeout:        10 * time.Minute,
+		Context:        ctx,
 	}
 	if _, err := RunExternalProcess(config); err != nil {
 		if isWin11RefusedExit(err) {
@@ -765,11 +792,11 @@ func getWebFileDependencies() []WebFileDependency {
 		{
 			LocalPath: windows11ISOPath("amd64"),
 			Checksum:  "",
-			BeforeHook: func() (string, error) {
+			BeforeHook: func(ctx context.Context) (string, error) {
 				if err := migrateLegacyWindows11ISO("amd64"); err != nil {
 					return "", err
 				}
-				return getWindows11Download("amd64", windows11ISOPath("amd64"), false)
+				return getWindows11DownloadContext(ctx, "amd64", windows11ISOPath("amd64"), false)
 			},
 			RelatedVmConfigs: []VirtualMachineConfig{
 				{
@@ -807,11 +834,11 @@ func getWebFileDependencies() []WebFileDependency {
 		{
 			LocalPath: windows11ISOPath("arm64"),
 			Checksum:  "",
-			BeforeHook: func() (string, error) {
+			BeforeHook: func(ctx context.Context) (string, error) {
 				if err := migrateLegacyWindows11ISO("arm64"); err != nil {
 					return "", err
 				}
-				return getWindows11Download("arm64", windows11ISOPath("arm64"), false)
+				return getWindows11DownloadContext(ctx, "arm64", windows11ISOPath("arm64"), false)
 			},
 			RelatedVmConfigs: []VirtualMachineConfig{
 				{
@@ -847,8 +874,8 @@ func getWebFileDependencies() []WebFileDependency {
 			Checksum:        "sha256:" + virtioWinSHA256,
 			Source:          virtioWinISOURLFromArchive(virtioWinFedoraArchiveURL, virtioWinVersion),
 			FallbackSources: virtioWinISOURLs(virtioWinVersion),
-			BeforeHook: func() (string, error) {
-				return selectFastestVirtioWinISOURL(virtioWinVersion)
+			BeforeHook: func(ctx context.Context) (string, error) {
+				return selectFastestVirtioWinISOURL(ctx, virtioWinVersion)
 			},
 			RelatedVmConfigs: []VirtualMachineConfig{
 				{
@@ -998,9 +1025,12 @@ const webFileChecksumAttempts = 3
 
 var webFileRetryDelay = 5 * time.Second
 
-func downloadWebFileDependency(p *mpb.Progress, dep WebFileDependency) error {
+func downloadWebFileDependency(ctx context.Context, p *mpb.Progress, dep WebFileDependency) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if dep.BeforeHook != nil {
-		newSource, err := dep.BeforeHook()
+		newSource, err := dep.BeforeHook(ctx)
 		if err != nil {
 			return err
 		}
@@ -1019,15 +1049,20 @@ func downloadWebFileDependency(p *mpb.Progress, dep WebFileDependency) error {
 
 	var failures []string
 	for index, source := range sources {
-		err := downloadWebFileDependencyFromSource(p, dep, source)
+		err := downloadWebFileDependencyFromSource(ctx, p, dep, source)
 		// Mirrors occasionally serve a truncated or corrupted body; a fresh request usually succeeds.
 		for attempt := 2; attempt <= webFileChecksumAttempts && err != nil && isChecksumMismatch(err); attempt++ {
 			log.Printf("Checksum mismatch downloading %s from %s; retrying (attempt %d/%d)", dep.LocalPath, source, attempt, webFileChecksumAttempts)
-			time.Sleep(webFileRetryDelay)
-			err = downloadWebFileDependencyFromSource(p, dep, source)
+			if sleepErr := sleepContext(ctx, webFileRetryDelay); sleepErr != nil {
+				return sleepErr
+			}
+			err = downloadWebFileDependencyFromSource(ctx, p, dep, source)
 		}
 		if err == nil {
 			return nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("download of %s cancelled: %w", dep.LocalPath, ctxErr)
 		}
 
 		failures = append(failures, fmt.Sprintf("%s: %v", source, err))
@@ -1049,19 +1084,37 @@ func downloadWebFileDependency(p *mpb.Progress, dep WebFileDependency) error {
 	return err
 }
 
-func downloadWebFileDependencyFromSource(p *mpb.Progress, dep WebFileDependency, source string) error {
+// partialDownloadSuffix names the file a download is written to before it is complete.
+const partialDownloadSuffix = ".part"
+
+// downloadWebFileDependencyFromSource downloads into a partial file next to
+// dep.LocalPath and renames it only after the download (and its checksum, if any)
+// completed. An interrupted download therefore never looks like a complete file, which
+// matters for dependencies without a checksum.
+func downloadWebFileDependencyFromSource(ctx context.Context, p *mpb.Progress, dep WebFileDependency, source string) error {
 	src := sourceWithChecksum(source, dep.Checksum)
+	partialPath := dep.LocalPath + partialDownloadSuffix
+	// Never resume a leftover partial file: without a checksum a stale prefix of an
+	// updated file could not be detected.
+	if err := os.Remove(partialPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove partial download %s: %w", partialPath, err)
+	}
 	listener := &ProgressBarListener{progress: p}
 	client := &getter.Client{
+		Ctx:              ctx,
 		Src:              src,
-		Dst:              dep.LocalPath,
+		Dst:              partialPath,
 		Mode:             getter.ClientModeFile,
 		ProgressListener: listener,
 	}
 	err := client.Get()
+	if err == nil {
+		if renameErr := os.Rename(partialPath, dep.LocalPath); renameErr != nil {
+			err = fmt.Errorf("move completed download %s to %s: %w", partialPath, dep.LocalPath, renameErr)
+		}
+	}
 	if err != nil {
-		// delete the file if it was partially downloaded
-		_ = os.Remove(dep.LocalPath)
+		_ = os.Remove(partialPath)
 		if listener.bar != nil {
 			listener.bar.Abort(false)
 		}

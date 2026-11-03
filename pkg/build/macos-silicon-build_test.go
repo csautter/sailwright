@@ -4,6 +4,7 @@
 package build
 
 import (
+	"context"
 	"os"
 	"runtime"
 	"testing"
@@ -33,7 +34,7 @@ func TestBuildQemuUbuntuServerArm64OnMacos(t *testing.T) {
 		MemoryMB:             memoryMB,
 		Headless:             true,
 	}
-	err := RunQemuUbuntuBuildOnMacOS(VirtualMachineConfig)
+	err := RunQemuUbuntuBuildOnMacOS(context.Background(), VirtualMachineConfig)
 	if err != nil {
 		t.Fatalf("Failed to build QEMU Ubuntu Server Arm64 on macOS: %v", err)
 	}
@@ -59,7 +60,7 @@ func TestBuildQemuUbuntuServerAmd64OnMacos(t *testing.T) {
 		MemoryMB:             memoryMB,
 		Headless:             true,
 	}
-	err := RunQemuUbuntuBuildOnMacOS(VirtualMachineConfig)
+	err := RunQemuUbuntuBuildOnMacOS(context.Background(), VirtualMachineConfig)
 	if err != nil {
 		t.Fatalf("Failed to build QEMU Ubuntu Server Amd64 on macOS: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestBuildQemuUbuntuDesktopArm64OnMacos(t *testing.T) {
 		MemoryMB:             memoryMB,
 		Headless:             true,
 	}
-	err := RunQemuUbuntuBuildOnMacOS(VirtualMachineConfig)
+	err := RunQemuUbuntuBuildOnMacOS(context.Background(), VirtualMachineConfig)
 	if err != nil {
 		t.Fatalf("Failed to build QEMU Ubuntu Desktop Arm64 on macOS: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestBuildQemuUbuntuDesktopAmd64OnMacos(t *testing.T) {
 		MemoryMB:             memoryMB,
 		Headless:             true,
 	}
-	err := RunQemuUbuntuBuildOnMacOS(VirtualMachineConfig)
+	err := RunQemuUbuntuBuildOnMacOS(context.Background(), VirtualMachineConfig)
 	if err != nil {
 		t.Fatalf("Failed to build QEMU Ubuntu Desktop Amd64 on macOS: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestBuildQemuWindows11Arm64OnMacos(t *testing.T) {
 		MemoryMB:             memoryMB,
 		Headless:             true,
 	}
-	err := RunQemuWindowsBuildOnMacOS(VirtualMachineConfig)
+	err := RunQemuWindowsBuildOnMacOS(context.Background(), VirtualMachineConfig)
 	if err != nil {
 		t.Fatalf("Failed to build QEMU Windows 11 Arm64 on macOS: %v", err)
 	}
@@ -165,7 +166,7 @@ func TestBuildQemuWindows11Amd64OnMacos(t *testing.T) {
 		MemoryMB:             memoryMB,
 		Headless:             true,
 	}
-	err := RunQemuWindowsBuildOnMacOS(VirtualMachineConfig)
+	err := RunQemuWindowsBuildOnMacOS(context.Background(), VirtualMachineConfig)
 	if err != nil {
 		t.Fatalf("Failed to build QEMU Windows 11 Amd64 on macOS: %v", err)
 	}

@@ -3,9 +3,7 @@ package build
 import (
 	"context"
 	"errors"
-	"os"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -51,7 +49,7 @@ func TestBuildScriptTimeoutAllowsFiveHourBuilds(t *testing.T) {
 }
 
 func TestDetermineBuildCompletionDecisionSuccess(t *testing.T) {
-	decision := determineBuildCompletionDecision(nil, nil, nil)
+	decision := determineBuildCompletionDecision(nil, nil, false)
 	if decision.err != nil {
 		t.Fatalf("expected nil error, got %v", decision.err)
 	}
@@ -65,7 +63,7 @@ func TestDetermineBuildCompletionDecisionSuccess(t *testing.T) {
 
 func TestDetermineBuildCompletionDecisionFailureKeepsFfmpeg(t *testing.T) {
 	waitErr := errors.New("build failed")
-	decision := determineBuildCompletionDecision(waitErr, nil, nil)
+	decision := determineBuildCompletionDecision(waitErr, nil, false)
 	if !errors.Is(decision.err, waitErr) {
 		t.Fatalf("expected wait error to be returned, got %v", decision.err)
 	}
@@ -78,7 +76,7 @@ func TestDetermineBuildCompletionDecisionFailureKeepsFfmpeg(t *testing.T) {
 }
 
 func TestDetermineBuildCompletionDecisionSkipsFfmpegOnContextCancellation(t *testing.T) {
-	decision := determineBuildCompletionDecision(nil, context.Canceled, nil)
+	decision := determineBuildCompletionDecision(nil, context.Canceled, false)
 	if !errors.Is(decision.err, context.Canceled) {
 		t.Fatalf("expected context cancellation, got %v", decision.err)
 	}
@@ -87,29 +85,24 @@ func TestDetermineBuildCompletionDecisionSkipsFfmpegOnContextCancellation(t *tes
 	}
 }
 
-func TestDetermineBuildCompletionDecisionSkipsFfmpegOnSignal(t *testing.T) {
-	decision := determineBuildCompletionDecision(nil, nil, syscall.SIGINT)
-	if decision.err == nil {
-		t.Fatal("expected signal error")
+func TestDetermineBuildCompletionDecisionKeepsFfmpegOnInterrupt(t *testing.T) {
+	decision := determineBuildCompletionDecision(errors.New("exit status 1"), context.Canceled, true)
+	if !errors.Is(decision.err, ErrInterrupted) {
+		t.Fatalf("expected interrupt error, got %v", decision.err)
 	}
 	if !decision.runFfmpeg {
-		t.Fatal("expected ffmpeg post-processing to run after signal interruption")
+		t.Fatal("expected ffmpeg post-processing to run after an interrupt")
+	}
+	if decision.buildSuccess {
+		t.Fatal("expected interrupted build to stay unsuccessful")
 	}
 }
 
-func TestDrainInterruptedSignalReturnsSignalWhenAvailable(t *testing.T) {
-	interruptedSignal := make(chan os.Signal, 1)
-	interruptedSignal <- syscall.SIGTERM
-
-	got := drainInterruptedSignal(interruptedSignal)
-	if got != syscall.SIGTERM {
-		t.Fatalf("expected SIGTERM, got %v", got)
-	}
-}
-
-func TestDrainInterruptedSignalReturnsNilWhenEmpty(t *testing.T) {
-	if got := drainInterruptedSignal(make(chan os.Signal, 1)); got != nil {
-		t.Fatalf("expected nil signal, got %v", got)
+func TestDetermineBuildCompletionDecisionInterruptWinsOverSuccess(t *testing.T) {
+	// The build may exit 0 although Ctrl+C was pressed; it must not be promoted.
+	decision := determineBuildCompletionDecision(nil, nil, true)
+	if decision.buildSuccess || decision.err == nil {
+		t.Fatalf("expected interrupted build to fail, got %+v", decision)
 	}
 }
 

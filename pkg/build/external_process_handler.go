@@ -6,12 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"os/exec"
-	"os/signal"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/csautter/dev-alchemy/internal/winpsenv"
@@ -32,19 +29,14 @@ type RunProcessConfig struct {
 	Silent             *atomic.Bool
 }
 
+// RunExternalProcess runs a helper process in a process group of its own. Cancelling
+// config.Context terminates the group; without interrupt handling in config.Context,
+// Ctrl+C is handled for the duration of the call.
 func RunExternalProcess(config RunProcessConfig) (context.Context, error) {
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if config.Context != nil {
-		ctx, cancel = context.WithTimeout(config.Context, config.Timeout)
-	} else {
-		ctx, cancel = context.WithTimeout(context.Background(), config.Timeout)
-	}
+	parent, stopInterruptHandling := ensureInterruptHandling(config.Context)
+	defer stopInterruptHandling()
+	ctx, cancel := context.WithTimeout(parent, config.Timeout)
 	defer cancel()
-
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
-	defer signal.Stop(sigs)
 
 	if config.DelayBeforeStart > 0 {
 		if !isSilent(config.Silent) {
@@ -60,11 +52,6 @@ func RunExternalProcess(config RunProcessConfig) (context.Context, error) {
 				log.Printf("Process %s start interrupted by retry interrupt channel", config.ExecutablePath)
 			}
 			return cancelledContext(), fmt.Errorf("process %q start interrupted", config.ExecutablePath)
-		case sig := <-sigs:
-			if !isSilent(config.Silent) {
-				log.Printf("Process %s start interrupted by signal: %v", config.ExecutablePath, sig)
-			}
-			return ctx, fmt.Errorf("process %q start interrupted by signal: %v", config.ExecutablePath, sig)
 		case <-ctx.Done():
 			if !isSilent(config.Silent) {
 				log.Printf("Process %s start cancelled due to timeout or interruption: %v", config.ExecutablePath, ctx.Err())
@@ -85,17 +72,19 @@ func RunExternalProcess(config RunProcessConfig) (context.Context, error) {
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		log.Fatalf("Failed to get stdout: %v", err)
+		return ctx, fmt.Errorf("process %q: get stdout: %w", config.ExecutablePath, err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		log.Fatalf("Failed to get stderr: %v", err)
+		return ctx, fmt.Errorf("process %q: get stderr: %w", config.ExecutablePath, err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		log.Fatalf("Failed to start command: %v", err)
+		return ctx, fmt.Errorf("process %q: start: %w", config.ExecutablePath, err)
 	}
 	processGroupID := commandProcessGroupID(cmd)
+	untrackProcessGroup := trackProcessGroup(processGroupID)
+	defer untrackProcessGroup()
 
 	done := make(chan error, 1)
 
@@ -115,10 +104,7 @@ func RunExternalProcess(config RunProcessConfig) (context.Context, error) {
 	case err := <-done:
 		if err != nil {
 			terminateProcessGroup(processGroupID, processCleanupGracePeriod)
-			if config.FailOnError {
-				log.Fatalf("Process %s failed: %v", config.ExecutablePath, err)
-			}
-			if !isSilent(config.Silent) {
+			if config.FailOnError || !isSilent(config.Silent) {
 				log.Printf("Process %s finished with error: %v", config.ExecutablePath, err)
 			}
 			return ctx, fmt.Errorf("process %q exited with error: %w", config.ExecutablePath, err)
@@ -139,12 +125,6 @@ func RunExternalProcess(config RunProcessConfig) (context.Context, error) {
 			log.Printf("Process %s terminated due to timeout or interruption: %v", config.ExecutablePath, ctx.Err())
 		}
 		return ctx, fmt.Errorf("process %q terminated: %w", config.ExecutablePath, ctx.Err())
-	case sig := <-sigs:
-		terminateProcessGroup(processGroupID, processCleanupGracePeriod)
-		if !isSilent(config.Silent) {
-			log.Printf("Process %s terminated due to signal: %v", config.ExecutablePath, sig)
-		}
-		return ctx, fmt.Errorf("process %q terminated by signal: %v", config.ExecutablePath, sig)
 	}
 	return ctx, nil
 }
@@ -173,11 +153,11 @@ func RunExternalProcessWithRetries(config RunProcessConfig) context.Context {
 	var lastErr error
 	startTime := time.Now()
 
-	// Register a signal channel at the retry-loop level so that Ctrl+C
-	// stops retrying immediately, even while sleeping between attempts.
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
-	defer signal.Stop(sigs)
+	// Ctrl+C cancels the context and stops retrying immediately, even while sleeping
+	// between attempts.
+	ctx, stopInterruptHandling := ensureInterruptHandling(config.Context)
+	defer stopInterruptHandling()
+	config.Context = ctx
 
 	for attempt := 0; attempt <= config.Retries && time.Since(startTime) < config.Timeout; attempt++ {
 		if attempt > 0 {
@@ -186,9 +166,9 @@ func RunExternalProcessWithRetries(config RunProcessConfig) context.Context {
 			}
 			// Interruptible retry-interval sleep
 			select {
-			case sig := <-sigs:
+			case <-ctx.Done():
 				if !isSilent(config.Silent) {
-					log.Printf("Retry loop for process %s interrupted by signal: %v", config.ExecutablePath, sig)
+					log.Printf("Retry loop for process %s interrupted: %v", config.ExecutablePath, context.Cause(ctx))
 				}
 				return cancelledContext()
 			case <-config.InterruptRetryChan:
@@ -201,13 +181,11 @@ func RunExternalProcessWithRetries(config RunProcessConfig) context.Context {
 		}
 
 		// Check for a pending signal before starting the next attempt
-		select {
-		case sig := <-sigs:
+		if ctx.Err() != nil {
 			if !isSilent(config.Silent) {
-				log.Printf("Retry loop for process %s interrupted by signal before attempt %d: %v", config.ExecutablePath, attempt, sig)
+				log.Printf("Retry loop for process %s interrupted before attempt %d: %v", config.ExecutablePath, attempt, context.Cause(ctx))
 			}
 			return cancelledContext()
-		default:
 		}
 		if config.InterruptRetryChan != nil {
 			select {
@@ -220,12 +198,12 @@ func RunExternalProcessWithRetries(config RunProcessConfig) context.Context {
 			}
 		}
 
-		ctx, err := RunExternalProcess(config)
+		processCtx, err := RunExternalProcess(config)
 		if err == nil {
-			return ctx
+			return processCtx
 		}
-		if ctx != nil && ctx.Err() == context.Canceled {
-			return ctx
+		if processCtx != nil && processCtx.Err() == context.Canceled {
+			return processCtx
 		}
 		lastErr = err
 
@@ -236,21 +214,17 @@ func RunExternalProcessWithRetries(config RunProcessConfig) context.Context {
 				if !isSilent(config.Silent) {
 					log.Printf("Received interrupt signal, stopping retries for process %s", config.ExecutablePath)
 				}
-				return ctx
+				return processCtx
 			default:
 				// No interrupt signal, continue
 			}
 		}
 
-		// If RunExternalProcess itself was interrupted by a signal, the outer
-		// sigs channel will also have received it — check and stop retrying.
-		select {
-		case sig := <-sigs:
+		if ctx.Err() != nil {
 			if !isSilent(config.Silent) {
-				log.Printf("Retry loop for process %s stopping after signal: %v", config.ExecutablePath, sig)
+				log.Printf("Retry loop for process %s stopping: %v", config.ExecutablePath, context.Cause(ctx))
 			}
 			return cancelledContext()
-		default:
 		}
 	}
 	if !isSilent(config.Silent) {

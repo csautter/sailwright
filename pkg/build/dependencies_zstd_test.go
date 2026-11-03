@@ -2,6 +2,7 @@ package build
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -38,7 +39,7 @@ func TestDownloadWebFileDependencyZstd(t *testing.T) {
 			}))
 			defer server.Close()
 			dest := filepath.Join(t.TempDir(), "dependency")
-			err := downloadWebFileDependency(nil, WebFileDependency{
+			err := downloadWebFileDependency(context.Background(), nil, WebFileDependency{
 				LocalPath: dest,
 				Source:    server.URL + "/dependency.zst",
 			})

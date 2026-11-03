@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -24,6 +25,8 @@ func TestMain(m *testing.M) {
 		os.Exit(runTTYSessionHelper())
 	case "terminal-handoff":
 		os.Exit(runTerminalHandoff())
+	case "terminal-interrupt":
+		os.Exit(runTerminalInterrupt())
 	}
 	os.Exit(m.Run())
 }
@@ -39,6 +42,25 @@ func runTerminalHandoff() int {
 	}
 	restoreCommandTerminal()
 	restoreInteractiveTerminal()
+	return 0
+}
+
+// runTerminalInterrupt runs a build command that owns the terminal and handles SIGINT
+// like Packer does (clean up, exit 1). It exits 0 when the command's exit is detected
+// as a Ctrl+C from the terminal.
+func runTerminalInterrupt() int {
+	cmd, terminal := newBuildCommand("sh", []string{"-c", "trap 'exit 1' INT; echo ready; while :; do sleep 0.1; done"}, false)
+	if !terminal.attached {
+		fmt.Fprintln(os.Stderr, "build command did not get the terminal")
+		return 5
+	}
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	err := cmd.Run()
+	terminal.restore()
+	if !isTerminalInterruptExit(err) {
+		fmt.Fprintf(os.Stderr, "Ctrl+C was not detected, command ended with %v\n", err)
+		return 4
+	}
 	return 0
 }
 
@@ -125,5 +147,69 @@ func TestTerminalHandoffDoesNotStopTheProcess(t *testing.T) {
 				t.Fatal("terminal hand-off hung (process stopped by SIGTTOU)")
 			}
 		})
+	}
+}
+
+// TestTerminalInterruptOfBuildCommandIsDetected covers Ctrl+C while a single build owns
+// the terminal: the signal reaches only the build, which exits 1 after cleaning up, and
+// sailwright must still recognise it as an interrupt to stop the other builds.
+func TestTerminalInterruptOfBuildCommandIsDetected(t *testing.T) {
+	master, slave := openPTY(t)
+	defer master.Close()
+	defer slave.Close()
+
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(self)
+	cmd.Env = append(os.Environ(), ttyScenarioEnv+"=terminal-interrupt")
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	ready := make(chan struct{})
+	output := make(chan string, 1)
+	go func() {
+		var seen []byte
+		signalled := false
+		buf := make([]byte, 4096)
+		for {
+			n, err := master.Read(buf)
+			seen = append(seen, buf[:n]...)
+			if !signalled && strings.Contains(string(seen), "ready") {
+				signalled = true
+				close(ready)
+			}
+			if err != nil {
+				output <- string(seen)
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-ready:
+	case <-time.After(20 * time.Second):
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		t.Fatal("build command did not start")
+	}
+	if _, err := master.Write([]byte{0x03}); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			_ = slave.Close()
+			t.Fatalf("Ctrl+C of the build command was not detected: %v\n%s", err, <-output)
+		}
+	case <-time.After(20 * time.Second):
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		t.Fatal("build command did not stop after Ctrl+C")
 	}
 }

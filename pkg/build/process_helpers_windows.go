@@ -20,3 +20,19 @@ func restoreInteractiveTerminal() {}
 func attachCommandToInteractiveTerminal(cmd *exec.Cmd) func() {
 	return func() {}
 }
+
+func killProcessGroup(processGroupID int) {}
+
+type commandTerminal struct {
+	attached bool
+	restore  func()
+}
+
+func newBuildCommand(executable string, args []string, detached bool) (*exec.Cmd, commandTerminal) {
+	// #nosec G204 -- executable and args are constructed by internal build flows; no shell is invoked.
+	return exec.Command(executable, args...), commandTerminal{restore: func() {}}
+}
+
+func isTerminalInterruptExit(err error) bool {
+	return false
+}

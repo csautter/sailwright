@@ -1,6 +1,8 @@
 package build
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -19,7 +21,7 @@ const (
 // attaching a new VM to the Default Switch can briefly disrupt the host adapter's IPv4 address.
 // This failure always occurs within the first ~30 seconds; real build failures take 30+ minutes.
 // Retries are skipped for long-running failures to avoid wasting CI time on genuine errors.
-func RunHypervWindowsBuildOnWindows(config VirtualMachineConfig) error {
+func RunHypervWindowsBuildOnWindows(ctx context.Context, config VirtualMachineConfig) error {
 	const maxRetries = 3
 	const retryDelay = 30 * time.Second
 	// Failures under this threshold are likely the transient IP detection race.
@@ -32,7 +34,7 @@ func RunHypervWindowsBuildOnWindows(config VirtualMachineConfig) error {
 
 	// Prepare once outside the retry loop: packer init failures are not the IP race and
 	// must not burn build attempts. initializePacker retries network errors on its own.
-	config, err := prepareWindowsBuild(config, hypervPackerFile)
+	config, err := prepareWindowsBuild(ctx, config, hypervPackerFile)
 	if err != nil {
 		return err
 	}
@@ -42,9 +44,12 @@ func RunHypervWindowsBuildOnWindows(config VirtualMachineConfig) error {
 		captureHypervDiagnostics(config, fmt.Sprintf("attempt-%d-preflight", attempt), nil)
 
 		start := time.Now()
-		lastErr = runPackerBuild(config, hypervPackerFile)
+		lastErr = runPackerBuild(ctx, config, hypervPackerFile)
 		if lastErr == nil {
 			return nil
+		}
+		if errors.Is(lastErr, ErrInterrupted) || ctx.Err() != nil {
+			return lastErr
 		}
 
 		captureHypervDiagnostics(config, fmt.Sprintf("attempt-%d-failure", attempt), lastErr)
@@ -57,41 +62,43 @@ func RunHypervWindowsBuildOnWindows(config VirtualMachineConfig) error {
 		if attempt < maxRetries {
 			log.Printf("HyperV build attempt %d/%d failed after %.0fs (likely transient IP detection race): %v. Retrying in %s...",
 				attempt, maxRetries, elapsed.Seconds(), lastErr, retryDelay)
-			time.Sleep(retryDelay)
+			if err := sleepContext(ctx, retryDelay); err != nil {
+				return buildContextError(ctx)
+			}
 		}
 	}
 	return fmt.Errorf("HyperV build failed after %d attempts: %w", maxRetries, lastErr)
 }
 
 // RunVirtualBoxWindowsBuildOnWindows builds a Windows 11 VM using VirtualBox on Windows.
-func RunVirtualBoxWindowsBuildOnWindows(config VirtualMachineConfig) error {
-	return runWindowsBuild(config, virtualBoxPackerFile)
+func RunVirtualBoxWindowsBuildOnWindows(ctx context.Context, config VirtualMachineConfig) error {
+	return runWindowsBuild(ctx, config, virtualBoxPackerFile)
 }
 
 // runWindowsBuild executes the Packer build process for Windows VMs.
-func runWindowsBuild(config VirtualMachineConfig, packerFile string) error {
-	config, err := prepareWindowsBuild(config, packerFile)
+func runWindowsBuild(ctx context.Context, config VirtualMachineConfig, packerFile string) error {
+	config, err := prepareWindowsBuild(ctx, config, packerFile)
 	if err != nil {
 		return err
 	}
-	return runPackerBuild(config, packerFile)
+	return runPackerBuild(ctx, config, packerFile)
 }
 
-// prepareWindowsBuild stages no-cache artifacts and initializes Packer plugins.
-func prepareWindowsBuild(config VirtualMachineConfig, packerFile string) (VirtualMachineConfig, error) {
-	config, err := withStagedBuildArtifactsForNoCache(config)
+// prepareWindowsBuild stages the build artifacts and initializes Packer plugins.
+func prepareWindowsBuild(ctx context.Context, config VirtualMachineConfig, packerFile string) (VirtualMachineConfig, error) {
+	config, err := withStagedBuildArtifacts(config)
 	if err != nil {
 		return config, err
 	}
-	if err := initializePacker(config, packerFile); err != nil {
+	if err := initializePacker(ctx, config, packerFile); err != nil {
 		return config, fmt.Errorf("failed to initialize packer: %w", err)
 	}
 	return config, nil
 }
 
 // runPackerBuild runs packer build for an already initialized packer file.
-func runPackerBuild(config VirtualMachineConfig, packerFile string) error {
-	return RunBuildScript(config, packerExecutable, buildPackerArgs(config, packerFile))
+func runPackerBuild(ctx context.Context, config VirtualMachineConfig, packerFile string) error {
+	return RunBuildScript(ctx, config, packerExecutable, buildPackerArgs(config, packerFile))
 }
 
 // packerInitRetryDelays are the waits between packer init attempts after a network error.
@@ -122,7 +129,7 @@ var packerInitNetworkErrorMarkers = []string{
 const packerInitReleasesFallbackMarker = "could not get sha256 checksum file"
 
 // initializePacker runs the packer init command for the given file, retrying network errors.
-func initializePacker(config VirtualMachineConfig, packerFile string) error {
+func initializePacker(ctx context.Context, config VirtualMachineConfig, packerFile string) error {
 	env := GetDirectoriesInstance().ManagedEnv()
 	if config.Verbose {
 		env = append(env, "PACKER_LOG=1")
@@ -146,7 +153,9 @@ func initializePacker(config VirtualMachineConfig, packerFile string) error {
 
 		delay := packerInitRetryDelays[attempt-1]
 		log.Printf("packer init attempt %d/%d failed with a network error: %v. Retrying in %s...", attempt, maxAttempts, err, delay)
-		time.Sleep(delay)
+		if err := sleepContext(ctx, delay); err != nil {
+			return buildContextError(ctx)
+		}
 	}
 }
 

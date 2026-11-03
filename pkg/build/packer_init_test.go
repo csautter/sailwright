@@ -1,6 +1,7 @@
 package build
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -32,7 +33,7 @@ func TestInitializePackerRetriesNetworkErrors(t *testing.T) {
 		"",
 	})
 
-	if err := initializePacker(VirtualMachineConfig{}, hypervPackerFile); err != nil {
+	if err := initializePacker(context.Background(), VirtualMachineConfig{}, hypervPackerFile); err != nil {
 		t.Fatalf("expected retry to succeed, got %v", err)
 	}
 	if *calls != 2 {
@@ -43,7 +44,7 @@ func TestInitializePackerRetriesNetworkErrors(t *testing.T) {
 func TestInitializePackerDoesNotRetryNonNetworkErrors(t *testing.T) {
 	calls := stubPackerInit(t, []string{"Error: Unsupported Packer Core version", ""})
 
-	if err := initializePacker(VirtualMachineConfig{}, hypervPackerFile); err == nil {
+	if err := initializePacker(context.Background(), VirtualMachineConfig{}, hypervPackerFile); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if *calls != 1 {
@@ -55,7 +56,7 @@ func TestInitializePackerExplainsReleasesFallbackAfterRetries(t *testing.T) {
 	fallback := `could not get sha256 checksum file for github.com/hashicorp/vagrant version 1.1.7. GET ...: 404`
 	calls := stubPackerInit(t, []string{fallback, fallback, fallback})
 
-	err := initializePacker(VirtualMachineConfig{}, hypervPackerFile)
+	err := initializePacker(context.Background(), VirtualMachineConfig{}, hypervPackerFile)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -70,7 +71,7 @@ func TestInitializePackerExplainsReleasesFallbackAfterRetries(t *testing.T) {
 func TestRunHypervWindowsBuildDoesNotRetryPackerInitFailure(t *testing.T) {
 	calls := stubPackerInit(t, []string{"Error: Unsupported Packer Core version", "", ""})
 
-	err := RunHypervWindowsBuildOnWindows(VirtualMachineConfig{
+	err := RunHypervWindowsBuildOnWindows(context.Background(), VirtualMachineConfig{
 		OS:                   "windows11",
 		Arch:                 "amd64",
 		HostOs:               HostOsWindows,

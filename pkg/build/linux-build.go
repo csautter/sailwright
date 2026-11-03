@@ -1,12 +1,13 @@
 package build
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 )
 
-func runQemuUbuntuBuild(config VirtualMachineConfig, relativeScriptPath string) error {
-	config, err := withStagedBuildArtifactsForNoCache(config)
+func runQemuUbuntuBuild(ctx context.Context, config VirtualMachineConfig, relativeScriptPath string) error {
+	config, err := withStagedBuildArtifacts(config)
 	if err != nil {
 		return err
 	}
@@ -31,15 +32,15 @@ func runQemuUbuntuBuild(config VirtualMachineConfig, relativeScriptPath string) 
 	if config.Verbose {
 		args = append(args, "--verbose")
 	}
-	return RunBuildScript(config, "bash", args, arm64QemuMachineEnv(config)...)
+	return RunBuildScript(ctx, config, "bash", args, arm64QemuMachineEnv(config)...)
 }
 
-func RunQemuUbuntuBuildOnLinux(config VirtualMachineConfig) error {
+func RunQemuUbuntuBuildOnLinux(ctx context.Context, config VirtualMachineConfig) error {
 	logArm64QemuVersion(config)
-	return runQemuUbuntuBuild(config, "build/packer/linux/ubuntu/linux-ubuntu-on-linux.sh")
+	return runQemuUbuntuBuild(ctx, config, "build/packer/linux/ubuntu/linux-ubuntu-on-linux.sh")
 }
 
-func RunQemuWindowsBuildOnLinux(config VirtualMachineConfig) error {
+func RunQemuWindowsBuildOnLinux(ctx context.Context, config VirtualMachineConfig) error {
 	logArm64QemuVersion(config)
-	return runQemuWindowsBuild(config, "build/packer/windows/windows11-on-linux.sh")
+	return runQemuWindowsBuild(ctx, config, "build/packer/windows/windows11-on-linux.sh")
 }

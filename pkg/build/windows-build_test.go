@@ -4,6 +4,7 @@
 package build
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -27,7 +28,7 @@ func TestBuildHypervWindows11Amd64OnWindows(t *testing.T) {
 		Cpus:                 4,
 		MemoryMB:             memoryMB,
 	}
-	err := RunHypervWindowsBuildOnWindows(VirtualMachineConfig)
+	err := RunHypervWindowsBuildOnWindows(context.Background(), VirtualMachineConfig)
 	if err != nil {
 		t.Fatalf("Failed to build Hyper-V Windows 11 Amd64 on Windows: %v", err)
 	}
@@ -51,7 +52,7 @@ func TestBuildVirtualBoxWindows11Amd64OnWindows(t *testing.T) {
 		Cpus:                 4,
 		MemoryMB:             memoryMB,
 	}
-	err := RunVirtualBoxWindowsBuildOnWindows(VirtualMachineConfig)
+	err := RunVirtualBoxWindowsBuildOnWindows(context.Background(), VirtualMachineConfig)
 	if err != nil {
 		t.Fatalf("Failed to build VirtualBox Windows 11 Amd64 on Windows: %v", err)
 	}
@@ -62,7 +63,7 @@ func TestBuildVirtualBoxWindows11Amd64OnWindows(t *testing.T) {
 func TestInitializePackerPropagatesError(t *testing.T) {
 	// A non-existent HCL path guarantees packer init exits non-zero (either the packer
 	// binary is missing entirely, or it rejects the unknown file).
-	err := initializePacker(VirtualMachineConfig{}, "/nonexistent/path/that/does/not/exist.pkr.hcl")
+	err := initializePacker(context.Background(), VirtualMachineConfig{}, "/nonexistent/path/that/does/not/exist.pkr.hcl")
 	if err == nil {
 		t.Fatal("expected initializePacker to return an error for a non-existent packer file, got nil")
 	}
@@ -78,7 +79,7 @@ func TestRunWindowsBuildPropagatesInitError(t *testing.T) {
 		VirtualizationEngine: VirtualizationEngineHyperv,
 	}
 
-	err := runWindowsBuild(cfg, "/nonexistent/path/that/does/not/exist.pkr.hcl")
+	err := runWindowsBuild(context.Background(), cfg, "/nonexistent/path/that/does/not/exist.pkr.hcl")
 	if err == nil {
 		t.Fatal("expected runWindowsBuild to return an error when packer init fails, got nil")
 	}
