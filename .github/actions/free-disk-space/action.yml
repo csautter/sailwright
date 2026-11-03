@@ -1,0 +1,12 @@
+name: 'Free Runner Disk Space'
+description: >
+  Reclaims disk space on GitHub-hosted Linux runners by removing large unused
+  toolsets (Android SDK, .NET, Haskell, CodeQL, etc.) and pruning Docker caches.
+
+runs:
+  using: "composite"
+  steps:
+    - name: Free runner disk space
+      if: runner.os == 'Linux'
+      shell: bash
+      run: bash "${{ github.action_path }}/scripts/free-disk-space.sh"

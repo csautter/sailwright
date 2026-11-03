@@ -124,6 +124,7 @@ install_linux_packages() {
 
 	${SUDO} apt-get update
 	${SUDO} apt-get install -y "${packages[@]}"
+	${SUDO} apt-get clean
 }
 
 install_hashicorp_apt_repo
