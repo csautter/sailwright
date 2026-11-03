@@ -52,6 +52,14 @@ func wrapOperationLocks(commands []*cobra.Command, appData func() string) {
 				return err
 			}
 			defer release()
+			if cmd == createCmd && commandInstanceName(cmd) != "" {
+				image := strings.TrimSuffix(target, "/"+commandInstanceName(cmd))
+				releaseImage, err := operationlock.AcquireSharedWithin(appData(), image, "clone image", timeout)
+				if err != nil {
+					return err
+				}
+				defer releaseImage()
+			}
 			return run(cmd, args)
 		}
 	}
@@ -70,7 +78,11 @@ func operationLockTarget(cmd *cobra.Command, args []string, transfer bool) (stri
 	typ, _ := cmd.Flags().GetString("type")
 	arch, _ := cmd.Flags().GetString("arch")
 	typ = alchemy_build.TargetType(args[0], typ)
-	return args[0] + "/" + typ + "/" + arch, true
+	key := args[0] + "/" + typ + "/" + arch
+	if name := commandInstanceName(cmd); name != "" {
+		key += "/" + name
+	}
+	return key, true
 }
 
 func operationLockTimeout(value string) (time.Duration, error) {

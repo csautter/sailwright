@@ -103,3 +103,30 @@ func TestBusyErrorNamesHolder(t *testing.T) {
 		t.Fatalf("stale holder %v", holder)
 	}
 }
+
+func TestImageReadLocksAllowClonesAndExcludeBuilds(t *testing.T) {
+	dir := t.TempDir()
+	first, err := AcquireShared(dir, "ubuntu/server/amd64", "clone a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := AcquireShared(dir, "ubuntu/server/amd64", "clone b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release, err := Acquire(dir, "ubuntu/server/amd64", "build"); err == nil {
+		release()
+		t.Fatal("build raced with image clones")
+	}
+	if release, err := Acquire(dir, "", "build all"); err == nil {
+		release()
+		t.Fatal("bulk build raced with clones")
+	}
+	first()
+	second()
+	release, err := Acquire(dir, "ubuntu/server/amd64", "build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+}

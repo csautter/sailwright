@@ -29,7 +29,7 @@ func defaultStartVirtualMachinesForHostOS(hostOs alchemy_build.HostOsType) []alc
 }
 
 func printAvailableStartCombinations() error {
-	vms := availableStartVirtualMachines()
+	vms := listingInstances(availableStartVirtualMachines())
 	return printVirtualMachineCombinationTable(
 		os.Stdout,
 		fmt.Sprintf("Available start combinations for host OS: %s", alchemy_build.GetCurrentHostOs()),
@@ -83,6 +83,9 @@ Examples:
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateInstanceSelector(cmd, args); err != nil {
+			return err
+		}
 		osName := args[0]
 
 		osType = alchemy_build.TargetType(osName, osType)
@@ -100,12 +103,17 @@ Examples:
 		for _, vm := range availableVirtualMachines {
 			if vm.OS == osName && vm.UbuntuType == osType && vm.Arch == arch {
 				selectedVM = vm
+				selectedVM.Name = commandInstanceName(cmd)
 				valid = true
 				break
 			}
 		}
 		if !valid {
 			return fmt.Errorf("❌ invalid combination: OS=%s, Type=%s, Arch=%s", osName, osType, arch)
+		}
+
+		if err := alchemy_build.ValidateInstance(selectedVM); err != nil {
+			return err
 		}
 
 		fmt.Printf("🔧 Starting VM for OS: %s, Type: %s, Architecture: %s\n", osName, osType, arch)
@@ -133,12 +141,16 @@ func runStart(vm alchemy_build.VirtualMachineConfig) error {
 			return err
 		}
 	}
-	return alchemy_deploy.RunStart(vm)
+	if err := alchemy_deploy.RunStart(vm); err != nil {
+		return err
+	}
+	return configureNamedGuest(vm)
 }
 
 func init() {
 	rootCmd.AddCommand(startCmd)
 	addGuestSecurityFlag(startCmd, &startAllowInsecureCredentials)
+	addInstanceFlag(startCmd)
 	startCmd.AddCommand(startListCmd)
 	addListJSONFlag(startListCmd)
 

@@ -12,6 +12,7 @@ import (
 // VMInfo is the versioned connection description for a running managed VM.
 type VMInfo struct {
 	SchemaVersion int    `json:"schema_version"`
+	Name          string `json:"name"`
 	OS            string `json:"os"`
 	Type          string `json:"type"`
 	Arch          string `json:"arch"`
@@ -33,6 +34,7 @@ type VMInfo struct {
 // VMInfo it is available for stopped VMs.
 type VMIdentity struct {
 	SchemaVersion int    `json:"schema_version"`
+	Name          string `json:"name"`
 	OS            string `json:"os"`
 	Type          string `json:"type"`
 	Arch          string `json:"arch"`
@@ -49,7 +51,7 @@ func InspectVMIdentity(vm alchemy_build.VirtualMachineConfig) (VMIdentity, error
 	if err != nil {
 		return VMIdentity{}, err
 	}
-	return VMIdentity{SchemaVersion: 1, OS: vm.OS, Type: vm.UbuntuType, Arch: vm.Arch, Engine: string(vm.VirtualizationEngine), Exists: exists, InstanceID: id}, nil
+	return VMIdentity{SchemaVersion: 1, Name: vm.Name, OS: vm.OS, Type: vm.UbuntuType, Arch: vm.Arch, Engine: string(vm.VirtualizationEngine), Exists: exists, InstanceID: id}, nil
 }
 
 // DiscoverLibvirtAddress uses the same lease/agent discovery as provisioning.
@@ -69,11 +71,14 @@ func DiscoverTartAddress(project string, vm alchemy_build.VirtualMachineConfig) 
 
 // InspectVM returns guest connection details without writing them to logs.
 func InspectVM(vm alchemy_build.VirtualMachineConfig) (VMInfo, error) {
+	if err := alchemy_build.ValidateInstance(vm); err != nil {
+		return VMInfo{}, err
+	}
 	if err := ensureProvisionTargetRunning(vm); err != nil {
 		return VMInfo{}, err
 	}
 	project := alchemy_build.GetDirectoriesInstance().ProjectDir
-	info := VMInfo{SchemaVersion: 1, OS: vm.OS, Type: vm.UbuntuType, Arch: vm.Arch, Engine: string(vm.VirtualizationEngine), State: "running", NetworkMode: "unknown"}
+	info := VMInfo{SchemaVersion: 1, Name: vm.Name, OS: vm.OS, Type: vm.UbuntuType, Arch: vm.Arch, Engine: string(vm.VirtualizationEngine), State: "running", NetworkMode: "unknown"}
 	var err error
 	switch info.Engine {
 	case "hyperv":

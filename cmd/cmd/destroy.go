@@ -9,6 +9,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var runDestroyFunc = runDestroy
+
 var inspectDestroyTargetExists = alchemy_deploy.DestroyTargetExists
 
 func isDestroySupported(vm alchemy_build.VirtualMachineConfig) bool {
@@ -26,7 +28,7 @@ func availableDestroyVirtualMachines() []alchemy_build.VirtualMachineConfig {
 }
 
 func printAvailableDestroyCombinations() error {
-	vms := availableDestroyVirtualMachines()
+	vms := listingInstances(availableDestroyVirtualMachines())
 	return printVirtualMachineCombinationTable(
 		os.Stdout,
 		fmt.Sprintf("Available destroy combinations for host OS: %s", alchemy_build.GetCurrentHostOs()),
@@ -65,15 +67,22 @@ Examples:
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateInstanceSelector(cmd, args); err != nil {
+			return err
+		}
 		osName := args[0]
 
 		osType = alchemy_build.TargetType(osName, osType)
 
 		if osName == "all" {
 			fmt.Println("🔧 Destroying all available VM configurations")
-			for _, vm := range availableDestroyVirtualMachines() {
+			vms, err := includeAllInstances(cmd, availableDestroyVirtualMachines())
+			if err != nil {
+				return err
+			}
+			for _, vm := range vms {
 				fmt.Printf("➡️ Destroying VM for OS: %s, Type: %s, Architecture: %s\n", vm.OS, vm.UbuntuType, vm.Arch)
-				if err := runDestroy(vm); err != nil {
+				if err := runDestroyFunc(vm); err != nil {
 					return fmt.Errorf("failed destroying VM for OS=%s, type=%s, arch=%s: %w", vm.OS, vm.UbuntuType, vm.Arch, err)
 				}
 			}
@@ -86,6 +95,7 @@ Examples:
 		for _, vm := range availableVirtualMachines {
 			if vm.OS == osName && vm.UbuntuType == osType && vm.Arch == arch {
 				selectedVM = vm
+				selectedVM.Name = commandInstanceName(cmd)
 				valid = true
 				break
 			}
@@ -94,8 +104,12 @@ Examples:
 			return fmt.Errorf("❌ invalid combination: OS=%s, Type=%s, Arch=%s", osName, osType, arch)
 		}
 
+		if err := alchemy_build.ValidateInstance(selectedVM); err != nil {
+			return err
+		}
+
 		fmt.Printf("🔧 Destroying VM for OS: %s, Type: %s, Architecture: %s\n", osName, osType, arch)
-		if err := runDestroy(selectedVM); err != nil {
+		if err := runDestroyFunc(selectedVM); err != nil {
 			return fmt.Errorf("failed destroying VM for OS=%s, type=%s, arch=%s: %w", osName, osType, arch, err)
 		}
 
@@ -113,11 +127,16 @@ var destroyListCmd = &cobra.Command{
 }
 
 func runDestroy(vm alchemy_build.VirtualMachineConfig) error {
-	return alchemy_deploy.RunDestroy(vm)
+	if err := alchemy_deploy.RunDestroy(vm); err != nil {
+		return err
+	}
+	return alchemy_deploy.RemoveInstanceRecord(vm)
 }
 
 func init() {
 	rootCmd.AddCommand(destroyCmd)
+	addInstanceFlag(destroyCmd)
+	destroyCmd.Flags().Bool("all-instances", false, "Include named instances when stopping or destroying all VMs")
 	destroyCmd.AddCommand(destroyListCmd)
 	addListJSONFlag(destroyListCmd)
 

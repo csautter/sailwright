@@ -9,6 +9,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var runStopFunc = runStop
+
 var inspectStopTarget = alchemy_deploy.InspectStopTarget
 
 func isStopSupported(vm alchemy_build.VirtualMachineConfig) bool {
@@ -26,7 +28,7 @@ func availableStopVirtualMachines() []alchemy_build.VirtualMachineConfig {
 }
 
 func printAvailableStopCombinations() error {
-	vms := availableStopVirtualMachines()
+	vms := listingInstances(availableStopVirtualMachines())
 	return printVirtualMachineCombinationTable(
 		os.Stdout,
 		fmt.Sprintf("Available stop combinations for host OS: %s", alchemy_build.GetCurrentHostOs()),
@@ -75,15 +77,22 @@ Examples:
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateInstanceSelector(cmd, args); err != nil {
+			return err
+		}
 		osName := args[0]
 
 		osType = alchemy_build.TargetType(osName, osType)
 
 		if osName == "all" {
 			fmt.Println("🔧 Stopping all available VM configurations")
-			for _, vm := range availableStopVirtualMachines() {
+			vms, err := includeAllInstances(cmd, availableStopVirtualMachines())
+			if err != nil {
+				return err
+			}
+			for _, vm := range vms {
 				fmt.Printf("➡️ Stopping VM for OS: %s, Type: %s, Architecture: %s\n", vm.OS, vm.UbuntuType, vm.Arch)
-				if err := runStop(vm); err != nil {
+				if err := runStopFunc(vm); err != nil {
 					return fmt.Errorf("failed stopping VM for OS=%s, type=%s, arch=%s: %w", vm.OS, vm.UbuntuType, vm.Arch, err)
 				}
 			}
@@ -96,6 +105,7 @@ Examples:
 		for _, vm := range availableVirtualMachines {
 			if vm.OS == osName && vm.UbuntuType == osType && vm.Arch == arch {
 				selectedVM = vm
+				selectedVM.Name = commandInstanceName(cmd)
 				valid = true
 				break
 			}
@@ -104,8 +114,12 @@ Examples:
 			return fmt.Errorf("❌ invalid combination: OS=%s, Type=%s, Arch=%s", osName, osType, arch)
 		}
 
+		if err := alchemy_build.ValidateInstance(selectedVM); err != nil {
+			return err
+		}
+
 		fmt.Printf("🔧 Stopping VM for OS: %s, Type: %s, Architecture: %s\n", osName, osType, arch)
-		if err := runStop(selectedVM); err != nil {
+		if err := runStopFunc(selectedVM); err != nil {
 			return fmt.Errorf("failed stopping VM for OS=%s, type=%s, arch=%s: %w", osName, osType, arch, err)
 		}
 
@@ -128,6 +142,8 @@ func runStop(vm alchemy_build.VirtualMachineConfig) error {
 
 func init() {
 	rootCmd.AddCommand(stopCmd)
+	addInstanceFlag(stopCmd)
+	stopCmd.Flags().Bool("all-instances", false, "Include named instances when stopping or destroying all VMs")
 	stopCmd.AddCommand(stopListCmd)
 	addListJSONFlag(stopListCmd)
 
