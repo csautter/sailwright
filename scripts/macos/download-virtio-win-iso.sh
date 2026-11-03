@@ -20,7 +20,17 @@ VIRTIO_WIN_FILE_VERSION="${VIRTIO_WIN_VERSION%-*}"
 # Updated by scripts/update-virtio-win-checksum.sh (see the "Sync virtio-win checksum" workflow)
 VIRTIO_WIN_SHA256="303f7ae40dad495d6ae474fdc571df58958a4dbc5c37a522d80f9a203867949d"
 
-virtio_iso_path="$CACHE_DIR/windows/virtio-win.iso"
+# The cache file name carries the full version so a version bump never reuses a stale ISO.
+# Keep it in sync with virtioWinISOCacheFileName in pkg/build/dependencies.go.
+virtio_iso_file_name="virtio-win-${VIRTIO_WIN_VERSION}.iso"
+if [ "${1:-}" = "--print-file-name" ]; then
+	echo "$virtio_iso_file_name"
+	exit 0
+fi
+
+virtio_iso_path="$CACHE_DIR/windows/$virtio_iso_file_name"
+# Cache path used before the version was part of the file name.
+legacy_virtio_iso_path="$CACHE_DIR/windows/virtio-win.iso"
 virtio_iso_url="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-${VIRTIO_WIN_VERSION}/virtio-win-${VIRTIO_WIN_FILE_VERSION}.iso"
 tmp_path="${virtio_iso_path}.tmp"
 
@@ -43,17 +53,28 @@ cleanup_tmp() {
 
 trap cleanup_tmp EXIT
 
+# One-time migration of the unversioned file; mirrors migrateLegacyVirtioWinISO in pkg/build/dependencies.go.
+if [ -f "$legacy_virtio_iso_path" ]; then
+	if [ ! -f "$virtio_iso_path" ] && verify_sha256 "$legacy_virtio_iso_path"; then
+		echo "Moving $legacy_virtio_iso_path to $virtio_iso_path"
+		mv "$legacy_virtio_iso_path" "$virtio_iso_path"
+	else
+		echo "Removing outdated $legacy_virtio_iso_path"
+		rm -f "$legacy_virtio_iso_path"
+	fi
+fi
+
 if [ -f "$virtio_iso_path" ]; then
 	if verify_sha256 "$virtio_iso_path"; then
-		echo "virtio-win.iso already exists and checksum matches, skipping download"
+		echo "$virtio_iso_file_name already exists and checksum matches, skipping download"
 		exit 0
 	fi
 
-	echo "Existing virtio-win.iso checksum mismatch, re-downloading"
+	echo "Existing $virtio_iso_file_name checksum mismatch, re-downloading"
 	rm -f "$virtio_iso_path"
 fi
 
-echo "Downloading virtio-win.iso"
+echo "Downloading $virtio_iso_file_name"
 mkdir -p "$CACHE_DIR/windows"
 curl --fail --progress-bar -L -o "$tmp_path" "$virtio_iso_url"
 
@@ -61,6 +82,6 @@ if verify_sha256 "$tmp_path"; then
 	mv "$tmp_path" "$virtio_iso_path"
 	trap - EXIT
 else
-	echo "Checksum mismatch for downloaded virtio-win.iso" >&2
+	echo "Checksum mismatch for downloaded $virtio_iso_file_name" >&2
 	exit 1
 fi

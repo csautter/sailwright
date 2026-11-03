@@ -216,6 +216,47 @@ func virtioWinISOFileName(version string) string {
 	return fmt.Sprintf("virtio-win-%s.iso", virtioWinISOFileVersion(version))
 }
 
+// virtioWinISOCacheFileName is the local cache file name of the virtio-win ISO. It carries the
+// full release version, so a version bump changes the path and the CI build-cache key instead of
+// restoring a stale ISO that fails the checksum. Renovate updates the same name in the build
+// workflows' cache_files.
+func virtioWinISOCacheFileName(version string) string {
+	return fmt.Sprintf("virtio-win-%s.iso", version)
+}
+
+func virtioWinISOCachePath(version string) string {
+	return GetDirectoriesInstance().CachePath("windows", virtioWinISOCacheFileName(version))
+}
+
+// virtioWinLegacyISOFileName is the unversioned cache file name used before the version was part
+// of the name.
+const virtioWinLegacyISOFileName = "virtio-win.iso"
+
+// migrateLegacyVirtioWinISO moves an ISO cached under the unversioned name to destination when it
+// matches checksum and deletes it otherwise, so it neither triggers a re-download nor stays behind
+// as an orphan. It reports whether destination now holds the verified ISO.
+// scripts/macos/download-virtio-win-iso.sh does the same for the shell build scripts.
+func migrateLegacyVirtioWinISO(destination, checksum string) bool {
+	legacyPath := filepath.Join(filepath.Dir(destination), virtioWinLegacyISOFileName)
+	if _, err := os.Stat(legacyPath); err != nil {
+		return false
+	}
+	if checkIfWebFileDependencyExists(WebFileDependency{LocalPath: legacyPath, Checksum: checksum}) {
+		err := os.Rename(legacyPath, destination)
+		if err == nil {
+			log.Printf("Moved cached virtio-win ISO %s to %s", legacyPath, destination)
+			return true
+		}
+		log.Printf("Warning: could not move cached virtio-win ISO %s to %s: %v", legacyPath, destination, err)
+	}
+	if err := os.Remove(legacyPath); err != nil {
+		log.Printf("Warning: could not remove outdated virtio-win ISO %s: %v", legacyPath, err)
+	} else {
+		log.Printf("Removed outdated virtio-win ISO %s", legacyPath)
+	}
+	return false
+}
+
 func virtioWinISOURLFromArchive(archiveURL, version string) string {
 	return fmt.Sprintf(
 		"%s/virtio-win-%s/%s",
@@ -416,6 +457,7 @@ func reconcileWebFileDependency(ctx context.Context, p *mpb.Progress, dep WebFil
 	if checkIfWebFileDependencyExists(dep) {
 		return nil
 	}
+	removeStaleWebFileDependency(dep)
 	if err := downloadWebFileDependency(ctx, p, dep); err != nil {
 		if ctxErr := buildContextError(ctx); ctxErr != nil {
 			return fmt.Errorf("download of %s stopped: %w", dep.LocalPath, ctxErr)
@@ -447,6 +489,20 @@ func lockWebFileDependency(ctx context.Context, localPath string) (func(), error
 	case <-ctx.Done():
 		return nil, context.Cause(ctx)
 	}
+}
+
+// removeStaleWebFileDependency deletes a local file that failed the existence check, typically
+// an outdated file restored from a cache. Downloading onto it lets go-getter verify the stale
+// content and spend a checksum attempt before the file is replaced.
+func removeStaleWebFileDependency(dep WebFileDependency) {
+	if _, err := os.Stat(dep.LocalPath); err != nil {
+		return
+	}
+	if err := os.Remove(dep.LocalPath); err != nil {
+		log.Printf("Warning: could not remove %s, which does not match its checksum: %v", dep.LocalPath, err)
+		return
+	}
+	log.Printf("Removed %s because it does not match its checksum", dep.LocalPath)
 }
 
 func webFileDependenciesForVMConfig(vmconfig VirtualMachineConfig) []WebFileDependency {
@@ -912,11 +968,14 @@ func getWebFileDependencies() []WebFileDependency {
 			},
 		),
 		{
-			LocalPath:       GetDirectoriesInstance().CachePath("windows", "virtio-win.iso"),
+			LocalPath:       virtioWinISOCachePath(virtioWinVersion),
 			Checksum:        "sha256:" + virtioWinSHA256,
 			Source:          virtioWinISOURLFromArchive(virtioWinFedoraArchiveURL, virtioWinVersion),
 			FallbackSources: virtioWinISOURLs(virtioWinVersion),
 			BeforeHook: func(ctx context.Context) (string, error) {
+				if migrateLegacyVirtioWinISO(virtioWinISOCachePath(virtioWinVersion), "sha256:"+virtioWinSHA256) {
+					return "", nil
+				}
 				return selectFastestVirtioWinISOURL(ctx, virtioWinVersion)
 			},
 			RelatedVmConfigs: []VirtualMachineConfig{

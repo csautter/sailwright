@@ -61,9 +61,6 @@ func TestLinuxBuildWorkflowProbesWindowsAndFullyBuildsUbuntu(t *testing.T) {
 			if entry["packer_start_only"] != want {
 				t.Errorf("job %q matrix entry %s must set packer_start_only: %q", jobID, entry["go_test_name"], want)
 			}
-			if entry["vm_os"] == "windows11" && !slices.Contains(entry.cacheFiles(t), "./.dev-alchemy/cache/windows/virtio-win.iso") {
-				t.Errorf("job %q matrix entry %s must cache the virtio-win ISO", jobID, entry["go_test_name"])
-			}
 		}
 	}
 }

@@ -286,6 +286,7 @@ run_packer_build() {
 		-var "qmp_socket_path=${qmp_socket_path}" \
 		-var "artifact_output_path=${artifact_output_path}" \
 		-var "iso_url=${win11_iso_path}" \
+		-var "virtio_win_iso_name=${virtio_win_iso_name}" \
 		-var "headless=${headless}" \
 		-var "vnc_port=${vnc_port}" \
 		-var "arch=${arch}" \
@@ -562,6 +563,7 @@ download_windows_iso_if_missing "$arch" "$windows_source_iso_path"
 
 bash "${project_root}/scripts/macos/download-utm-guest-tools.sh"
 bash "${project_root}/scripts/macos/download-virtio-win-iso.sh"
+virtio_win_iso_name="$(bash "${project_root}/scripts/macos/download-virtio-win-iso.sh" --print-file-name)" || exit 1
 
 if [[ "$arch" == "arm64" ]]; then
 	if ! bash "${project_root}/scripts/macos/download-arm64-uefi.sh"; then

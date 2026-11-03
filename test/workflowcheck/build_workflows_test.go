@@ -1,6 +1,7 @@
 package workflowcheck
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +13,11 @@ const (
 )
 
 var buildWorkflows = []string{linuxBuildWorkflow, macOSBuildWorkflow}
+
+// versionedVirtioWinISOCachePathRE matches the virtio-win ISO cached under its full release version.
+// An unversioned name would keep restoring an outdated ISO from the build cache after a version
+// bump. TestVirtioWinPinsStayInSync in pkg/build checks the version against the Go pin.
+var versionedVirtioWinISOCachePathRE = regexp.MustCompile(`^\./\.dev-alchemy/cache/windows/virtio-win-0\.1\.[0-9]+-[0-9]+\.iso$`)
 
 func TestBuildWorkflowMatrixEntriesReferenceExistingTests(t *testing.T) {
 	t.Parallel()
@@ -134,6 +140,9 @@ func TestBuildWorkflowsCacheArchitectureSpecificDependencies(t *testing.T) {
 						if !slices.Contains(cached, path) {
 							t.Errorf("job %q matrix entry %s must cache %s", jobID, testName, path)
 						}
+					}
+					if entry["vm_os"] == "windows11" && !slices.ContainsFunc(cached, versionedVirtioWinISOCachePathRE.MatchString) {
+						t.Errorf("job %q matrix entry %s must cache the virtio-win ISO under its versioned name %s", jobID, testName, versionedVirtioWinISOCachePathRE)
 					}
 
 					if entry["vm_os"] == "windows11" {
