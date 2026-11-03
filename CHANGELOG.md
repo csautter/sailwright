@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0](https://github.com/csautter/sailwright/compare/v0.24.2...v0.25.0) (2026-11-02)
+
+
+### Added
+
+* **terraform:** harden state backend storage account ([cb93795](https://github.com/csautter/sailwright/commit/cb93795ef762bd6c9e35620a7faf951af95d4ab6))
+
+
+### Fixed
+
+* **gh-runner-func:** import ResourceManagementClient from new azure-mgmt-resource path ([ebb50a5](https://github.com/csautter/sailwright/commit/ebb50a56658848dbaad951a9a3bef6faed7e32b6))
+* **gh-runner-func:** make delete_resource_group asynchronous and idempotent ([a06e838](https://github.com/csautter/sailwright/commit/a06e838dbfac9187e515e3ef4acd580592b34258))
+* **make:** publish function app with --python flag ([07fa852](https://github.com/csautter/sailwright/commit/07fa852ad2f241077c0071fcd9737a57316f5faa))
+* **provision:** fail when DEV_ALCHEMY_ROLE_SOURCES_CONFIG points at a missing file ([cb6c2bc](https://github.com/csautter/sailwright/commit/cb6c2bca7b887b58b6dd5453158b8befc441fa5a))
+* **provision:** raise WinRM timeouts for local Windows provisioning ([9f3a9e3](https://github.com/csautter/sailwright/commit/9f3a9e3ed8596c04afcecff408378450faebdb07))
+* **provision:** strip PowerShell 7 module paths before starting Windows PowerShell ([85c40e6](https://github.com/csautter/sailwright/commit/85c40e6bfeb39cb535c50821bc7b1c03084ffa76))
+* **provision:** strip PowerShell 7 module paths before starting Windows PowerShell ([10f4617](https://github.com/csautter/sailwright/commit/10f46176c4bd96cb7e65657b73ea11bf83f7b6fa))
+* **provision:** warn on ansible-core &lt; 2.19 with -K and cover --ask-become-pass end to end ([5f1a2ca](https://github.com/csautter/sailwright/commit/5f1a2ca528e7ec081a5bf71554fa7b65920f4d71))
+* **provision:** warn when ansible-core hangs on a wrong become password ([775714b](https://github.com/csautter/sailwright/commit/775714bd22094a6e709535613b0262f44ea730a7))
+* **runner:** truncate overlong output lines instead of aborting stream ([cf86e5e](https://github.com/csautter/sailwright/commit/cf86e5e46cfdb3f3b1afc91e811d1b71cd58f78e))
+* **runner:** truncate overlong output lines instead of aborting stream ([203f35f](https://github.com/csautter/sailwright/commit/203f35fd3284db685411d3ba5fa26e6bd3e172a2))
+* sanitize PSModulePath for every Windows PowerShell child process ([8c3a8c2](https://github.com/csautter/sailwright/commit/8c3a8c2b8d794fcb994fa76d61c8c87e1d154e11))
+* **terraform:** enforce HTTPS on runner function app and document accepted trivy findings ([4673244](https://github.com/csautter/sailwright/commit/46732445b0e87168d48ad4277833b61c75109aa8))
+* **terraform:** use per-unit trivy cache to avoid parallel bundle race ([15adcd1](https://github.com/csautter/sailwright/commit/15adcd178a275edc8813557a9e3bc37d8bf43fa1))
+* **terraform:** use per-unit trivy cache to avoid parallel bundle race ([c3454a6](https://github.com/csautter/sailwright/commit/c3454a657762d117695e34523eb5c11ccd3ab770))
+
+
+### Build
+
+* **devcontainer:** install Azure Functions Core Tools ([f2d440c](https://github.com/csautter/sailwright/commit/f2d440cf970254d81d821b56111424e4f64a4695))
+
+
+### CI
+
+* **ask-become-pass:** pin python 3.13 on macos and check only the test sudoers file ([5b315a2](https://github.com/csautter/sailwright/commit/5b315a25aca12c7f8f1366871e4c1a494d50676b))
+* confirm Hyper-V runner cleanup via delete-resource-group.sh ([4ea02e6](https://github.com/csautter/sailwright/commit/4ea02e6b09eb6299d805e5735f20677da79b6b19))
+* run sailwright provision local --check from pwsh on a GitHub-hosted Windows runner ([89b3497](https://github.com/csautter/sailwright/commit/89b34979972042eb06bf1ef93d6d97af9202f803))
+* run winpsenv tests and widen Windows PowerShell workflow triggers ([7dc940a](https://github.com/csautter/sailwright/commit/7dc940ac870a8489342293d7b3cbe19e01c9b292))
+
 ## [0.24.2](https://github.com/csautter/sailwright/compare/v0.24.1...v0.24.2) (2026-10-31)
 
 
