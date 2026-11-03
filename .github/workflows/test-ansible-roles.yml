@@ -22,10 +22,7 @@ on:
       - "deployments/utm/**"
       - "scripts/linux/**"
       - "scripts/macos/**"
-      - "scripts/windows/local-windows-provision-ssh-bootstrap.ps1"
-      - "scripts/windows/local-windows-provision-ssh-cleanup.ps1"
-      - "scripts/windows/local-windows-provision-winrm-bootstrap.ps1"
-      - "scripts/windows/local-windows-provision-winrm-cleanup.ps1"
+      - "scripts/windows/**"
       - "runtimeassets.go"
       - ".github/workflows/test-ansible-roles.yml"
   pull_request:
@@ -48,10 +45,7 @@ on:
       - "deployments/utm/**"
       - "scripts/linux/**"
       - "scripts/macos/**"
-      - "scripts/windows/local-windows-provision-ssh-bootstrap.ps1"
-      - "scripts/windows/local-windows-provision-ssh-cleanup.ps1"
-      - "scripts/windows/local-windows-provision-winrm-bootstrap.ps1"
-      - "scripts/windows/local-windows-provision-winrm-cleanup.ps1"
+      - "scripts/windows/**"
       - "runtimeassets.go"
       - ".github/workflows/test-ansible-roles.yml"
 

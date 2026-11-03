@@ -70,6 +70,7 @@
     path: "{{ ansible_env.HOME }}/.zshrc"
     line: "jenv global {{ jdk_default_version }}"
     insertafter: EOF
+    create: true
 
 - name: Ensure jenv plugins directory exists
   file:
