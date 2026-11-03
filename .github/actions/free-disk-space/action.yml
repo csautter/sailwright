@@ -1,12 +1,25 @@
 name: 'Free Runner Disk Space'
 description: >
   Reclaims disk space on GitHub-hosted Linux runners by removing large unused
-  toolsets (Android SDK, .NET, Haskell, CodeQL, etc.) and pruning Docker caches.
+  toolsets (Android SDK, .NET, Haskell, CodeQL, etc.) and optionally pruning
+  Docker caches. Destructive: only runs on ephemeral GitHub-hosted runners and
+  is skipped on self-hosted runners.
+
+inputs:
+  prune-docker:
+    description: >
+      Whether to prune all pre-cached Docker images, build caches and volumes.
+      Frees several GB but is one of the slowest cleanup steps; disable it in
+      jobs that do not need the extra space.
+    required: false
+    default: 'true'
 
 runs:
   using: "composite"
   steps:
     - name: Free runner disk space
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && runner.environment == 'github-hosted'
       shell: bash
+      env:
+        FREE_DISK_SPACE_PRUNE_DOCKER: ${{ inputs.prune-docker }}
       run: bash "${{ github.action_path }}/scripts/free-disk-space.sh"
