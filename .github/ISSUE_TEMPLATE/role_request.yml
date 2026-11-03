@@ -1,0 +1,32 @@
+name: Role request
+description: Request an Ansible role for a tool.
+labels: [enhancement]
+body:
+  - type: input
+    id: tool
+    attributes:
+      label: Requested tool
+      description: Name the tool and describe what you want the role to configure.
+    validations:
+      required: true
+  - type: textarea
+    id: target-os
+    attributes:
+      label: Target operating systems
+      description: Include OS versions and architectures where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: install-method
+    attributes:
+      label: Preferred install method
+      description: For example, a package manager, vendor installer, binary archive, or source build. Say if you have no preference.
+    validations:
+      required: true
+  - type: textarea
+    id: links
+    attributes:
+      label: Links
+      description: Link to the tool homepage, installation instructions, and relevant packages or releases.
+    validations:
+      required: true
