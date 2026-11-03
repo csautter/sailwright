@@ -1,0 +1,195 @@
+name: Test Dependency Installers
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cmd/main.go"
+      - "cmd/cmd/provision.go"
+      - "cmd/cmd/root.go"
+      - "pkg/provision/**"
+      - "pkg/build/**"
+      - "runtimeassets.go"
+      - "inventory/**"
+      - "ansible.cfg"
+      - "go.mod"
+      - "go.sum"
+      - "test/askbecomepass/**"
+      - "scripts/linux/**"
+      - "scripts/macos/**"
+      - "scripts/common/**"
+      - ".github/workflows/test-dependency-installers.yml"
+  pull_request:
+    paths:
+      - "cmd/main.go"
+      - "cmd/cmd/provision.go"
+      - "cmd/cmd/root.go"
+      - "pkg/provision/**"
+      - "pkg/build/**"
+      - "runtimeassets.go"
+      - "inventory/**"
+      - "ansible.cfg"
+      - "go.mod"
+      - "go.sum"
+      - "test/askbecomepass/**"
+      - "scripts/linux/**"
+      - "scripts/macos/**"
+      - "scripts/common/**"
+      - ".github/workflows/test-dependency-installers.yml"
+  schedule:
+    # Weekly, to catch changes in ansible-core and the runner images.
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  ask-become-pass:
+    name: provision local -K (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux installer
+            os: ubuntu-24.04
+            locale: C.UTF-8
+            apt_package: hello
+          - name: macos installer
+            os: macos-latest
+            locale: en_US.UTF-8
+            apt_package: ""
+    env:
+      TEST_USER: swaskpass
+      TEST_ROOT: /tmp/sw-askpass
+      TEST_WORKDIR: /tmp/sw-askpass-work
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build the CLI
+        run: |
+          make build-cli-local
+          mkdir -p "$TEST_ROOT/bin"
+          cp "dist/$(go env GOOS)-$(go env GOARCH)/sailwright" "$TEST_ROOT/bin/sailwright"
+          "$TEST_ROOT/bin/sailwright" --help >/dev/null
+
+      - name: Run the dependency installer
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            bash scripts/macos/sailwright-install-dependencies.sh
+          else
+            bash scripts/linux/sailwright-install-dependencies.sh
+          fi
+
+      - name: Check the installer-provided ansible-core
+        run: |
+          ansible-playbook --version | tee "$RUNNER_TEMP/ansible-version"
+          python3 - "$RUNNER_TEMP/ansible-version" <<'PYTHON'
+          import pathlib, re, sys
+          output = pathlib.Path(sys.argv[1]).read_text()
+          match = re.search(r"\[core (\d+)\.(\d+)\.(\d+)[^\]]*\]", output)
+          assert match, f"Cannot identify ansible-core: {output}"
+          assert tuple(map(int, match.groups())) >= (2, 19, 0), output
+          PYTHON
+          echo "ANSIBLE_BIN_DIR=$(dirname "$(command -v ansible-playbook)")" >> "$GITHUB_ENV"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            echo "TEST_PYTHON=$(brew --prefix)/opt/python@3.13/bin/python3.13" >> "$GITHUB_ENV"
+          else
+            echo "TEST_PYTHON=/usr/bin/python3" >> "$GITHUB_ENV"
+          fi
+
+      - name: Smoke test local provisioning in check mode
+        run: |
+          cat > "$TEST_ROOT/smoke.yml" <<'YAML'
+          - hosts: all
+            gather_facts: false
+            tasks:
+              - name: Confirm local execution
+                ansible.builtin.assert:
+                  that: ansible_connection == 'local'
+          YAML
+          cd /tmp
+          ANSIBLE_PYTHON_INTERPRETER="$TEST_PYTHON" \
+            "$TEST_ROOT/bin/sailwright" provision local --check --yes --playbook "$TEST_ROOT/smoke.yml"
+
+      - name: Copy tests and fixture where the test user can read them
+        run: |
+          cp -R test/askbecomepass "$TEST_ROOT/tests"
+          chmod -R a+rX "$TEST_ROOT"
+
+      - name: Generate the test user's password
+        run: |
+          password="$(openssl rand -hex 16)"
+          echo "::add-mask::$password"
+          echo "TEST_PASSWORD=$password" >> "$GITHUB_ENV"
+
+      - name: Create the test user (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo useradd --create-home --shell /bin/bash "$TEST_USER"
+          echo "$TEST_USER:$TEST_PASSWORD" | sudo chpasswd
+
+      - name: Create the test user (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          sudo sysadminctl -addUser "$TEST_USER" -fullName "Sailwright ask-become-pass test" \
+            -password "$TEST_PASSWORD" -shell /bin/bash
+          dscl . -read "/Users/$TEST_USER" UniqueID
+
+      - name: Require a password for the test user's sudo
+        run: |
+          rule="$RUNNER_TEMP/sudoers-$TEST_USER"
+          {
+            echo "$TEST_USER ALL=(ALL) ALL"
+            # No cached credentials and no first-use lecture: every sudo call
+            # needs the password, and the output stays predictable.
+            echo "Defaults:$TEST_USER timestamp_timeout=0, lecture=never"
+          } > "$rule"
+          sudo visudo -cf "$rule"
+          sudo mkdir -p /etc/sudoers.d
+          sudo install -m 0440 "$rule" "/etc/sudoers.d/$TEST_USER"
+          # Check only this file: the runner image's own sudoers files may not
+          # pass `visudo -c` (e.g. /etc/sudoers.d/runner has mode 0644).
+          sudo visudo -cf "/etc/sudoers.d/$TEST_USER"
+          # Guard: the test is only meaningful if sudo really asks.
+          if sudo -u "$TEST_USER" sudo -n true 2>/dev/null; then
+            echo "::error::sudo works without a password for $TEST_USER"
+            exit 1
+          fi
+          sudo install -d -o "$TEST_USER" -m 0700 "$TEST_WORKDIR"
+
+      - name: Run the --ask-become-pass end-to-end tests
+        run: |
+          interpreter=auto_silent
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            interpreter="$TEST_PYTHON"
+          fi
+          # Run as the test user, from a directory outside any git checkout, so
+          # the binary uses its embedded project like a released binary does.
+          cd /
+          sudo -u "$TEST_USER" env \
+            HOME="$TEST_WORKDIR" \
+            PATH="$ANSIBLE_BIN_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+            LANG="${{ matrix.locale }}" \
+            LC_ALL="${{ matrix.locale }}" \
+            ANSIBLE_PYTHON_INTERPRETER="$interpreter" \
+            SAILWRIGHT_ASKPASS_BIN="$TEST_ROOT/bin/sailwright" \
+            SAILWRIGHT_ASKPASS_PASSWORD="$TEST_PASSWORD" \
+            SAILWRIGHT_ASKPASS_FIXTURE="$TEST_ROOT/tests/fixture" \
+            SAILWRIGHT_ASKPASS_WORKDIR="$TEST_WORKDIR" \
+            SAILWRIGHT_ASKPASS_APT_PACKAGE="${{ matrix.apt_package }}" \
+            SAILWRIGHT_ASKPASS_RUN_TIMEOUT=120 \
+            "$TEST_PYTHON" -m unittest discover -s "$TEST_ROOT/tests" -v
