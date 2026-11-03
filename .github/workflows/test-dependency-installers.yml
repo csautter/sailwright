@@ -86,6 +86,21 @@ jobs:
           cp "dist/$(go env GOOS)-$(go env GOARCH)/sailwright" "$TEST_ROOT/bin/sailwright"
           "$TEST_ROOT/bin/sailwright" --help >/dev/null
 
+      - name: Exclude the Linux runner's preinstalled Ansible
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -f /usr/local/bin/ansible /usr/local/bin/ansible-*
+          echo "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" >> "$GITHUB_ENV"
+
+      - name: Remove the runner's preinstalled Ansible
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          if brew list --formula ansible >/dev/null 2>&1; then
+            brew unpin ansible 2>/dev/null || true
+            brew uninstall --force ansible
+          fi
+
       - name: Run the dependency installer
         run: |
           if [[ "$RUNNER_OS" == "macOS" ]]; then
