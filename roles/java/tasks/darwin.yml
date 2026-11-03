@@ -43,7 +43,7 @@
     create: yes
 
 - name: Discover Java home paths
-  command: /usr/libexec/java_home -v {{ item }}
+  command: /usr/libexec/java_home -F -v {{ '1.8' if item == 8 else item }}
   loop: "{{ jdk_versions }}"
   register: java_home_paths
   changed_when: false
