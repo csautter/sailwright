@@ -32,7 +32,11 @@ while [[ $# -gt 0 ]]; do
 		fi
 		;;
 	--name)
-		instance_name="$2"
+		if [[ -z "${2:-}" || ! "$2" =~ ^[a-z0-9]([a-z0-9-]{0,22}[a-z0-9])?$ || "$2" == "default" || "$2" == "all" ]]; then
+            echo "Invalid instance name: use 1–24 lowercase letters, digits or internal hyphens; default and all are reserved." >&2
+            exit 1
+        fi
+        instance_name="$2"
 		shift 2
 		;;
 	--verbose)
