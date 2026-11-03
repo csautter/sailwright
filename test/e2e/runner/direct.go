@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strconv"
+	"time"
 )
 
 // DirectExecutor runs the sailwright binary itself. It is meant for disposable CI
@@ -44,6 +45,10 @@ func (d *DirectExecutor) HostChangesAllowed(context.Context) (bool, string) {
 	return false, "set SAILWRIGHT_E2E_ALLOW_HOST_CHANGES=1 to run host-modifying steps directly"
 }
 
+// directCancelGracePeriod matches the time the gateway gives a cancelled job between
+// SIGTERM and SIGKILL.
+const directCancelGracePeriod = 10 * time.Second
+
 // Run implements Executor.
 func (d *DirectExecutor) Run(ctx context.Context, req StepRequest) (Result, error) {
 	argv, err := DirectArgv(req)
@@ -72,6 +77,9 @@ func (d *DirectExecutor) List(ctx context.Context, command string) ([]ListedTarg
 func (d *DirectExecutor) exec(ctx context.Context, argv []string) (string, int, error) {
 	// #nosec G204 -- the operator chooses the binary; argv comes from repository scenarios.
 	cmd := exec.CommandContext(ctx, d.Binary, argv...)
+	// Cancel like the gateway does: SIGTERM first, SIGKILL after the grace period.
+	cmd.Cancel = func() error { return terminateProcess(cmd.Process) }
+	cmd.WaitDelay = directCancelGracePeriod
 	var buf bytes.Buffer
 	var out io.Writer = &buf
 	if d.Stream != nil {

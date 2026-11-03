@@ -164,10 +164,19 @@ func runStep(ctx context.Context, step Step, executor Executor, opts RunOptions)
 
 	opts.Logf("step %q (%s)", step.Name, step.Op)
 	started := opts.Now()
-	result, err := executor.Run(ctx, StepRequest{Step: step, Target: opts.Target, Getenv: opts.Getenv, Logf: opts.Logf})
+	runCtx := ctx
+	if step.cancelAfter > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, step.cancelAfter)
+		defer cancel()
+	}
+	result, err := executor.Run(runCtx, StepRequest{Step: step, Target: opts.Target, Getenv: opts.Getenv, Logf: opts.Logf})
 	report.Duration = opts.Now().Sub(started)
 	report.Argv = result.Argv
 	report.OutputTail = tail(result.Output, outputTailLines)
+	if step.cancelAfter > 0 {
+		return finishCancelledStep(ctx, step, runCtx, report, executor, opts.Target)
+	}
 	if err != nil {
 		report.Status = StatusFailed
 		report.Reason = err.Error()
@@ -182,6 +191,29 @@ func runStep(ctx context.Context, step Step, executor Executor, opts RunOptions)
 		return report
 	}
 	report.Status = StatusPassed
+	return report
+}
+
+// finishCancelledStep evaluates a step with cancel_after: the command must still have
+// been running when it was cancelled, and expect.state must hold afterwards.
+func finishCancelledStep(ctx context.Context, step Step, runCtx context.Context, report StepReport, executor Executor, target Target) StepReport {
+	if runCtx.Err() == nil {
+		report.Status = StatusFailed
+		report.Reason = fmt.Sprintf("command finished before it was cancelled after %s", step.cancelAfter)
+		return report
+	}
+	if step.Expect.State != nil {
+		stateOnly := step
+		stateOnly.Expect = Expect{State: step.Expect.State}
+		code := stateOnly.Expect.expectedExitCode()
+		if problems := checkExpectations(ctx, stateOnly, Result{ExitCode: code}, 0, executor, target); len(problems) > 0 {
+			report.Status = StatusFailed
+			report.Reason = strings.Join(problems, "; ")
+			return report
+		}
+	}
+	report.Status = StatusPassed
+	report.Reason = fmt.Sprintf("cancelled after %s", step.cancelAfter)
 	return report
 }
 
