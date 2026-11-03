@@ -197,6 +197,12 @@ type provisionRequest struct {
 }
 
 func executeProvision(cmd *cobra.Command, req provisionRequest) error {
+	if err := alchemy_build.ValidateInstanceName(req.name); err != nil {
+		return err
+	}
+	if req.name != "" && (req.target == "local" || req.target == "all") {
+		return fmt.Errorf("--name cannot be combined with %s", req.target)
+	}
 	osName := req.target
 	options := alchemy_provision.ProvisionOptions{
 		Check:                           req.check,

@@ -137,3 +137,21 @@ func TestNamedHypervFallbackUsesExactProviderName(t *testing.T) {
 		t.Fatal("direct action accepted a default instance")
 	}
 }
+
+func TestTartDiscoverySupportsLegacyListing(t *testing.T) {
+	old := runInstanceDiscoveryCommand
+	defer func() { runInstanceDiscoveryCommand = old }()
+	calls := 0
+	runInstanceDiscoveryCommand = func(_ string, _ time.Duration, _ string, args []string) (string, error) {
+		calls++
+		if len(args) > 1 {
+			return "not JSON", nil
+		}
+		return "Source Name Disk Size\nlocal macos-arm64-work-dev-alchemy 20 GB\nOCI ghcr.io/example/macos:latest 20 GB", nil
+	}
+	vm := build.VirtualMachineConfig{OS: "macos", Arch: "arm64", VirtualizationEngine: build.VirtualizationEngineTart}
+	found, err := DiscoverInstances([]build.VirtualMachineConfig{vm})
+	if err != nil || len(found) != 1 || found[0].Name != "work" || calls != 2 {
+		t.Fatal(found, err, calls)
+	}
+}

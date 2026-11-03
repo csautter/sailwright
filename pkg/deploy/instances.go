@@ -13,6 +13,8 @@ import (
 	build "github.com/csautter/dev-alchemy/pkg/build"
 )
 
+var runInstanceDiscoveryCommand = runCommandWithCombinedOutput
+
 // DiscoverInstances queries the hypervisor, not the registry. Defaults are supplied
 // by the caller, so old installations need no metadata or migration.
 func DiscoverInstances(bases []build.VirtualMachineConfig) ([]build.VirtualMachineConfig, error) {
@@ -55,24 +57,33 @@ func providerInstanceNames(engine build.VirtualizationEngine) ([]string, error) 
 	case build.VirtualizationEngineHyperv:
 		output, err = runHypervCommandWithCombinedOutput(project, instanceIDQueryTimeout, "powershell", []string{"-NoProfile", "-NonInteractive", "-Command", "Get-VM | Select-Object -ExpandProperty Name"})
 	case build.VirtualizationEngineTart:
-		output, err = runCommandWithCombinedOutput(project, instanceIDQueryTimeout, "tart", []string{"list", "--format", "json"})
-		if err != nil {
-			return nil, err
-		}
+		output, err = runInstanceDiscoveryCommand(project, instanceIDQueryTimeout, "tart", []string{"list", "--format", "json"})
 		var entries []struct {
 			Name   string `json:"Name"`
 			Source string `json:"Source"`
 		}
-		if err = json.Unmarshal([]byte(output), &entries); err != nil {
+		if err == nil && json.Unmarshal([]byte(output), &entries) == nil {
+			var names []string
+			for _, entry := range entries {
+				if strings.EqualFold(entry.Source, "local") {
+					names = append(names, entry.Name)
+				}
+			}
+			return names, nil
+		}
+		output, err = runInstanceDiscoveryCommand(project, instanceIDQueryTimeout, "tart", []string{"list"})
+		if err != nil {
 			return nil, err
 		}
 		var names []string
-		for _, entry := range entries {
-			if strings.EqualFold(entry.Source, "local") {
-				names = append(names, entry.Name)
+		for _, line := range strings.Split(output, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && strings.EqualFold(fields[0], "local") {
+				names = append(names, fields[1])
 			}
 		}
 		return names, nil
+
 	case build.VirtualizationEngineUtm:
 		home, err := os.UserHomeDir()
 		if err != nil {
