@@ -40,6 +40,7 @@
     link: /usr/bin/java
     path: "/usr/lib/jvm/temurin-{{ item }}-jdk-{{ (ansible_architecture == 'aarch64') | ternary('arm64', (ansible_architecture == 'x86_64') | ternary('amd64', ansible_architecture)) }}/bin/java"
     priority: "{{ item }}"
+    state: present
   loop: "{{ jdk_versions }}"
   become: true
   when: not ansible_check_mode
@@ -51,7 +52,19 @@
     link: /usr/bin/javac
     path: "/usr/lib/jvm/temurin-{{ item }}-jdk-{{ (ansible_architecture == 'aarch64') | ternary('arm64', (ansible_architecture == 'x86_64') | ternary('amd64', ansible_architecture)) }}/bin/javac"
     priority: "{{ item }}"
+    state: present
   loop: "{{ jdk_versions }}"
+  become: true
+  when: not ansible_check_mode
+
+- name: Select the default Java and Javac alternatives
+  community.general.alternatives:
+    name: "{{ item }}"
+    path: "/usr/lib/jvm/temurin-{{ jdk_default_version }}-jdk-{{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}/bin/{{ item }}"
+    state: selected
+  loop:
+    - java
+    - javac
   become: true
   when: not ansible_check_mode
 
