@@ -1,0 +1,71 @@
+name: Bug report
+description: Report a reproducible problem with Sailwright.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Include the smallest configuration or playbook that reproduces the problem. Remove credentials and other private data from commands and logs.
+  - type: input
+    id: host-os
+    attributes:
+      label: Host OS and version
+      placeholder: Ubuntu 24.04.3, macOS 26.1, or Windows 11 25H2
+    validations:
+      required: true
+  - type: input
+    id: architecture
+    attributes:
+      label: Host architecture
+      placeholder: arm64 or amd64 (uname -m on Unix)
+    validations:
+      required: true
+  - type: textarea
+    id: sailwright-version
+    attributes:
+      label: Sailwright version
+      description: Paste the output of `sailwright --version`. If your build does not support this flag, include the release tag or source commit and how you installed it.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command and reproduction steps
+      description: Include all flags, relevant configuration or a minimal playbook, and the steps needed to reproduce the problem.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: VM backend
+      options:
+        - Tart
+        - UTM
+        - Hyper-V
+        - VirtualBox
+        - QEMU
+        - Docker
+        - local provisioning
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output and logs
+      description: Paste the complete relevant output, including the error. For provisioning issues, include `ansible-playbook --version` output.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+    validations:
+      required: true

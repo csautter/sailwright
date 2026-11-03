@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Repository documentation
+    url: https://github.com/csautter/sailwright/tree/main/docs
+    about: Read installation, provisioning, and troubleshooting guides.
+  - name: Sailwright website
+    url: https://sailwright.dev
+    about: Find Sailwright documentation and getting started information.
