@@ -60,6 +60,9 @@ func isHypervVagrantTarget(config alchemy_build.VirtualMachineConfig) bool {
 }
 
 func RunHypervVagrantDeployOnWindows(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isHypervVagrantTarget(config) {
 		return fmt.Errorf("hyper-v vagrant deploy is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -186,6 +189,9 @@ func hypervDisableUnsupportedNestedVirtualization(workingDir string, env []strin
 }
 
 func RunHypervVagrantDestroyOnWindows(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isHypervVagrantTarget(config) {
 		return fmt.Errorf("hyper-v vagrant destroy is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -213,6 +219,9 @@ func RunHypervVagrantDestroyOnWindows(config alchemy_build.VirtualMachineConfig)
 		}
 	}
 
+	if config.Name != "" {
+		return nil
+	}
 	boxInstalled, err := hypervVagrantBoxInstalledChecker(projectDir, settings.BoxName)
 	if err != nil {
 		return err
@@ -233,6 +242,9 @@ func RunHypervVagrantDestroyOnWindows(config alchemy_build.VirtualMachineConfig)
 }
 
 func RunHypervVagrantStartOnWindows(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isHypervVagrantTarget(config) {
 		return fmt.Errorf("hyper-v vagrant start is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -262,6 +274,9 @@ func RunHypervVagrantStartOnWindows(config alchemy_build.VirtualMachineConfig) e
 }
 
 func RunHypervVagrantStopOnWindows(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isHypervVagrantTarget(config) {
 		return fmt.Errorf("hyper-v vagrant stop is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -398,10 +413,11 @@ func waitForHypervVagrantStop(config alchemy_build.VirtualMachineConfig, timeout
 }
 
 func resolveHypervVagrantDeploySettings(config alchemy_build.VirtualMachineConfig, projectDir string) (hypervVagrantDeploySettings, error) {
+	config.VirtualizationEngine = alchemy_build.VirtualizationEngineHyperv
 	switch config.OS {
 	case "windows11":
 		boxName := windowsHypervVagrantBoxName
-		vmName := boxName
+		vmName := alchemy_build.InstanceName(config)
 		return hypervVagrantDeploySettings{
 			BoxName:    boxName,
 			BoxPath:    getHypervWindowsBoxPath(config),
@@ -418,7 +434,7 @@ func resolveHypervVagrantDeploySettings(config alchemy_build.VirtualMachineConfi
 			ubuntuType = "server"
 		}
 		boxName := fmt.Sprintf("linux-ubuntu-%s-packer", ubuntuType)
-		vmName := boxName
+		vmName := alchemy_build.InstanceName(config)
 		return hypervVagrantDeploySettings{
 			BoxName:    boxName,
 			BoxPath:    getHypervUbuntuBoxPath(config),
