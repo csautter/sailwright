@@ -10,6 +10,7 @@ import (
 
 	"github.com/csautter/dev-alchemy/internal/winpsenv"
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
+	"github.com/csautter/dev-alchemy/pkg/provision"
 )
 
 type installCommandSpec struct {
@@ -191,7 +192,13 @@ It is needed to create and run sailwright VMs, not for local provisioning.`,
 		}
 
 		fmt.Printf("🔧 Running dependency installer for host OS: %s\n", hostOs)
-		return runInstallCommand(spec)
+		if err := runInstallCommand(spec); err != nil {
+			return err
+		}
+		if hostOs != alchemy_build.HostOsWindows {
+			return provision.CheckInstalledAnsibleCore()
+		}
+		return nil
 	},
 }
 

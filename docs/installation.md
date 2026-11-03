@@ -14,6 +14,34 @@ the ways below; all of them install the same release archives from
 After installing, set up the host dependencies with `sailwright install`; see
 [Host dependencies](#host-dependencies).
 
+## Host dependencies
+
+Run `sailwright install` after installing the CLI. On Ubuntu 24.04, Ubuntu
+26.04, and Debian 13 it installs Ansible through the distribution's `pipx`,
+using an isolated environment under `/opt/sailwright/pipx`. Commands including
+`ansible-playbook` and `ansible-galaxy` are linked into `/usr/local/bin`.
+The full Ansible collection bundle and `pywinrm` remain available; pip never
+modifies the distribution's Python environment.
+
+The dependency installers and `sailwright install` require ansible-core
+**2.19.0 or newer** and verify that `ansible-playbook --version` starts
+successfully. This version detects rejected sudo passwords during local
+provisioning. Self-installed older Ansible still triggers a warning for `-K`.
+If validation finds an older executable, check `command -v ansible-playbook`
+and put `/usr/local/bin` before its directory on `PATH`, or activate an
+environment with a supported ansible-core.
+
+Rerun `sailwright install` to refresh Linux dependencies to the latest Ansible
+compatible with the distribution Python. To remove its isolated Ansible
+installation and command links:
+
+```bash
+sudo env PIPX_HOME=/opt/sailwright/pipx PIPX_BIN_DIR=/usr/local/bin pipx uninstall ansible
+```
+
+This does not remove other host dependencies or an Ansible package installed
+separately through apt.
+
 ## Homebrew
 
 On macOS or Linux:

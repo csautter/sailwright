@@ -101,8 +101,9 @@ A wrong password only fails cleanly with ansible-core 2.19 or newer. Older
 versions, such as ansible-core 2.16 from the Ubuntu 24.04 `ansible` apt package,
 hang at the first task that uses `become`; press Ctrl+C and run again.
 Sailwright prints a warning before the run when it finds such a version. Check
-yours with `ansible-playbook --version`. To get a newer one, install
-`ansible-core` with `pipx` or from the Ansible PPA on Ubuntu.
+yours with `ansible-playbook --version`. Run `sailwright install` to install
+a supported version (see [host dependencies](installation.md#host-dependencies)),
+or install `ansible-core` with `pipx` or from the Ansible PPA on Ubuntu.
 
 ## Windows local behavior
 
