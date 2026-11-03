@@ -16,6 +16,7 @@ var listCommands = []string{"build", "create", "start", "stop", "destroy", "prov
 
 // Target is one entry of `<command> list --json` reported by the pinned binary.
 type Target struct {
+	Name   string            `json:"name"`
 	OS     string            `json:"os"`
 	Type   string            `json:"type"`
 	Arch   string            `json:"arch"`
@@ -138,10 +139,13 @@ func ParseTargetListing(output []byte) ([]Target, error) {
 		if err := json.Unmarshal(line, &listing); err != nil {
 			return nil, fmt.Errorf("decode listing: %w", err)
 		}
-		if listing.SchemaVersion != 1 {
+		if listing.SchemaVersion != 1 && listing.SchemaVersion != 2 {
 			return nil, fmt.Errorf("unsupported listing schema_version %d", listing.SchemaVersion)
 		}
 		for _, target := range listing.Targets {
+			if err := validateInstanceName(target.Name); err != nil {
+				return nil, err
+			}
 			for _, value := range []string{target.OS, target.Type, target.Arch, target.Engine} {
 				if value != "" && !identifierPattern.MatchString(value) {
 					return nil, fmt.Errorf("listing contains an invalid identifier %q", value)

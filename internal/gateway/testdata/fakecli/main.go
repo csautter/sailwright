@@ -36,6 +36,7 @@ type invocation struct {
 }
 
 type target struct {
+	Name   string            `json:"name"`
 	OS     string            `json:"os"`
 	Type   string            `json:"type"`
 	Arch   string            `json:"arch"`
@@ -76,7 +77,7 @@ func main() {
 		if delay, err := time.ParseDuration(readState("identity-delay")); err == nil {
 			time.Sleep(delay)
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "os": args[2], "type": typ, "arch": arch, "engine": "qemu", "exists": readState(id) != "", "instance_id": readState(id + ".instance")})
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "name": targetName(args), "os": args[2], "type": typ, "arch": arch, "engine": "qemu", "exists": readState(id) != "", "instance_id": readState(id + ".instance")})
 		return
 	}
 	if len(args) > 2 && args[0] == "vm" && args[1] == "info" {
@@ -102,7 +103,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, warning)
 		}
 		password := os.Getenv("FAKE_VM_PASSWORD")
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "os": args[2], "type": typ, "arch": arch, "engine": "qemu", "state": "running", "address": address, "network_mode": "unknown", "protocol": protocol, "port": port, "username": "packer", "password": password, "instance_id": readState(id + ".instance")})
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "name": targetName(args), "os": args[2], "type": typ, "arch": arch, "engine": "qemu", "state": "running", "address": address, "network_mode": "unknown", "protocol": protocol, "port": port, "username": "packer", "password": password, "instance_id": readState(id + ".instance")})
 		return
 	}
 	if args[0] == "__session" {
@@ -208,11 +209,29 @@ func printPlaybook(args []string) {
 
 func printListing(command string) {
 	targets := append([]target(nil), baseTargets...)
+	entries, _ := os.ReadDir(os.Getenv("FAKE_CLI_STATE"))
+	for _, entry := range entries {
+		if state := readState(entry.Name()); state != "running" && state != "stopped" {
+			continue
+		}
+		for _, base := range baseTargets {
+			prefix := fmt.Sprintf("%s-%s-%s-", base.OS, base.Type, base.Arch)
+			if strings.HasPrefix(entry.Name(), prefix) {
+				base.Name = strings.TrimPrefix(entry.Name(), prefix)
+				targets = append(targets, base)
+				break
+			}
+		}
+	}
 	if command == "provision" {
 		targets = append(targets, target{OS: "local", Engine: "local"})
 	}
 	for i := range targets {
-		state := readState(fmt.Sprintf("%s-%s-%s", targets[i].OS, targets[i].Type, targets[i].Arch))
+		id := fmt.Sprintf("%s-%s-%s", targets[i].OS, targets[i].Type, targets[i].Arch)
+		if targets[i].Name != "" {
+			id += "-" + targets[i].Name
+		}
+		state := readState(id)
 		if state == "" {
 			state = "missing"
 		}
@@ -234,7 +253,7 @@ func printListing(command string) {
 			targets[i].Exists = &exists
 		}
 	}
-	out, _ := json.Marshal(map[string]any{"schema_version": 1, "targets": targets})
+	out, _ := json.Marshal(map[string]any{"schema_version": 2, "targets": targets})
 	fmt.Println("diagnostic line before the document")
 	fmt.Println(string(out))
 }
@@ -272,7 +291,11 @@ func targetID(args []string) string {
 			arch = args[i+1]
 		}
 	}
-	return fmt.Sprintf("%s-%s-%s", osName, osType, arch)
+	id := fmt.Sprintf("%s-%s-%s", osName, osType, arch)
+	if name := targetName(args); name != "" {
+		id += "-" + name
+	}
+	return id
 }
 
 // writeConsoleFrames writes two frames: a dark screen and one with a bright "dialog".
@@ -459,4 +482,13 @@ func contains(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func targetName(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--name" {
+			return args[i+1]
+		}
+	}
+	return ""
 }

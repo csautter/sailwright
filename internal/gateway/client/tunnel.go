@@ -15,7 +15,7 @@ import (
 )
 
 // OpenTunnel upgrades an authenticated HTTP/1 connection to a raw guest stream.
-func (e Endpoint) OpenTunnel(ctx context.Context, osName, typ, arch string, port int) (net.Conn, error) {
+func (e Endpoint) OpenTunnel(ctx context.Context, osName, typ, arch string, port int, names ...string) (net.Conn, error) {
 	if port != 22 && port != 5985 && port != 5986 {
 		return nil, fmt.Errorf("port must be 22, 5985 or 5986")
 	}
@@ -28,6 +28,9 @@ func (e Endpoint) OpenTunnel(ctx context.Context, osName, typ, arch string, port
 	}
 	endpoint.Path, endpoint.RawPath, endpoint.RawQuery, endpoint.Fragment = "/tunnel", "", "", ""
 	values := url.Values{"os": {osName}, "type": {typ}, "arch": {arch}, "port": {strconv.Itoa(port)}}
+	if len(names) > 0 && names[0] != "" {
+		values.Set("name", names[0])
+	}
 	endpoint.RawQuery = values.Encode()
 	var conn net.Conn
 	dialer := net.Dialer{Timeout: 10 * time.Second}

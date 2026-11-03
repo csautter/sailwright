@@ -52,6 +52,7 @@ var vmCommands = map[OpKind]bool{OpBuild: true, OpCreate: true, OpStart: true, O
 
 // Operation is a fully validated safe-set operation.
 type Operation struct {
+	Name     string
 	Kind     OpKind
 	Command  string   // for OpList: the listed command
 	HelpPath []string // for OpHelp: the command path, e.g. ["provision"]
@@ -100,6 +101,9 @@ func (o Operation) Argv(ctx GrammarContext) []string {
 	if o.Type != "" {
 		argv = append(argv, "--type", o.Type)
 	}
+	if o.Name != "" {
+		argv = append(argv, "--name", o.Name)
+	}
 	switch o.Kind {
 	case OpBuild:
 		if o.Engine != "" {
@@ -130,17 +134,21 @@ func (o Operation) Argv(ctx GrammarContext) []string {
 
 // VMTarget names one VM the way the CLI does: Type is empty for OSes without types.
 type VMTarget struct {
-	OS, Type, Arch string
+	OS, Type, Arch, Name string
 }
 
 // Key is the os/type/arch form used for locks, ownership and tunnel targets.
-func (t VMTarget) Key() string { return vmKey(t.OS, t.Type, t.Arch) }
+func (t VMTarget) Key() string { return vmKey(t.OS, t.Type, t.Arch, t.Name) }
 
 // ResolveVMTarget validates a target and fills the CLI defaults (arch amd64; type
 // server for OSes that list types, none for the others) against the targets that
 // `sailwright <listCommand> list` reports. Every tool that names a VM goes through
 // it, so jobs, vm_info, tunnels and ownership records agree on the VM's name.
-func (ctx GrammarContext) ResolveVMTarget(listCommand, osName, osType, arch, engine string) (VMTarget, error) {
+func (ctx GrammarContext) ResolveVMTarget(listCommand, osName, osType, arch, engine string, names ...string) (VMTarget, error) {
+	name := firstInstanceName(names)
+	if err := validateInstanceName(name); err != nil {
+		return VMTarget{}, err
+	}
 	if arch == "" {
 		arch = defaultArch
 	}
@@ -163,7 +171,7 @@ func (ctx GrammarContext) ResolveVMTarget(listCommand, osName, osType, arch, eng
 	if matches[0].Type == "" {
 		osType = ""
 	}
-	return VMTarget{OS: osName, Type: osType, Arch: arch}, nil
+	return VMTarget{OS: osName, Type: osType, Arch: arch, Name: name}, nil
 }
 
 func embeddedPlaybookPath(playbookDir string, name string) string {
@@ -191,6 +199,12 @@ func (o *Operation) Validate(ctx GrammarContext) error {
 		}
 	}
 
+	if err := validateInstanceName(o.Name); err != nil {
+		return err
+	}
+	if o.Name != "" && (o.Kind == OpBuild || o.Kind == OpPull) {
+		return fmt.Errorf("--name is not supported for %s", o.Kind)
+	}
 	if o.OS == "all" {
 		return errors.New(`"all" targets are not in the safe set`)
 	}
@@ -272,11 +286,11 @@ var safeFlags = map[OpKind][]flagSpec{
 		{name: "parallel", short: "p"}, {name: "headless", bool: true},
 		{name: "verbose", short: "v", bool: true}, {name: "no-cache", bool: true},
 	},
-	OpCreate:    {{name: "arch", short: "a"}, {name: "type", short: "t"}},
-	OpStart:     {{name: "arch", short: "a"}, {name: "type", short: "t"}},
-	OpStop:      {{name: "arch", short: "a"}, {name: "type", short: "t"}},
-	OpDestroy:   {{name: "arch", short: "a"}, {name: "type", short: "t"}},
-	OpProvision: {{name: "arch", short: "a"}, {name: "type", short: "t"}, {name: "check", bool: true}, {name: "verbosity"}, {name: "playbook"}, {name: "role"}, {name: "config"}},
+	OpCreate:    {{name: "name"}, {name: "arch", short: "a"}, {name: "type", short: "t"}},
+	OpStart:     {{name: "name"}, {name: "arch", short: "a"}, {name: "type", short: "t"}},
+	OpStop:      {{name: "name"}, {name: "arch", short: "a"}, {name: "type", short: "t"}},
+	OpDestroy:   {{name: "name"}, {name: "arch", short: "a"}, {name: "type", short: "t"}},
+	OpProvision: {{name: "name"}, {name: "arch", short: "a"}, {name: "type", short: "t"}, {name: "check", bool: true}, {name: "verbosity"}, {name: "playbook"}, {name: "role"}, {name: "config"}},
 	OpPull: {
 		{name: "os"}, {name: "arch", short: "a"}, {name: "type", short: "t"}, {name: "engine"},
 		{name: "yes", short: "y", bool: true}, {name: "no-docker-credentials", bool: true},
@@ -334,7 +348,7 @@ func ParseSafe(args []string, ctx GrammarContext) (Operation, error) {
 		return Operation{}, fmt.Errorf("%s expects exactly one positional argument", command)
 	}
 
-	op := Operation{Kind: kind, Verbosity: -1, Arch: values["arch"], Type: values["type"], Engine: values["engine"]}
+	op := Operation{Kind: kind, Verbosity: -1, Arch: values["arch"], Type: values["type"], Name: values["name"], Engine: values["engine"]}
 	switch kind {
 	case OpPull:
 		op.Ref = positionals[0]
@@ -463,4 +477,22 @@ func containsString(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+// firstInstanceName preserves three-component addresses for default instances.
+func firstInstanceName(names []string) string {
+	if len(names) > 0 {
+		return names[0]
+	}
+	return ""
+}
+
+// Keep instance selectors independent of the installed CLI's configuration types.
+var instanceNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,22}[a-z0-9])?$`)
+
+func validateInstanceName(name string) error {
+	if name != "" && (name == "default" || name == "all" || !instanceNamePattern.MatchString(name)) {
+		return fmt.Errorf("invalid instance name %q: use 1–24 lowercase letters, digits or internal hyphens; default and all are reserved", name)
+	}
+	return nil
 }

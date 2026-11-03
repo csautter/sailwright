@@ -15,6 +15,7 @@ import (
 
 // ManagedVM is a VM that sailwright created and that an agent may reach.
 type ManagedVM struct {
+	Name        string
 	OS          string
 	Type        string
 	Arch        string
@@ -46,11 +47,11 @@ var instanceIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 // allowlist bound what such an address can reach.
 type ManagedVMResolver interface {
 	// Resolve may return a briefly cached result (repeated MCP calls).
-	Resolve(ctx context.Context, osName, osType, arch string) (ManagedVM, error)
+	Resolve(ctx context.Context, osName, osType, arch string, names ...string) (ManagedVM, error)
 	// ResolveFresh always queries current state (tunnel creation).
-	ResolveFresh(ctx context.Context, osName, osType, arch string) (ManagedVM, error)
+	ResolveFresh(ctx context.Context, osName, osType, arch string, names ...string) (ManagedVM, error)
 	// Identify reports which VM instance exists, also for a stopped VM.
-	Identify(ctx context.Context, osName, osType, arch string) (VMIdentity, error)
+	Identify(ctx context.Context, osName, osType, arch string, names ...string) (VMIdentity, error)
 }
 
 // ErrVMAccessUnavailable reports that a managed guest cannot currently be reached.
@@ -96,19 +97,22 @@ const vmInfoCacheTTL = 2 * time.Second
 // busy or nested Windows host right after a VM boots.
 const vmQueryTimeout = 2 * time.Minute
 
-func (r *CLIManagedVMResolver) Resolve(ctx context.Context, osName, osType, arch string) (ManagedVM, error) {
-	return r.resolve(ctx, osName, osType, arch, true)
+func (r *CLIManagedVMResolver) Resolve(ctx context.Context, osName, osType, arch string, names ...string) (ManagedVM, error) {
+	return r.resolve(ctx, osName, osType, arch, firstInstanceName(names), true)
 }
 
-func (r *CLIManagedVMResolver) ResolveFresh(ctx context.Context, osName, osType, arch string) (ManagedVM, error) {
-	return r.resolve(ctx, osName, osType, arch, false)
+func (r *CLIManagedVMResolver) ResolveFresh(ctx context.Context, osName, osType, arch string, names ...string) (ManagedVM, error) {
+	return r.resolve(ctx, osName, osType, arch, firstInstanceName(names), false)
 }
 
-func (r *CLIManagedVMResolver) resolve(ctx context.Context, osName, osType, arch string, cached bool) (ManagedVM, error) {
+func (r *CLIManagedVMResolver) resolve(ctx context.Context, osName, osType, arch, name string, cached bool) (ManagedVM, error) {
 	if !identifierPattern.MatchString(osName) || (osType != "" && !identifierPattern.MatchString(osType)) || !identifierPattern.MatchString(arch) {
 		return ManagedVM{}, errors.New("invalid VM target")
 	}
-	key := osName + "/" + osType + "/" + arch
+	if err := validateInstanceName(name); err != nil {
+		return ManagedVM{}, err
+	}
+	key := vmKey(osName, osType, arch, name)
 	if err := ctx.Err(); err != nil {
 		return ManagedVM{}, err
 	}
@@ -140,7 +144,7 @@ func (r *CLIManagedVMResolver) resolve(ctx context.Context, osName, osType, arch
 		}
 		r.inflight[key] = lookup
 		r.workers.Add(1)
-		go r.query(key, lookup, osName, osType, arch)
+		go r.query(key, lookup, osName, osType, arch, name)
 	}
 	r.mu.Unlock()
 	select {
@@ -178,9 +182,9 @@ func (r *CLIManagedVMResolver) Close() error {
 
 // query runs detached from any single caller so a cancelled request does not fail
 // the other callers sharing the lookup; the owner lifetime and timeout bound it.
-func (r *CLIManagedVMResolver) query(key string, lookup *vmLookup, osName, osType, arch string) {
+func (r *CLIManagedVMResolver) query(key string, lookup *vmLookup, osName, osType, arch, name string) {
 	defer r.workers.Done()
-	lookup.vm, lookup.err = r.run(r.lifetime, osName, osType, arch)
+	lookup.vm, lookup.err = r.run(r.lifetime, osName, osType, arch, name)
 	if lookup.err != nil && r.Console != nil {
 		fmt.Fprintf(r.Console, "vm info %s failed: %s\n", key, sanitizeForTerminal(lookup.err.Error()))
 	}
@@ -203,12 +207,16 @@ func (r *CLIManagedVMResolver) query(key string, lookup *vmLookup, osName, osTyp
 	close(lookup.done)
 }
 
-func (r *CLIManagedVMResolver) run(parent context.Context, osName, osType, arch string) (ManagedVM, error) {
+func (r *CLIManagedVMResolver) run(parent context.Context, osName, osType, arch string, names ...string) (ManagedVM, error) {
+	name := firstInstanceName(names)
 	ctx, cancel := context.WithTimeout(parent, vmQueryTimeout)
 	defer cancel()
 	args := []string{"vm", "info", osName, "--arch", arch, "--json"}
 	if osType != "" {
 		args = append(args, "--type", osType)
+	}
+	if name != "" {
+		args = append(args, "--name", name)
 	}
 	var output limitedBuffer
 	output.limit = maxInfoOutputBytes
@@ -220,6 +228,7 @@ func (r *CLIManagedVMResolver) run(parent context.Context, osName, osType, arch 
 		return ManagedVM{}, fmt.Errorf("%w: vm info exited with %d: %s", ErrVMAccessUnavailable, code, r.redact(errorSummary(output.String())))
 	}
 	var value struct {
+		Name          string `json:"name"`
 		SchemaVersion int    `json:"schema_version"`
 		OS            string `json:"os"`
 		Type          string `json:"type"`
@@ -240,7 +249,7 @@ func (r *CLIManagedVMResolver) run(parent context.Context, osName, osType, arch 
 	if value.SchemaVersion != 1 {
 		return ManagedVM{}, fmt.Errorf("unsupported VM info schema %d", value.SchemaVersion)
 	}
-	if value.OS != osName || value.Type != osType || value.Arch != arch {
+	if value.OS != osName || value.Type != osType || value.Arch != arch || value.Name != name {
 		return ManagedVM{}, fmt.Errorf("VM info answered for %s/%s/%s", value.OS, value.Type, value.Arch)
 	}
 	if value.State != "running" {
@@ -266,12 +275,16 @@ func (r *CLIManagedVMResolver) run(parent context.Context, osName, osType, arch 
 	if r.Redactor != nil && value.Password != value.Username {
 		r.Redactor.AddRequired(value.Password)
 	}
-	return ManagedVM{OS: osName, Type: osType, Arch: arch, Engine: value.Engine, Address: address.Unmap(), NetworkMode: value.NetworkMode, Protocol: value.Protocol, Port: value.Port, Username: value.Username, Password: value.Password, InstanceID: value.InstanceID}, nil
+	return ManagedVM{Name: name, OS: osName, Type: osType, Arch: arch, Engine: value.Engine, Address: address.Unmap(), NetworkMode: value.NetworkMode, Protocol: value.Protocol, Port: value.Port, Username: value.Username, Password: value.Password, InstanceID: value.InstanceID}, nil
 }
 
 // Identify runs `vm identity`. It is not cached: callers use it to decide whether
 // a VM is still the one the gateway knows.
-func (r *CLIManagedVMResolver) Identify(ctx context.Context, osName, osType, arch string) (VMIdentity, error) {
+func (r *CLIManagedVMResolver) Identify(ctx context.Context, osName, osType, arch string, names ...string) (VMIdentity, error) {
+	name := firstInstanceName(names)
+	if err := validateInstanceName(name); err != nil {
+		return VMIdentity{}, err
+	}
 	if !identifierPattern.MatchString(osName) || (osType != "" && !identifierPattern.MatchString(osType)) || !identifierPattern.MatchString(arch) {
 		return VMIdentity{}, errors.New("invalid VM target")
 	}
@@ -292,6 +305,9 @@ func (r *CLIManagedVMResolver) Identify(ctx context.Context, osName, osType, arc
 	if osType != "" {
 		args = append(args, "--type", osType)
 	}
+	if name != "" {
+		args = append(args, "--name", name)
+	}
 	var output limitedBuffer
 	output.limit = maxInfoOutputBytes
 	code, err := r.Runner.Run(ctx, args, r.Work, &output)
@@ -302,6 +318,7 @@ func (r *CLIManagedVMResolver) Identify(ctx context.Context, osName, osType, arc
 		return VMIdentity{}, fmt.Errorf("vm identity exited with %d: %s", code, r.redact(errorSummary(output.String())))
 	}
 	var value struct {
+		Name          string `json:"name"`
 		SchemaVersion int    `json:"schema_version"`
 		OS            string `json:"os"`
 		Type          string `json:"type"`
@@ -312,7 +329,7 @@ func (r *CLIManagedVMResolver) Identify(ctx context.Context, osName, osType, arc
 	if err := json.Unmarshal([]byte(lastJSONLine(output.String())), &value); err != nil || value.SchemaVersion != 1 {
 		return VMIdentity{}, errors.New("invalid VM identity response")
 	}
-	if value.OS != osName || value.Type != osType || value.Arch != arch {
+	if value.OS != osName || value.Type != osType || value.Arch != arch || value.Name != name {
 		return VMIdentity{}, fmt.Errorf("VM identity answered for %s/%s/%s", value.OS, value.Type, value.Arch)
 	}
 	if value.InstanceID != "" && !instanceIDPattern.MatchString(value.InstanceID) {
