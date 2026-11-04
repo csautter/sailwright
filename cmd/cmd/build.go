@@ -337,6 +337,7 @@ Example:
 				// Only a single build at a time may own the terminal (for sudo prompts);
 				// parallel builds run without it so that Ctrl+C reaches sailwright.
 				available_virtual_machines[i].DetachedFromTerminal = parallel > 1
+				available_virtual_machines[i].Headless = headless
 			}
 
 			ctx, stopInterruptHandling := alchemy_build.HandleInterrupts(buildCommandContext(cmd))

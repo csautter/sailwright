@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
@@ -282,6 +283,66 @@ func TestBuildCommandReturnsErrorWhenBuildFails(t *testing.T) {
 	err := buildCmd.RunE(buildCmd, []string{vm.OS})
 	if err == nil || !strings.Contains(err.Error(), "packer exploded") {
 		t.Fatalf("expected build failure to be returned, got %v", err)
+	}
+}
+
+func TestBuildCommandPassesHeadlessToRunner(t *testing.T) {
+	vms := defaultBuildVirtualMachines()
+	if len(vms) == 0 {
+		t.Skip("no default build targets available on this host")
+	}
+	vm := vms[0]
+
+	for _, selection := range []struct {
+		name     string
+		all      bool
+		parallel int
+	}{
+		{name: "single", parallel: 1},
+		{name: "all/sequential", all: true, parallel: 1},
+		{name: "all/parallel", all: true, parallel: 4},
+	} {
+		for _, wantHeadless := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/headless=%v", selection.name, wantHeadless), func(t *testing.T) {
+				stubPrebuiltOffer(t)
+				previousRunner := runBuildFunc
+				previousHeadless, previousParallel := headless, parallel
+				previousArch, previousType, previousEngine := arch, osType, buildEngine
+				t.Cleanup(func() {
+					runBuildFunc = previousRunner
+					headless, parallel = previousHeadless, previousParallel
+					arch, osType, buildEngine = previousArch, previousType, previousEngine
+				})
+
+				headless, parallel = wantHeadless, selection.parallel
+				arch, osType, buildEngine = vm.Arch, vm.UbuntuType, string(vm.VirtualizationEngine)
+				osName, wantBuilds := vm.OS, 1
+				if selection.all {
+					osName, buildEngine, wantBuilds = "all", "", len(vms)
+				}
+
+				var mu sync.Mutex
+				var built []alchemy_build.VirtualMachineConfig
+				runBuildFunc = func(_ context.Context, config alchemy_build.VirtualMachineConfig) error {
+					mu.Lock()
+					defer mu.Unlock()
+					built = append(built, config)
+					return nil
+				}
+
+				if err := buildCmd.RunE(buildCmd, []string{osName}); err != nil {
+					t.Fatalf("unexpected build error: %v", err)
+				}
+				if len(built) != wantBuilds {
+					t.Fatalf("got %d builds, want %d", len(built), wantBuilds)
+				}
+				for _, config := range built {
+					if config.Headless != wantHeadless {
+						t.Errorf("build %s/%s/%s: Headless = %v, want %v", config.OS, config.UbuntuType, config.Arch, config.Headless, wantHeadless)
+					}
+				}
+			})
+		}
 	}
 }
 
