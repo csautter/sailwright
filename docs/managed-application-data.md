@@ -51,6 +51,21 @@ The Ansible role-source config is
 `ansible-role-sources.yml` in that directory. See
 [Ansible Role Sources](./ansible-role-sources.md).
 
+Guest security settings are read from `config.yaml` in the same config directory.
+Protection is enabled when the file is missing; its explicit default is:
+
+```yaml
+security:
+  allow_insecure_credentials: false
+```
+
+Setting this to `true` persistently accepts unsafe guest network access for
+Create, Start, and Provision across all targets using this config directory.
+Unknown keys, invalid values, and multiple YAML documents cause an error, even
+when the command-line override is present. See
+[Guest network security](./guest-security.md) before enabling it. The Ansible
+role-source file remains separate.
+
 ## Overrides and exported paths
 
 You can override the default root by setting

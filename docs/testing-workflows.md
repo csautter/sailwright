@@ -57,6 +57,14 @@ remains enabled on macOS and Linux hosts; Windows hosts do not currently record
 VNC. The flag applies to `build`, including parallel builds, and does not change
 the display behavior of `create` or `start`.
 
+`create`, `start`, and `provision` now refuse bridged or unknown networks with
+non-private guest credentials unless you explicitly accept the risk. The UTM
+templates still use bridged networking, so their new-VM creation is affected.
+Before following those workflows, read
+[Guest network security](./guest-security.md) for migration guidance, credential
+classification, and per-command or persistent overrides. Provisioning variables
+do not change credentials baked into an image.
+
 Use the `list` subcommands to see what your current host supports:
 
 ```bash

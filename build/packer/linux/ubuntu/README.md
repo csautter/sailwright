@@ -47,6 +47,12 @@ Output boxes:
 
 ## Build Ubuntu on macOS Hosts (UTM/QEMU)
 
+The UTM deployment templates still use bridged networking. Creating or starting
+a guest with non-private credentials requires an appropriate network change or
+explicit risk acceptance. See
+[Guest network security](../../../../docs/guest-security.md) before deployment;
+building an image does not change its guest credentials.
+
 Use the CLI from repository root:
 
 ```bash
