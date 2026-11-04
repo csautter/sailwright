@@ -505,7 +505,7 @@ func TestMigrateLegacyVirtioWinISOKeepsISOWhenMoveFails(t *testing.T) {
 	// The destination directory does not exist, so the rename fails.
 	destination := filepath.Join(dir, "missing", virtioWinISOCacheFileName("0.1.302-1"))
 
-	if !migrateLegacyVirtioWinISO(legacyPath, destination, fmt.Sprintf("sha256:%x", sha256.Sum256(content))) {
+	if !migrateLegacyWebFile(legacyPath, destination, fmt.Sprintf("sha256:%x", sha256.Sum256(content))) {
 		t.Fatal("expected a verified legacy ISO to be kept when the move fails")
 	}
 	assertFileContent(t, legacyPath, content)

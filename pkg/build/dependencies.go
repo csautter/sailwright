@@ -241,33 +241,39 @@ const virtioWinLegacyISOFileName = "virtio-win.iso"
 // ISO matches checksum. scripts/macos/download-virtio-win-iso.sh does the same for the shell build
 // scripts.
 func prepareVirtioWinISOCache(destination, checksum string) {
+	prepareVersionedWebFileCache(destination, checksum, "virtio-win*.iso", virtioWinLegacyISOFileName)
+}
+
+// prepareVersionedWebFileCache prunes older versions and migrates a verified legacy file.
+// Temporary downloads and unrelated cache files are left alone.
+func prepareVersionedWebFileCache(destination, checksum, pattern, legacyName string) {
 	dir := filepath.Dir(destination)
-	paths, err := filepath.Glob(filepath.Join(dir, "virtio-win*.iso"))
+	paths, err := filepath.Glob(filepath.Join(dir, pattern))
 	if err != nil {
-		log.Printf("Warning: could not list cached virtio-win ISOs in %s: %v", dir, err)
+		log.Printf("Warning: could not list cached downloads in %s: %v", dir, err)
 		return
 	}
-	legacyPath := filepath.Join(dir, virtioWinLegacyISOFileName)
+	legacyPath := filepath.Join(dir, legacyName)
 	for _, path := range paths {
 		if path == destination {
 			continue
 		}
-		if path == legacyPath && migrateLegacyVirtioWinISO(legacyPath, destination, checksum) {
+		if path == legacyPath && migrateLegacyWebFile(legacyPath, destination, checksum) {
 			continue
 		}
 		if err := os.Remove(path); err != nil {
-			log.Printf("Warning: could not remove outdated virtio-win ISO %s: %v", path, err)
+			log.Printf("Warning: could not remove outdated download %s: %v", path, err)
 			continue
 		}
-		log.Printf("Removed outdated virtio-win ISO %s", path)
+		log.Printf("Removed outdated download %s", path)
 	}
 }
 
-// migrateLegacyVirtioWinISO moves the ISO at legacyPath to destination when destination is missing
-// and the ISO matches checksum. It reports whether legacyPath must be kept: true when it was moved
+// migrateLegacyWebFile moves legacyPath to destination when destination is missing
+// and the file matches checksum. It reports whether legacyPath must be kept: true when it was moved
 // or when the move failed, so verified bytes are not thrown away; false when it is outdated or
 // destination already exists.
-func migrateLegacyVirtioWinISO(legacyPath, destination, checksum string) bool {
+func migrateLegacyWebFile(legacyPath, destination, checksum string) bool {
 	if _, err := os.Stat(destination); !os.IsNotExist(err) {
 		return false
 	}
@@ -275,10 +281,10 @@ func migrateLegacyVirtioWinISO(legacyPath, destination, checksum string) bool {
 		return false
 	}
 	if err := os.Rename(legacyPath, destination); err != nil {
-		log.Printf("Warning: could not move cached virtio-win ISO %s to %s: %v", legacyPath, destination, err)
+		log.Printf("Warning: could not move cached download %s to %s: %v", legacyPath, destination, err)
 		return true
 	}
-	log.Printf("Moved cached virtio-win ISO %s to %s", legacyPath, destination)
+	log.Printf("Moved cached download %s to %s", legacyPath, destination)
 	return true
 }
 
