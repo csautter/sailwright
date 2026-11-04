@@ -150,7 +150,7 @@ locals {
   # that, macOS keeps the pin and other hosts use virt.
   arm64_machine_default = local.host_is_darwin ? "virt-10.0,highmem=on" : "virt,highmem=on"
   arm64_machine         = var.arm64_machine != "" ? var.arm64_machine : local.arm64_machine_default
-  qemu_display          = local.host_is_darwin ? "cocoa" : "none"
+  qemu_display          = local.host_is_darwin && !var.headless ? "cocoa" : "none"
 
   boot_command = {
     "amd64" = [
