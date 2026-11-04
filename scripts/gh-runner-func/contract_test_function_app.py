@@ -25,6 +25,7 @@ except importlib.metadata.PackageNotFoundError:
 if SDKS_INSTALLED:
     import azure.functions as func
     from azure.core.credentials import AccessToken
+    from azure.core.exceptions import ResourceNotFoundError, ServiceResponseError
     from azure.core.pipeline.transport import HttpResponse, HttpTransport
     from azure.keyvault.secrets import SecretClient
     from azure.mgmt.compute import ComputeManagementClient
@@ -70,6 +71,10 @@ if SDKS_INSTALLED:
         def __init__(self, responses):
             self.responses = iter(responses)
             self.requests = []
+            self.sleeps = []
+
+        def sleep(self, duration):
+            self.sleeps.append(duration)
 
         def open(self):
             pass
@@ -85,7 +90,10 @@ if SDKS_INSTALLED:
 
         def send(self, request, **kwargs):
             self.requests.append((request.method, request.url, kwargs))
-            status, body, headers = next(self.responses)
+            item = next(self.responses)
+            if isinstance(item, Exception):
+                raise item
+            status, body, headers = item
             return _Response(request, status, body, headers)
 
 
@@ -139,6 +147,8 @@ class RequestRunnerWireFormatTest(unittest.TestCase):
             poller.result.return_value.id = f"/id/{operation}"
         self.compute = mock.Mock()
         self.resources = mock.Mock()
+        # request_runner looks the group up before creating it.
+        self.resources.resource_groups.get.side_effect = ResourceNotFoundError()
         secrets = mock.Mock()
         secrets.get_secret.return_value.value = "secret"
         github = mock.Mock(status_code=201)
@@ -306,12 +316,23 @@ class RequestRunnerWireFormatTest(unittest.TestCase):
         credential = mock.Mock(spec=["get_token"])
         credential.get_token.return_value = AccessToken("fake-token", 9999999999)
         compute = ComputeManagementClient(
-            credential, "sub", transport=transport, **function_app._SDK_OPTIONS
+            credential, "sub", transport=transport, **function_app._arm_options()
         )
         self.addCleanup(compute.close)
+        # Status reads find the group the creation request made.
+        self.resources.resource_groups.create_or_update.side_effect = (
+            lambda *args: setattr(
+                self.resources.resource_groups.get,
+                "side_effect",
+                None,
+            )
+        )
         self.resources.resource_groups.get.return_value.tags = {
             "managed-by": "gh-runner-broker"
         }
+        self.resources.resource_groups.get.return_value.properties.provisioning_state = (
+            "Succeeded"
+        )
         with mock.patch.object(
             function_app, "ComputeManagementClient", return_value=compute
         ):
@@ -339,14 +360,19 @@ class RequestRunnerWireFormatTest(unittest.TestCase):
 
     def test_sdk_clients_recognize_transport_timeouts(self):
         credential = mock.Mock(spec=["get_token"])
-        for factory, args in (
-            (ComputeManagementClient, (credential, "sub")),
-            (NetworkManagementClient, (credential, "sub")),
-            (ResourceManagementClient, (credential, "sub")),
-            (SecretClient, ("https://vault.vault.azure.net", credential)),
+        for factory, args, options, read_timeout in (
+            (ComputeManagementClient, (credential, "sub"), function_app._arm_options, 10),
+            (NetworkManagementClient, (credential, "sub"), function_app._arm_options, 10),
+            (ResourceManagementClient, (credential, "sub"), function_app._arm_options, 10),
+            (
+                SecretClient,
+                ("https://vault.vault.azure.net", credential),
+                lambda: function_app._KEY_VAULT_OPTIONS,
+                5,
+            ),
         ):
             with self.subTest(client=factory.__name__):
-                with factory(*args, **function_app._SDK_OPTIONS) as client:
+                with factory(*args, **options()) as client:
                     pipeline_client = (
                         client._client._client
                         if factory is SecretClient
@@ -354,8 +380,60 @@ class RequestRunnerWireFormatTest(unittest.TestCase):
                     )
                     transport = pipeline_client._pipeline._transport
                     self.assertEqual(transport.connection_config.timeout, 3)
-                    self.assertEqual(transport.connection_config.read_timeout, 5)
+                    self.assertEqual(
+                        transport.connection_config.read_timeout, read_timeout
+                    )
 
+    def _resource_client(self, transport):
+        credential = mock.Mock(spec=["get_token"])
+        credential.get_token.return_value = AccessToken("fake-token", 9999999999)
+        client = ResourceManagementClient(
+            credential, "sub", transport=transport, **function_app._arm_options()
+        )
+        self.addCleanup(client.close)
+        return client
+
+    def test_arm_retries_cap_server_retry_after(self):
+        group = {"location": "westeurope", "tags": {"managed-by": "gh-runner-broker"}}
+        transport = _Transport(
+            [
+                (429, {"error": {"code": "TooManyRequests"}}, {"Retry-After": "600"}),
+                (503, {"error": {"code": "ServerBusy"}}, {}),
+                (200, group, {}),
+            ]
+        )
+        result = self._resource_client(transport).resource_groups.get("gh-runner-tmp-x")
+        self.assertEqual(result.tags, group["tags"])
+        self.assertEqual(len(transport.requests), 3)
+        # Retry-After 600 is capped; the second wait is the bounded backoff.
+        self.assertEqual(transport.sleeps[0], function_app._SDK_RETRY_AFTER_MAX)
+        self.assertLessEqual(max(transport.sleeps), 2)
+
+    def test_arm_retries_are_bounded(self):
+        transport = _Transport(
+            [(503, {"error": {"code": "ServerBusy"}}, {})] * 3
+            + [(200, {"location": "westeurope"}, {})]
+        )
+        with self.assertRaises(function_app.HttpResponseError):
+            self._resource_client(transport).resource_groups.get("gh-runner-tmp-x")
+        self.assertEqual(len(transport.requests), 3)
+
+    def test_arm_put_is_resent_after_a_read_timeout(self):
+        # A PUT to the same name is idempotent, so an SDK retry after a lost
+        # response does not create a second resource.
+        transport = _Transport(
+            [
+                ServiceResponseError("read timed out"),
+                (201, {"location": "westeurope"}, {}),
+            ]
+        )
+        client = self._resource_client(transport)
+        client.resource_groups.create_or_update(
+            "gh-runner-tmp-x",
+            function_app.ResourceGroup(location="westeurope"),
+        )
+        self.assertEqual([item[0] for item in transport.requests], ["PUT", "PUT"])
+        self.assertEqual(transport.requests[0][1], transport.requests[1][1])
 
 if __name__ == "__main__":
     unittest.main()

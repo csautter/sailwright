@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import traceback
 from functools import lru_cache
 from pathlib import Path
 from time import monotonic, sleep
@@ -17,6 +18,7 @@ from azure.core.exceptions import (
     ServiceRequestError,
     ServiceResponseError,
 )
+from azure.core.pipeline.policies import RetryPolicy
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 from azure.mgmt.compute import ComputeManagementClient
@@ -39,8 +41,16 @@ _ALLOWED_FLAVORS: frozenset[str] = frozenset({"hyperv", "virtualbox"})
 # GitHub repo: only allow "owner/repo" with safe characters, no path traversal
 _REPO_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
+# Broker resource groups: the gh-runner-tmp prefix plus the ARM resource group
+# character set, up to 90 characters and not ending in a period.
+_RESOURCE_GROUP_RE = re.compile(r"gh-runner-tmp[a-zA-Z0-9_.()-]{0,77}")
+
+# Runner names and generated VM names: letters, digits and hyphens.
+_NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9-]{0,63}")
+
 # Ownership marker applied to every broker-created resource group. delete_resource_group
-# requires this tag as a defense-in-depth companion to the name-prefix guard.
+# and runner_status require this tag as a defense-in-depth companion to the name-prefix
+# guard, and request_runner refuses to adopt an existing group that lacks it.
 RG_OWNER_TAG = "managed-by"
 RG_OWNER_TAG_VALUE = "gh-runner-broker"
 
@@ -62,6 +72,8 @@ _CLAIM_URI_TO_SHORT: dict[str, str] = {
     "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress": "email",
     "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name": "name",
 }
+
+_AUTH_SETTINGS = ("ALLOWED_AUDIENCE", "ALLOWED_TENANT_ID")
 
 
 def _get_claims_from_principal_header(req: func.HttpRequest) -> dict[str, str]:
@@ -137,69 +149,68 @@ def load_powershell_script(
     return script
 
 
-@app.route(
-    route="delete_resource_group",
-    auth_level=func.AuthLevel.ANONYMOUS,
-    methods=["POST"],
-)
-def delete_resource_group(req: func.HttpRequest) -> func.HttpResponse:
-    authorized, reason = require_authenticated_caller(req)
-    if not authorized:
-        logging.warning("Unauthorized delete_resource_group request: %s", reason)
-        return func.HttpResponse("Unauthorized", status_code=401)
-    return handle_delete_resource_group(req)
+# --- Dependency clients -------------------------------------------------------
+
+# Seconds a server Retry-After may delay one SDK retry. ARM can ask for much
+# longer waits, which would keep the HTTP request asleep past the frontend limit.
+_SDK_RETRY_AFTER_MAX = 2
 
 
-def handle_delete_resource_group(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info("Delete resource group request received")
-    try:
-        credential = DefaultAzureCredential()
-        subscription_id = os.environ["SUBSCRIPTION_ID"]
-        # TODO: resource group name needs to follow a naming convention to avoid deleting unintended groups
-        # TODO: create a check to validate the resource group is intended for deletion
-        body = req.get_json()
-        resource_group = body.get("resource-group", os.environ["RESOURCE_GROUP"])
-        validate_source_group_name(resource_group)
-        resource_client = ResourceManagementClient(credential, subscription_id)
-        try:
-            rg = resource_client.resource_groups.get(resource_group)
-        except ResourceNotFoundError:
-            # Idempotent: a retry after a deletion that already finished must
-            # succeed. Nothing is deleted here, so no ownership check is needed.
-            return _delete_response(resource_group, DELETE_STATUS_DELETED, 200)
+class _BoundedRetryPolicy(RetryPolicy):
+    """azure-core retries whose server Retry-After is capped."""
 
-        # Defense in depth: require the broker's ownership tag in addition to the
-        # name-prefix check before deleting. A same-prefix RG that the broker did
-        # not create (missing tag) is refused.
-        validate_source_group_ownership(rg, resource_group)
-        if (
-            rg.properties and rg.properties.provisioning_state or ""
-        ).lower() == "deleting":
-            return _delete_response(resource_group, DELETE_STATUS_DELETING, 202)
-
-        # Start the deletion without waiting for it: deleting a runner VM takes
-        # longer than the ~230 s front-end request limit of the Function App, so
-        # waiting turned successful deletions into 504 Gateway Time-out errors.
-        # Callers poll this endpoint until it reports "deleted".
-        resource_client.resource_groups.begin_delete(resource_group)
-        return _delete_response(resource_group, DELETE_STATUS_DELETING, 202)
-    except Exception as e:
-        logging.error("Error deleting resource group: %s", e)
-        return func.HttpResponse(
-            "Internal error deleting resource group", status_code=500
-        )
+    def get_retry_after(self, response):
+        retry_after = super().get_retry_after(response)
+        return None if retry_after is None else min(retry_after, _SDK_RETRY_AFTER_MAX)
 
 
-# Client transport limits also apply to requests made by ARM pollers. Key Vault
-# retries are managed explicitly below. Disable SDK retries so Retry-After
-# cannot keep an HTTP request asleep beyond the frontend deadline.
-_SDK_OPTIONS = dict(
+def _arm_options():
+    # ARM PUTs are idempotent for a fixed resource name, so SDK retries after a
+    # read timeout resend the same request instead of creating new resources.
+    # Each call stops starting new attempts after 15 s. A fresh policy per
+    # client: pipeline policies are linked to their pipeline and cannot be shared.
+    return dict(
+        connection_timeout=3,
+        read_timeout=10,
+        retry_policy=_BoundedRetryPolicy(
+            retry_total=2,
+            retry_backoff_factor=0.5,
+            retry_backoff_max=2,
+            timeout=15,
+        ),
+    )
+
+
+# Key Vault retries are managed explicitly by _get_secret.
+_KEY_VAULT_OPTIONS = dict(connection_timeout=3, read_timeout=5, retry_total=0)
+
+# Managed identity token requests are cheap and occasionally flaky: keep a
+# short bounded retry.
+_CREDENTIAL_OPTIONS = dict(
     connection_timeout=3,
     read_timeout=5,
-    retry_total=0,
+    retry_total=2,
+    retry_backoff_factor=0.5,
+    retry_backoff_max=2,
+    process_timeout=5,
 )
+
+
+def _credential():
+    return DefaultAzureCredential(**_CREDENTIAL_OPTIONS)
+
+
+# --- Request budget -------------------------------------------------------------
+#
+# The Function App frontend aborts HTTP requests after about 230 s. Everything up
+# to the VM submission must finish within _REQUEST_BUDGET_SECONDS. Resource
+# creation only starts with at least _MIN_PROVISION_SECONDS left, and network
+# waits leave _VM_RESERVE_SECONDS for the VM submission (and its Spot fallback).
+_REQUEST_BUDGET_SECONDS = 160
+_MIN_PROVISION_SECONDS = 60
+_VM_RESERVE_SECONDS = 30
 _NETWORK_WAIT_SECONDS = 20
-_REQUEST_BUDGET_SECONDS = 180
+
 _REQUIRED_SETTINGS = (
     "ALLOWED_TENANT_ID",
     "ALLOWED_AUDIENCE",
@@ -223,9 +234,30 @@ def _runner_config():
 
 class _BrokerFailure(Exception):
     def __init__(self, status, message, retry_after=None):
+        super().__init__(message)
         self.status = status
         self.message = message
         self.retry_after = retry_after
+
+
+# --- Shared request helpers -----------------------------------------------------
+
+
+def _valid_resource_group(name):
+    return (
+        isinstance(name, str)
+        and _RESOURCE_GROUP_RE.fullmatch(name) is not None
+        and not name.endswith(".")
+    )
+
+
+def _owned_by_broker(group):
+    return (getattr(group, "tags", None) or {}).get(RG_OWNER_TAG) == RG_OWNER_TAG_VALUE
+
+
+def _group_state(group):
+    properties = getattr(group, "properties", None)
+    return ((properties and properties.provisioning_state) or "").lower()
 
 
 def _resource_names(config):
@@ -246,8 +278,10 @@ def _resource_names(config):
 
 
 def _request_context(req):
-    correlation = getattr(req, "headers", {}).get("X-Correlation-ID", "")
-    if not re.fullmatch(r"[a-zA-Z0-9._-]{1,64}", correlation):
+    correlation = (getattr(req, "headers", None) or {}).get("X-Correlation-ID", "")
+    if not isinstance(correlation, str) or not re.fullmatch(
+        r"[a-zA-Z0-9._-]{1,64}", correlation
+    ):
         correlation = uuid4().hex
     return {"correlation-id": correlation, "stage": "input"}
 
@@ -271,6 +305,21 @@ def _runner_response(context, status_code, message, **fields):
     )
 
 
+def _authorize(req, context):
+    """Return an error response for a rejected caller, or None to proceed."""
+    context["stage"] = "auth"
+    authorized, reason = require_authenticated_caller(req)
+    _log_stage(context, "authorized" if authorized else "rejected")
+    if authorized:
+        return None
+    if reason == "server misconfiguration":
+        # The caller is not authorized yet: setting names go to the log only.
+        missing = [key for key in _AUTH_SETTINGS if not os.environ.get(key)]
+        _log_stage(context, "missing-settings", logging.ERROR, missing=missing)
+        return _runner_response(context, 503, "Server misconfiguration")
+    return _runner_response(context, 401, "Unauthorized")
+
+
 def _arm_code(error):
     code = getattr(getattr(error, "error", None), "code", None)
     # ARM codes are identifiers. Discard arbitrary upstream text.
@@ -281,49 +330,160 @@ def _arm_code(error):
     )
 
 
-def _dependency_error(context, error):
+def _error_fields(error):
+    fields = {"exception": type(error).__name__}
     code = _arm_code(error)
-    _log_stage(
-        context,
-        "failed",
-        logging.ERROR,
-        exception=type(error).__name__,
-        **({"arm-code": code} if code else {}),
-    )
+    if code:
+        fields["arm-code"] = code
+    upstream_status = getattr(error, "status_code", None)
+    if isinstance(error, HttpResponseError) and isinstance(upstream_status, int):
+        fields["upstream-status"] = upstream_status
+    return fields
+
+
+def _frames(error):
+    # File, line and function only: exception messages may carry secrets.
+    return [
+        f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}"
+        for frame in traceback.extract_tb(error.__traceback__)
+    ][-10:]
+
+
+def _classify(error):
+    """Map an exception to (HTTP status, message, Retry-After seconds)."""
     if isinstance(error, _BrokerFailure):
-        return _runner_response(
-            context, error.status, error.message, retry_after=error.retry_after
-        )
+        return error.status, error.message, error.retry_after
     if isinstance(error, (TimeoutError, requests.Timeout)):
-        return _runner_response(context, 504, "Dependency timed out")
+        return 504, "Dependency timed out", None
     if isinstance(error, (ServiceRequestError, ServiceResponseError)):
-        return _runner_response(
-            context, 503, "Azure service unavailable", retry_after=5
-        )
+        return 503, "Azure service unavailable", 5
     if isinstance(error, HttpResponseError):
         status = getattr(error, "status_code", None)
         if status == 409:
-            return _runner_response(context, 409, "Azure resource conflict")
+            return 409, "Azure resource conflict", None
         if status == 429 or status is not None and status >= 500:
-            return _runner_response(
-                context, 503, "Azure service unavailable", retry_after=5
-            )
-        return _runner_response(context, 502, "Azure request failed")
+            return 503, "Azure service unavailable", 5
+        return 502, "Azure request failed", None
     if isinstance(error, (AzureError, requests.RequestException)):
-        return _runner_response(context, 502, "Dependency request failed")
-    return _runner_response(context, 500, "Internal error preparing runner")
+        return 502, "Dependency request failed", None
+    return 500, "Internal error", None
+
+
+def _dependency_error(context, error, resources=None):
+    """Build the error response for a failed request.
+
+    ``resources`` is set once request_runner has started writing to Azure. From
+    then on, resources may exist even when the request failed (an ARM write can
+    succeed after a client timeout), so the response asks for cleanup and never
+    carries Retry-After: request_runner is not idempotent.
+    """
+    status, message, retry_after = _classify(error)
+    fields = _error_fields(error)
+    if status == 500:
+        fields["frames"] = _frames(error)
+    _log_stage(context, "failed", logging.ERROR, **fields)
+    extra = {}
+    if resources is not None:
+        retry_after = None
+        extra = {"cleanup-required": True, "resources": resources}
+        message = f"{message}; resources may exist, clean up the resource group before retrying"
+    return _runner_response(context, status, message, retry_after=retry_after, **extra)
+
+
+# --- delete_resource_group ------------------------------------------------------
+
+
+@app.route(
+    route="delete_resource_group",
+    auth_level=func.AuthLevel.ANONYMOUS,
+    methods=["POST"],
+)
+def delete_resource_group(req: func.HttpRequest) -> func.HttpResponse:
+    context = _request_context(req)
+    denied = _authorize(req, context)
+    if denied is not None:
+        return denied
+    return handle_delete_resource_group(req, context)
+
+
+def _delete_response(context, status, status_code):
+    resource_group = context["resource-group"]
+    if status == DELETE_STATUS_DELETED:
+        message = f"Resource group '{resource_group}' deleted."
+    else:
+        message = f"Deletion of resource group '{resource_group}' in progress."
+    return _runner_response(context, status_code, message, status=status)
+
+
+def handle_delete_resource_group(
+    req: func.HttpRequest, context=None
+) -> func.HttpResponse:
+    context = context or _request_context(req)
+    context["stage"] = "input"
+    try:
+        body = req.get_json()
+        resource_group = body.get(
+            "resource-group", os.environ.get("RESOURCE_GROUP", "")
+        )
+        if not _valid_resource_group(resource_group):
+            raise ValueError("resource-group")
+    except (ValueError, TypeError, AttributeError):
+        return _runner_response(
+            context, 400, "Invalid request body or resource-group"
+        )
+    context["resource-group"] = resource_group
+    subscription_id = os.environ.get("SUBSCRIPTION_ID", "").strip()
+    if not subscription_id:
+        return _runner_response(
+            context, 503, "Missing required app settings", missing=["SUBSCRIPTION_ID"]
+        )
+    try:
+        context["stage"] = "resource-group"
+        resource_client = ResourceManagementClient(
+            _credential(), subscription_id, **_arm_options()
+        )
+        try:
+            group = resource_client.resource_groups.get(resource_group)
+        except ResourceNotFoundError:
+            # Idempotent: a retry after a deletion that already finished must
+            # succeed. Nothing is deleted here, so no ownership check is needed.
+            return _delete_response(context, DELETE_STATUS_DELETED, 200)
+
+        # Defense in depth: require the broker's ownership tag in addition to the
+        # name-prefix check before deleting. A same-prefix RG that the broker did
+        # not create (missing tag) is refused.
+        if not _owned_by_broker(group):
+            _log_stage(context, "ownership-rejected", logging.WARNING)
+            return _runner_response(
+                context, 403, "Resource group is not owned by the runner broker"
+            )
+        if _group_state(group) == "deleting":
+            return _delete_response(context, DELETE_STATUS_DELETING, 202)
+
+        # Start the deletion without waiting for it: deleting a runner VM takes
+        # longer than the ~230 s front-end request limit of the Function App, so
+        # waiting turned successful deletions into 504 Gateway Time-out errors.
+        # Callers poll this endpoint until it reports "deleted".
+        context["stage"] = "delete"
+        resource_client.resource_groups.begin_delete(resource_group, polling=False)
+        _log_stage(context, "delete-started")
+        return _delete_response(context, DELETE_STATUS_DELETING, 202)
+    except Exception as error:
+        return _dependency_error(context, error)
+
+
+# --- request_runner -------------------------------------------------------------
 
 
 def _network_result(poller, deadline):
     # Reserve time for the final VM submission (and its possible Spot fallback).
-    wait_seconds = min(_NETWORK_WAIT_SECONDS, max(0, deadline - monotonic() - 20))
+    wait_seconds = min(
+        _NETWORK_WAIT_SECONDS, max(0, deadline - monotonic() - _VM_RESERVE_SECONDS)
+    )
     result = poller.result(timeout=wait_seconds)
     # LROPoller.result(timeout=...) may return before completion without raising.
     if not poller.done():
-        raise _BrokerFailure(
-            504,
-            "Network provisioning timed out; clean up the resource group before retrying",
-        )
+        raise _BrokerFailure(504, "Network provisioning timed out")
     return result
 
 
@@ -394,6 +554,12 @@ def _github_token(pat, repo, context):
                 raise _BrokerFailure(
                     503, "GitHub rate limit exceeded; retry later", max(1, retry)
                 )
+            if 300 <= status < 400:
+                # Redirects are not followed so the PAT never leaves api.github.com.
+                raise _BrokerFailure(
+                    502,
+                    "GitHub redirected the request; use the repository's current owner/name",
+                )
             if status < 500 or attempt == 2:
                 raise _BrokerFailure(502, "GitHub registration request failed")
         _log_stage(context, "retry", logging.WARNING, attempt=attempt + 1)
@@ -405,21 +571,9 @@ def _github_token(pat, repo, context):
 )
 def request_runner(req: func.HttpRequest) -> func.HttpResponse:
     context = _request_context(req)
-    context["stage"] = "auth"
-    authorized, reason = require_authenticated_caller(req)
-    _log_stage(context, "authorized" if authorized else "rejected")
-    if not authorized:
-        if reason == "server misconfiguration":
-            config, _ = _runner_config()
-            missing = [
-                key
-                for key in ("ALLOWED_AUDIENCE", "ALLOWED_TENANT_ID")
-                if not config[key]
-            ]
-            return _runner_response(
-                context, 503, "Missing required app settings", missing=missing
-            )
-        return _runner_response(context, 401, "Unauthorized")
+    denied = _authorize(req, context)
+    if denied is not None:
+        return denied
     return handle_request_runner(req, context)
 
 
@@ -432,99 +586,64 @@ def handle_request_runner(req: func.HttpRequest, context=None) -> func.HttpRespo
         return _runner_response(
             context, 503, "Missing required app settings", missing=missing
         )
+    # Filled in once the first Azure write starts; see _dependency_error.
+    progress = {}
     try:
-        return _provision_runner(req, context, config)
+        return _provision_runner(req, context, config, progress)
     except Exception as error:
-        return _dependency_error(context, error)
+        return _dependency_error(context, error, progress.get("resources"))
 
 
-def _provision_runner(req, context, config):
-    deadline = monotonic() + _REQUEST_BUDGET_SECONDS
-    context["stage"] = "input"
+def _parse_runner_request(req, config):
+    """Return validated (repo, runner_name, resource_group, flavor) or raise."""
+    body = req.get_json()
+    repo = body["repo"]
+    runner_name = body.get("runner-name", "gh-runner-vm")
+    resource_group = body.get("resource-group", config["RESOURCE_GROUP"])
+    virtualization_flavor = body.get("virtualization-flavor", "hyperv")
+    if not isinstance(repo, str) or not _REPO_RE.fullmatch(repo):
+        raise ValueError("repo")
+    if not _valid_resource_group(resource_group):
+        raise ValueError("resource-group")
+    if (
+        not isinstance(runner_name, str)
+        or not _NAME_RE.fullmatch(runner_name)
+        or runner_name[:15].isdigit()
+    ):
+        raise ValueError("runner-name")
+    if virtualization_flavor not in _ALLOWED_FLAVORS:
+        raise ValueError("virtualization-flavor")
+    return repo, runner_name, resource_group, virtualization_flavor
+
+
+def _ensure_resource_group(resource_client, resource_group):
+    """Create the group, or reuse one the broker already owns.
+
+    Never adopt a foreign group: stamping the ownership tag on it would let
+    delete_resource_group delete it later, and a PUT would replace its tags.
+    """
     try:
-        body = req.get_json()
-        repo = body["repo"]
-        runner_name = body.get("runner-name", "gh-runner-vm")
-        resource_group = body.get("resource-group", config["RESOURCE_GROUP"])
-        virtualization_flavor = body.get("virtualization-flavor", "hyperv")
-        if not isinstance(repo, str) or not _REPO_RE.fullmatch(repo):
-            raise ValueError("repo")
-        if (
-            not isinstance(resource_group, str)
-            or not re.fullmatch(r"gh-runner-tmp[a-zA-Z0-9_.()-]{0,77}", resource_group)
-            or resource_group.endswith(".")
-        ):
-            raise ValueError("resource-group")
-        if (
-            not isinstance(runner_name, str)
-            or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9-]{0,63}", runner_name)
-            or runner_name[:15].isdigit()
-        ):
-            raise ValueError("runner-name")
-        if virtualization_flavor not in _ALLOWED_FLAVORS:
-            raise ValueError("virtualization-flavor")
-    except (ValueError, KeyError, TypeError, AttributeError):
-        return _runner_response(
-            context,
-            400,
-            "Invalid request body, repo, resource-group, runner-name or virtualization-flavor",
+        group = resource_client.resource_groups.get(resource_group)
+    except ResourceNotFoundError:
+        group = None
+    if group is None:
+        return False
+    if not _owned_by_broker(group):
+        raise _BrokerFailure(
+            409, "Resource group exists and is not owned by the runner broker"
         )
-    names = _resource_names(config)
-    context.update({"resource-group": resource_group, "vm": names["vm"]})
-    _log_stage(context, "validated", resources=names)
+    if _group_state(group) == "deleting":
+        raise _BrokerFailure(
+            409, "Resource group is being deleted; use a new group or wait for deletion"
+        )
+    return True
 
-    context["stage"] = "pat"
-    credential = DefaultAzureCredential(**_SDK_OPTIONS, process_timeout=5)
-    kv_client = SecretClient(
-        vault_url=config["VAULT_URL"],
-        credential=credential,
-        **_SDK_OPTIONS,
-    )
-    pat = _get_secret(kv_client, "github-runner-pat", context)
-    _log_stage(context, "retrieved")
-    context["stage"] = "github-token"
-    runner_token = _github_token(pat, repo, context)
-    _log_stage(context, "acquired")
 
-    context["stage"] = "bootstrap"
-    script = load_powershell_script(
-        runner_token, f"https://github.com/{repo}", virtualization_flavor
-    )
-    custom_data = base64.b64encode(script.encode("utf-8")).decode("utf-8")
-    context["stage"] = "admin-password"
-    admin_password = _get_secret(kv_client, "github-runner-vm-admin-pw", context)
-    _log_stage(context, "retrieved")
-
-    context["stage"] = "resource-group"
-    compute = ComputeManagementClient(
-        credential, config["SUBSCRIPTION_ID"], **_SDK_OPTIONS
-    )
-    resource_client = ResourceManagementClient(
-        credential, config["SUBSCRIPTION_ID"], **_SDK_OPTIONS
-    )
-    resource_client.resource_groups.create_or_update(
-        resource_group,
-        ResourceGroup(
-            location=config["LOCATION"], tags={RG_OWNER_TAG: RG_OWNER_TAG_VALUE}
-        ),
-    )
-    image_reference = compute_models.ImageReference(
-        id=config["CUSTOM_IMAGE_ID"] + "-" + virtualization_flavor
-    )
-
-    context["stage"] = "network"
-    # Create network resources
-    network_client = NetworkManagementClient(
-        credential, config["SUBSCRIPTION_ID"], polling_interval=1, **_SDK_OPTIONS
-    )
-
+def _create_network(network_client, resource_group, names, location, deadline):
+    """Create VNet, subnet, public IP, NSG and NIC; return the NIC."""
     vnet_name = names["vnet"]
     subnet_name = os.environ.get("SUBNET_NAME", "default")
-    ip_name = names["ip"]
-    nic_name = names["nic"]
-    location = config["LOCATION"]
 
-    # Create VNet if not exists
     _network_result(
         network_client.virtual_networks.begin_create_or_update(
             resource_group,
@@ -539,7 +658,6 @@ def _provision_runner(req, context, config):
         deadline,
     )
 
-    # Create Subnet if not exists
     subnet = _network_result(
         network_client.subnets.begin_create_or_update(
             resource_group,
@@ -550,11 +668,10 @@ def _provision_runner(req, context, config):
         deadline,
     )
 
-    # Create Public IP
     public_ip = _network_result(
         network_client.public_ip_addresses.begin_create_or_update(
             resource_group,
-            ip_name,
+            names["ip"],
             network_models.PublicIPAddress(
                 location=location,
                 public_ip_allocation_method="Static",
@@ -564,8 +681,6 @@ def _provision_runner(req, context, config):
         deadline,
     )
 
-    # Create NSG (if not exists).
-    #
     # No inbound rules are added: the runner only needs OUTBOUND connectivity
     # to GitHub, and the default NSG rules deny all inbound traffic. RDP (3389)
     # was previously opened to `*` for first-run bootstrap debugging, which is
@@ -573,21 +688,19 @@ def _provision_runner(req, context, config):
     # unauthenticated attack surface (brute force, RDP CVEs). For the rare debug
     # session, use Azure Bastion / just-in-time VM access instead of a standing
     # inbound rule.
-    nsg_name = names["nsg"]
     nsg = _network_result(
         network_client.network_security_groups.begin_create_or_update(
             resource_group,
-            nsg_name,
+            names["nsg"],
             network_models.NetworkSecurityGroup(location=location),
         ),
         deadline,
     )
 
-    # Create NIC and associate NSG
-    nic = _network_result(
+    return _network_result(
         network_client.network_interfaces.begin_create_or_update(
             resource_group,
-            nic_name,
+            names["nic"],
             network_models.NetworkInterface(
                 location=location,
                 ip_configurations=[
@@ -605,15 +718,112 @@ def _provision_runner(req, context, config):
         deadline,
     )
 
+
+def _submit_vm(compute, resource_group, vm_name, vm_params, context):
+    """Submit the VM without waiting; try Spot first when VM_USE_SPOT=true."""
+    regular_vm = compute_models.VirtualMachine(**vm_params)
+    if os.environ.get("VM_USE_SPOT", "false").lower() == "true":
+        # Built before the try below: a model error is a code bug and must not
+        # be mistaken for missing spot capacity and fall back to a regular VM.
+        spot_vm = compute_models.VirtualMachine(
+            **vm_params,
+            priority="Spot",
+            eviction_policy="Deallocate",
+            # -1 means pay up to on-demand price
+            billing_profile=compute_models.BillingProfile(max_price=-1),
+        )
+        try:
+            _log_stage(context, "spot-attempt")
+            compute.virtual_machines.begin_create_or_update(
+                resource_group, vm_name, spot_vm, polling=False
+            )
+            return
+        except HttpResponseError as spot_error:
+            _log_stage(
+                context, "spot-fallback", logging.WARNING, **_error_fields(spot_error)
+            )
+    compute.virtual_machines.begin_create_or_update(
+        resource_group, vm_name, regular_vm, polling=False
+    )
+
+
+def _provision_runner(req, context, config, progress):
+    deadline = monotonic() + _REQUEST_BUDGET_SECONDS
+    context["stage"] = "input"
+    try:
+        repo, runner_name, resource_group, virtualization_flavor = (
+            _parse_runner_request(req, config)
+        )
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return _runner_response(
+            context,
+            400,
+            "Invalid request body, repo, resource-group, runner-name or virtualization-flavor",
+        )
+    names = _resource_names(config)
+    context.update({"resource-group": resource_group, "vm": names["vm"]})
+    _log_stage(context, "validated", resources=names)
+
+    context["stage"] = "pat"
+    credential = _credential()
+    kv_client = SecretClient(
+        vault_url=config["VAULT_URL"], credential=credential, **_KEY_VAULT_OPTIONS
+    )
+    pat = _get_secret(kv_client, "github-runner-pat", context)
+    _log_stage(context, "retrieved")
+    context["stage"] = "github-token"
+    runner_token = _github_token(pat, repo, context)
+    _log_stage(context, "acquired")
+
+    context["stage"] = "bootstrap"
+    script = load_powershell_script(
+        runner_token, f"https://github.com/{repo}", virtualization_flavor
+    )
+    custom_data = base64.b64encode(script.encode("utf-8")).decode("utf-8")
+    context["stage"] = "admin-password"
+    admin_password = _get_secret(kv_client, "github-runner-vm-admin-pw", context)
+    _log_stage(context, "retrieved")
+
+    context["stage"] = "resource-group"
+    if deadline - monotonic() < _MIN_PROVISION_SECONDS:
+        # Nothing has been written yet, so retrying is safe.
+        raise _BrokerFailure(
+            504, "Request budget exhausted before provisioning started", 5
+        )
+    location = config["LOCATION"]
+    resource_client = ResourceManagementClient(
+        credential, config["SUBSCRIPTION_ID"], **_arm_options()
+    )
+    reused = _ensure_resource_group(resource_client, resource_group)
+    # From here on, Azure may hold resources for this request.
+    progress["resources"] = names
+    if not reused:
+        resource_client.resource_groups.create_or_update(
+            resource_group,
+            ResourceGroup(location=location, tags={RG_OWNER_TAG: RG_OWNER_TAG_VALUE}),
+        )
+    _log_stage(context, "ready", reused=reused)
+
+    context["stage"] = "network"
+    network_client = NetworkManagementClient(
+        credential, config["SUBSCRIPTION_ID"], polling_interval=1, **_arm_options()
+    )
+    nic = _create_network(network_client, resource_group, names, location, deadline)
     _log_stage(context, "created")
+
     context["stage"] = "vm"
+    compute = ComputeManagementClient(
+        credential, config["SUBSCRIPTION_ID"], **_arm_options()
+    )
     # Keyword arguments shared by the regular and the spot VirtualMachine, so
     # the spot fallback sends none of the spot-only fields.
     vm_params = {
         "location": location,
         "hardware_profile": compute_models.HardwareProfile(vm_size=config["VM_SIZE"]),
         "storage_profile": compute_models.StorageProfile(
-            image_reference=image_reference,
+            image_reference=compute_models.ImageReference(
+                id=config["CUSTOM_IMAGE_ID"] + "-" + virtualization_flavor
+            ),
             os_disk=compute_models.OSDisk(
                 create_option="FromImage",
                 # disk size needs to be at minium 128GB - defined by the image size
@@ -634,44 +844,7 @@ def _provision_runner(req, context, config):
             network_interfaces=[compute_models.NetworkInterfaceReference(id=nic.id)]
         ),
     }
-
-    # Configure spot VM if enabled
-    use_spot = os.environ.get("VM_USE_SPOT", "false").lower() == "true"
-    regular_vm = compute_models.VirtualMachine(**vm_params)
-    if use_spot:
-        # Built before the try below: a model error is a code bug and must not
-        # be mistaken for missing spot capacity and fall back to a regular VM.
-        spot_vm = compute_models.VirtualMachine(
-            **vm_params,
-            priority="Spot",
-            eviction_policy="Deallocate",
-            # -1 means pay up to on-demand price
-            billing_profile=compute_models.BillingProfile(max_price=-1),
-        )
-
-        try:
-            _log_stage(context, "spot-attempt")
-            compute.virtual_machines.begin_create_or_update(
-                resource_group, names["vm"], spot_vm, polling=False
-            )
-        except HttpResponseError as spot_error:
-            _log_stage(
-                context,
-                "spot-fallback",
-                logging.WARNING,
-                exception=type(spot_error).__name__,
-                **(
-                    {"arm-code": _arm_code(spot_error)} if _arm_code(spot_error) else {}
-                ),
-            )
-            # Retry without the spot configuration
-            compute.virtual_machines.begin_create_or_update(
-                resource_group, names["vm"], regular_vm, polling=False
-            )
-    else:
-        compute.virtual_machines.begin_create_or_update(
-            resource_group, names["vm"], regular_vm, polling=False
-        )
+    _submit_vm(compute, resource_group, names["vm"], vm_params, context)
     _log_stage(context, "submitted")
     return _runner_response(
         context,
@@ -683,24 +856,15 @@ def _provision_runner(req, context, config):
     )
 
 
+# --- runner_status --------------------------------------------------------------
+
+
 @app.route(route="runner_status", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
 def runner_status(req: func.HttpRequest) -> func.HttpResponse:
     context = _request_context(req)
-    context["stage"] = "auth"
-    authorized, reason = require_authenticated_caller(req)
-    _log_stage(context, "authorized" if authorized else "rejected")
-    if not authorized:
-        if reason == "server misconfiguration":
-            config, _ = _runner_config()
-            missing = [
-                key
-                for key in ("ALLOWED_AUDIENCE", "ALLOWED_TENANT_ID")
-                if not config[key]
-            ]
-            return _runner_response(
-                context, 503, "Missing required app settings", missing=missing
-            )
-        return _runner_response(context, 401, "Unauthorized")
+    denied = _authorize(req, context)
+    if denied is not None:
+        return denied
     return handle_runner_status(req, context)
 
 
@@ -711,15 +875,9 @@ def handle_runner_status(req: func.HttpRequest, context=None) -> func.HttpRespon
         body = req.get_json()
         resource_group = body["resource-group"]
         vm_name = body["vm"]
-        if (
-            not isinstance(resource_group, str)
-            or not re.fullmatch(r"gh-runner-tmp[a-zA-Z0-9_.()-]{0,77}", resource_group)
-            or resource_group.endswith(".")
-        ):
+        if not _valid_resource_group(resource_group):
             raise ValueError("resource-group")
-        if not isinstance(vm_name, str) or not re.fullmatch(
-            r"[a-zA-Z0-9][a-zA-Z0-9-]{0,63}", vm_name
-        ):
+        if not isinstance(vm_name, str) or not _NAME_RE.fullmatch(vm_name):
             raise ValueError("vm")
     except (ValueError, KeyError, TypeError, AttributeError):
         return _runner_response(
@@ -733,25 +891,29 @@ def handle_runner_status(req: func.HttpRequest, context=None) -> func.HttpRespon
             context, 503, "Missing required app settings", missing=["SUBSCRIPTION_ID"]
         )
     try:
-        credential = DefaultAzureCredential(**_SDK_OPTIONS, process_timeout=5)
+        credential = _credential()
         context["stage"] = "resource-group"
         resources = ResourceManagementClient(
-            credential, config["SUBSCRIPTION_ID"], **_SDK_OPTIONS
+            credential, config["SUBSCRIPTION_ID"], **_arm_options()
         )
         group = resources.resource_groups.get(resource_group)
-        if (group.tags or {}).get(RG_OWNER_TAG) != RG_OWNER_TAG_VALUE:
+        if not _owned_by_broker(group):
             _log_stage(context, "ownership-rejected", logging.WARNING)
             return _runner_response(
                 context, 403, "Resource group is not owned by the runner broker"
             )
+        if _group_state(group) == "deleting":
+            return _deleting_status(context)
         context["stage"] = "vm-status"
         compute = ComputeManagementClient(
-            credential, config["SUBSCRIPTION_ID"], **_SDK_OPTIONS
+            credential, config["SUBSCRIPTION_ID"], **_arm_options()
         )
         vm = compute.virtual_machines.get(
             resource_group, vm_name, expand="instanceView"
         )
         state = (vm.provisioning_state or "unknown").lower()
+        if state == "deleting":
+            return _deleting_status(context)
         statuses = vm.instance_view.statuses if vm.instance_view else []
         # A VM can be evicted after provisioning succeeds. Neither a stopped VM
         # nor a deallocated one can register a runner and pick up CI work.
@@ -779,7 +941,13 @@ def handle_runner_status(req: func.HttpRequest, context=None) -> func.HttpRespon
                 **{"error-code": code},
             )
         status = "succeeded" if state == "succeeded" else "provisioning"
-        _log_stage(context, "observed", status=status)
+        # Callers poll every 10 s; only state changes deserve INFO.
+        _log_stage(
+            context,
+            "observed",
+            logging.INFO if status == "succeeded" else logging.DEBUG,
+            status=status,
+        )
         return _runner_response(
             context,
             200 if status == "succeeded" else 202,
@@ -796,39 +964,11 @@ def handle_runner_status(req: func.HttpRequest, context=None) -> func.HttpRespon
         return _dependency_error(context, error)
 
 
-def validate_source_group_name(name: str) -> bool:
-    if not name.startswith("gh-runner-tmp"):
-        raise Exception("Invalid source group name")
-
-    return True
-
-
-def _delete_response(
-    resource_group: str, status: str, status_code: int
-) -> func.HttpResponse:
-    if status == DELETE_STATUS_DELETED:
-        message = f"Resource group '{resource_group}' deleted."
-    else:
-        message = f"Deletion of resource group '{resource_group}' in progress."
-    return func.HttpResponse(
-        json.dumps(
-            {"message": message, "status": status, "resource-group": resource_group}
-        ),
-        mimetype="application/json",
-        status_code=status_code,
+def _deleting_status(context):
+    _log_stage(context, "deleting")
+    return _runner_response(
+        context,
+        200,
+        "Runner resource group or VM is being deleted; stop waiting",
+        status="deleting",
     )
-
-
-def validate_source_group_ownership(rg, name: str) -> bool:
-    """Confirm the resource group carries the broker's ownership tag.
-
-    Refuses deletion if the RG was not created by this broker (missing/incorrect
-    ``managed-by`` tag), even when its name matches the prefix.
-    """
-    tags = rg.tags or {}
-    if tags.get(RG_OWNER_TAG) != RG_OWNER_TAG_VALUE:
-        raise Exception(
-            f"Resource group '{name}' is not owned by gh-runner-broker; refusing to delete"
-        )
-
-    return True

@@ -49,6 +49,14 @@ class ServiceResponseError(AzureError):
     pass
 
 
+class RetryPolicy:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+    def get_retry_after(self, response):
+        return response
+
+
 class RequestException(Exception):
     pass
 
@@ -80,6 +88,10 @@ def _install_stubs():
         "azure.functions": types.ModuleType("azure.functions"),
         "azure.core": types.ModuleType("azure.core"),
         "azure.core.exceptions": types.ModuleType("azure.core.exceptions"),
+        "azure.core.pipeline": types.ModuleType("azure.core.pipeline"),
+        "azure.core.pipeline.policies": types.ModuleType(
+            "azure.core.pipeline.policies"
+        ),
         "azure.identity": types.ModuleType("azure.identity"),
         "azure.keyvault": types.ModuleType("azure.keyvault"),
         "azure.keyvault.secrets": types.ModuleType("azure.keyvault.secrets"),
@@ -110,6 +122,7 @@ def _install_stubs():
         ServiceResponseError,
     ):
         setattr(modules["azure.core.exceptions"], cls.__name__, cls)
+    modules["azure.core.pipeline.policies"].RetryPolicy = RetryPolicy
     modules["requests"].RequestException = RequestException
     modules["requests"].Timeout = Timeout
     modules["azure.identity"].DefaultAzureCredential = mock.Mock()
@@ -162,10 +175,7 @@ class DeleteResourceGroupTest(unittest.TestCase):
         response = function_app.handle_delete_resource_group(
             _request({"resource-group": resource_group})
         )
-        body = (
-            json.loads(response.body) if response.status_code < 300 else response.body
-        )
-        return response.status_code, body
+        return response.status_code, json.loads(response.body)
 
     def test_starts_deletion_without_waiting(self):
         self.client.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
@@ -175,8 +185,10 @@ class DeleteResourceGroupTest(unittest.TestCase):
         self.assertEqual(status_code, 202)
         self.assertEqual(body["status"], function_app.DELETE_STATUS_DELETING)
         self.client.resource_groups.begin_delete.assert_called_once_with(
-            "gh-runner-tmp-1-hv"
+            "gh-runner-tmp-1-hv", polling=False
         )
+        self.assertEqual(body["resource-group"], "gh-runner-tmp-1-hv")
+        self.assertIn("correlation-id", body)
         poller = self.client.resource_groups.begin_delete.return_value
         poller.wait.assert_not_called()
         poller.result.assert_not_called()
@@ -207,13 +219,14 @@ class DeleteResourceGroupTest(unittest.TestCase):
 
             status_code, _ = self._delete()
 
-            self.assertEqual(status_code, 500, tags)
+            self.assertEqual(status_code, 403, tags)
         self.client.resource_groups.begin_delete.assert_not_called()
 
     def test_refuses_name_outside_runner_prefix(self):
-        status_code, _ = self._delete("production-rg")
+        for name in ("production-rg", "gh-runner-tmp/../x", "gh-runner-tmp-x."):
+            status_code, _ = self._delete(name)
 
-        self.assertEqual(status_code, 500)
+            self.assertEqual(status_code, 400, name)
         self.client.resource_groups.get.assert_not_called()
         self.client.resource_groups.begin_delete.assert_not_called()
 
@@ -222,7 +235,25 @@ class DeleteResourceGroupTest(unittest.TestCase):
 
         status_code, _ = self._delete()
 
-        self.assertEqual(status_code, 500)
+        self.assertEqual(status_code, 403)
+
+    def test_dependency_failure_is_structured(self):
+        self.client.resource_groups.get.side_effect = HttpResponseError(
+            "private-secret", 503, "ServerBusy"
+        )
+        with self.assertLogs(level="ERROR") as logs:
+            status_code, body = self._delete()
+        self.assertEqual(status_code, 503)
+        self.assertEqual(body["stage"], "resource-group")
+        self.assertIn('"upstream-status": 503', str(logs.output))
+        self.assertNotIn("private-secret", json.dumps(body) + str(logs.output))
+
+    def test_missing_subscription_is_reported(self):
+        with mock.patch.dict(os.environ, {"SUBSCRIPTION_ID": ""}):
+            status_code, body = self._delete()
+        self.assertEqual(status_code, 503)
+        self.assertEqual(body["missing"], ["SUBSCRIPTION_ID"])
+        self.client.resource_groups.get.assert_not_called()
 
 
 REQUEST_RUNNER_ENV = {
@@ -244,6 +275,8 @@ class RequestRunnerTest(unittest.TestCase):
         self.network = mock.Mock()
         self.compute = mock.Mock()
         self.resources = mock.Mock()
+        # A new group by default; tests that reuse one set a return value.
+        self.resources.resource_groups.get.side_effect = ResourceNotFoundError()
         secrets = self.secrets = mock.Mock()
         secrets.get_secret.return_value.value = "secret"
         github = self.github = mock.Mock(status_code=201)
@@ -607,7 +640,7 @@ class RequestRunnerTest(unittest.TestCase):
         for call in self.compute.virtual_machines.begin_create_or_update.call_args_list:
             self.assertIs(call.kwargs["polling"], False)
 
-    def test_missing_auth_config_returns_setting_names(self):
+    def test_missing_auth_config_logs_setting_names_without_returning_them(self):
         request = _request({})
         with (
             mock.patch.object(
@@ -616,10 +649,13 @@ class RequestRunnerTest(unittest.TestCase):
                 return_value=(False, "server misconfiguration"),
             ),
             mock.patch.dict(os.environ, {"ALLOWED_AUDIENCE": ""}),
+            self.assertLogs(level="ERROR") as logs,
         ):
             response = function_app.request_runner(request)
         self.assertEqual(response.status_code, 503)
-        self.assertEqual(json.loads(response.body)["missing"], ["ALLOWED_AUDIENCE"])
+        self.assertNotIn("missing", json.loads(response.body))
+        self.assertNotIn("ALLOWED_AUDIENCE", response.body)
+        self.assertIn("ALLOWED_AUDIENCE", str(logs.output))
 
     def test_valid_correlation_propagates_through_all_stages(self):
         request = _request({"repo": "owner/repo", "resource-group": "gh-runner-tmp-ci"})
@@ -646,11 +682,134 @@ class RequestRunnerTest(unittest.TestCase):
     def test_network_wait_respects_remaining_request_budget(self):
         poller = self.network.virtual_networks.begin_create_or_update.return_value
         poller.done.return_value = False
-        with mock.patch.object(function_app, "monotonic", side_effect=[0, 170]):
+        # Request start, pre-write budget check, first network wait.
+        with mock.patch.object(function_app, "monotonic", side_effect=[0, 50, 140]):
             response = self._request_runner()
         self.assertEqual(response.status_code, 504)
         poller.result.assert_called_once_with(timeout=0)
         self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+
+    def test_exhausted_budget_stops_before_the_first_write(self):
+        with mock.patch.object(function_app, "monotonic", side_effect=[0, 110]):
+            response = self._request_runner()
+        body = json.loads(response.body)
+        self.assertEqual(response.status_code, 504)
+        self.assertEqual(body["stage"], "resource-group")
+        self.assertEqual(response.headers["Retry-After"], "5")
+        self.assertNotIn("cleanup-required", body)
+        self.resources.resource_groups.get.assert_not_called()
+        self.resources.resource_groups.create_or_update.assert_not_called()
+
+    def test_failures_after_the_first_write_require_cleanup_without_retry_after(self):
+        for operation, error in (
+            (
+                self.compute.virtual_machines.begin_create_or_update,
+                ServiceResponseError("private-secret"),
+            ),
+            (
+                self.resources.resource_groups.create_or_update,
+                HttpResponseError("private-secret", 503),
+            ),
+        ):
+            with self.subTest(operation=operation):
+                operation.side_effect = error
+                response = self._request_runner()
+                body = json.loads(response.body)
+                self.assertEqual(response.status_code, 503)
+                self.assertNotIn("Retry-After", response.headers)
+                self.assertTrue(body["cleanup-required"])
+                self.assertEqual(
+                    set(body["resources"]), {"vm", "vnet", "ip", "nic", "nsg"}
+                )
+                self.assertEqual(body["vm"], body["resources"]["vm"])
+                self.assertNotIn("private-secret", response.body)
+                operation.side_effect = None
+
+    def test_failures_before_the_first_write_keep_retry_after(self):
+        self.secrets.get_secret.side_effect = ServiceRequestError()
+        response = self._request_runner()
+        self.assertEqual(response.headers["Retry-After"], "5")
+        self.assertNotIn("cleanup-required", json.loads(response.body))
+
+    def test_reuses_an_owned_resource_group_without_rewriting_it(self):
+        self.resources.resource_groups.get.side_effect = None
+        self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
+        self.assertEqual(self._request_runner().status_code, 202)
+        self.resources.resource_groups.create_or_update.assert_not_called()
+        self.compute.virtual_machines.begin_create_or_update.assert_called_once()
+
+    def test_refuses_foreign_or_deleting_resource_groups(self):
+        self.resources.resource_groups.get.side_effect = None
+        for group in (
+            _resource_group(None),
+            _resource_group({function_app.RG_OWNER_TAG: "someone-else"}),
+            _resource_group(OWNED_TAGS, "Deleting"),
+        ):
+            with self.subTest(group=group):
+                self.resources.resource_groups.get.return_value = group
+                response = self._request_runner()
+                self.assertEqual(response.status_code, 409)
+                self.assertNotIn("cleanup-required", json.loads(response.body))
+        self.resources.resource_groups.create_or_update.assert_not_called()
+        self.network.virtual_networks.begin_create_or_update.assert_not_called()
+
+    def test_unexpected_error_logs_frames_without_message(self):
+        self.network.virtual_networks.begin_create_or_update.side_effect = (
+            AttributeError("private-secret")
+        )
+        with self.assertLogs(level="ERROR") as logs:
+            response = self._request_runner()
+        self.assertEqual(response.status_code, 500)
+        event = json.loads(logs.records[-1].getMessage())
+        self.assertEqual(event["exception"], "AttributeError")
+        self.assertTrue(
+            any(frame.startswith("function_app.py:") for frame in event["frames"])
+        )
+        self.assertNotIn("private-secret", str(logs.output) + response.body)
+
+    def test_azure_errors_log_upstream_status(self):
+        self.network.subnets.begin_create_or_update.side_effect = HttpResponseError(
+            "private-secret", 400, "InvalidRequestContent"
+        )
+        with self.assertLogs(level="ERROR") as logs:
+            self.assertEqual(self._request_runner().status_code, 502)
+        event = json.loads(logs.records[-1].getMessage())
+        self.assertEqual(event["upstream-status"], 400)
+        self.assertEqual(event["arm-code"], "InvalidRequestContent")
+        self.assertNotIn("frames", event)
+
+    def test_github_redirect_is_explained(self):
+        self.github.status_code = 301
+        response = self._request_runner()
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("redirected", json.loads(response.body)["message"])
+
+    def test_sdk_clients_get_bounded_retry_policies(self):
+        self.assertEqual(self._request_runner().status_code, 202)
+        policies = []
+        for client in (
+            function_app.ResourceManagementClient,
+            function_app.NetworkManagementClient,
+            function_app.ComputeManagementClient,
+        ):
+            kwargs = client.call_args.kwargs
+            self.assertIsInstance(
+                kwargs["retry_policy"], function_app._BoundedRetryPolicy
+            )
+            self.assertEqual(kwargs["retry_policy"].kwargs["retry_total"], 2)
+            policies.append(kwargs["retry_policy"])
+        # Pipeline policies are linked to one pipeline and must not be shared.
+        self.assertEqual(len({id(policy) for policy in policies}), 3)
+        self.assertEqual(function_app.SecretClient.call_args.kwargs["retry_total"], 0)
+        self.assertEqual(
+            function_app.DefaultAzureCredential.call_args.kwargs["retry_total"], 2
+        )
+
+    def test_retry_after_is_capped(self):
+        policy = function_app._BoundedRetryPolicy()
+        self.assertEqual(policy.get_retry_after(600), 2)
+        self.assertEqual(policy.get_retry_after(1), 1)
+        self.assertIsNone(policy.get_retry_after(None))
 
 
 class RunnerStatusTest(unittest.TestCase):
@@ -777,6 +936,20 @@ class RunnerStatusTest(unittest.TestCase):
         ):
             self.assertEqual(function_app.runner_status(_request({})).status_code, 401)
         self.resources.resource_groups.get.assert_not_called()
+
+    def test_deleting_group_or_vm_stops_polling(self):
+        response = self._status("Deleting")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.body)["status"], "deleting")
+        self.resources.resource_groups.get.return_value = _resource_group(
+            OWNED_TAGS, "Deleting"
+        )
+        self.compute.virtual_machines.get.reset_mock()
+        response = function_app.handle_runner_status(
+            _request({"resource-group": "gh-runner-tmp-ci", "vm": "runner-123"})
+        )
+        self.assertEqual(json.loads(response.body)["status"], "deleting")
+        self.compute.virtual_machines.get.assert_not_called()
 
     def test_status_only_requires_subscription_configuration(self):
         with mock.patch.dict(os.environ, {"VAULT_URL": "", "SUBSCRIPTION_ID": ""}):
