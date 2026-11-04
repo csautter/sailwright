@@ -99,7 +99,7 @@ func TestVirtioWinCacheFileNamesFollowPin(t *testing.T) {
 				t.Errorf("%s caches %s; want %s to match virtioWinVersion", workflowPath, match, wantName)
 			}
 		}
-		assertRenovateUpdatesVirtioWinReferences(t, workflowPath, content, len(matches))
+		assertRenovateUpdatesCacheReferences(t, workflowPath, content, len(matches), "virtio-win", "custom.virtio-win", virtioWinVersion)
 	}
 }
 
@@ -129,9 +129,9 @@ func TestVirtioWinDownloadScriptPrintsCacheFileName(t *testing.T) {
 
 var virtioWinISOReferenceRE = regexp.MustCompile(`virtio-win-[0-9][0-9.]*-[0-9]+\.iso`)
 
-// assertRenovateUpdatesVirtioWinReferences checks that a renovate.json regex manager for the
-// virtio-win datasource covers path and captures every versioned reference in it.
-func assertRenovateUpdatesVirtioWinReferences(t *testing.T, path, content string, want int) {
+// assertRenovateUpdatesCacheReferences checks that a Renovate manager covers the workflow and
+// captures every versioned reference, so updates change the remote cache keys too.
+func assertRenovateUpdatesCacheReferences(t *testing.T, path, content string, want int, depName, datasource, version string) {
 	t.Helper()
 
 	var config struct {
@@ -147,7 +147,7 @@ func assertRenovateUpdatesVirtioWinReferences(t *testing.T, path, content string
 	}
 
 	for _, manager := range config.CustomManagers {
-		if manager.DepNameTemplate != "virtio-win" || manager.DatasourceTemplate != "custom.virtio-win" {
+		if manager.DepNameTemplate != depName || manager.DatasourceTemplate != datasource {
 			continue
 		}
 		coversFile := false
@@ -167,17 +167,72 @@ func assertRenovateUpdatesVirtioWinReferences(t *testing.T, path, content string
 			}
 			matches := re.FindAllStringSubmatch(content, -1)
 			if len(matches) != want {
-				t.Errorf("%s: Renovate matchString %q finds %d virtio-win references, want %d", path, matchString, len(matches), want)
+				t.Errorf("%s: Renovate matchString %q finds %d %s references, want %d", path, matchString, len(matches), depName, want)
 			}
 			for _, match := range matches {
-				if got := match[re.SubexpIndex("currentValue")]; got != virtioWinVersion {
-					t.Errorf("%s: Renovate captures virtio-win version %q, want %q", path, got, virtioWinVersion)
+				if got := match[re.SubexpIndex("currentValue")]; got != version {
+					t.Errorf("%s: Renovate captures %s version %q, want %q", path, depName, got, version)
 				}
 			}
 			return
 		}
 	}
-	t.Errorf("%s: no Renovate regex manager updates the virtio-win cache file names", path)
+	t.Errorf("%s: no Renovate regex manager updates the %s cache file names", path, depName)
+}
+
+func TestFirmwareAndGuestToolsCacheNamesFollowPins(t *testing.T) {
+	t.Parallel()
+
+	assertContainsAll(t, "scripts/macos/download-utm-guest-tools.sh", readRepoFile(t, "scripts/macos/download-utm-guest-tools.sh"),
+		`UTM_GUEST_TOOLS_VERSION="`+utmGuestToolsVersion+`"`,
+		`UTM_GUEST_TOOLS_RELEASE="`+utmGuestToolsRelease+`"`,
+		`UTM_GUEST_TOOLS_SHA256="`+utmGuestToolsSHA256+`"`,
+	)
+	assertContainsAll(t, windowsQemuTemplatePath, readRepoFile(t, windowsQemuTemplatePath),
+		`win11_guest_tools = "${local.cache_directory}/utm/${var.utm_guest_tools_iso_name}"`,
+	)
+	assertContainsAll(t, windowsQemuScriptPath, readRepoFile(t, windowsQemuScriptPath),
+		`utm_guest_tools_iso_name="$(bash "${project_root}/scripts/macos/download-utm-guest-tools.sh" --print-file-name)"`,
+		`-var "utm_guest_tools_iso_name=${utm_guest_tools_iso_name}"`,
+	)
+
+	for _, tc := range []struct {
+		script, name, legacy, pattern string
+	}{
+		{"download-arm64-uefi.sh", qemuEfiAarch64CacheFileName(qemuEfiAarch64Version), "qemu-efi-aarch64_all.deb", `qemu-efi-aarch64_[0-9A-Za-z.+~-]+_all\.deb`},
+		{"download-utm-guest-tools.sh", utmGuestToolsISOFileName(utmGuestToolsVersion), "utm-guest-tools-latest.iso", `utm-guest-tools-[0-9]+\.[0-9]+\.[0-9]+\.iso`},
+	} {
+		t.Run(tc.script, func(t *testing.T) {
+			if runtime.GOOS != "windows" {
+				cmd := exec.Command("bash", repoPath(t, "scripts/macos/"+tc.script), "--print-file-name")
+				cacheDir := filepath.Join(t.TempDir(), "cache")
+				cmd.Env = append(cmd.Environ(), "DEV_ALCHEMY_CACHE_DIR="+cacheDir)
+				out, err := cmd.CombinedOutput()
+				if err != nil || string(out) != tc.name+"\n" {
+					t.Fatalf("--print-file-name: got %q, %v; want %q", out, err, tc.name+"\n")
+				}
+				assertFilesMissing(t, cacheDir)
+			}
+			for _, path := range []string{".github/workflows/test-build-linux.yml", ".github/workflows/test-build-macos.yml"} {
+				content := readRepoFile(t, path)
+				if strings.Contains(content, tc.legacy) {
+					t.Errorf("%s still caches %s", path, tc.legacy)
+				}
+				matches := regexp.MustCompile(tc.pattern).FindAllString(content, -1)
+				if len(matches) == 0 {
+					t.Fatalf("%s has no cache references for %s", path, tc.script)
+				}
+				for _, name := range matches {
+					if name != tc.name {
+						t.Errorf("%s caches %s; want %s", path, name, tc.name)
+					}
+				}
+				if tc.script == "download-arm64-uefi.sh" {
+					assertRenovateUpdatesCacheReferences(t, path, content, len(matches), "qemu-efi-aarch64", "deb", qemuEfiAarch64Version)
+				}
+			}
+		})
+	}
 }
 
 var ubuntuLiveServerISOReferenceRE = regexp.MustCompile(`ubuntu-([0-9]{2}\.[0-9]{2}(?:\.[0-9]+)?)-live-server-(amd64|arm64)\.iso`)

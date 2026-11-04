@@ -4,7 +4,7 @@
 # The version in pkg/build/dependencies.go is the source of truth (Renovate updates
 # it). This script copies it to scripts/macos/download-arm64-uefi.sh, downloads the
 # matching deb, checks it against snapshot.debian.org and writes its SHA-256 and the
-# snapshot first_seen timestamp to both files.
+# snapshot first_seen timestamp to both files. Also updates the CI cache file names.
 #
 # Still manual (see build/packer/linux/ubuntu/README.md): the edk2 release in the
 # template comments and a boot test on an Apple Silicon Mac.
@@ -63,3 +63,7 @@ sed -i -E \
 	-e "s/^(\tqemuEfiAarch64SnapshotTimestamp[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${first_seen}\2/" \
 	-e "s/^(\tqemuEfiAarch64PinnedFor[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${version}\2/" \
 	"$go_file"
+for workflow in test-build-linux.yml test-build-macos.yml; do
+	sed -i -E "s/qemu-efi-aarch64_[0-9A-Za-z.+~-]+_all\.deb/qemu-efi-aarch64_${version}_all.deb/g" \
+		"$repo_root/.github/workflows/$workflow"
+done

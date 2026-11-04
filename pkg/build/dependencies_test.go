@@ -660,7 +660,7 @@ func TestArm64DependencyReconciliationPinsQemuEfiAarch64(t *testing.T) {
 		dirs.CacheDir = originalCacheDir
 	}()
 
-	wantPath := filepath.Join(dirs.CacheDir, "qemu-efi-aarch64_all.deb")
+	wantPath := filepath.Join(dirs.CacheDir, qemuEfiAarch64CacheFileName(qemuEfiAarch64Version))
 	for _, vmconfig := range []VirtualMachineConfig{
 		{OS: "ubuntu", UbuntuType: "server", Arch: "arm64", HostOs: HostOsDarwin, VirtualizationEngine: VirtualizationEngineUtm},
 		{OS: "ubuntu", UbuntuType: "desktop", Arch: "arm64", HostOs: HostOsDarwin, VirtualizationEngine: VirtualizationEngineUtm},
@@ -675,6 +675,9 @@ func TestArm64DependencyReconciliationPinsQemuEfiAarch64(t *testing.T) {
 			found = true
 			if dep.Checksum != "sha256:"+qemuEfiAarch64SHA256 {
 				t.Errorf("%+v: expected pinned qemu-efi-aarch64 checksum, got %q", vmconfig, dep.Checksum)
+			}
+			if dep.PrepareHook == nil {
+				t.Errorf("%+v: qemu-efi-aarch64 must prepare its versioned cache", vmconfig)
 			}
 			if dep.BeforeHook != nil {
 				t.Errorf("%+v: qemu-efi-aarch64 must not resolve its URL at download time", vmconfig)

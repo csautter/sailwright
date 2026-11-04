@@ -167,6 +167,11 @@ const (
 	// The "Sync virtio-win checksum" workflow updates it via scripts/update-virtio-win-checksum.sh.
 	virtioWinSHA256 = "303f7ae40dad495d6ae474fdc571df58958a4dbc5c37a522d80f9a203867949d"
 
+	// Update with scripts/update-utm-guest-tools-pin.sh, which follows UTM's advertised ISO.
+	utmGuestToolsVersion = "0.1.271"
+	utmGuestToolsRelease = "v10.0.2-utm"
+	utmGuestToolsSHA256  = "65b6a69b392ee01dd314c10f3dad9ebbf9c4160be43f5f0dd6bb715944d9095b"
+
 	// renovate: datasource=deb depName=qemu-efi-aarch64 versioning=deb registryUrl=https://deb.debian.org/debian?suite=trixie&components=main&binaryArch=all
 	qemuEfiAarch64Version = "2025.02-8+deb13u1"
 
@@ -434,22 +439,42 @@ func probeDownloadURL(ctx context.Context, client *http.Client, candidate string
 // qemuEfiAarch64URLs returns the pinned Debian qemu-efi-aarch64 package on the
 // Debian mirror first and on snapshot.debian.org as a fallback.
 func qemuEfiAarch64URLs() []string {
-	poolPath := "pool/main/e/edk2/qemu-efi-aarch64_" + qemuEfiAarch64Version + "_all.deb"
+	poolPath := "pool/main/e/edk2/" + qemuEfiAarch64CacheFileName(qemuEfiAarch64Version)
 	return []string{
 		"https://deb.debian.org/debian/" + poolPath,
 		"https://snapshot.debian.org/archive/debian/" + qemuEfiAarch64SnapshotTimestamp + "/" + poolPath,
 	}
 }
 
+func qemuEfiAarch64CacheFileName(version string) string {
+	return "qemu-efi-aarch64_" + version + "_all.deb"
+}
+
+func utmGuestToolsISOFileName(version string) string {
+	return "utm-guest-tools-" + version + ".iso"
+}
+
+func utmGuestToolsISOPath() string {
+	return GetDirectoriesInstance().CachePath("utm", utmGuestToolsISOFileName(utmGuestToolsVersion))
+}
+
+func utmGuestToolsISOURL() string {
+	return "https://github.com/utmapp/qemu/releases/download/" + utmGuestToolsRelease + "/" + utmGuestToolsISOFileName(utmGuestToolsVersion)
+}
+
 // qemuEfiAarch64Dependency returns the pinned ARM64 UEFI firmware package for the given VM configs.
 func qemuEfiAarch64Dependency(related ...VirtualMachineConfig) WebFileDependency {
 	urls := qemuEfiAarch64URLs()
+	path := GetDirectoriesInstance().CachePath(qemuEfiAarch64CacheFileName(qemuEfiAarch64Version))
 	return WebFileDependency{
-		LocalPath:        GetDirectoriesInstance().CachePath("qemu-efi-aarch64_all.deb"),
+		LocalPath:        path,
 		Checksum:         "sha256:" + qemuEfiAarch64SHA256,
 		Source:           urls[0],
 		FallbackSources:  urls[1:],
 		RelatedVmConfigs: related,
+		PrepareHook: func() {
+			prepareVersionedWebFileCache(path, "sha256:"+qemuEfiAarch64SHA256, "qemu-efi-aarch64*_all.deb", "qemu-efi-aarch64_all.deb")
+		},
 		FailureHint: fmt.Sprintf("if every source failed the checksum, the qemu-efi-aarch64 %s pin is probably stale (see build/packer/linux/ubuntu/README.md)",
 			qemuEfiAarch64Version),
 	}
@@ -893,9 +918,12 @@ func getWindows11DownloadContext(ctx context.Context, arch string, savePath stri
 func getWebFileDependencies() []WebFileDependency {
 	return []WebFileDependency{
 		{
-			LocalPath: GetDirectoriesInstance().CachePath("utm", "utm-guest-tools-latest.iso"),
-			Checksum:  "",
-			Source:    "https://getutm.app/downloads/utm-guest-tools-latest.iso",
+			LocalPath: utmGuestToolsISOPath(),
+			Checksum:  "sha256:" + utmGuestToolsSHA256,
+			Source:    utmGuestToolsISOURL(),
+			PrepareHook: func() {
+				prepareVersionedWebFileCache(utmGuestToolsISOPath(), "sha256:"+utmGuestToolsSHA256, "utm-guest-tools-*.iso", "utm-guest-tools-latest.iso")
+			},
 			RelatedVmConfigs: []VirtualMachineConfig{
 				{
 					OS:                   "windows11",

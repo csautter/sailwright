@@ -18,6 +18,8 @@ var buildWorkflows = []string{linuxBuildWorkflow, macOSBuildWorkflow}
 // An unversioned name would keep restoring an outdated ISO from the build cache after a version
 // bump. TestVirtioWinPinsStayInSync in pkg/build checks the version against the Go pin.
 var versionedVirtioWinISOCachePathRE = regexp.MustCompile(`^\./\.dev-alchemy/cache/windows/virtio-win-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.iso$`)
+var versionedQemuEfiCachePathRE = regexp.MustCompile(`^\./\.dev-alchemy/cache/qemu-efi-aarch64_[0-9A-Za-z.+~-]+_all\.deb$`)
+var versionedUtmGuestToolsCachePathRE = regexp.MustCompile(`^\./\.dev-alchemy/cache/utm/utm-guest-tools-[0-9]+\.[0-9]+\.[0-9]+\.iso$`)
 
 func TestBuildWorkflowMatrixEntriesReferenceExistingTests(t *testing.T) {
 	t.Parallel()
@@ -125,17 +127,19 @@ func TestBuildWorkflowsCacheArchitectureSpecificDependencies(t *testing.T) {
 					}
 
 					var want []string
-					if arch == "arm64" {
-						want = append(want, "./.dev-alchemy/cache/qemu-efi-aarch64_all.deb")
-					}
 					if entry["vm_os"] == "windows11" {
 						want = append(want,
 							"./.dev-alchemy/cache/windows11/iso/win11_english_"+arch+".iso",
-							"./.dev-alchemy/cache/utm/utm-guest-tools-latest.iso",
 						)
 					}
 
 					cached := entry.cacheFiles(t)
+					if arch == "arm64" && !slices.ContainsFunc(cached, versionedQemuEfiCachePathRE.MatchString) {
+						t.Errorf("job %q matrix entry %s must cache versioned qemu-efi-aarch64 firmware", jobID, testName)
+					}
+					if entry["vm_os"] == "windows11" && !slices.ContainsFunc(cached, versionedUtmGuestToolsCachePathRE.MatchString) {
+						t.Errorf("job %q matrix entry %s must cache a versioned UTM Guest Tools ISO", jobID, testName)
+					}
 					for _, path := range want {
 						if !slices.Contains(cached, path) {
 							t.Errorf("job %q matrix entry %s must cache %s", jobID, testName, path)

@@ -287,6 +287,7 @@ run_packer_build() {
 		-var "artifact_output_path=${artifact_output_path}" \
 		-var "iso_url=${win11_iso_path}" \
 		-var "virtio_win_iso_name=${virtio_win_iso_name}" \
+		-var "utm_guest_tools_iso_name=${utm_guest_tools_iso_name}" \
 		-var "headless=${headless}" \
 		-var "vnc_port=${vnc_port}" \
 		-var "arch=${arch}" \
@@ -561,6 +562,7 @@ if [[ ! -f "$windows_source_iso_path" && -f "$legacy_windows_iso_path" ]]; then
 fi
 download_windows_iso_if_missing "$arch" "$windows_source_iso_path"
 
+utm_guest_tools_iso_name="$(bash "${project_root}/scripts/macos/download-utm-guest-tools.sh" --print-file-name)" || exit 1
 bash "${project_root}/scripts/macos/download-utm-guest-tools.sh"
 virtio_win_iso_name="$(bash "${project_root}/scripts/macos/download-virtio-win-iso.sh" --print-file-name)" || exit 1
 bash "${project_root}/scripts/macos/download-virtio-win-iso.sh"

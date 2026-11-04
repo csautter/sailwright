@@ -107,6 +107,15 @@ variable "arm64_machine" {
   description = "QEMU -machine value for ARM64 guests. sailwright build sets it through PKR_VAR_arm64_machine from the machines the installed QEMU supports. Empty uses virt-10.0 on macOS and virt elsewhere."
 }
 
+variable "utm_guest_tools_iso_name" {
+  type        = string
+  description = "File name of the pinned UTM Guest Tools ISO, supplied by windows11-qemu.sh."
+  validation {
+    condition     = var.utm_guest_tools_iso_name != ""
+    error_message = "The utm_guest_tools_iso_name variable must be set."
+  }
+}
+
 variable "virtio_win_iso_name" {
   type        = string
   description = "File name of the virtio-win ISO in the windows cache directory. windows11-qemu.sh takes it from scripts/macos/download-virtio-win-iso.sh, where it carries the pinned version."
@@ -128,7 +137,7 @@ locals {
   }
   win11_iso         = var.iso_url != "" ? var.iso_url : local.win11_default_iso[var.arch]
   win11_qcow2       = var.artifact_output_path != "" ? var.artifact_output_path : "${local.cache_directory}/windows11/qemu-windows11-${var.arch}.qcow2"
-  win11_guest_tools = "${local.cache_directory}/utm/utm-guest-tools-latest.iso"
+  win11_guest_tools = "${local.cache_directory}/utm/${var.utm_guest_tools_iso_name}"
   win11_virtio_iso  = "${local.cache_directory}/windows/${var.virtio_win_iso_name}"
   win11_uefi_code   = "${local.cache_directory}/qemu-uefi/usr/share/AAVMF/AAVMF_CODE.no-secboot.fd"
   win11_uefi_vars   = "${local.cache_directory}/qemu-uefi/usr/share/AAVMF/AAVMF_VARS.fd"
