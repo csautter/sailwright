@@ -605,6 +605,8 @@ def _provision_runner(req, context, config):
         deadline,
     )
 
+    _log_stage(context, "created")
+    context["stage"] = "vm"
     # Keyword arguments shared by the regular and the spot VirtualMachine, so
     # the spot fallback sends none of the spot-only fields.
     vm_params = {
@@ -633,8 +635,6 @@ def _provision_runner(req, context, config):
         ),
     }
 
-    _log_stage(context, "created")
-    context["stage"] = "vm"
     # Configure spot VM if enabled
     use_spot = os.environ.get("VM_USE_SPOT", "false").lower() == "true"
     regular_vm = compute_models.VirtualMachine(**vm_params)
@@ -761,7 +761,8 @@ def handle_runner_status(req: func.HttpRequest, context=None) -> func.HttpRespon
             if status.code
             and (
                 status.code.lower().startswith("provisioningstate/failed")
-                or status.code.lower()
+                or state == "succeeded"
+                and status.code.lower()
                 in ("powerstate/deallocated", "powerstate/stopped")
             )
         ]

@@ -370,6 +370,7 @@ class RequestRunnerTest(unittest.TestCase):
             response = self._request_runner()
 
         self.assertEqual(response.status_code, 500)
+        self.assertEqual(json.loads(response.body)["stage"], "vm")
         self.compute.virtual_machines.begin_create_or_update.assert_not_called()
 
     def test_missing_configuration_is_cached_and_deterministic(self):
@@ -715,6 +716,11 @@ class RunnerStatusTest(unittest.TestCase):
                     json.loads(self._status("Succeeded", (code,)).body)["status"],
                     "failed",
                 )
+
+    def test_stopped_vm_during_initial_creation_is_still_provisioning(self):
+        response = self._status("Creating", ("PowerState/stopped",))
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(json.loads(response.body)["status"], "provisioning")
 
     def test_failed_and_canceled_without_instance_view(self):
         for state in ("Failed", "Canceled", "Cancelled"):
