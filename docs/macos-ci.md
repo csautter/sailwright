@@ -8,7 +8,7 @@ checks cannot reproduce.
 | --- | --- | --- | --- |
 | A: Darwin profile | `ubuntu-24.04` for amd64, `ubuntu-24.04-arm` for arm64 | Packer validation and QEMU argument snapshots for Windows 11, Ubuntu Server and Ubuntu Desktop; Darwin Go compilation; shell portability and dependency selection; UTM bundle snapshots | Build/deploy/installer PR paths and manual dispatch |
 | B: quick check | GitHub-hosted `macos-26` | Homebrew installation, Darwin unit tests, BSD shell behavior, all six real QEMU startup probes, UTM bundle creation and an attempt to register bundles | macOS paths or `ci:macos` |
-| C: full build | `macos-26-tart` when enabled, otherwise `macos-26` | Full arm64 installations and UTM deployment/startup smoke tests; amd64 startup probes | Weekly, release PRs, runner changes, `ci:macos-full`, or manual dispatch |
+| C: full build | `macos-26-tart` when enabled, otherwise `macos-26` | Full arm64 installations and UTM boot checks with guest-agent readiness; amd64 startup probes | Weekly, release PRs, runner changes, `ci:macos-full`, or manual dispatch |
 
 Full amd64 installations and their UTM smoke tests run on the first Monday of
 each month and on release-please PRs. Other full-tier runs use startup probes
@@ -110,8 +110,21 @@ AppleScript, TCC or APFS. Tier B exercises real QEMU startup, but it does not
 complete guest installation or boot guests through UTM. Only tier C checks
 installation followed by UTM guest startup.
 
-Hardware acceleration through HVF is outside these checks. The existing
-`is_ci` setting keeps Darwin CI builds on TCG because Tart VMs cannot provide
-nested virtualization. The Linux profile does not substitute Linux-built
-images for macOS build results. An optional Linux QEMU/KVM probe is not enabled;
-QEMU compatibility and real firmware execution remain tier B checks.
+Tier C reuses each completed build: it creates a disposable bundle below the
+job's `.dev-alchemy/utm-<test>` directory, opens it in UTM and starts the VM by
+UUID. `boot-utm.py` requires UTM's QEMU Guest Agent to respond with a usable IP
+within 20 minutes; a running emulator alone is insufficient. Registration,
+startup, guest-agent timeout and cleanup errors fail the job. The VM is stopped
+and deleted afterwards; the cached build image is retained. The tested plist
+and a JSON result (including failures) are uploaded as UTM boot diagnostics.
+This is a boot smoke, not the full provision/idempotency E2E scenario.
+
+Hardware acceleration through HVF and bridged networking are outside these CI
+checks. The existing `is_ci` setting keeps Packer on TCG. The disposable tier C
+bundle likewise disables its hypervisor, caps memory at 4 GiB and uses emulated
+networking, because Tart cannot provide nested HVF/vmnet. Production templates
+and their snapshots retain their native settings. A guest-agent IP confirms
+the installed OS is running; it does not prove host-to-guest SSH/WinRM or native
+bridged networking. Verify those on a physical Mac when changing VM hardware
+or networking. The Linux profile does not substitute Linux-built images for
+macOS build results. An optional Linux QEMU/KVM probe is not enabled.

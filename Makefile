@@ -268,6 +268,7 @@ test-macos-profile-golden:
 
 test-macos-profile-shell:
 	python3 test/macos-profile/test-routes.py
+	python3 test/macos-profile/test-boot-utm.py
 	python3 test/macos-profile/lint.py
 	bash test/macos-profile/test-shell.sh
 	python3 test/macos-profile/test-utm.py

@@ -166,6 +166,7 @@ jobs:
     runs-on: ${{ vars.USE_TART_MACOS_RUNNERS == 'true' && matrix.tart_runs_on || matrix.runs_on }}
     env:
       SAILWRIGHT_WIN11_ISO_OFFLINE: '1'
+      SAILWRIGHT_UTM_VM_DIR: ${{ github.workspace }}/.dev-alchemy/utm-${{ matrix.go_test_name }}
       DEV_ALCHEMY_APP_DATA_DIR: ${{ github.workspace }}/.dev-alchemy
       DEV_ALCHEMY_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/cache
       DEV_ALCHEMY_VAGRANT_DIR: ${{ github.workspace }}/.dev-alchemy/.vagrant
@@ -181,6 +182,7 @@ jobs:
           - vm_os: windows11
             go_test_name: TestBuildQemuWindows11Arm64OnMacos
             deploy_test_name: TestDeployUtmWindows11Arm64OnMacos
+            utm_os: windows11
             runs_on: macos-26
             tart_runs_on: macos-26-tart
             packer_start_timeout: '180'
@@ -194,6 +196,7 @@ jobs:
           - vm_os: windows11
             go_test_name: TestBuildQemuWindows11Amd64OnMacos
             deploy_test_name: TestDeployUtmWindows11Amd64OnMacos
+            utm_os: windows11
             runs_on: macos-26
             tart_runs_on: macos-26-tart
             packer_start_timeout: '180'
@@ -206,6 +209,7 @@ jobs:
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuServerArm64OnMacos
             deploy_test_name: TestDeployUtmUbuntuServerArm64OnMacos
+            utm_os: ubuntu-server
             runs_on: macos-26
             tart_runs_on: macos-26-tart
             packer_start_timeout: '180'
@@ -217,6 +221,7 @@ jobs:
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuServerAmd64OnMacos
             deploy_test_name: TestDeployUtmUbuntuServerAmd64OnMacos
+            utm_os: ubuntu-server
             runs_on: macos-26
             tart_runs_on: macos-26-tart
             packer_start_timeout: '180'
@@ -226,6 +231,7 @@ jobs:
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuDesktopArm64OnMacos
             deploy_test_name: TestDeployUtmUbuntuDesktopArm64OnMacos
+            utm_os: ubuntu-desktop
             runs_on: macos-26
             tart_runs_on: macos-26-tart
             packer_start_timeout: '180'
@@ -237,6 +243,7 @@ jobs:
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuDesktopAmd64OnMacos
             deploy_test_name: TestDeployUtmUbuntuDesktopAmd64OnMacos
+            utm_os: ubuntu-desktop
             runs_on: macos-26
             tart_runs_on: macos-26-tart
             packer_start_timeout: '180'
@@ -289,7 +296,7 @@ jobs:
           if [ -d ./.dev-alchemy ]; then
             sudo chown -R "$(id -u):$(id -g)" ./.dev-alchemy
           fi
-      - name: Run deploy smoke test TEST_NAME=${{ matrix.deploy_test_name }}
+      - name: Create UTM bundle and verify guest boot TEST_NAME=${{ matrix.deploy_test_name }}
         if: steps.packer_build.outcome == 'success' && env.DEV_ALCHEMY_PACKER_START_ONLY != 'true'
         id: deploy_smoke
         shell: bash
@@ -300,6 +307,17 @@ jobs:
         run: |-
           df -h "$GITHUB_WORKSPACE" "$HOME"
           go test -timeout 60m -v ./pkg/deploy -run "^${{ matrix.deploy_test_name }}$"
+          python3 test/macos-profile/boot-utm.py \
+            "$SAILWRIGHT_UTM_VM_DIR/${{ matrix.utm_os }}-${{ matrix.arch }}-dev-alchemy.utm" \
+            --software-emulation --diagnostics artifact/utm-boot
+      - name: Upload UTM boot diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: utm-boot-${{ matrix.go_test_name }}
+          path: artifact/utm-boot
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Move .vnc.mp4 files to artifact directory
         if: contains(matrix.runs_on, 'macos')
         run: |-

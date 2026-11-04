@@ -79,3 +79,39 @@ func TestMacOSFullBuildsRestrictAmd64ToReleaseOrMonthlySelection(t *testing.T) {
 		t.Errorf("full builds must gate amd64 installation on monthly/release selection")
 	}
 }
+
+func TestMacOSFullBuildsRequireGuestReadinessAfterBundleCreation(t *testing.T) {
+	t.Parallel()
+	j := loadWorkflow(t, macOSBuildWorkflow).job(t, macOSBuildJob)
+	for _, entry := range j.Strategy.Matrix.Include {
+		want := "windows11"
+		if entry["vm_os"] == "ubuntu" {
+			want = "ubuntu-server"
+			if strings.Contains(entry["go_test_name"], "Desktop") {
+				want = "ubuntu-desktop"
+			}
+		}
+		if entry["utm_os"] != want {
+			t.Errorf("%s must boot %s, got %q", entry["go_test_name"], want, entry["utm_os"])
+		}
+	}
+	if !strings.Contains(j.Env["SAILWRIGHT_UTM_VM_DIR"], "${{ github.workspace }}/.dev-alchemy/") {
+		t.Error("boot checks must use disposable workspace bundles")
+	}
+	smoke := j.stepByID(t, macOSBuildJob, "deploy_smoke")
+	create := strings.Index(smoke.Run, "go test -timeout 60m")
+	boot := strings.Index(smoke.Run, "python3 test/macos-profile/boot-utm.py")
+	if create == -1 || boot <= create {
+		t.Fatal("full deploy smoke must boot the bundle after creation, not only copy its disk")
+	}
+	for _, required := range []string{"$SAILWRIGHT_UTM_VM_DIR/${{ matrix.utm_os }}-${{ matrix.arch }}-dev-alchemy.utm", "--software-emulation", "--diagnostics artifact/utm-boot"} {
+		if !strings.Contains(smoke.Run, required) {
+			t.Errorf("boot check missing %q", required)
+		}
+	}
+	if j.stepIndex(func(s step) bool {
+		return usesAction(s, "actions/upload-artifact") && s.If == "always()" && s.With["path"] == "artifact/utm-boot"
+	}) == -1 {
+		t.Error("UTM failures must retain diagnostics")
+	}
+}

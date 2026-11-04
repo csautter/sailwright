@@ -671,6 +671,9 @@ If `CYGWIN_TERMINAL_PATH` points to `mintty.exe`, provisioning resolves it to th
 
 ## macOS Host Workflows
 
+For CI tiers, local profile checks and coverage limits, see
+[macOS validation](./macos-ci.md).
+
 ### macOS on macOS with Tart
 
 Use the provided script:
