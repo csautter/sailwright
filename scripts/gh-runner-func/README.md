@@ -1,7 +1,7 @@
 # GitHub Actions Runner Broker — Azure Function
 
 This Azure Function App acts as the **control-plane broker** for on-demand Windows GitHub Actions runner VMs on Azure.
-It exposes two HTTP endpoints that CI workflows call to create and destroy ephemeral runner VMs.
+It exposes HTTP endpoints to create ephemeral runner VMs, observe provisioning, and delete their resource groups.
 
 ---
 
@@ -10,6 +10,7 @@ It exposes two HTTP endpoints that CI workflows call to create and destroy ephem
 1. [Architecture overview](#architecture-overview)
 2. [API endpoints](#api-endpoints)
    - [POST /api/request_runner](#post-apirequest_runner)
+   - [POST /api/runner_status](#post-apirunner_status)
    - [POST /api/delete_resource_group](#post-apidelete_resource_group)
 3. [Authentication and security model](#authentication-and-security-model)
 4. [Required app settings](#required-app-settings)
@@ -41,6 +42,8 @@ Azure Function App  (EasyAuth v2 → Return401 for unauthenticated)
         ├─▶ request_runner       → Key Vault ──▶ GitHub API ──▶ Azure Compute API
         │                                         (register token)   (create VM)
         │
+        ├─▶ runner_status         → Azure Resource Manager / Compute API
+        │
         └─▶ delete_resource_group → Azure Resource Manager API
 ```
 
@@ -63,8 +66,8 @@ Registers a GitHub Actions runner token, creates a resource group, and provision
 | Field                  | Type   | Required | Default                             | Description |
 |------------------------|--------|----------|-------------------------------------|-------------|
 | `repo`                 | string | ✅        | —                                   | GitHub repository in `owner/repo` format |
-| `resource-group`       | string | ❌        | `RESOURCE_GROUP` env var            | Target resource group name. Must start with `gh-runner-tmp`. |
-| `runner-name`          | string | ❌        | `"gh-runner-vm"`                    | VM / runner display name. Truncated to 15 chars for the Windows computer name. |
+| `resource-group`       | string | ❌        | `RESOURCE_GROUP` env var            | Target resource group name. Must start with `gh-runner-tmp`, use letters, digits, `_-.()` and not end in a period (up to 90 characters). Prefer a separate group per request for independent cleanup. |
+| `runner-name`          | string | ❌        | `"gh-runner-vm"`                    | Runner display name (letters, digits, hyphens; starts with a letter or digit, up to 64 characters). Truncated to 15 chars for the Windows computer name, which cannot be all numeric. Use a distinct name for each concurrent runner. |
 | `virtualization-flavor`| string | ❌        | `"hyperv"`                          | Virtualization technology. Allowed values: `hyperv`, `virtualbox`. |
 
 **Example**
@@ -82,10 +85,14 @@ Registers a GitHub Actions runner token, creates a resource group, and provision
 
 | Status | Meaning |
 |--------|---------|
-| `202`  | VM creation started. Body: `{"message": "Runner VM creation started", "vm": "<vm-name>"}` |
-| `400`  | Invalid request body, repo format, or virtualization flavor. |
-| `401`  | Authentication/authorization check failed. |
-| `500`  | Internal error (GitHub API failure, Key Vault access, VM provisioning, missing config). |
+| `202` | VM creation accepted. The existing `message` and `vm` fields remain; `resource-group`, `resources`, `status: "provisioning"` and `status-url: "/api/runner_status"` identify the resources and how to monitor them. |
+| `400` | Invalid input, or GitHub returned `404` for the repository. |
+| `401` | Authentication/authorization check failed. |
+| `409` | Azure resource conflict; inspect the returned group and VM before retrying. |
+| `502` | Key Vault/Azure request rejected, GitHub authentication/authorization failed (`401`/`403`), invalid GitHub token response, or GitHub request failed after retries. |
+| `503` | Missing app settings (names in `missing`), Azure unavailable, or GitHub rate limited (`429`). Transient failures include a `Retry-After` header. |
+| `504` | GitHub request or network provisioning timed out. |
+| `500` | Unexpected internal preparation error. |
 
 **What the endpoint does**
 
@@ -96,10 +103,73 @@ Registers a GitHub Actions runner token, creates a resource group, and provision
 5. Creates (or reuses) the resource group in `LOCATION`.
 6. Provisions a VNet (`10.0.0.0/16`), subnet, public IP, NSG (no inbound rules), and NIC.
 7. Creates the VM using the image referenced by `CUSTOM_IMAGE_ID` + `-` + `virtualization-flavor`.
-8. If `VM_USE_SPOT=true`, first attempts a spot VM; falls back to a regular VM on failure.
+8. If `VM_USE_SPOT=true`, first attempts a spot VM; an ARM error on the initial submission triggers an on-demand fallback. Failures after acceptance are reported by `runner_status`.
 9. The VM boots, runs `runner-setup.ps1` via `custom_data`, installs Hyper-V or VirtualBox, and registers itself as a GitHub Actions runner.
 
+**Diagnostics and retries**
+
+Send an optional `X-Correlation-ID` (1–64 letters, digits, `.`, `_`, or `-`),
+or let the broker generate one. Every creation/status response includes it in
+the header and `correlation-id` field, alongside the current `stage`. JSON logs
+identify auth, input, PAT, GitHub token, network and VM stages. Failures log the
+exception class and ARM error code when available; upstream bodies and exception
+messages are omitted to keep credentials out of logs.
+
+The broker checks required settings on first use and caches the result per
+worker. Restart the Function App after correcting settings. Resource settings
+`VM_NAME`, `VNET_NAME`, `IP_NAME`, `NIC_NAME` and `NSG_NAME` are prefixes: each
+request gets a UUID suffix within Azure name limits. The `resources` response
+field and input-stage log contain the actual generated names.
+
+Key Vault transport failures and transient HTTP failures, plus GitHub network
+errors and `5xx` responses, get at most three attempts with 0.5 s and 1 s backoff.
+GitHub `429` is returned immediately with `Retry-After` (60 s if unavailable).
+SDK and GitHub connections use a 3 s connect timeout and a 5 s read timeout.
+Network pollers wait at most 20 s each, shortened by a shared 180 s request
+budget with 20 s reserved for VM submission. VM provisioning is asynchronous.
+
+A retry of `request_runner` creates new resources; it is **not idempotent**.
+After an uncertain response or network timeout, inspect the returned group/VM
+and clean up before submitting again. Accepted Azure operations may still finish
+following an HTTP timeout. Use a dedicated group per request when cleanup must
+not affect other runners.
+
 > **Security note:** The NSG adds no inbound rules — the runner only needs outbound connectivity to GitHub, and the default rules deny all inbound. RDP (3389) is intentionally **not** opened. For the rare debug session, use Azure Bastion / just-in-time VM access rather than a standing inbound rule.
+
+---
+
+### POST /api/runner_status
+
+Poll this endpoint after a `202` creation response to detect provisioning
+failures without holding the creation HTTP request open. It reads ARM directly,
+so it works across Function worker restarts and requires no in-memory poller.
+It uses the same caller authentication as `request_runner`, and checks the
+resource group's `managed-by: gh-runner-broker` tag before reading the VM.
+
+Send the `resource-group` and actual `vm` from the creation response:
+
+```json
+{
+  "resource-group": "gh-runner-tmp-ci-run-12345",
+  "vm": "gh-runner-vm-<generated-suffix>"
+}
+```
+
+| HTTP status | Body `status` | Action |
+|-------------|---------------|--------|
+| `202` | `provisioning` | Poll again after `Retry-After` (10 seconds), with an overall caller deadline. |
+| `200` | `succeeded` | ARM provisioning succeeded. Continue checking GitHub runner registration separately. |
+| `200` | `failed` | Stop waiting and clean up. `error-code` contains a provisioning/power-state code. Failed/canceled provisioning and stopped/deallocated VMs are reported here, including Spot eviction. |
+| `404` | `not-found` | The group or VM no longer exists. Stop waiting and inspect cleanup. |
+| `400` / `401` / `403` | — | Invalid input, unauthenticated caller, or group not owned by the broker. |
+| `502` / `503` / `504` | — | Status lookup failed; use `stage` and correlation ID for diagnosis. |
+
+Callers must inspect the JSON `status`, including on HTTP `200`, to fail CI early.
+Existing creation-only callers must add this polling step to observe late
+failures. This endpoint reports Azure VM state; it does not check the bootstrap
+script or GitHub registration and does not automatically retry late Spot
+failures on demand. Continue polling while waiting for registration if Spot
+eviction needs to be detected after provisioning succeeds.
 
 ---
 
@@ -180,7 +250,7 @@ The golden image build ([build-azure-runner-image.yml](../../.github/workflows/b
 
 These must be present in the Function App's **Application Settings** (set by Terraform; see `deployments/terraform/modules/azure_gh_runner/manager.tf`).
 
-### Required — function cannot start without these
+### Required — runtime and broker settings
 
 | Setting                  | Description |
 |--------------------------|-------------|
@@ -200,18 +270,18 @@ These must be present in the Function App's **Application Settings** (set by Ter
 | `CUSTOM_IMAGE_ID`| ARM resource ID prefix for the custom Windows image, e.g. `/subscriptions/<sub>/resourceGroups/gh-actions-images-<region>/providers/Microsoft.Compute/images/Win2022GHAzureRunner`. The function appends `-<virtualization-flavor>` at runtime. |
 | `VM_SIZE`        | Azure VM SKU, e.g. `Standard_D4ds_v5`. |
 | `ADMIN_USERNAME` | VM local administrator username, e.g. `azureuser`. |
-| `VM_NAME`        | Default VM name, e.g. `gh-runner-vm`. |
+| `VM_NAME`        | VM resource name prefix, e.g. `gh-runner-vm`; a unique suffix is appended per request. |
 
 ### Optional — have safe defaults
 
 | Setting          | Default            | Description |
 |------------------|--------------------|-------------|
-| `VM_USE_SPOT`    | `false`            | Set to `true` to use Azure Spot VMs with automatic fallback to on-demand. |
-| `VNET_NAME`      | `gh-runner-vnet`   | Virtual network name within the runner resource group. |
+| `VM_USE_SPOT`    | `false`            | Set to `true` to use Azure Spot VMs with on-demand fallback for initial submission errors. Poll `runner_status` for late failures. |
+| `VNET_NAME`      | `gh-runner-vnet`   | Virtual network name prefix within the runner resource group. |
 | `SUBNET_NAME`    | `default`          | Subnet name. |
-| `IP_NAME`        | `gh-runner-ip`     | Public IP resource name. |
-| `NIC_NAME`       | `gh-runner-nic`    | Network interface resource name. |
-| `NSG_NAME`       | `gh-runner-nsg`    | Network security group name. |
+| `IP_NAME`        | `gh-runner-ip`     | Public IP resource name prefix. |
+| `NIC_NAME`       | `gh-runner-nic`    | Network interface resource name prefix. |
+| `NSG_NAME`       | `gh-runner-nsg`    | Network security group name prefix. |
 | `ALLOWED_USER_OBJECT_IDS` | deploying user's OID | Comma-separated Entra object IDs of users allowed to call endpoints directly. |
 
 ---
@@ -363,15 +433,15 @@ func host start
 
 ## Testing endpoints
 
-Unit tests for the handlers stub the Azure SDKs and need only Python 3:
+Unit tests for the handlers stub the Azure SDKs and need only Python 3. They cover dependency failures, retries, invalid input, missing configuration, concurrent resource naming and late provisioning failures:
 
 ```bash
 python3 -m unittest discover -s scripts/gh-runner-func
 ```
 
 Contract tests check the JSON request bodies the real, pinned Azure SDKs send to
-ARM, so a wrong model field name or an SDK serialization change shows up before
-deployment. Run them in a separate virtual environment with the lock installed.
+ARM, exercise accepted-then-failed provisioning through a fake SDK transport,
+and verify transport timeouts, so SDK changes show up before deployment. Run them in a separate virtual environment with the lock installed.
 The stub-based tests above must not run in the same process:
 
 ```bash
