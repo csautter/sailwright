@@ -245,6 +245,8 @@ func TestAssessRisk(t *testing.T) {
 		{[]string{"provision", "--ask-become-pass", "local"}, "", []string{RiskHostCode, RiskHostModifying}},
 		{[]string{"provision", "-K", "local", "--check"}, "", []string{RiskHostCode}},
 		{[]string{"build", "--no-prebuilt", "all"}, "", []string{RiskAllTargets}},
+		{[]string{"create", "--allow-insecure-credentials", "all"}, "", []string{RiskAllTargets}},
+		{[]string{"provision", "--allow-insecure-credentials", "local", "--check"}, "", []string{RiskHostCode}},
 		{[]string{"provision", "ubuntu", "--", "-e", "x=1"}, "", []string{RiskHostCode, RiskPassthroughArgs}},
 		{[]string{"provision", "ubuntu", "--playbook", "/w/a/site.yml"}, "/w/a", []string{RiskHostCode}},
 		{[]string{"provision", "ubuntu", "--playbook", "/etc/site.yml"}, "/w/a", []string{RiskExternalPaths, RiskHostCode}},
