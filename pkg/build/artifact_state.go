@@ -41,6 +41,9 @@ const (
 	artifactCompletionMarkerSuffix = ".sailwright-complete"
 	artifactCompletionMarkerFormat = 1
 
+	// The infixes keep the old dev-alchemy name so that leftovers of earlier versions
+	// are still recognised. buildArtifactBackupInfix is no longer written: older
+	// versions backed up artifacts that unstaged builds overwrote in place.
 	stagedBuildArtifactInfix   = ".dev-alchemy-build-"
 	buildArtifactBackupInfix   = ".dev-alchemy-backup-"
 	replaceArtifactBackupInfix = ".dev-alchemy-replace-backup-"

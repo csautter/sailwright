@@ -455,19 +455,6 @@ func checkIfBuildArtifactsExist(config VirtualMachineConfig) (bool, error) {
 	return BuildArtifactsExist(config)
 }
 
-type buildArtifactBackup struct {
-	originalPath string
-	backupPath   string
-}
-
-func deferBuildArtifactCleanup(cleanup func(bool) error, buildSucceeded *bool) func() {
-	return func() {
-		if err := cleanup(*buildSucceeded); err != nil {
-			log.Printf("Build artifact cleanup failed: %v", err)
-		}
-	}
-}
-
 func prepareBuildArtifactsForBuild(config VirtualMachineConfig) (bool, func(bool) error, error) {
 	artifacts, err := resolveExpectedBuildArtifacts(config)
 	if err != nil {
@@ -493,44 +480,29 @@ func prepareBuildArtifactsForBuild(config VirtualMachineConfig) (bool, func(bool
 		return false, nil, err
 	}
 
-	if len(config.StagedBuildArtifacts) > 0 {
-		stagedArtifacts, err := validateStagedBuildArtifacts(artifacts, config.StagedBuildArtifacts)
-		if err != nil {
-			return false, nil, err
-		}
-		if err := removeBuildArtifacts(stagedArtifacts); err != nil {
-			return false, nil, err
-		}
-		cleanup := func(success bool) error {
-			if success {
-				log.Printf("Promoting staged build artifact(s) after successful build: %v -> %v", stagedArtifacts, artifacts)
-				if err := promoteStagedBuildArtifacts(artifacts, stagedArtifacts); err != nil {
-					return err
-				}
-				return MarkBuildArtifactsComplete(artifacts)
-			}
-			log.Printf("Removing staged build artifact(s) after failed or interrupted build: %v", stagedArtifacts)
-			return removeBuildArtifacts(stagedArtifacts)
-		}
-
-		return false, cleanup, nil
+	// Builds always write to staging paths (see withStagedBuildArtifacts), so the final
+	// path never holds a partial artifact.
+	if len(config.StagedBuildArtifacts) == 0 {
+		return false, nil, errors.New("build artifacts must be staged: call withStagedBuildArtifacts before the build")
 	}
-
-	if err := RemoveBuildArtifactCompletionMarkers(artifacts); err != nil {
-		return false, nil, err
-	}
-	backups, err := backupBuildArtifacts(artifacts)
+	stagedArtifacts, err := validateStagedBuildArtifacts(artifacts, config.StagedBuildArtifacts)
 	if err != nil {
 		return false, nil, err
 	}
-
+	if err := removeBuildArtifacts(stagedArtifacts); err != nil {
+		return false, nil, err
+	}
 	cleanup := func(success bool) error {
 		if success {
-			return errors.Join(MarkBuildArtifactsComplete(artifacts), removeBackedUpArtifacts(backups))
+			log.Printf("Promoting staged build artifact(s) after successful build: %v -> %v", stagedArtifacts, artifacts)
+			if err := promoteStagedBuildArtifacts(artifacts, stagedArtifacts); err != nil {
+				return err
+			}
+			return MarkBuildArtifactsComplete(artifacts)
 		}
-		return errors.Join(removeBuildArtifacts(artifacts), restoreBackedUpArtifacts(backups))
+		log.Printf("Removing staged build artifact(s) after failed or interrupted build: %v", stagedArtifacts)
+		return removeBuildArtifacts(stagedArtifacts)
 	}
-
 	return false, cleanup, nil
 }
 
@@ -653,76 +625,6 @@ func RemoveBuildArtifactsForConfig(config VirtualMachineConfig) {
 	if err := RemoveBuildArtifacts(artifacts); err != nil {
 		log.Printf("Failed to remove build artifacts: %v", err)
 	}
-}
-
-func backupBuildArtifacts(artifacts []string) ([]buildArtifactBackup, error) {
-	backups := make([]buildArtifactBackup, 0, len(artifacts))
-	for _, artifact := range artifacts {
-		if _, err := os.Stat(artifact); os.IsNotExist(err) {
-			continue
-		} else if err != nil {
-			_ = restoreBackedUpArtifacts(backups)
-			return nil, err
-		}
-
-		backupPath := fmt.Sprintf("%s%s%d", artifact, buildArtifactBackupInfix, time.Now().UnixNano())
-		if err := os.Rename(artifact, backupPath); err != nil {
-			_ = restoreBackedUpArtifacts(backups)
-			return nil, fmt.Errorf("failed to back up build artifact %s: %w", artifact, err)
-		}
-
-		log.Printf("Backed up existing build artifact: %s -> %s", artifact, backupPath)
-		backups = append(backups, buildArtifactBackup{
-			originalPath: artifact,
-			backupPath:   backupPath,
-		})
-	}
-
-	return backups, nil
-}
-
-func restoreBackedUpArtifacts(backups []buildArtifactBackup) error {
-	var errs []error
-	for _, backup := range backups {
-		if _, err := os.Stat(backup.backupPath); os.IsNotExist(err) {
-			continue
-		} else if err != nil {
-			errs = append(errs, fmt.Errorf("failed to stat backup artifact %s: %w", backup.backupPath, err))
-			continue
-		}
-
-		// #nosec G301 -- restored cache artifact directories must remain traversable for non-root CI steps after sudo-created builds.
-		if err := os.MkdirAll(filepath.Dir(backup.originalPath), 0755); err != nil {
-			errs = append(errs, fmt.Errorf("failed to recreate artifact directory for %s: %w", backup.originalPath, err))
-			continue
-		}
-
-		if err := os.Rename(backup.backupPath, backup.originalPath); err != nil {
-			errs = append(errs, fmt.Errorf("failed to restore backup artifact %s: %w", backup.originalPath, err))
-			continue
-		}
-		log.Printf("Restored build artifact backup: %s", backup.originalPath)
-	}
-	return errors.Join(errs...)
-}
-
-func removeBackedUpArtifacts(backups []buildArtifactBackup) error {
-	var errs []error
-	for _, backup := range backups {
-		if _, err := os.Stat(backup.backupPath); os.IsNotExist(err) {
-			continue
-		} else if err != nil {
-			errs = append(errs, fmt.Errorf("failed to stat backup artifact %s: %w", backup.backupPath, err))
-			continue
-		}
-
-		if err := os.RemoveAll(backup.backupPath); err != nil {
-			errs = append(errs, fmt.Errorf("failed to remove backup artifact %s: %w", backup.backupPath, err))
-			continue
-		}
-		log.Printf("Removed build artifact backup: %s", backup.backupPath)
-	}
-	return errors.Join(errs...)
 }
 
 func promoteStagedBuildArtifacts(finalArtifacts []string, stagedArtifacts []string) error {

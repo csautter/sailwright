@@ -115,24 +115,6 @@ func TestDetermineBuildCompletionDecisionDiscardsStoppedBuildThatExitedZero(t *t
 	}
 }
 
-func TestDeferBuildArtifactCleanupUsesFinalBuildSuccessValue(t *testing.T) {
-	got := false
-
-	func() {
-		buildSucceeded := false
-		defer deferBuildArtifactCleanup(func(success bool) error {
-			got = success
-			return nil
-		}, &buildSucceeded)()
-
-		buildSucceeded = true
-	}()
-
-	if !got {
-		t.Fatal("expected deferred cleanup to observe final successful build state")
-	}
-}
-
 func TestLogBuildOutputLineEnablesAuxiliaryProcessSilenceOnMarker(t *testing.T) {
 	t.Parallel()
 
