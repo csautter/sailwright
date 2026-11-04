@@ -171,6 +171,7 @@ locals {
 
   qemu_args = {
     "amd64" = [
+      ["-netdev", "user,id=user.0,hostfwd=tcp:127.0.0.1:{{ .SSHHostPort }}-:22"],
       ["-machine", "q35,vmport=off,i8042=off,hpet=off"],
       ["-accel", local.amd64_accel],
       ["-smp", "cpus=${var.cpus},cores=${var.cpus},sockets=1,threads=1"],
@@ -183,6 +184,7 @@ locals {
     ]
     "arm64" = [
       ["-accel", local.arm64_accel],
+      ["-netdev", "user,id=user.0,hostfwd=tcp:127.0.0.1:{{ .SSHHostPort }}-:22"],
       ["-machine", local.arm64_machine],
       ["-cpu", local.arm64_cpu_model],
       ["-drive", "file=${local.arm64_efi_code},if=pflash,unit=0,format=raw,readonly=on"],
