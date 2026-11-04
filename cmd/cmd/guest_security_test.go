@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -131,5 +133,143 @@ func TestGuestSecurityOverrideFlags(t *testing.T) {
 		if flag == nil || flag.DefValue != "false" {
 			t.Fatalf("missing safe default on %s", command.Name())
 		}
+	}
+}
+
+func TestCreateListingUsesPlannedSecurityOnlyForMissingTargets(t *testing.T) {
+	fakeGuestSecurity(t, "unknown", false, false)
+	inspectGuestNetwork = alchemy_deploy.InspectNetworkMode
+	inspectGuestCredentials = alchemy_provision.GuestCredentialSecurity
+	dirs := alchemy_build.GetDirectoriesInstance()
+	oldProject := dirs.ProjectDir
+	oldJSON := listOutputJSON
+	oldExists, oldArtifact := inspectCreateTargetExists, inspectCreateArtifactExists
+	t.Cleanup(func() {
+		dirs.ProjectDir, listOutputJSON = oldProject, oldJSON
+		inspectCreateTargetExists, inspectCreateArtifactExists = oldExists, oldArtifact
+	})
+	dirs.ProjectDir = t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("UTM_UBUNTU_ANSIBLE_PASSWORD", "Unique-Guest-Passphrase")
+	write := func(path, value string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(dirs.ProjectDir, "deployments", "utm", "ubuntu-arm64", "config.plist"),
+		`<plist><dict><key>Network</key><array><dict><key>Mode</key><string>Bridged</string></dict></array></dict></plist>`)
+	write(filepath.Join(home, "Library", "Containers", "com.utmapp.UTM", "Data", "Documents", "ubuntu-desktop-arm64-dev-alchemy.utm", "config.plist"),
+		`<plist><dict><key>Network</key><array><dict><key>Mode</key><string>Shared</string></dict></array></dict></plist>`)
+	inspectCreateTargetExists = alchemy_deploy.CreateTargetExists
+	inspectCreateArtifactExists = func(alchemy_build.VirtualMachineConfig) (bool, error) { return true, nil }
+	vms := []alchemy_build.VirtualMachineConfig{
+		{OS: "ubuntu", UbuntuType: "server", Arch: "arm64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineUtm},
+		{OS: "ubuntu", UbuntuType: "desktop", Arch: "arm64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineUtm},
+	}
+	for _, jsonOutput := range []bool{false, true} {
+		listOutputJSON = jsonOutput
+		var out bytes.Buffer
+		if err := printCreateCombinations(&out, vms); err != nil {
+			t.Fatal(err)
+		}
+		if jsonOutput {
+			var listing vmListingJSON
+			if err := json.Unmarshal(out.Bytes(), &listing); err != nil {
+				t.Fatal(err)
+			}
+			if len(listing.Targets) != 2 {
+				t.Fatalf("unexpected targets: %+v", listing.Targets)
+			}
+			missing, existing := listing.Targets[0], listing.Targets[1]
+			if missing.NetworkMode != "bridged" || missing.CredentialsOrigin != "legacy" || missing.Fields["create"] != "ready to create" {
+				t.Fatalf("missing VM must show the template and baked-in credentials: %+v", missing)
+			}
+			if existing.NetworkMode != "nat" || existing.CredentialsOrigin != "user" || existing.Fields["create"] != "already created" {
+				t.Fatalf("existing VM must show current configuration: %+v", existing)
+			}
+		} else {
+			rows := strings.Split(out.String(), "\n")
+			for _, row := range rows {
+				if strings.Contains(row, "server") && (!strings.Contains(row, "bridged") || !strings.Contains(row, "legacy")) {
+					t.Fatalf("incorrect planned metadata: %s", row)
+				}
+				if strings.Contains(row, "desktop") && (!strings.Contains(row, "nat") || !strings.Contains(row, "user")) {
+					t.Fatalf("incorrect existing metadata: %s", row)
+				}
+			}
+		}
+	}
+}
+
+func TestGuestSecurityListingsSurviveCredentialConfigurationErrors(t *testing.T) {
+	for _, unreadable := range []bool{false, true} {
+		t.Run(map[bool]string{false: "invalid dotenv", true: "dotenv is a directory"}[unreadable], func(t *testing.T) {
+			fakeGuestSecurity(t, "nat", false, false)
+			inspectGuestCredentials = alchemy_provision.GuestCredentialSecurity
+			dirs := alchemy_build.GetDirectoriesInstance()
+			oldProject, oldJSON, oldStderr := dirs.ProjectDir, listOutputJSON, os.Stderr
+			t.Cleanup(func() { dirs.ProjectDir, listOutputJSON, os.Stderr = oldProject, oldJSON, oldStderr })
+			dirs.ProjectDir = t.TempDir()
+			dotenv := filepath.Join(dirs.ProjectDir, ".env")
+			if unreadable {
+				if err := os.Mkdir(dotenv, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(dotenv, []byte("sensitive-invalid-dotenv-line"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			warningsPath := filepath.Join(t.TempDir(), "warnings")
+			warnings, err := os.Create(warningsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = warnings.Close() })
+			os.Stderr = warnings
+			vm := alchemy_build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "server", Arch: "amd64", VirtualizationEngine: alchemy_build.VirtualizationEngineQemu}
+			for _, jsonOutput := range []bool{false, true} {
+				listOutputJSON = jsonOutput
+				var out bytes.Buffer
+				err := printVirtualMachineCombinationTable(&out, "title", "empty", []alchemy_build.VirtualMachineConfig{vm}, []string{"OS", "Type", "Arch"}, func(vm alchemy_build.VirtualMachineConfig) ([]string, error) {
+					return []string{vm.OS, vm.UbuntuType, vm.Arch}, nil
+				})
+				if err != nil {
+					t.Fatalf("credential metadata must not hide targets: %v", err)
+				}
+				if jsonOutput {
+					var listing vmListingJSON
+					if err := json.Unmarshal(out.Bytes(), &listing); err != nil {
+						t.Fatal(err)
+					}
+					if len(listing.Targets) != 1 || listing.Targets[0].CredentialsOrigin != "unknown" || listing.Targets[0].NetworkMode != "nat" {
+						t.Fatalf("incorrect metadata: %+v", listing.Targets)
+					}
+				} else if !strings.Contains(out.String(), "unknown") || !strings.Contains(out.String(), "ubuntu") {
+					t.Fatalf("missing target or unknown credentials: %s", out.String())
+				}
+				if strings.Contains(out.String(), "sensitive-invalid-dotenv-line") {
+					t.Fatal("listing leaked configuration contents")
+				}
+			}
+			var guardWarnings bytes.Buffer
+			if err := checkGuestSecurity(vm, false, true, &guardWarnings); err == nil {
+				t.Fatal("lifecycle guard must still reject invalid credentials, even with an override")
+			}
+			if err := warnings.Close(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(warningsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(data, []byte("guest credential security is unknown")) || bytes.Contains(data, []byte("sensitive-invalid-dotenv-line")) {
+				t.Fatalf("missing or unsafe diagnostic: %s", data)
+			}
+		})
 	}
 }

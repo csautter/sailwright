@@ -41,7 +41,9 @@ func warnGuestSecurity(writer io.Writer, vm alchemy_build.VirtualMachineConfig, 
 	if network.Mode != "nat" && vm.OS != "local" {
 		fmt.Fprintf(writer, "Warning: %s has %s networking (%s); the guest may be reachable from the LAN.\n", target, network.Mode, network.Detail)
 	}
-	if !private {
+	if origin == "unknown" {
+		fmt.Fprintf(writer, "Warning: %s guest credential security is unknown; check the engine-specific credential configuration and project .env file.\n", target)
+	} else if !private {
 		fmt.Fprintf(writer, "Warning: %s uses non-private guest credentials (origin: %s). Change the guest password and configure the engine-specific ANSIBLE_USER/ANSIBLE_PASSWORD environment variables before using a bridged network.\n", target, origin)
 	}
 }
