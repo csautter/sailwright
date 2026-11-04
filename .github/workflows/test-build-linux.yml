@@ -38,6 +38,7 @@ on:
       - ".github/workflows/test-build-linux.yml"
       - ".github/actions/download-build-cache/**"
       - ".github/actions/upload-build-cache/**"
+      - ".github/actions/free-disk-space/**"
   pull_request:
     paths:
       - "cmd/main.go"
@@ -61,6 +62,7 @@ on:
       - ".github/workflows/test-build-linux.yml"
       - ".github/actions/download-build-cache/**"
       - ".github/actions/upload-build-cache/**"
+      - ".github/actions/free-disk-space/**"
 
 concurrency:
   # Keep scheduled runs out of the main branch group so they never cancel a push build.
@@ -144,6 +146,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      - name: Free runner disk space
+        uses: ./.github/actions/free-disk-space
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
@@ -162,6 +167,7 @@ jobs:
       - name: Install dependencies linux
         run: |
           go run cmd/main.go install
+          sudo apt-get clean
 
       - name: Run cold-cache dependency bootstrap tests
         shell: bash
@@ -272,11 +278,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      - name: Free runner disk space
+        uses: ./.github/actions/free-disk-space
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+
+      # Install (and clean the apt archives) before downloading the multi-GB ISOs to keep
+      # peak disk usage low and fail fast before expensive cache transfers.
+      - name: Install dependencies linux
+        run: |
+          go run cmd/main.go install
+          sudo apt-get clean
 
       - name: Download build cache files
         uses: ./.github/actions/download-build-cache
@@ -289,10 +305,6 @@ jobs:
           ftp-password: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
           ftp-base-dir: /private
           local-cache-dir: ""
-
-      - name: Install dependencies linux
-        run: |
-          go run cmd/main.go install
 
       - name: Run dependency reconciliation smoke test TEST_NAME=${{ matrix.dependency_test_name }}
         id: dependency_reconciliation
@@ -328,6 +340,13 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 1
+
+      - name: Report disk usage
+        if: always()
+        shell: bash
+        run: |
+          df -h / "${GITHUB_WORKSPACE}" || true
+          du -sh .dev-alchemy/* 2>/dev/null || true
 
       - name: Move .vnc.mp4 files to artifact directory
         if: always()
@@ -402,6 +421,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+
+      - name: Free runner disk space
+        uses: ./.github/actions/free-disk-space
+        with:
+          # Only a single qcow2 artifact lands here; skip the slow Docker prune.
+          prune-docker: "false"
 
       - name: Set up Go
         uses: actions/setup-go@v7
