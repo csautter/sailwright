@@ -225,6 +225,23 @@ class _BrokerFailure(Exception):
         self.retry_after = retry_after
 
 
+def _resource_names(config):
+    # A private VNet per request also avoids concurrent subnet updates. Keep
+    # configured names as prefixes and use the strict common ARM character set.
+    suffix = uuid4().hex
+    names = {}
+    for key, default, limit in (
+        ("vm", config["VM_NAME"], 64),
+        ("vnet", os.environ.get("VNET_NAME", "gh-runner-vnet"), 64),
+        ("ip", os.environ.get("IP_NAME", "gh-runner-ip"), 80),
+        ("nic", os.environ.get("NIC_NAME", "gh-runner-nic"), 80),
+        ("nsg", os.environ.get("NSG_NAME", "gh-runner-nsg"), 80),
+    ):
+        prefix = re.sub(r"[^a-z0-9-]", "-", default.lower()).strip("-") or "runner"
+        names[key] = f"{prefix[: limit - len(suffix) - 1]}-{suffix}"
+    return names
+
+
 def _request_context(req):
     correlation = getattr(req, "headers", {}).get("X-Correlation-ID", "")
     if not re.fullmatch(r"[a-zA-Z0-9._-]{1,64}", correlation):
@@ -432,7 +449,9 @@ def _provision_runner(req, context, config):
             400,
             "Invalid request body, repo, resource-group, runner-name or virtualization-flavor",
         )
-    _log_stage(context, "validated")
+    names = _resource_names(config)
+    context.update({"resource-group": resource_group, "vm": names["vm"]})
+    _log_stage(context, "validated", resources=names)
 
     context["stage"] = "pat"
     credential = DefaultAzureCredential(**_SDK_OPTIONS, process_timeout=5)
@@ -479,10 +498,10 @@ def _provision_runner(req, context, config):
         credential, config["SUBSCRIPTION_ID"], **_SDK_OPTIONS
     )
 
-    vnet_name = os.environ.get("VNET_NAME", "gh-runner-vnet")
+    vnet_name = names["vnet"]
     subnet_name = os.environ.get("SUBNET_NAME", "default")
-    ip_name = os.environ.get("IP_NAME", "gh-runner-ip")
-    nic_name = os.environ.get("NIC_NAME", "gh-runner-nic")
+    ip_name = names["ip"]
+    nic_name = names["nic"]
     location = config["LOCATION"]
 
     # Create VNet if not exists
@@ -531,7 +550,7 @@ def _provision_runner(req, context, config):
     # unauthenticated attack surface (brute force, RDP CVEs). For the rare debug
     # session, use Azure Bastion / just-in-time VM access instead of a standing
     # inbound rule.
-    nsg_name = os.environ.get("NSG_NAME", "gh-runner-nsg")
+    nsg_name = names["nsg"]
     nsg = _network_result(
         network_client.network_security_groups.begin_create_or_update(
             resource_group,
@@ -608,7 +627,7 @@ def _provision_runner(req, context, config):
         try:
             logging.info("Attempting to create spot VM")
             compute.virtual_machines.begin_create_or_update(
-                resource_group, config["VM_NAME"], spot_vm
+                resource_group, names["vm"], spot_vm
             )
         except Exception as spot_error:
             _log_stage(
@@ -619,16 +638,14 @@ def _provision_runner(req, context, config):
             )
             # Retry without the spot configuration
             compute.virtual_machines.begin_create_or_update(
-                resource_group, config["VM_NAME"], regular_vm
+                resource_group, names["vm"], regular_vm
             )
     else:
         compute.virtual_machines.begin_create_or_update(
-            resource_group, config["VM_NAME"], regular_vm
+            resource_group, names["vm"], regular_vm
         )
     _log_stage(context, "submitted")
-    return _runner_response(
-        context, 202, "Runner VM creation started", vm=config["VM_NAME"]
-    )
+    return _runner_response(context, 202, "Runner VM creation started", resources=names)
 
 
 def validate_source_group_name(name: str) -> bool:

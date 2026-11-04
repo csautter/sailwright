@@ -9,6 +9,7 @@ import os
 import sys
 import types
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 
 
@@ -537,6 +538,45 @@ class RequestRunnerTest(unittest.TestCase):
         )
         self.assertEqual(self._request_runner().status_code, 409)
         self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+
+    def test_concurrent_requests_use_distinct_resource_names_in_the_same_group(self):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(lambda _: self._request_runner(), range(2)))
+        bodies = [json.loads(response.body) for response in responses]
+        for response in responses:
+            self.assertEqual(response.status_code, 202)
+        for resource in ("vm", "vnet", "ip", "nic", "nsg"):
+            self.assertNotEqual(
+                bodies[0]["resources"][resource], bodies[1]["resources"][resource]
+            )
+        for body in bodies:
+            self.assertEqual(body["vm"], body["resources"]["vm"])
+            self.assertEqual(body["resource-group"], "gh-runner-tmp-1-hv")
+        calls = self.compute.virtual_machines.begin_create_or_update.call_args_list
+        self.assertEqual(
+            {call.args[1] for call in calls}, {body["vm"] for body in bodies}
+        )
+
+    def test_resource_name_prefixes_follow_azure_limits(self):
+        config = {"VM_NAME": "Invalid_Name!" * 20}
+        with mock.patch.dict(
+            os.environ, {"VNET_NAME": "x" * 100, "NIC_NAME": "!!", "NSG_NAME": "ü/"}
+        ):
+            names = function_app._resource_names(config)
+        for resource, name in names.items():
+            self.assertRegex(name, r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
+            self.assertLessEqual(len(name), 64 if resource in ("vm", "vnet") else 80)
+        self.assertRegex(names["nic"], r"^runner-")
+
+    def test_conflict_returns_generated_names_for_cleanup(self):
+        self.compute.virtual_machines.begin_create_or_update.side_effect = (
+            HttpResponseError(status_code=409)
+        )
+        response = self._request_runner()
+        body = json.loads(response.body)
+        self.assertEqual(response.status_code, 409)
+        self.assertRegex(body["vm"], r"^gh-runner-vm-[a-f0-9]{32}$")
+        self.assertEqual(body["resource-group"], "gh-runner-tmp-1-hv")
 
 
 if __name__ == "__main__":
