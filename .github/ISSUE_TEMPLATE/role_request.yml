@@ -6,7 +6,14 @@ body:
     id: tool
     attributes:
       label: Requested tool
-      description: Name the tool and describe what you want the role to configure.
+      placeholder: For example, Terraform
+    validations:
+      required: true
+  - type: textarea
+    id: configuration
+    attributes:
+      label: What the role should configure
+      description: Describe what the role should install and configure, such as components, settings, or integrations.
     validations:
       required: true
   - type: textarea

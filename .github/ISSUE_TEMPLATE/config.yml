@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/csautter/sailwright/security/advisories/new
+    about: Report vulnerabilities privately. Do not open a public issue.
   - name: Repository documentation
     url: https://github.com/csautter/sailwright/tree/main/docs
     about: Read installation, provisioning, and troubleshooting guides.
