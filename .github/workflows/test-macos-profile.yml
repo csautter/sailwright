@@ -50,7 +50,7 @@ jobs:
       - name: Install fixture tools
         run: |-
           sudo apt-get update
-          sudo apt-get install -y qemu-utils dosfstools mtools swtpm gettext-base uuid-runtime rsync
+          sudo apt-get install -y qemu-utils dosfstools mtools swtpm gettext-base uuid-runtime rsync xorriso
       - name: Compare Darwin QEMU arguments
         run: make test-macos-profile MACOS_PROFILE_ARCH=${{ matrix.arch }}
       - name: Compile Darwin packages

@@ -55,9 +55,10 @@ existing cache access, which is unavailable to untrusted fork PRs.
 ## Running and updating snapshots
 
 Install Packer (CI uses 1.16.2), its QEMU plugin, Python 3, Go and the fixture
-tools: `qemu-img`, `mkfs.vfat`, `mcopy`, `swtpm`, `envsubst`, `uuidgen`, and
+tools: `qemu-img`, `xorriso`, `mkfs.vfat`, `mcopy`, `swtpm`, `envsubst`, `uuidgen`, and
 `rsync`. On Ubuntu these are supplied by `qemu-utils`, `dosfstools`, `mtools`,
-`swtpm`, `gettext-base`, `uuid-runtime`, and `rsync`.
+`swtpm`, `gettext-base`, `uuid-runtime`, `rsync`, and `xorriso`. Packer creates a
+cloud-init CD from the Ubuntu template's `cd_files` even with fixture ISOs.
 
 ```sh
 make test-macos-profile
