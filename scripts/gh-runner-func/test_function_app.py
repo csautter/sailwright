@@ -13,10 +13,11 @@ from unittest import mock
 
 
 class _HttpResponse:
-    def __init__(self, body=None, status_code=200, mimetype=None):
+    def __init__(self, body=None, status_code=200, mimetype=None, headers=None):
         self.body = body
         self.status_code = status_code
         self.mimetype = mimetype
+        self.headers = headers or {}
 
 
 class _FunctionApp:
@@ -24,7 +25,34 @@ class _FunctionApp:
         return lambda handler: handler
 
 
-class ResourceNotFoundError(Exception):
+class AzureError(Exception):
+    pass
+
+
+class HttpResponseError(AzureError):
+    def __init__(self, message="upstream error", status_code=500, code=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.error = types.SimpleNamespace(code=code)
+
+
+class ResourceNotFoundError(HttpResponseError):
+    pass
+
+
+class ServiceRequestError(AzureError):
+    pass
+
+
+class ServiceResponseError(AzureError):
+    pass
+
+
+class RequestException(Exception):
+    pass
+
+
+class Timeout(RequestException):
     pass
 
 
@@ -58,8 +86,12 @@ def _install_stubs():
         "azure.mgmt.compute": types.ModuleType("azure.mgmt.compute"),
         "azure.mgmt.compute.models": _models_module("azure.mgmt.compute.models"),
         "azure.mgmt.resource": types.ModuleType("azure.mgmt.resource"),
-        "azure.mgmt.resource.resources": types.ModuleType("azure.mgmt.resource.resources"),
-        "azure.mgmt.resource.resources.models": _models_module("azure.mgmt.resource.resources.models"),
+        "azure.mgmt.resource.resources": types.ModuleType(
+            "azure.mgmt.resource.resources"
+        ),
+        "azure.mgmt.resource.resources.models": _models_module(
+            "azure.mgmt.resource.resources.models"
+        ),
         "azure.mgmt.network": types.ModuleType("azure.mgmt.network"),
         "azure.mgmt.network.models": _models_module("azure.mgmt.network.models"),
         "requests": types.ModuleType("requests"),
@@ -69,7 +101,16 @@ def _install_stubs():
     functions.HttpResponse = _HttpResponse
     functions.HttpRequest = object
     functions.AuthLevel = types.SimpleNamespace(ANONYMOUS="anonymous")
-    modules["azure.core.exceptions"].ResourceNotFoundError = ResourceNotFoundError
+    for cls in (
+        AzureError,
+        HttpResponseError,
+        ResourceNotFoundError,
+        ServiceRequestError,
+        ServiceResponseError,
+    ):
+        setattr(modules["azure.core.exceptions"], cls.__name__, cls)
+    modules["requests"].RequestException = RequestException
+    modules["requests"].Timeout = Timeout
     modules["azure.identity"].DefaultAzureCredential = mock.Mock()
     modules["azure.keyvault.secrets"].SecretClient = mock.Mock()
     modules["azure.mgmt.compute"].ComputeManagementClient = mock.Mock()
@@ -87,7 +128,7 @@ import function_app  # noqa: E402
 
 
 def _request(body):
-    return types.SimpleNamespace(get_json=lambda: body)
+    return types.SimpleNamespace(get_json=lambda: body, headers={})
 
 
 def _resource_group(tags=None, provisioning_state="Succeeded"):
@@ -104,17 +145,25 @@ class DeleteResourceGroupTest(unittest.TestCase):
     def setUp(self):
         self.client = mock.Mock()
         patches = [
-            mock.patch.object(function_app, "ResourceManagementClient", return_value=self.client),
+            mock.patch.object(
+                function_app, "ResourceManagementClient", return_value=self.client
+            ),
             mock.patch.object(function_app, "DefaultAzureCredential"),
-            mock.patch.dict(os.environ, {"SUBSCRIPTION_ID": "sub", "RESOURCE_GROUP": "unused"}),
+            mock.patch.dict(
+                os.environ, {"SUBSCRIPTION_ID": "sub", "RESOURCE_GROUP": "unused"}
+            ),
         ]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
 
     def _delete(self, resource_group="gh-runner-tmp-1-hv"):
-        response = function_app.handle_delete_resource_group(_request({"resource-group": resource_group}))
-        body = json.loads(response.body) if response.status_code < 300 else response.body
+        response = function_app.handle_delete_resource_group(
+            _request({"resource-group": resource_group})
+        )
+        body = (
+            json.loads(response.body) if response.status_code < 300 else response.body
+        )
         return response.status_code, body
 
     def test_starts_deletion_without_waiting(self):
@@ -124,7 +173,9 @@ class DeleteResourceGroupTest(unittest.TestCase):
 
         self.assertEqual(status_code, 202)
         self.assertEqual(body["status"], function_app.DELETE_STATUS_DELETING)
-        self.client.resource_groups.begin_delete.assert_called_once_with("gh-runner-tmp-1-hv")
+        self.client.resource_groups.begin_delete.assert_called_once_with(
+            "gh-runner-tmp-1-hv"
+        )
         poller = self.client.resource_groups.begin_delete.return_value
         poller.wait.assert_not_called()
         poller.result.assert_not_called()
@@ -139,7 +190,9 @@ class DeleteResourceGroupTest(unittest.TestCase):
         self.client.resource_groups.begin_delete.assert_not_called()
 
     def test_reports_deleting_without_new_request_while_deletion_runs(self):
-        self.client.resource_groups.get.return_value = _resource_group(OWNED_TAGS, "Deleting")
+        self.client.resource_groups.get.return_value = _resource_group(
+            OWNED_TAGS, "Deleting"
+        )
 
         status_code, body = self._delete()
 
@@ -188,18 +241,29 @@ class RequestRunnerTest(unittest.TestCase):
         self.network = mock.Mock()
         self.compute = mock.Mock()
         self.resources = mock.Mock()
-        secrets = mock.Mock()
+        secrets = self.secrets = mock.Mock()
         secrets.get_secret.return_value.value = "secret"
-        github = mock.Mock(status_code=201)
+        github = self.github = mock.Mock(status_code=201)
         github.json.return_value = {"token": "registration-token"}
+        function_app._runner_config.cache_clear()
+        self.addCleanup(function_app._runner_config.cache_clear)
         patches = [
-            mock.patch.object(function_app, "NetworkManagementClient", return_value=self.network),
-            mock.patch.object(function_app, "ComputeManagementClient", return_value=self.compute),
-            mock.patch.object(function_app, "ResourceManagementClient", return_value=self.resources),
+            mock.patch.object(
+                function_app, "NetworkManagementClient", return_value=self.network
+            ),
+            mock.patch.object(
+                function_app, "ComputeManagementClient", return_value=self.compute
+            ),
+            mock.patch.object(
+                function_app, "ResourceManagementClient", return_value=self.resources
+            ),
             mock.patch.object(function_app, "SecretClient", return_value=secrets),
             mock.patch.object(function_app, "DefaultAzureCredential"),
-            mock.patch.object(function_app.requests, "post", create=True, return_value=github),
+            mock.patch.object(
+                function_app.requests, "post", create=True, return_value=github
+            ),
             mock.patch.dict(os.environ, REQUEST_RUNNER_ENV),
+            mock.patch.object(function_app, "sleep"),
         ]
         for patch in patches:
             patch.start()
@@ -207,7 +271,13 @@ class RequestRunnerTest(unittest.TestCase):
 
     def _request_runner(self):
         return function_app.handle_request_runner(
-            _request({"repo": "owner/repo", "resource-group": "gh-runner-tmp-1-hv", "runner-name": "1-hv"})
+            _request(
+                {
+                    "repo": "owner/repo",
+                    "resource-group": "gh-runner-tmp-1-hv",
+                    "runner-name": "1-hv",
+                }
+            )
         )
 
     def _bodies(self):
@@ -219,7 +289,10 @@ class RequestRunnerTest(unittest.TestCase):
             "NetworkSecurityGroup": self.network.network_security_groups.begin_create_or_update,
             "NetworkInterface": self.network.network_interfaces.begin_create_or_update,
         }
-        bodies = {model: operation.call_args.args[-1] for model, operation in operations.items()}
+        bodies = {
+            model: operation.call_args.args[-1]
+            for model, operation in operations.items()
+        }
         for call in self.compute.virtual_machines.begin_create_or_update.call_args_list:
             bodies.setdefault("VirtualMachine", []).append(call.args[-1])
         return bodies
@@ -249,9 +322,15 @@ class RequestRunnerTest(unittest.TestCase):
         self.assertEqual(bodies["ResourceGroup"].tags, OWNED_TAGS)
 
     def test_spot_fallback_drops_spot_settings(self):
-        self.compute.virtual_machines.begin_create_or_update.side_effect = [Exception("no capacity"), mock.DEFAULT]
+        self.compute.virtual_machines.begin_create_or_update.side_effect = [
+            Exception("no capacity"),
+            mock.DEFAULT,
+        ]
 
-        with mock.patch.dict(os.environ, {"VM_USE_SPOT": "true"}), self.assertLogs(level="WARNING"):
+        with (
+            mock.patch.dict(os.environ, {"VM_USE_SPOT": "true"}),
+            self.assertLogs(level="WARNING"),
+        ):
             response = self._request_runner()
 
         self.assertEqual(response.status_code, 202)
@@ -278,12 +357,185 @@ class RequestRunnerTest(unittest.TestCase):
                 raise TypeError("unexpected keyword argument")
             return virtual_machine(**kwargs)
 
-        with mock.patch.dict(os.environ, {"VM_USE_SPOT": "true"}), \
-                mock.patch.object(function_app.compute_models, "VirtualMachine", side_effect=build), \
-                self.assertLogs(level="ERROR"):
+        with (
+            mock.patch.dict(os.environ, {"VM_USE_SPOT": "true"}),
+            mock.patch.object(
+                function_app.compute_models, "VirtualMachine", side_effect=build
+            ),
+            self.assertLogs(level="ERROR"),
+        ):
             response = self._request_runner()
 
         self.assertEqual(response.status_code, 500)
+        self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+
+    def test_missing_configuration_is_cached_and_deterministic(self):
+        with mock.patch.dict(os.environ, {"VAULT_URL": "", "VM_SIZE": ""}):
+            response = self._request_runner()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.body)["missing"], ["VAULT_URL", "VM_SIZE"])
+        self.assertEqual(self._request_runner().status_code, 503)
+        self.secrets.get_secret.assert_not_called()
+
+    def test_key_vault_transport_failure_retries_without_leaking_secrets(self):
+        self.secrets.get_secret.side_effect = ServiceRequestError("PAT=private-secret")
+        with self.assertLogs(level="WARNING") as logs:
+            response = self._request_runner()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(self.secrets.get_secret.call_count, 3)
+        self.assertEqual(
+            function_app.sleep.call_args_list, [mock.call(0.5), mock.call(1.0)]
+        )
+        self.assertNotIn("private-secret", response.body + str(logs.output))
+        self.assertEqual(json.loads(response.body)["stage"], "pat")
+
+    def test_key_vault_denial_is_not_retried(self):
+        self.secrets.get_secret.side_effect = HttpResponseError(status_code=403)
+        self.assertEqual(self._request_runner().status_code, 502)
+        self.secrets.get_secret.assert_called_once()
+
+    def test_admin_password_failure_is_mapped_before_resources_are_created(self):
+        self.secrets.get_secret.side_effect = [
+            types.SimpleNamespace(value="pat"),
+            ServiceResponseError("private-secret"),
+            ServiceResponseError(),
+            ServiceResponseError(),
+        ]
+        response = self._request_runner()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.body)["stage"], "admin-password")
+        self.resources.resource_groups.create_or_update.assert_not_called()
+
+    def test_key_vault_recovers_after_transient_failure(self):
+        self.secrets.get_secret.side_effect = [
+            ServiceRequestError(),
+            types.SimpleNamespace(value="pat"),
+            types.SimpleNamespace(value="password"),
+        ]
+        self.assertEqual(self._request_runner().status_code, 202)
+        self.assertEqual(self.secrets.get_secret.call_count, 3)
+
+    def test_github_timeout_and_network_failure(self):
+        for error, expected in [
+            (Timeout("private-secret"), 504),
+            (RequestException("private-secret"), 502),
+        ]:
+            with (
+                self.subTest(error=type(error).__name__),
+                mock.patch.object(
+                    function_app.requests, "post", side_effect=error
+                ) as post,
+            ):
+                with self.assertLogs(level="WARNING") as logs:
+                    response = self._request_runner()
+                self.assertEqual(response.status_code, expected)
+                self.assertEqual(post.call_count, 3)
+                self.assertNotIn("private-secret", response.body + str(logs.output))
+                self.assertEqual(json.loads(response.body)["stage"], "github-token")
+
+    def test_github_status_mapping(self):
+        for status, expected, attempts in [
+            (401, 502, 1),
+            (403, 502, 1),
+            (404, 400, 1),
+            (429, 503, 1),
+            (500, 502, 3),
+            (503, 502, 3),
+            (302, 502, 1),
+            (422, 502, 1),
+        ]:
+            with self.subTest(status=status):
+                self.github.status_code = status
+                self.github.headers = {"Retry-After": "90"}
+                function_app.requests.post.reset_mock()
+                response = self._request_runner()
+                self.assertEqual(response.status_code, expected)
+                self.assertEqual(function_app.requests.post.call_count, attempts)
+                if status == 429:
+                    self.assertEqual(response.headers["Retry-After"], "90")
+                self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+
+    def test_github_invalid_response(self):
+        for body in (None, {}, {"token": None}, {"token": ""}, []):
+            with self.subTest(body=body):
+                self.github.json.return_value = body
+                self.assertEqual(self._request_runner().status_code, 502)
+        self.github.json.side_effect = ValueError("private-secret")
+        self.assertEqual(self._request_runner().status_code, 502)
+
+    def test_github_retry_recovers(self):
+        with mock.patch.object(
+            function_app.requests, "post", side_effect=[Timeout(), self.github]
+        ) as post:
+            self.assertEqual(self._request_runner().status_code, 202)
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(post.call_args.kwargs["timeout"], (3, 5))
+        self.assertFalse(post.call_args.kwargs["allow_redirects"])
+
+    def test_invalid_inputs_do_not_call_dependencies(self):
+        for body in (
+            None,
+            [],
+            {},
+            {"repo": 12},
+            {"repo": "../repo"},
+            {"repo": "owner/repo", "virtualization-flavor": []},
+            {"repo": "owner/repo", "resource-group": "production"},
+        ):
+            with self.subTest(body=body):
+                response = function_app.handle_request_runner(_request(body))
+                self.assertEqual(response.status_code, 400)
+        self.secrets.get_secret.assert_not_called()
+
+    def test_resource_group_failure_has_stage_and_arm_code(self):
+        self.resources.resource_groups.create_or_update.side_effect = HttpResponseError(
+            "private-secret", 429, "TooManyRequests"
+        )
+        with self.assertLogs(level="ERROR") as logs:
+            response = self._request_runner()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.body)["stage"], "resource-group")
+        self.assertIn("TooManyRequests", str(logs.output))
+        self.assertNotIn("private-secret", str(logs.output) + response.body)
+
+    def test_authentication_and_correlation(self):
+        request = _request({})
+        request.headers["X-Correlation-ID"] = "ci-run-123"
+        with (
+            mock.patch.object(
+                function_app,
+                "require_authenticated_caller",
+                return_value=(False, "secret"),
+            ),
+            self.assertLogs(level="INFO") as logs,
+        ):
+            response = function_app.request_runner(request)
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.headers["X-Correlation-ID"], "ci-run-123")
+        self.assertIn('"stage": "auth"', str(logs.output))
+        self.assertNotIn("secret", str(logs.output))
+
+    def test_invalid_correlation_is_replaced(self):
+        request = _request({})
+        request.headers["X-Correlation-ID"] = "bad\nheader"
+        response = function_app.handle_request_runner(request)
+        self.assertRegex(response.headers["X-Correlation-ID"], r"^[a-f0-9]{32}$")
+
+    def test_network_poller_timeout_stops_before_vm_creation(self):
+        poller = self.network.virtual_networks.begin_create_or_update.return_value
+        poller.done.return_value = False
+        response = self._request_runner()
+        self.assertEqual(response.status_code, 504)
+        self.assertEqual(json.loads(response.body)["stage"], "network")
+        poller.result.assert_called_once_with(timeout=12)
+        self.network.subnets.begin_create_or_update.assert_not_called()
+        self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+
+    def test_network_failure_is_mapped(self):
+        self.network.network_interfaces.begin_create_or_update.return_value.result.side_effect = HttpResponseError(
+            status_code=409
+        )
+        self.assertEqual(self._request_runner().status_code, 409)
         self.compute.virtual_machines.begin_create_or_update.assert_not_called()
 
 

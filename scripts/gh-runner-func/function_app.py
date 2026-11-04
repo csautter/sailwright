@@ -1,21 +1,30 @@
 import base64
-import azure.functions as func
 import json
 import logging
-import re
-import requests
 import os
+import re
+from functools import lru_cache
 from pathlib import Path
+from time import sleep
+from uuid import uuid4
 
-from azure.core.exceptions import ResourceNotFoundError
+import azure.functions as func
+import requests
+from azure.core.exceptions import (
+    AzureError,
+    HttpResponseError,
+    ResourceNotFoundError,
+    ServiceRequestError,
+    ServiceResponseError,
+)
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 from azure.mgmt.compute import ComputeManagementClient
 from azure.mgmt.compute import models as compute_models
-from azure.mgmt.resource.resources import ResourceManagementClient
-from azure.mgmt.resource.resources.models import ResourceGroup
 from azure.mgmt.network import NetworkManagementClient
 from azure.mgmt.network import models as network_models
+from azure.mgmt.resource.resources import ResourceManagementClient
+from azure.mgmt.resource.resources.models import ResourceGroup
 
 # Request bodies are built from SDK model objects, never plain dicts: since
 # azure-mgmt-network 31 and azure-mgmt-compute 38 the SDKs send dict bodies to
@@ -163,7 +172,9 @@ def handle_delete_resource_group(req: func.HttpRequest) -> func.HttpResponse:
         # name-prefix check before deleting. A same-prefix RG that the broker did
         # not create (missing tag) is refused.
         validate_source_group_ownership(rg, resource_group)
-        if (rg.properties and rg.properties.provisioning_state or "").lower() == "deleting":
+        if (
+            rg.properties and rg.properties.provisioning_state or ""
+        ).lower() == "deleting":
             return _delete_response(resource_group, DELETE_STATUS_DELETING, 202)
 
         # Start the deletion without waiting for it: deleting a runner VM takes
@@ -179,128 +190,304 @@ def handle_delete_resource_group(req: func.HttpRequest) -> func.HttpResponse:
         )
 
 
+# Client transport limits also apply to requests made by ARM pollers. Key Vault
+# retries are managed explicitly below. Disable SDK retries so Retry-After
+# cannot keep an HTTP request asleep beyond the frontend deadline.
+_SDK_OPTIONS = dict(
+    connection_timeout=3,
+    read_timeout=5,
+    retry_total=0,
+)
+_NETWORK_WAIT_SECONDS = 12
+_REQUIRED_SETTINGS = (
+    "VAULT_URL",
+    "SUBSCRIPTION_ID",
+    "LOCATION",
+    "RESOURCE_GROUP",
+    "VM_NAME",
+    "VM_SIZE",
+    "ADMIN_USERNAME",
+    "CUSTOM_IMAGE_ID",
+)
+
+
+@lru_cache(maxsize=1)
+def _runner_config():
+    values = {key: os.environ.get(key, "").strip() for key in _REQUIRED_SETTINGS}
+    missing = sorted(key for key, value in values.items() if not value)
+    return values, missing
+
+
+class _BrokerFailure(Exception):
+    def __init__(self, status, message, retry_after=None):
+        self.status = status
+        self.message = message
+        self.retry_after = retry_after
+
+
+def _request_context(req):
+    correlation = getattr(req, "headers", {}).get("X-Correlation-ID", "")
+    if not re.fullmatch(r"[a-zA-Z0-9._-]{1,64}", correlation):
+        correlation = uuid4().hex
+    return {"correlation-id": correlation, "stage": "input"}
+
+
+def _log_stage(context, event, level=logging.INFO, **fields):
+    # Never stringify exceptions or log upstream bodies: either can contain
+    # credentials, VM customData or the Authorization header.
+    logging.log(level, json.dumps({**context, "event": event, **fields}))
+
+
+def _runner_response(context, status, message, **fields):
+    retry_after = fields.pop("retry_after", None)
+    headers = {"X-Correlation-ID": context["correlation-id"]}
+    if retry_after is not None:
+        headers["Retry-After"] = str(retry_after)
+    return func.HttpResponse(
+        json.dumps({"message": message, **context, **fields}),
+        status_code=status,
+        mimetype="application/json",
+        headers=headers,
+    )
+
+
+def _dependency_error(context, error):
+    code = getattr(getattr(error, "error", None), "code", None)
+    # ARM codes are identifiers. Discard arbitrary upstream text.
+    code = (
+        code
+        if isinstance(code, str) and re.fullmatch(r"[a-zA-Z0-9._/-]{1,128}", code)
+        else None
+    )
+    _log_stage(
+        context,
+        "failed",
+        logging.ERROR,
+        exception=type(error).__name__,
+        **({"arm-code": code} if code else {}),
+    )
+    if isinstance(error, _BrokerFailure):
+        return _runner_response(
+            context, error.status, error.message, retry_after=error.retry_after
+        )
+    if isinstance(error, (TimeoutError, requests.Timeout)):
+        return _runner_response(context, 504, "Dependency timed out")
+    if isinstance(error, (ServiceRequestError, ServiceResponseError)):
+        return _runner_response(
+            context, 503, "Azure service unavailable", retry_after=5
+        )
+    if isinstance(error, HttpResponseError):
+        status = getattr(error, "status_code", None)
+        if status == 409:
+            return _runner_response(context, 409, "Azure resource conflict")
+        if status == 429 or status is not None and status >= 500:
+            return _runner_response(
+                context, 503, "Azure service unavailable", retry_after=5
+            )
+        return _runner_response(context, 502, "Azure request failed")
+    if isinstance(error, (AzureError, requests.RequestException)):
+        return _runner_response(context, 502, "Dependency request failed")
+    return _runner_response(context, 500, "Internal error preparing runner")
+
+
+def _network_result(poller):
+    result = poller.result(timeout=_NETWORK_WAIT_SECONDS)
+    # LROPoller.result(timeout=...) may return before completion without raising.
+    if not poller.done():
+        raise _BrokerFailure(
+            504,
+            "Network provisioning timed out; clean up the resource group before retrying",
+        )
+    return result
+
+
+def _get_secret(client, name, context):
+    for attempt in range(3):
+        try:
+            value = client.get_secret(name).value
+            if not isinstance(value, str) or not value:
+                raise _BrokerFailure(502, "Key Vault returned an empty secret")
+            return value
+        except (ServiceRequestError, ServiceResponseError, HttpResponseError) as error:
+            status = getattr(error, "status_code", None)
+            transient = not isinstance(error, HttpResponseError) or status in (
+                408,
+                429,
+                500,
+                502,
+                503,
+                504,
+            )
+            if not transient or attempt == 2:
+                raise
+            _log_stage(context, "retry", logging.WARNING, attempt=attempt + 1)
+            sleep(0.5 * 2**attempt)
+
+
+def _github_token(pat, repo, context):
+    url = f"https://api.github.com/repos/{repo}/actions/runners/registration-token"
+    for attempt in range(3):
+        try:
+            response = requests.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {pat}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                timeout=(3, 5),
+                allow_redirects=False,
+            )
+        except requests.RequestException:
+            if attempt == 2:
+                raise
+        else:
+            status = response.status_code
+            _log_stage(context, "response", upstream_status=status)
+            if status == 201:
+                try:
+                    token = response.json()["token"]
+                    if not isinstance(token, str) or not token:
+                        raise ValueError("empty token")
+                    return token
+                except (ValueError, KeyError, TypeError):
+                    raise _BrokerFailure(
+                        502, "GitHub returned an invalid registration token"
+                    ) from None
+            if status in (401, 403):
+                raise _BrokerFailure(502, "GitHub authentication/authorization failed")
+            if status == 404:
+                raise _BrokerFailure(400, "GitHub repository not found or inaccessible")
+            if status == 429:
+                retry = response.headers.get("Retry-After", "60")
+                retry = (
+                    int(retry)
+                    if isinstance(retry, str) and retry.isdigit() and len(retry) < 7
+                    else 60
+                )
+                raise _BrokerFailure(
+                    503, "GitHub rate limit exceeded; retry later", max(1, retry)
+                )
+            if status < 500 or attempt == 2:
+                raise _BrokerFailure(502, "GitHub registration request failed")
+        _log_stage(context, "retry", logging.WARNING, attempt=attempt + 1)
+        sleep(0.5 * 2**attempt)
+
+
 @app.route(
     route="request_runner", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"]
 )
 def request_runner(req: func.HttpRequest) -> func.HttpResponse:
-    authorized, reason = require_authenticated_caller(req)
+    context = _request_context(req)
+    context["stage"] = "auth"
+    authorized, _ = require_authenticated_caller(req)
+    _log_stage(context, "authorized" if authorized else "rejected")
     if not authorized:
-        logging.warning("Unauthorized request_runner request: %s", reason)
-        return func.HttpResponse("Unauthorized", status_code=401)
-    return handle_request_runner(req)
+        return _runner_response(context, 401, "Unauthorized")
+    return handle_request_runner(req, context)
 
 
-def handle_request_runner(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info("Request received")
+def handle_request_runner(req: func.HttpRequest, context=None) -> func.HttpResponse:
+    context = context or _request_context(req)
+    context["stage"] = "config"
+    config, missing = _runner_config()
+    if missing:
+        _log_stage(context, "missing-settings", logging.ERROR, missing=missing)
+        return _runner_response(
+            context, 503, "Missing required app settings", missing=missing
+        )
+    try:
+        return _provision_runner(req, context, config)
+    except Exception as error:
+        return _dependency_error(context, error)
+
+
+def _provision_runner(req, context, config):
+    context["stage"] = "input"
     try:
         body = req.get_json()
-        repo = body["repo"]  # org/repo
+        repo = body["repo"]
         runner_name = body.get("runner-name", "gh-runner-vm")
-        resource_group = body.get("resource-group", os.environ["RESOURCE_GROUP"])
+        resource_group = body.get("resource-group", config["RESOURCE_GROUP"])
         virtualization_flavor = body.get("virtualization-flavor", "hyperv")
-        validate_source_group_name(resource_group)
-    except Exception:
-        return func.HttpResponse(
-            'Invalid JSON body. Expected: { "repo": "org/repo" }', status_code=400
+        if not isinstance(repo, str) or not _REPO_RE.fullmatch(repo):
+            raise ValueError("repo")
+        if (
+            not isinstance(resource_group, str)
+            or not re.fullmatch(r"gh-runner-tmp[a-zA-Z0-9_.()-]{0,77}", resource_group)
+            or resource_group.endswith(".")
+        ):
+            raise ValueError("resource-group")
+        if (
+            not isinstance(runner_name, str)
+            or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9-]{0,63}", runner_name)
+            or runner_name[:15].isdigit()
+        ):
+            raise ValueError("runner-name")
+        if virtualization_flavor not in _ALLOWED_FLAVORS:
+            raise ValueError("virtualization-flavor")
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return _runner_response(
+            context,
+            400,
+            "Invalid request body, repo, resource-group, runner-name or virtualization-flavor",
         )
+    _log_stage(context, "validated")
 
-    if not _REPO_RE.match(repo):
-        return func.HttpResponse(
-            "Invalid repo format. Expected: owner/repo", status_code=400
-        )
-    if virtualization_flavor not in _ALLOWED_FLAVORS:
-        return func.HttpResponse(
-            f"Invalid virtualization-flavor. Allowed: {', '.join(sorted(_ALLOWED_FLAVORS))}",
-            status_code=400,
-        )
-
-    # 1. Get PAT from Key Vault
-    credential = DefaultAzureCredential()
-    vault_url = os.environ["VAULT_URL"]
-    kv_client = SecretClient(vault_url=vault_url, credential=credential)
-
-    pat = kv_client.get_secret("github-runner-pat").value
-
-    # 2. Call GitHub API
-    url = f"https://api.github.com/repos/{repo}/actions/runners/registration-token"
-
-    response = requests.post(
-        url,
-        headers={
-            "Authorization": f"Bearer {pat}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-        timeout=10,
+    context["stage"] = "pat"
+    credential = DefaultAzureCredential(**_SDK_OPTIONS, process_timeout=5)
+    kv_client = SecretClient(
+        vault_url=config["VAULT_URL"],
+        credential=credential,
+        **_SDK_OPTIONS,
     )
+    pat = _get_secret(kv_client, "github-runner-pat", context)
+    _log_stage(context, "retrieved")
+    context["stage"] = "github-token"
+    runner_token = _github_token(pat, repo, context)
+    _log_stage(context, "acquired")
 
-    if response.status_code != 201:
-        logging.error("GitHub API error: %s %s", response.status_code, response.text)
-        return func.HttpResponse(
-            "Failed to obtain runner registration token", status_code=500
-        )
-
-    runner_token = response.json()["token"]
-
-    # Load and prepare PowerShell script
+    context["stage"] = "bootstrap"
     script = load_powershell_script(
         runner_token, f"https://github.com/{repo}", virtualization_flavor
     )
-
     custom_data = base64.b64encode(script.encode("utf-8")).decode("utf-8")
+    context["stage"] = "admin-password"
+    admin_password = _get_secret(kv_client, "github-runner-vm-admin-pw", context)
+    _log_stage(context, "retrieved")
 
-    # Create VM
-    compute = ComputeManagementClient(credential, os.environ["SUBSCRIPTION_ID"])
-    resource_client = ResourceManagementClient(
-        credential, os.environ["SUBSCRIPTION_ID"]
+    context["stage"] = "resource-group"
+    compute = ComputeManagementClient(
+        credential, config["SUBSCRIPTION_ID"], **_SDK_OPTIONS
     )
-
-    # Tag the RG with an ownership marker. This is a defense-in-depth companion to
-    # the name-prefix guard: delete_resource_group refuses any RG that lacks this
-    # tag, so a bug or a maliciously crafted same-prefix name cannot delete an
-    # unrelated resource group.
+    resource_client = ResourceManagementClient(
+        credential, config["SUBSCRIPTION_ID"], **_SDK_OPTIONS
+    )
     resource_client.resource_groups.create_or_update(
         resource_group,
         ResourceGroup(
-            location=os.environ["LOCATION"],
-            tags={RG_OWNER_TAG: RG_OWNER_TAG_VALUE},
+            location=config["LOCATION"], tags={RG_OWNER_TAG: RG_OWNER_TAG_VALUE}
         ),
     )
+    image_reference = compute_models.ImageReference(
+        id=config["CUSTOM_IMAGE_ID"] + "-" + virtualization_flavor
+    )
 
-    # Support custom image via environment variable (expects ARM resource ID)
-    custom_image_id = os.environ.get("CUSTOM_IMAGE_ID")
-    if custom_image_id:
-        image_reference = compute_models.ImageReference(
-            id=custom_image_id + "-" + virtualization_flavor
-        )
-    else:
-        # throw error if no custom image provided
-        return func.HttpResponse(
-            "CUSTOM_IMAGE_ID environment variable not set", status_code=500
-        )
+    context["stage"] = "network"
+    # Create network resources
+    network_client = NetworkManagementClient(
+        credential, config["SUBSCRIPTION_ID"], **_SDK_OPTIONS
+    )
 
-    try:
-        admin_password = kv_client.get_secret("github-runner-vm-admin-pw").value
-    except Exception as e:
-        logging.error("Failed to retrieve VM admin password from Key Vault: %s", e)
-        return func.HttpResponse(
-            "Internal error retrieving credentials", status_code=500
-        )
+    vnet_name = os.environ.get("VNET_NAME", "gh-runner-vnet")
+    subnet_name = os.environ.get("SUBNET_NAME", "default")
+    ip_name = os.environ.get("IP_NAME", "gh-runner-ip")
+    nic_name = os.environ.get("NIC_NAME", "gh-runner-nic")
+    location = config["LOCATION"]
 
-    try:
-        # Create network resources
-        network_client = NetworkManagementClient(
-            credential, os.environ["SUBSCRIPTION_ID"]
-        )
-
-        vnet_name = os.environ.get("VNET_NAME", "gh-runner-vnet")
-        subnet_name = os.environ.get("SUBNET_NAME", "default")
-        ip_name = os.environ.get("IP_NAME", "gh-runner-ip")
-        nic_name = os.environ.get("NIC_NAME", "gh-runner-nic")
-        location = os.environ["LOCATION"]
-
-        # Create VNet if not exists
-        vnet = network_client.virtual_networks.begin_create_or_update(
+    # Create VNet if not exists
+    _network_result(
+        network_client.virtual_networks.begin_create_or_update(
             resource_group,
             vnet_name,
             network_models.VirtualNetwork(
@@ -309,18 +496,22 @@ def handle_request_runner(req: func.HttpRequest) -> func.HttpResponse:
                     address_prefixes=["10.0.0.0/16"]
                 ),
             ),
-        ).result()
+        )
+    )
 
-        # Create Subnet if not exists
-        subnet = network_client.subnets.begin_create_or_update(
+    # Create Subnet if not exists
+    subnet = _network_result(
+        network_client.subnets.begin_create_or_update(
             resource_group,
             vnet_name,
             subnet_name,
             network_models.Subnet(address_prefix="10.0.0.0/24"),
-        ).result()
+        )
+    )
 
-        # Create Public IP
-        public_ip = network_client.public_ip_addresses.begin_create_or_update(
+    # Create Public IP
+    public_ip = _network_result(
+        network_client.public_ip_addresses.begin_create_or_update(
             resource_group,
             ip_name,
             network_models.PublicIPAddress(
@@ -328,26 +519,30 @@ def handle_request_runner(req: func.HttpRequest) -> func.HttpResponse:
                 public_ip_allocation_method="Static",
                 sku=network_models.PublicIPAddressSku(name="Standard"),
             ),
-        ).result()
+        )
+    )
 
-        # Create NSG (if not exists).
-        #
-        # No inbound rules are added: the runner only needs OUTBOUND connectivity
-        # to GitHub, and the default NSG rules deny all inbound traffic. RDP (3389)
-        # was previously opened to `*` for first-run bootstrap debugging, which is
-        # now proven; leaving a public IP with RDP open to the whole internet is an
-        # unauthenticated attack surface (brute force, RDP CVEs). For the rare debug
-        # session, use Azure Bastion / just-in-time VM access instead of a standing
-        # inbound rule.
-        nsg_name = os.environ.get("NSG_NAME", "gh-runner-nsg")
-        nsg = network_client.network_security_groups.begin_create_or_update(
+    # Create NSG (if not exists).
+    #
+    # No inbound rules are added: the runner only needs OUTBOUND connectivity
+    # to GitHub, and the default NSG rules deny all inbound traffic. RDP (3389)
+    # was previously opened to `*` for first-run bootstrap debugging, which is
+    # now proven; leaving a public IP with RDP open to the whole internet is an
+    # unauthenticated attack surface (brute force, RDP CVEs). For the rare debug
+    # session, use Azure Bastion / just-in-time VM access instead of a standing
+    # inbound rule.
+    nsg_name = os.environ.get("NSG_NAME", "gh-runner-nsg")
+    nsg = _network_result(
+        network_client.network_security_groups.begin_create_or_update(
             resource_group,
             nsg_name,
             network_models.NetworkSecurityGroup(location=location),
-        ).result()
+        )
+    )
 
-        # Create NIC and associate NSG
-        nic = network_client.network_interfaces.begin_create_or_update(
+    # Create NIC and associate NSG
+    nic = _network_result(
+        network_client.network_interfaces.begin_create_or_update(
             resource_group,
             nic_name,
             network_models.NetworkInterface(
@@ -361,85 +556,78 @@ def handle_request_runner(req: func.HttpRequest) -> func.HttpResponse:
                         ),
                     )
                 ],
-                network_security_group=network_models.NetworkSecurityGroup(
-                    id=nsg.id
+                network_security_group=network_models.NetworkSecurityGroup(id=nsg.id),
+            ),
+        )
+    )
+
+    # Keyword arguments shared by the regular and the spot VirtualMachine, so
+    # the spot fallback sends none of the spot-only fields.
+    vm_params = {
+        "location": location,
+        "hardware_profile": compute_models.HardwareProfile(vm_size=config["VM_SIZE"]),
+        "storage_profile": compute_models.StorageProfile(
+            image_reference=image_reference,
+            os_disk=compute_models.OSDisk(
+                create_option="FromImage",
+                # disk size needs to be at minium 128GB - defined by the image size
+                # disk_size_gb=int(os.environ.get("OS_DISK_SIZE_GB", "80")),
+                managed_disk=compute_models.ManagedDiskParameters(
+                    storage_account_type="Premium_LRS"
                 ),
             ),
-        ).result()
-
-        # Keyword arguments shared by the regular and the spot VirtualMachine, so
-        # the spot fallback sends none of the spot-only fields.
-        vm_params = {
-            "location": location,
-            "hardware_profile": compute_models.HardwareProfile(
-                vm_size=os.environ["VM_SIZE"]
-            ),
-            "storage_profile": compute_models.StorageProfile(
-                image_reference=image_reference,
-                os_disk=compute_models.OSDisk(
-                    create_option="FromImage",
-                    # disk size needs to be at minium 128GB - defined by the image size
-                    # disk_size_gb=int(os.environ.get("OS_DISK_SIZE_GB", "80")),
-                    managed_disk=compute_models.ManagedDiskParameters(
-                        storage_account_type="Premium_LRS"
-                    ),
-                ),
-            ),
-            "os_profile": compute_models.OSProfile(
-                # Windows computer names must be ≤15 chars
-                computer_name=runner_name[:15],
-                admin_username=os.environ["ADMIN_USERNAME"],
-                admin_password=admin_password,
-                custom_data=custom_data,
-            ),
-            "network_profile": compute_models.NetworkProfile(
-                network_interfaces=[
-                    compute_models.NetworkInterfaceReference(id=nic.id)
-                ]
-            ),
-        }
-
-        # Configure spot VM if enabled
-        use_spot = os.environ.get("VM_USE_SPOT", "false").lower() == "true"
-        regular_vm = compute_models.VirtualMachine(**vm_params)
-        if use_spot:
-            # Built before the try below: a model error is a code bug and must not
-            # be mistaken for missing spot capacity and fall back to a regular VM.
-            spot_vm = compute_models.VirtualMachine(
-                **vm_params,
-                priority="Spot",
-                eviction_policy="Deallocate",
-                # -1 means pay up to on-demand price
-                billing_profile=compute_models.BillingProfile(max_price=-1),
-            )
-
-            try:
-                logging.info("Attempting to create spot VM")
-                compute.virtual_machines.begin_create_or_update(
-                    resource_group, os.environ["VM_NAME"], spot_vm
-                )
-            except Exception as spot_error:
-                logging.warning(
-                    f"Spot VM creation failed: {str(spot_error)}. Retrying with regular VM."
-                )
-                # Retry without the spot configuration
-                compute.virtual_machines.begin_create_or_update(
-                    resource_group, os.environ["VM_NAME"], regular_vm
-                )
-        else:
-            compute.virtual_machines.begin_create_or_update(
-                resource_group, os.environ["VM_NAME"], regular_vm
-            )
-    except Exception as e:
-        logging.error("Error creating VM: %s", e)
-        return func.HttpResponse("Internal error creating runner VM", status_code=500)
-
-    return func.HttpResponse(
-        json.dumps(
-            {"message": "Runner VM creation started", "vm": os.environ["VM_NAME"]}
         ),
-        mimetype="application/json",
-        status_code=202,
+        "os_profile": compute_models.OSProfile(
+            # Windows computer names must be ≤15 chars
+            computer_name=runner_name[:15],
+            admin_username=config["ADMIN_USERNAME"],
+            admin_password=admin_password,
+            custom_data=custom_data,
+        ),
+        "network_profile": compute_models.NetworkProfile(
+            network_interfaces=[compute_models.NetworkInterfaceReference(id=nic.id)]
+        ),
+    }
+
+    _log_stage(context, "created")
+    context["stage"] = "vm"
+    # Configure spot VM if enabled
+    use_spot = os.environ.get("VM_USE_SPOT", "false").lower() == "true"
+    regular_vm = compute_models.VirtualMachine(**vm_params)
+    if use_spot:
+        # Built before the try below: a model error is a code bug and must not
+        # be mistaken for missing spot capacity and fall back to a regular VM.
+        spot_vm = compute_models.VirtualMachine(
+            **vm_params,
+            priority="Spot",
+            eviction_policy="Deallocate",
+            # -1 means pay up to on-demand price
+            billing_profile=compute_models.BillingProfile(max_price=-1),
+        )
+
+        try:
+            logging.info("Attempting to create spot VM")
+            compute.virtual_machines.begin_create_or_update(
+                resource_group, config["VM_NAME"], spot_vm
+            )
+        except Exception as spot_error:
+            _log_stage(
+                context,
+                "spot-fallback",
+                logging.WARNING,
+                exception=type(spot_error).__name__,
+            )
+            # Retry without the spot configuration
+            compute.virtual_machines.begin_create_or_update(
+                resource_group, config["VM_NAME"], regular_vm
+            )
+    else:
+        compute.virtual_machines.begin_create_or_update(
+            resource_group, config["VM_NAME"], regular_vm
+        )
+    _log_stage(context, "submitted")
+    return _runner_response(
+        context, 202, "Runner VM creation started", vm=config["VM_NAME"]
     )
 
 
@@ -450,13 +638,17 @@ def validate_source_group_name(name: str) -> bool:
     return True
 
 
-def _delete_response(resource_group: str, status: str, status_code: int) -> func.HttpResponse:
+def _delete_response(
+    resource_group: str, status: str, status_code: int
+) -> func.HttpResponse:
     if status == DELETE_STATUS_DELETED:
         message = f"Resource group '{resource_group}' deleted."
     else:
         message = f"Deletion of resource group '{resource_group}' in progress."
     return func.HttpResponse(
-        json.dumps({"message": message, "status": status, "resource-group": resource_group}),
+        json.dumps(
+            {"message": message, "status": status, "resource-group": resource_group}
+        ),
         mimetype="application/json",
         status_code=status_code,
     )
