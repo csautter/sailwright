@@ -59,7 +59,7 @@ for cached_deb_path in "${cache_dir}"/qemu-efi-aarch64*_all.deb; do
 		mv "$cached_deb_path" "$DEB_PATH" || echo "Warning: could not move $cached_deb_path, keeping it" >&2
 		continue
 	fi
-	rm -f "$cached_deb_path"
+	rm -f "$cached_deb_path" || echo "Warning: could not remove outdated $cached_deb_path" >&2
 done
 
 if [ -f "${DEB_PATH}" ] && [ "$(sha256_of "${DEB_PATH}")" = "${QEMU_EFI_AARCH64_SHA256}" ]; then

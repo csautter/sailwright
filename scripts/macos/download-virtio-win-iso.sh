@@ -69,7 +69,7 @@ for cached_iso_path in "$CACHE_DIR"/windows/virtio-win*.iso; do
 		continue
 	fi
 	echo "Removing outdated $cached_iso_path"
-	rm -f "$cached_iso_path"
+	rm -f "$cached_iso_path" || echo "Warning: could not remove outdated $cached_iso_path" >&2
 done
 
 if [ -f "$virtio_iso_path" ]; then

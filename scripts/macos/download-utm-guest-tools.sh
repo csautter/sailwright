@@ -48,7 +48,7 @@ for cached_iso_path in "$OUTPUT_DIR"/utm-guest-tools-*.iso; do
 		mv "$cached_iso_path" "$OUTPUT_PATH" || echo "Warning: could not move $cached_iso_path, keeping it" >&2
 		continue
 	fi
-	rm -f "$cached_iso_path"
+	rm -f "$cached_iso_path" || echo "Warning: could not remove outdated $cached_iso_path" >&2
 done
 
 if [ -f "$OUTPUT_PATH" ] && [ "$(sha256_of "$OUTPUT_PATH")" = "$UTM_GUEST_TOOLS_SHA256" ]; then

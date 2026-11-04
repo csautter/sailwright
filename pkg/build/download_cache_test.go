@@ -65,13 +65,17 @@ func TestFirmwareAndGuestToolsPrepareCache(t *testing.T) {
 
 // Exercise the real shell scripts with a small payload and a curl stub. Seed firmware extraction
 // outputs so these cases test cache/download behavior without needing a real Debian package.
-func TestFirmwareAndGuestToolsDownloadCaches(t *testing.T) {
+func TestVersionedDownloadCaches(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell downloaders run on Linux and macOS")
 	}
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("bash not available")
+	}
+	realRM, err := exec.LookPath("rm")
+	if err != nil {
+		t.Fatal(err)
 	}
 	content := []byte("verified download")
 	checksum := fmt.Sprintf("%x", sha256.Sum256(content))
@@ -80,8 +84,12 @@ func TestFirmwareAndGuestToolsDownloadCaches(t *testing.T) {
 	}{
 		{"download-arm64-uefi.sh", "", qemuEfiAarch64CacheFileName(qemuEfiAarch64Version), "qemu-efi-aarch64_all.deb", "qemu-efi-aarch64_2024.11-1_all.deb", qemuEfiAarch64SHA256},
 		{"download-utm-guest-tools.sh", "utm", utmGuestToolsISOFileName(utmGuestToolsVersion), "utm-guest-tools-latest.iso", "utm-guest-tools-0.1.100.iso", utmGuestToolsSHA256},
+		{"download-virtio-win-iso.sh", "windows", virtioWinISOCacheFileName(virtioWinVersion), virtioWinLegacyISOFileName, "virtio-win-0.1.100-1.iso", virtioWinSHA256},
 	} {
-		for _, scenario := range []string{"matching legacy", "stale legacy", "warm cache", "corrupt current", "HTTP failure", "checksum failure"} {
+		for _, scenario := range []string{
+			"matching legacy", "stale legacy", "warm cache", "corrupt current", "HTTP failure", "checksum failure",
+			"prune failure warm cache", "prune failure cold cache", "prune failure checksum failure",
+		} {
 			t.Run(file.script+"/"+scenario, func(t *testing.T) {
 				t.Parallel()
 				root := t.TempDir()
@@ -94,7 +102,7 @@ func TestFirmwareAndGuestToolsDownloadCaches(t *testing.T) {
 					writeDownloadCacheTestFile(t, legacy, content)
 				case "stale legacy":
 					writeDownloadCacheTestFile(t, legacy, []byte("stale"))
-				case "warm cache":
+				case "warm cache", "prune failure warm cache":
 					writeDownloadCacheTestFile(t, dest, content)
 				case "corrupt current":
 					writeDownloadCacheTestFile(t, dest, []byte("corrupt"))
@@ -115,8 +123,8 @@ while [ "$#" -gt 0 ]; do
 done
 printf 'verified download' > "$output"
 case "$DOWNLOAD_SCENARIO" in
-  'HTTP failure') exit 22 ;;
-  'checksum failure') printf 'bad download' > "$output" ;;
+  *'HTTP failure') exit 22 ;;
+  *'checksum failure') printf 'bad download' > "$output" ;;
 esac
 `
 				stubPath := filepath.Join(binDir, "curl")
@@ -124,9 +132,27 @@ esac
 				if err := os.Chmod(stubPath, 0o755); err != nil {
 					t.Fatal(err)
 				}
+				pruneFailure := strings.HasPrefix(scenario, "prune failure")
+				if pruneFailure {
+					// Fail only obsolete-file removal, regardless of host permissions or root.
+					rmStub := `#!/bin/bash
+for arg in "$@"; do
+  if [ "$arg" = "$BLOCKED_CACHE_PATH" ]; then
+    echo "rm: cannot remove $arg: Permission denied" >&2
+    exit 1
+  fi
+done
+exec "$REAL_RM" "$@"
+`
+					rmPath := filepath.Join(binDir, "rm")
+					writeDownloadCacheTestFile(t, rmPath, []byte(rmStub))
+					if err := os.Chmod(rmPath, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
 				logPath := filepath.Join(root, "curl.log")
 				cmd := exec.Command(bash, scriptPath)
-				cmd.Env = append(cmd.Environ(), "DEV_ALCHEMY_CACHE_DIR="+cacheDir, "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"), "CURL_LOG="+logPath, "DOWNLOAD_SCENARIO="+scenario)
+				cmd.Env = append(cmd.Environ(), "DEV_ALCHEMY_CACHE_DIR="+cacheDir, "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"), "CURL_LOG="+logPath, "DOWNLOAD_SCENARIO="+scenario, "BLOCKED_CACHE_PATH="+old, "REAL_RM="+realRM)
 				out, err := cmd.CombinedOutput()
 				if strings.HasSuffix(scenario, "failure") {
 					if err == nil {
@@ -139,8 +165,16 @@ esac
 					}
 					assertFileContent(t, dest, content)
 				}
-				assertFilesMissing(t, old, legacy)
-				if scenario == "matching legacy" || scenario == "warm cache" {
+				assertFilesMissing(t, legacy)
+				if pruneFailure {
+					assertFileContent(t, old, []byte("old version"))
+					if !strings.Contains(string(out), "Warning: could not remove outdated "+old) {
+						t.Fatalf("expected an obsolete-file cleanup warning: %s", out)
+					}
+				} else {
+					assertFilesMissing(t, old)
+				}
+				if scenario == "matching legacy" || strings.HasSuffix(scenario, "warm cache") {
 					assertFilesMissing(t, logPath)
 				} else if _, err := os.Stat(logPath); err != nil {
 					t.Fatalf("expected a download attempt: %v", err)
