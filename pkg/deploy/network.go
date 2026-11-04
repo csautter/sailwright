@@ -223,19 +223,31 @@ func hypervNetworkMode(output string) NetworkMode {
 func libvirtNetworkMode(output string) NetworkMode {
 	var network struct {
 		XMLName xml.Name `xml:"network"`
-		Forward struct {
+		Forward *struct {
 			Mode string `xml:"mode,attr"`
+			NAT  struct {
+				IPv6 string `xml:"ipv6,attr"`
+			} `xml:"nat"`
 		} `xml:"forward"`
+		IPs []struct {
+			Family string `xml:"family,attr"`
+		} `xml:"ip"`
 	}
 	if xml.Unmarshal([]byte(output), &network) != nil {
 		return unknownNetwork("invalid libvirt network XML")
 	}
+	if network.Forward == nil {
+		return NetworkMode{"nat", "libvirt isolated network"}
+	}
 	mode := unknownNetwork("libvirt forward mode " + network.Forward.Mode)
 	switch network.Forward.Mode {
-	case "nat":
+	case "nat", "": // A forward element without a mode defaults to NAT.
 		mode.Mode = "nat"
-	case "":
-		mode = NetworkMode{"nat", "libvirt isolated network"}
+		for _, ip := range network.IPs {
+			if ip.Family == "ipv6" && network.Forward.NAT.IPv6 != "yes" {
+				return NetworkMode{"bridged", "libvirt NAT with routed IPv6"}
+			}
+		}
 	case "bridge", "open", "route":
 		mode.Mode = "bridged"
 	}

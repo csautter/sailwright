@@ -97,6 +97,27 @@ func TestTartProcessNetworkMode(t *testing.T) {
 	}
 }
 
+func TestLibvirtNetworkIPv6Exposure(t *testing.T) {
+	for _, tc := range []struct {
+		name, forward, ips, want string
+	}{
+		{"IPv4 NAT", `<forward mode="nat"/>`, `<ip address="192.168.122.1"/>`, "nat"},
+		{"routed IPv6", `<forward mode="nat"/>`, `<ip family="ipv6" address="2001:db8::1"/>`, "bridged"},
+		{"dual stack routed IPv6", `<forward mode="nat"/>`, `<ip address="192.168.122.1"/><ip family="ipv6" address="2001:db8::1"/>`, "bridged"},
+		{"explicit IPv6 NAT", `<forward mode="nat"><nat ipv6="yes"/></forward>`, `<ip family="ipv6" address="fd00::1"/>`, "nat"},
+		{"explicit IPv6 routing", `<forward mode="nat"><nat ipv6="no"/></forward>`, `<ip family="ipv6" address="fd00::1"/>`, "bridged"},
+		{"isolated IPv6", "", `<ip family="ipv6" address="fd00::1"/>`, "nat"},
+		{"implicit NAT routed IPv6", `<forward/>`, `<ip family="ipv6" address="2001:db8::1"/>`, "bridged"},
+		{"routed network", `<forward mode="route"/>`, `<ip family="ipv6" address="2001:db8::1"/>`, "bridged"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := libvirtNetworkMode("<network>" + tc.forward + tc.ips + "</network>"); got.Mode != tc.want {
+				t.Fatalf("got %+v, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestInspectNetworkModeWithFakeCommands(t *testing.T) {
 	dirs := alchemy_build.GetDirectoriesInstance()
 	oldDir := dirs.ProjectDir
