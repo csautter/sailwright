@@ -118,6 +118,41 @@ func TestLibvirtNetworkIPv6Exposure(t *testing.T) {
 	}
 }
 
+func TestUTMEmulatedPortForwardExposure(t *testing.T) {
+	forward := func(key, value string) string {
+		return `<dict><key>Protocol</key><string>TCP</string><key>HostPort</key><integer>2222</integer><key>GuestPort</key><integer>22</integer><key>` + key + `</key>` + value + `</dict>`
+	}
+	for _, tc := range []struct {
+		name, forwards, want string
+	}{
+		{"no forwards", "", "nat"},
+		{"empty forwards", `<key>PortForward</key><array/>`, "nat"},
+		{"IPv4 loopback", `<key>PortForward</key><array>` + forward("HostAddress", `<string>127.0.0.1</string>`) + `</array>`, "nat"},
+		{"IPv6 loopback", `<key>PortForward</key><array>` + forward("HostAddress", `<string>::1</string>`) + `</array>`, "nat"},
+		{"legacy loopback", `<key>PortForward</key><array>` + forward("hostAddress", `<string>127.0.0.1</string>`) + `</array>`, "nat"},
+		{"IPv4 wildcard", `<key>PortForward</key><array>` + forward("HostAddress", `<string>0.0.0.0</string>`) + `</array>`, "unknown"},
+		{"IPv6 wildcard", `<key>PortForward</key><array>` + forward("HostAddress", `<string>::</string>`) + `</array>`, "unknown"},
+		{"LAN address", `<key>PortForward</key><array>` + forward("HostAddress", `<string>192.168.1.10</string>`) + `</array>`, "unknown"},
+		{"legacy LAN address", `<key>PortForward</key><array>` + forward("hostAddress", `<string>192.168.1.10</string>`) + `</array>`, "unknown"},
+		{"empty address", `<key>PortForward</key><array>` + forward("HostAddress", `<string/>`) + `</array>`, "unknown"},
+		{"missing address", `<key>PortForward</key><array><dict><key>GuestPort</key><integer>22</integer></dict></array>`, "unknown"},
+		{"hostname", `<key>PortForward</key><array>` + forward("HostAddress", `<string>localhost</string>`) + `</array>`, "unknown"},
+		{"invalid address type", `<key>PortForward</key><array>` + forward("HostAddress", `<integer>127</integer>`) + `</array>`, "unknown"},
+		{"invalid forwards type", `<key>PortForward</key><string/>`, "unknown"},
+		{"invalid forward entry", `<key>PortForward</key><array><string/></array>`, "unknown"},
+		{"mixed bindings", `<key>PortForward</key><array>` + forward("HostAddress", `<string>127.0.0.1</string>`) + forward("HostAddress", `<string>0.0.0.0</string>`) + `</array>`, "unknown"},
+		{"conflicting address aliases", `<key>PortForward</key><array><dict><key>HostAddress</key><string>127.0.0.1</string><key>hostAddress</key><string>0.0.0.0</string></dict></array>`, "unknown"},
+		{"duplicate addresses", `<key>PortForward</key><array><dict><key>HostAddress</key><string>0.0.0.0</string><key>HostAddress</key><string>127.0.0.1</string></dict></array>`, "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plist := `<plist><dict><key>Network</key><array><dict><key>Mode</key><string>Emulated</string>` + tc.forwards + `</dict></array></dict></plist>`
+			if got := utmNetworkMode([]byte(plist)); got.Mode != tc.want {
+				t.Fatalf("got %+v, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestInspectNetworkModeWithFakeCommands(t *testing.T) {
 	dirs := alchemy_build.GetDirectoriesInstance()
 	oldDir := dirs.ProjectDir

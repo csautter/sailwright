@@ -3,6 +3,7 @@ package deploy
 import (
 	"encoding/json"
 	"encoding/xml"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -179,26 +180,83 @@ func utmNetworkMode(data []byte) NetworkMode {
 			}
 			modes := []NetworkMode{}
 			for _, adapter := range dict.Children[i+1].Children {
-				mode := unknownNetwork("UTM adapter mode unavailable")
-				for j, field := range adapter.Children {
-					if field.XMLName.Local != "key" || field.Text != "Mode" || j+1 >= len(adapter.Children) {
-						continue
-					}
-					value := adapter.Children[j+1].Text
-					mode.Detail = "UTM " + value
-					switch value {
-					case "Shared", "Emulated", "Host":
-						mode.Mode = "nat"
-					case "Bridged":
-						mode.Mode = "bridged"
-					}
-				}
-				modes = append(modes, mode)
+				modes = append(modes, utmAdapterNetworkMode(adapter))
 			}
 			return combineNetworkModes(modes)
 		}
 	}
 	return unknownNetwork("UTM network configuration unavailable")
+}
+
+// plistDictionary rejects duplicate keys and malformed dictionaries so ambiguous
+// configuration cannot provide a false NAT result.
+func plistDictionary(node plistNode) (map[string]plistNode, bool) {
+	if node.XMLName.Local != "dict" || len(node.Children)%2 != 0 {
+		return nil, false
+	}
+	values := make(map[string]plistNode, len(node.Children)/2)
+	for i := 0; i < len(node.Children); i += 2 {
+		key := node.Children[i]
+		if key.XMLName.Local != "key" {
+			return nil, false
+		}
+		if _, duplicate := values[key.Text]; duplicate {
+			return nil, false
+		}
+		values[key.Text] = node.Children[i+1]
+	}
+	return values, true
+}
+
+func utmAdapterNetworkMode(adapter plistNode) NetworkMode {
+	values, valid := plistDictionary(adapter)
+	if !valid || values["Mode"].XMLName.Local != "string" {
+		return unknownNetwork("UTM adapter mode unavailable")
+	}
+	value := values["Mode"].Text
+	switch value {
+	case "Bridged":
+		return NetworkMode{"bridged", "UTM Bridged"}
+	case "Shared", "Host":
+		return NetworkMode{"nat", "UTM " + value}
+	case "Emulated":
+		forwards, exists := values["PortForward"]
+		if exists {
+			if forwards.XMLName.Local != "array" {
+				return unknownNetwork("UTM port forwarding configuration invalid")
+			}
+			for _, forward := range forwards.Children {
+				if !utmPortForwardIsLoopback(forward) {
+					return unknownNetwork("UTM Emulated with non-loopback or unknown port forwarding")
+				}
+			}
+		}
+		return NetworkMode{"nat", "UTM Emulated"}
+	default:
+		return unknownNetwork("UTM " + value)
+	}
+}
+
+func utmPortForwardIsLoopback(forward plistNode) bool {
+	values, valid := plistDictionary(forward)
+	if !valid {
+		return false
+	}
+	address, exists := values["HostAddress"]
+	// UTM before 4.4 used camel-case keys for port forwards.
+	legacy, legacyExists := values["hostAddress"]
+	if exists && legacyExists {
+		return false
+	}
+	if legacyExists {
+		address = legacy
+	}
+	if address.XMLName.Local != "string" {
+		return false
+	}
+	// Missing/empty addresses are not positive evidence of a loopback binding.
+	ip := net.ParseIP(address.Text)
+	return ip != nil && ip.IsLoopback()
 }
 
 func hypervNetworkMode(output string) NetworkMode {
