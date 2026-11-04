@@ -11,16 +11,23 @@ Optional:
   --repo <owner/repo>      GitHub repo (default: csautter/sailwright)
   --resource-group <name>  Resource group name
   --runner-name <name>     Runner name
+  --vm <name>              VM name from the request_runner response (for --runner-status)
   --flavor <hyperv|virtualbox>  Virtualization flavor (default: hyperv)
   --admin-azure-profile-dir <path> Azure CLI config dir for admin lookups (default: ~/.azure)
   --terragrunt-output-dir <path>  Terragrunt dir for output discovery
   --request-runner         Call request_runner endpoint
+  --runner-status          Poll runner_status until provisioning ends
   --delete-resource-group  Call delete_resource_group endpoint
   -h, --help               Show this help
 
 Examples:
   bash scripts/gh-runner-func/test-endpoints.sh \
     --request-runner
+
+  bash scripts/gh-runner-func/test-endpoints.sh \
+    --resource-group gh-runner-tmp-local-12345 \
+    --vm gh-runner-vm-<suffix> \
+    --runner-status
 
   bash scripts/gh-runner-func/test-endpoints.sh \
     --resource-group gh-runner-tmp-local-12345 \
@@ -42,7 +49,9 @@ REPO="${REPO:-csautter/sailwright}"
 RESOURCE_GROUP="${RESOURCE_GROUP:-}"
 RUNNER_NAME="${RUNNER_NAME:-}"
 VIRTUALIZATION_FLAVOR="${VIRTUALIZATION_FLAVOR:-hyperv}"
+VM_NAME="${VM_NAME:-}"
 REQUEST_RUNNER=false
+RUNNER_STATUS=false
 DELETE_RESOURCE_GROUP=false
 AZURE_ADMIN_CONFIG_DIR="${AZURE_ADMIN_CONFIG_DIR:-$HOME/.azure}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -83,8 +92,16 @@ while [[ $# -gt 0 ]]; do
       TERRAGRUNT_OUTPUT_DIR="$2"
       shift 2
       ;;
+    --vm)
+      VM_NAME="$2"
+      shift 2
+      ;;
     --request-runner)
       REQUEST_RUNNER=true
+      shift
+      ;;
+    --runner-status)
+      RUNNER_STATUS=true
       shift
       ;;
     --delete-resource-group)
@@ -103,13 +120,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$REQUEST_RUNNER" == "false" && "$DELETE_RESOURCE_GROUP" == "false" ]]; then
-  echo "You must provide exactly one operation flag: --request-runner or --delete-resource-group" >&2
-  exit 1
-fi
-
-if [[ "$REQUEST_RUNNER" == "true" && "$DELETE_RESOURCE_GROUP" == "true" ]]; then
-  echo "Use only one operation at a time: --request-runner OR --delete-resource-group" >&2
+operations=0
+for flag in "$REQUEST_RUNNER" "$RUNNER_STATUS" "$DELETE_RESOURCE_GROUP"; do
+  [[ "$flag" == "true" ]] && operations=$((operations + 1))
+done
+if [[ "$operations" -ne 1 ]]; then
+  echo "Provide exactly one operation flag: --request-runner, --runner-status or --delete-resource-group" >&2
   exit 1
 fi
 
@@ -188,6 +204,17 @@ if [[ "$REQUEST_RUNNER" == "true" ]]; then
     --output jsonc
 
   echo "request_runner succeeded."
+fi
+
+if [[ "$RUNNER_STATUS" == "true" ]]; then
+  if [[ -z "$RESOURCE_GROUP" || -z "$VM_NAME" ]]; then
+    echo "--resource-group and --vm are required for --runner-status" >&2
+    exit 1
+  fi
+  echo "Polling runner_status for ${RESOURCE_GROUP}/${VM_NAME}..."
+  FUNCTION_APP_NAME="$FUNCTION_APP_NAME" AZURE_CLIENT_ID="$API_CLIENT_ID" \
+    RESOURCE_GROUP="$RESOURCE_GROUP" VM_NAME="$VM_NAME" \
+    bash "$SCRIPT_DIR/wait-runner-provisioned.sh"
 fi
 
 if [[ "$DELETE_RESOURCE_GROUP" == "true" ]]; then
