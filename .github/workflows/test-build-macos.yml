@@ -1,52 +1,42 @@
-name: Test Packer Build on macOS for VMs
-
+name: Test macOS quick checks and full builds
 permissions:
   contents: read
-
+  pull-requests: read
 on:
-  workflow_dispatch:
-    inputs:
-      enable_utm_qemu_macos:
-        description: 'Enable UTM QEMU macOS builds'
-        required: false
-        default: true
-        type: boolean
+  workflow_dispatch: null
   pull_request:
-    paths:
-      - "cmd/main.go"
-      - "cmd/cmd/**"
-      - "build/packer/linux/*"
-      - "build/packer/linux/**/*"
-      - "build/packer/windows/*"
-      - "build/packer/windows/**/*"
-      - "pkg/build/**"
-      - "pkg/deploy/**"
-      - "deployments/utm/**"
-      - "scripts/linux/*"
-      - "scripts/linux/**/*"
-      - "scripts/macos/*"
-      - "scripts/macos/**/*"
-      - "scripts/windows/*"
-      - "scripts/windows/**/*"
-      - ".github/workflows/test-build-macos.yml"
-      - ".github/actions/download-build-cache/**"
-      - ".github/actions/upload-build-cache/**"
-
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
+  schedule:
+    - cron: 0 2 * * 1
+    - cron: 0 3 1-7 * *
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.schedule }}
+  cancel-in-progress: true
 jobs:
-  test-packer-build:
-    if: github.event_name == 'pull_request' || inputs.enable_utm_qemu_macos
-    name: build ${{ matrix.go_test_name }} VM_OS ${{ matrix.vm_os }} runner_os ${{ vars.USE_TART_MACOS_RUNNERS == 'true' && matrix.tart_runs_on || matrix.runs_on }}
-    runs-on: ${{ vars.USE_TART_MACOS_RUNNERS == 'true' && matrix.tart_runs_on || matrix.runs_on }}
-    env:
-      # Build jobs resolve the Windows 11 ISO through the cache manifest and never contact Microsoft.
-      SAILWRIGHT_WIN11_ISO_OFFLINE: "1"
-      DEV_ALCHEMY_APP_DATA_DIR: ${{ github.workspace }}/.dev-alchemy
-      DEV_ALCHEMY_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/cache
-      DEV_ALCHEMY_VAGRANT_DIR: ${{ github.workspace }}/.dev-alchemy/.vagrant
-      DEV_ALCHEMY_PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
-      PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
-      USE_TART_MACOS_RUNNERS: ${{ vars.USE_TART_MACOS_RUNNERS == 'true' && 'true' || 'false' }}
-    timeout-minutes: 260
+  select:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      quick: ${{ steps.route.outputs.quick }}
+      full: ${{ steps.route.outputs.full }}
+      full_amd64: ${{ steps.route.outputs.full_amd64 }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: route
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 test/macos-profile/routes.py
+  macos-quick:
+    needs:
+      - select
+    if: needs.select.outputs.quick == 'true'
+    name: quick ${{ matrix.go_test_name }}
+    runs-on: macos-26
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -56,72 +46,79 @@ jobs:
             deploy_test_name: TestDeployUtmWindows11Arm64OnMacos
             runs_on: macos-26
             tart_runs_on: macos-26-tart
-            packer_start_only: "false"
-            packer_start_timeout: "180"
-            cache_files: >-
+            packer_start_timeout: '180'
+            cache_files: |-
               [{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_arm64.iso","manifest":"windows11/iso/win11-arm64.json","blob-name":"win11_25h2_english_arm64.iso"},
                {"local-path":"./.dev-alchemy/cache/utm/utm-guest-tools-0.1.271.iso"},
                {"local-path":"./.dev-alchemy/cache/windows/virtio-win-0.1.302-1.iso"},
                {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_2025.02-8+deb13u1_all.deb"}]
+            arch: arm64
+            packer_start_only: 'true'
           - vm_os: windows11
             go_test_name: TestBuildQemuWindows11Amd64OnMacos
             deploy_test_name: TestDeployUtmWindows11Amd64OnMacos
             runs_on: macos-26
             tart_runs_on: macos-26-tart
-            packer_start_only: "false"
-            packer_start_timeout: "180"
-            cache_files: >-
+            packer_start_timeout: '180'
+            cache_files: |-
               [{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_amd64.iso","manifest":"windows11/iso/win11-amd64.json","blob-name":"win11_25h2_english_amd64.iso"},
                {"local-path":"./.dev-alchemy/cache/utm/utm-guest-tools-0.1.271.iso"},
                {"local-path":"./.dev-alchemy/cache/windows/virtio-win-0.1.302-1.iso"}]
+            arch: amd64
+            packer_start_only: 'true'
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuServerArm64OnMacos
             deploy_test_name: TestDeployUtmUbuntuServerArm64OnMacos
             runs_on: macos-26
             tart_runs_on: macos-26-tart
-            packer_start_only: "true"
-            packer_start_timeout: "180"
-            cache_files: >-
+            packer_start_timeout: '180'
+            cache_files: |-
               [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-arm64.iso"},
                {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_2025.02-8+deb13u1_all.deb"}]
+            arch: arm64
+            packer_start_only: 'true'
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuServerAmd64OnMacos
             deploy_test_name: TestDeployUtmUbuntuServerAmd64OnMacos
             runs_on: macos-26
             tart_runs_on: macos-26-tart
-            packer_start_only: "true"
-            packer_start_timeout: "180"
-            cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-amd64.iso"}]
+            packer_start_timeout: '180'
+            cache_files: '[{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-amd64.iso"}]'
+            arch: amd64
+            packer_start_only: 'true'
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuDesktopArm64OnMacos
             deploy_test_name: TestDeployUtmUbuntuDesktopArm64OnMacos
             runs_on: macos-26
             tart_runs_on: macos-26-tart
-            packer_start_only: "true"
-            packer_start_timeout: "180"
-            cache_files: >-
+            packer_start_timeout: '180'
+            cache_files: |-
               [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-arm64.iso"},
                {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_2025.02-8+deb13u1_all.deb"}]
+            arch: arm64
+            packer_start_only: 'true'
           - vm_os: ubuntu
             go_test_name: TestBuildQemuUbuntuDesktopAmd64OnMacos
             deploy_test_name: TestDeployUtmUbuntuDesktopAmd64OnMacos
             runs_on: macos-26
             tart_runs_on: macos-26-tart
-            packer_start_only: "true"
-            packer_start_timeout: "180"
-            cache_files: >-
-              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-amd64.iso"}]
+            packer_start_timeout: '180'
+            cache_files: '[{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-amd64.iso"}]'
+            arch: amd64
+            packer_start_only: 'true'
+    env:
+      SAILWRIGHT_WIN11_ISO_OFFLINE: '1'
+      DEV_ALCHEMY_APP_DATA_DIR: ${{ github.workspace }}/.dev-alchemy
+      DEV_ALCHEMY_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/cache
+      DEV_ALCHEMY_VAGRANT_DIR: ${{ github.workspace }}/.dev-alchemy/.vagrant
+      DEV_ALCHEMY_PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
+      PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
-
       - name: Download build cache files
         uses: ./.github/actions/download-build-cache
         with:
@@ -132,59 +129,184 @@ jobs:
           ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
           ftp-password: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
           ftp-base-dir: /private
-
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Install macOS dependencies
+        run: |-
+          go run cmd/main.go install
+          brew install gettext
+          echo "$(brew --prefix gettext)/bin" >> "$GITHUB_PATH"
+      - name: Record system Bash and Homebrew versions
+        run: |-
+          /bin/bash --version
+          command -v bash
+          bash --version
+          brew --version
+          qemu-system-aarch64 --version
+      - name: Run Darwin unit tests, native shell checks and UTM bundles
+        if: matrix.go_test_name == 'TestBuildQemuUbuntuServerArm64OnMacos'
+        run: |-
+          go test ./pkg/build ./pkg/deploy
+          /bin/bash test/macos-profile/test-shell.sh --native
+          python3 test/macos-profile/lint.py
+          python3 test/macos-profile/test-utm.py --register
+      - name: Probe real Darwin QEMU startup
+        env:
+          RUN_INTEGRATION_TESTS: '1'
+          DEV_ALCHEMY_PACKER_START_ONLY: ${{ matrix.packer_start_only }}
+          DEV_ALCHEMY_PACKER_START_TIMEOUT: ${{ matrix.packer_start_timeout }}
+          PACKER_LOG: '1'
+          PACKER_GITHUB_API_TOKEN: ${{ github.token }}
+        run: sudo -E make test-build-specific TEST_NAME=${{ matrix.go_test_name }}
+        id: packer_build
+  macos-full:
+    if: needs.select.outputs.full == 'true'
+    name: full ${{ matrix.go_test_name }}
+    runs-on: ${{ vars.USE_TART_MACOS_RUNNERS == 'true' && matrix.tart_runs_on || matrix.runs_on }}
+    env:
+      SAILWRIGHT_WIN11_ISO_OFFLINE: '1'
+      DEV_ALCHEMY_APP_DATA_DIR: ${{ github.workspace }}/.dev-alchemy
+      DEV_ALCHEMY_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/cache
+      DEV_ALCHEMY_VAGRANT_DIR: ${{ github.workspace }}/.dev-alchemy/.vagrant
+      DEV_ALCHEMY_PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
+      PACKER_CACHE_DIR: ${{ github.workspace }}/.dev-alchemy/packer_cache
+      USE_TART_MACOS_RUNNERS: ${{ vars.USE_TART_MACOS_RUNNERS == 'true' && 'true' || 'false' }}
+      DEV_ALCHEMY_PACKER_START_ONLY: ${{ matrix.packer_start_only == 'true' && needs.select.outputs.full_amd64 != 'true' && 'true' || 'false' }}
+    timeout-minutes: 260
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - vm_os: windows11
+            go_test_name: TestBuildQemuWindows11Arm64OnMacos
+            deploy_test_name: TestDeployUtmWindows11Arm64OnMacos
+            runs_on: macos-26
+            tart_runs_on: macos-26-tart
+            packer_start_timeout: '180'
+            cache_files: |-
+              [{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_arm64.iso","manifest":"windows11/iso/win11-arm64.json","blob-name":"win11_25h2_english_arm64.iso"},
+               {"local-path":"./.dev-alchemy/cache/utm/utm-guest-tools-0.1.271.iso"},
+               {"local-path":"./.dev-alchemy/cache/windows/virtio-win-0.1.302-1.iso"},
+               {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_2025.02-8+deb13u1_all.deb"}]
+            arch: arm64
+            packer_start_only: 'false'
+          - vm_os: windows11
+            go_test_name: TestBuildQemuWindows11Amd64OnMacos
+            deploy_test_name: TestDeployUtmWindows11Amd64OnMacos
+            runs_on: macos-26
+            tart_runs_on: macos-26-tart
+            packer_start_timeout: '180'
+            cache_files: |-
+              [{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_amd64.iso","manifest":"windows11/iso/win11-amd64.json","blob-name":"win11_25h2_english_amd64.iso"},
+               {"local-path":"./.dev-alchemy/cache/utm/utm-guest-tools-0.1.271.iso"},
+               {"local-path":"./.dev-alchemy/cache/windows/virtio-win-0.1.302-1.iso"}]
+            arch: amd64
+            packer_start_only: 'true'
+          - vm_os: ubuntu
+            go_test_name: TestBuildQemuUbuntuServerArm64OnMacos
+            deploy_test_name: TestDeployUtmUbuntuServerArm64OnMacos
+            runs_on: macos-26
+            tart_runs_on: macos-26-tart
+            packer_start_timeout: '180'
+            cache_files: |-
+              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-arm64.iso"},
+               {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_2025.02-8+deb13u1_all.deb"}]
+            arch: arm64
+            packer_start_only: 'false'
+          - vm_os: ubuntu
+            go_test_name: TestBuildQemuUbuntuServerAmd64OnMacos
+            deploy_test_name: TestDeployUtmUbuntuServerAmd64OnMacos
+            runs_on: macos-26
+            tart_runs_on: macos-26-tart
+            packer_start_timeout: '180'
+            cache_files: '[{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-amd64.iso"}]'
+            arch: amd64
+            packer_start_only: 'true'
+          - vm_os: ubuntu
+            go_test_name: TestBuildQemuUbuntuDesktopArm64OnMacos
+            deploy_test_name: TestDeployUtmUbuntuDesktopArm64OnMacos
+            runs_on: macos-26
+            tart_runs_on: macos-26-tart
+            packer_start_timeout: '180'
+            cache_files: |-
+              [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-arm64.iso"},
+               {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_2025.02-8+deb13u1_all.deb"}]
+            arch: arm64
+            packer_start_only: 'false'
+          - vm_os: ubuntu
+            go_test_name: TestBuildQemuUbuntuDesktopAmd64OnMacos
+            deploy_test_name: TestDeployUtmUbuntuDesktopAmd64OnMacos
+            runs_on: macos-26
+            tart_runs_on: macos-26-tart
+            packer_start_timeout: '180'
+            cache_files: '[{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-amd64.iso"}]'
+            arch: amd64
+            packer_start_only: 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Download build cache files
+        uses: ./.github/actions/download-build-cache
+        with:
+          storage-backend: ftp
+          files: ${{ matrix.cache_files }}
+          ftp-server: ${{ vars.BUILD_CACHE_FTP_SERVER }}
+          ftp-port: ${{ vars.BUILD_CACHE_FTP_PORT }}
+          ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
+          ftp-password: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
+          ftp-base-dir: /private
       - name: Set up Python
         uses: actions/setup-python@v7
         if: matrix.runs_on != 'windows-2025'
         with:
-          python-version: "3.13"
-
+          python-version: '3.13'
       - name: Install dependencies macos
         if: contains(matrix.runs_on, 'macos')
-        run: |
-          go run cmd/main.go install
-
-      - name: Run build for VM OS=${{ matrix.vm_os }} TEST_NAME=${{ matrix.go_test_name }} on runner OS=${{ vars.USE_TART_MACOS_RUNNERS == 'true' && matrix.tart_runs_on || matrix.runs_on }}
+        run: go run cmd/main.go install
+      - name: Run build for VM OS=${{ matrix.vm_os }} TEST_NAME=${{ matrix.go_test_name }} on runner OS=${{ vars.USE_TART_MACOS_RUNNERS == 'true' && matrix.tart_runs_on || matrix.runs_on
+          }}
         id: packer_build
         shell: bash
         continue-on-error: true
         env:
-          RUN_INTEGRATION_TESTS: "1"
-          DEV_ALCHEMY_PACKER_START_ONLY: ${{ matrix.packer_start_only }}
+          RUN_INTEGRATION_TESTS: '1'
+          DEV_ALCHEMY_PACKER_START_ONLY: ${{ env.DEV_ALCHEMY_PACKER_START_ONLY }}
           DEV_ALCHEMY_PACKER_START_TIMEOUT: ${{ matrix.packer_start_timeout }}
           PACKER_LOG: 1
           PACKER_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
+        run: |-
           go mod vendor
           sudo -E make test-build-specific TEST_NAME=${{ matrix.go_test_name }}
-
       - name: Normalize managed app-data ownership after sudo build
         if: always() && contains(matrix.runs_on, 'macos')
-        run: |
+        run: |-
           if [ -d ./.dev-alchemy ]; then
             sudo chown -R "$(id -u):$(id -g)" ./.dev-alchemy
           fi
-
       - name: Run deploy smoke test TEST_NAME=${{ matrix.deploy_test_name }}
-        if: steps.packer_build.outcome == 'success' && matrix.packer_start_only != 'true'
+        if: steps.packer_build.outcome == 'success' && env.DEV_ALCHEMY_PACKER_START_ONLY != 'true'
         id: deploy_smoke
         shell: bash
         continue-on-error: true
         env:
-          RUN_INTEGRATION_TESTS: "1"
-          RUN_MACOS_UTM_DEPLOY_SMOKE: "1"
-        run: |
+          RUN_INTEGRATION_TESTS: '1'
+          RUN_MACOS_UTM_DEPLOY_SMOKE: '1'
+        run: |-
           df -h "$GITHUB_WORKSPACE" "$HOME"
           go test -timeout 60m -v ./pkg/deploy -run "^${{ matrix.deploy_test_name }}$"
-
       - name: Move .vnc.mp4 files to artifact directory
         if: contains(matrix.runs_on, 'macos')
-        run: |
+        run: |-
           mkdir -p artifact
           if [ -d ./.dev-alchemy/cache ]; then
             find ./.dev-alchemy/cache -name '*.vnc.mp4' -exec cp {} artifact/ \;
           fi
-
       - name: Upload Playwright diagnostics artifact (always)
         if: always() && contains(matrix.runs_on, 'macos')
         uses: actions/upload-artifact@v7
@@ -193,7 +315,6 @@ jobs:
           path: ./.dev-alchemy/cache/windows/playwright-diagnostics/**
           if-no-files-found: ignore
           retention-days: 7
-
       - name: Upload packer-qemu-${{ matrix.vm_os }}-${{ matrix.go_test_name }}.vnc.mp4 artifact (always)
         if: contains(matrix.runs_on, 'macos')
         uses: actions/upload-artifact@v7
@@ -201,7 +322,6 @@ jobs:
           name: packer-qemu-${{ matrix.vm_os }}-${{ matrix.go_test_name }}.vnc.mp4
           path: artifact/*.vnc.mp4
           retention-days: 1
-
       - name: Upload build cache files
         uses: ./.github/actions/upload-build-cache
         with:
@@ -212,9 +332,34 @@ jobs:
           ftp-username: ${{ secrets.BUILD_CACHE_FTP_USERNAME }}
           ftp-password: ${{ secrets.BUILD_CACHE_FTP_PASSWORD }}
           ftp-base-dir: /private
-
       - name: Fail if build or deploy smoke test failed
         if: always() && (steps.packer_build.outcome == 'failure' || steps.deploy_smoke.outcome == 'failure')
-        run: |
+        run: |-
           echo "Build and/or deploy smoke test failed. Failing workflow."
           exit 1
+    needs:
+      - select
+  report-scheduled-failure:
+    needs:
+      - select
+      - macos-full
+    if: always() && github.event_name == 'schedule' && (needs.select.result == 'failure' || needs.macos-full.result == 'failure')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Create or update scheduled macOS failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |-
+          set -euo pipefail
+          title='Scheduled macOS build failed'
+          body="Scheduled macOS validation failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          issue="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$title in:title" --json number,title --jq '.[] | select(.title == "Scheduled macOS build failed") | .number' | head -n 1)"
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi

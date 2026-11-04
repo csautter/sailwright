@@ -73,8 +73,12 @@ func TestBuildWorkflowsPassPackerStartOnlySettingsToBuildStep(t *testing.T) {
 				}
 
 				build := j.stepByID(t, jobID, "packer_build")
+				startOnly := "${{ matrix.packer_start_only }}"
+				if fileName == macOSBuildWorkflow && jobID == "macos-full" {
+					startOnly = "${{ env.DEV_ALCHEMY_PACKER_START_ONLY }}"
+				}
 				for envName, want := range map[string]string{
-					"DEV_ALCHEMY_PACKER_START_ONLY":    "${{ matrix.packer_start_only }}",
+					"DEV_ALCHEMY_PACKER_START_ONLY":    startOnly,
 					"DEV_ALCHEMY_PACKER_START_TIMEOUT": "${{ matrix.packer_start_timeout }}",
 				} {
 					if got := build.Env[envName]; got != want {
