@@ -24,6 +24,14 @@ ENV TFLINT_SHA256_AMD64="cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d
 # renovate: datasource=custom.tflint-linux-arm64 depName=terraform-linters/tflint version=0.64.0 versioning=semver
 ENV TFLINT_SHA256_ARM64="560da89aacf59389d4eb029730dd5b109b7288096c32f2726a0d9e783a5ea8eb"
 
+# renovate: datasource=github-releases depName=hashicorp/terraform versioning=hashicorp
+ENV TERRAFORM_VERSION="1.17.1"
+# renovate: datasource=custom.trivy-linux-amd64 depName=aquasecurity/trivy versioning=semver
+ENV TRIVY_VERSION="0.76.1"
+ENV TRIVY_SHA256_AMD64="c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0"
+# renovate: datasource=custom.trivy-linux-arm64 depName=aquasecurity/trivy version=0.76.1 versioning=semver
+ENV TRIVY_SHA256_ARM64="e174dff2a6dba5e3ae41f8d0537a6324405bd08132497340304c6b20e0f16a1f"
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ansible \
@@ -128,17 +136,19 @@ RUN . /etc/os-release \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         packer \
-        terraform \
+        "terraform=${TERRAFORM_VERSION}-1" \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://aquasecurity.github.io/trivy-repo/deb/public.key | \
-        gpg --dearmor --yes -o /usr/share/keyrings/trivy.gpg \
-    && chmod go+r /usr/share/keyrings/trivy.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
-        > /etc/apt/sources.list.d/trivy.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends trivy \
-    && rm -rf /var/lib/apt/lists/* \
+RUN arch="$(dpkg --print-architecture)" \
+    && case "${arch}" in \
+        amd64) trivy_arch="64bit"; trivy_sha256="${TRIVY_SHA256_AMD64}" ;; \
+        arm64) trivy_arch="ARM64"; trivy_sha256="${TRIVY_SHA256_ARM64}" ;; \
+        *) echo "Unsupported Trivy architecture: ${arch}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-${trivy_arch}.tar.gz" -o /tmp/trivy.tar.gz \
+    && printf '%s  %s\n' "${trivy_sha256}" /tmp/trivy.tar.gz | sha256sum -c - \
+    && tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy \
+    && rm -f /tmp/trivy.tar.gz \
     && trivy --version
 
 RUN go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0

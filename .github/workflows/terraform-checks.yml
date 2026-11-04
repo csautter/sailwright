@@ -1,0 +1,40 @@
+name: Terraform checks
+
+on:
+  pull_request:
+    paths:
+      - 'deployments/terraform/**'
+      - '.github/workflows/terraform-checks.yml'
+      - '.devcontainer/Dockerfile'
+      - 'renovate.json'
+      - 'Makefile'
+  push:
+    branches: [main]
+    paths:
+      - 'deployments/terraform/**'
+      - '.github/workflows/terraform-checks.yml'
+      - '.devcontainer/Dockerfile'
+      - 'renovate.json'
+      - 'Makefile'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install pinned tools
+        run: |
+          bash deployments/terraform/scripts/install-check-tools.sh "$RUNNER_TEMP/terraform-tools"
+          echo "$RUNNER_TEMP/terraform-tools" >> "$GITHUB_PATH"
+      - name: Check formatting, providers, validation and security
+        run: bash deployments/terraform/scripts/check.sh

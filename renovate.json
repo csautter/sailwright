@@ -218,6 +218,27 @@
       ],
       "depNameTemplate": "actions/runner",
       "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "Update the shared Terraform version pin",
+      "managerFilePatterns": [
+        "/(^|/)\\.devcontainer/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+versioning=(?<versioning>\\S+)\\s+ENV\\s+TERRAFORM_VERSION=\"(?<currentValue>[^\"]+)\""
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Update Trivy shared archive version and SHA256 pins",
+      "managerFilePatterns": [
+        "/(^|/)\\.devcontainer/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+versioning=(?<versioning>\\S+)\\s+ENV\\s+TRIVY_VERSION=\"(?<currentValue>[^\"]+)\"\\s+ENV\\s+TRIVY_SHA256_AMD64=\"(?<currentDigest>[a-f0-9]{64})\"",
+        "# renovate: datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+version=(?<currentValue>\\S+)\\s+versioning=(?<versioning>\\S+)\\s+ENV\\s+TRIVY_SHA256_ARM64=\"(?<currentDigest>[a-f0-9]{64})\""
+      ]
     }
   ],
   "customDatasources": {
@@ -301,6 +322,20 @@
     "virtio-win": {
       "defaultRegistryUrlTemplate": "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/",
       "format": "html"
+    },
+    "trivy-linux-amd64": {
+      "defaultRegistryUrlTemplate": "https://api.github.com/repos/aquasecurity/trivy/releases?per_page=100",
+      "format": "json",
+      "transformTemplates": [
+        "{ \"releases\": ( $githubReleases := $type($) = \"array\" ? $ : []; $append([], $filter($map($githubReleases, function($release) { $exists($release.tag_name) and $exists($release.assets) ? ( $version := $replace($release.tag_name, /^v/, \"\"); $asset := $release.assets[name = \"trivy_\" & $version & \"_Linux-64bit.tar.gz\"][0]; $type($asset.digest) = \"string\" ? { \"version\": $version, \"releaseTimestamp\": $release.published_at, \"sourceUrl\": $release.html_url, \"digest\": $replace($asset.digest, /^sha256:/, \"\"), \"isStable\": $not($release.prerelease) } : undefined ) : undefined }), function($item) { $exists($item) })) ) }"
+      ]
+    },
+    "trivy-linux-arm64": {
+      "defaultRegistryUrlTemplate": "https://api.github.com/repos/aquasecurity/trivy/releases?per_page=100",
+      "format": "json",
+      "transformTemplates": [
+        "{ \"releases\": ( $githubReleases := $type($) = \"array\" ? $ : []; $append([], $filter($map($githubReleases, function($release) { $exists($release.tag_name) and $exists($release.assets) ? ( $version := $replace($release.tag_name, /^v/, \"\"); $asset := $release.assets[name = \"trivy_\" & $version & \"_Linux-ARM64.tar.gz\"][0]; $type($asset.digest) = \"string\" ? { \"version\": $version, \"releaseTimestamp\": $release.published_at, \"sourceUrl\": $release.html_url, \"digest\": $replace($asset.digest, /^sha256:/, \"\"), \"isStable\": $not($release.prerelease) } : undefined ) : undefined }), function($item) { $exists($item) })) ) }"
+      ]
     }
   },
   "packageRules": [
@@ -370,6 +405,16 @@
         "terraform-linters/tflint"
       ],
       "groupName": "TFLint devcontainer artifacts"
+    },
+    {
+      "matchDatasources": [
+        "custom.trivy-linux-amd64",
+        "custom.trivy-linux-arm64"
+      ],
+      "matchPackageNames": [
+        "aquasecurity/trivy"
+      ],
+      "groupName": "Trivy shared artifacts"
     }
   ]
 }
