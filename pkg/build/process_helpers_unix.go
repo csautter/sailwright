@@ -242,3 +242,11 @@ func isTerminalInterruptExit(err error) bool {
 	}
 	return exitErr.ExitCode() == interruptExitCode
 }
+
+// requestProcessGroupStop asks a process group to stop with SIGTERM. A stopped process
+// (e.g. after SIGTTIN) only acts on SIGTERM once it continues, hence the SIGCONT.
+func requestProcessGroupStop(processGroupID int) {
+	if processGroupID > 0 && signalProcessGroup(processGroupID, syscall.SIGTERM) {
+		_ = signalProcessGroup(processGroupID, syscall.SIGCONT)
+	}
+}

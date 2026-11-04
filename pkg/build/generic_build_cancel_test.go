@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -62,4 +63,73 @@ func TestHelperProcessIgnoreTermination(t *testing.T) {
 	signal.Ignore(os.Interrupt, syscall.SIGTERM)
 	time.Sleep(60 * time.Second)
 	os.Exit(0)
+}
+
+func stubStdinIsTerminal(t *testing.T, terminal bool) {
+	t.Helper()
+	previous := stdinIsTerminal
+	stdinIsTerminal = func() bool { return terminal }
+	t.Cleanup(func() { stdinIsTerminal = previous })
+}
+
+func TestBuildStopGracePeriod(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		terminal bool
+		signals  []os.Signal
+		want     time.Duration
+	}{
+		{name: "Ctrl+C in a terminal", terminal: true, signals: []os.Signal{os.Interrupt}, want: interactiveBuildProcessGracePeriod},
+		{name: "SIGINT without a terminal (CI runner)", terminal: false, signals: []os.Signal{os.Interrupt}, want: buildProcessGracePeriod},
+		{name: "supervisor SIGTERM", terminal: true, signals: []os.Signal{syscall.SIGTERM}, want: buildProcessGracePeriod},
+		{name: "second Ctrl+C", terminal: true, signals: []os.Signal{os.Interrupt, os.Interrupt}, want: buildProcessGracePeriod},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubStdinIsTerminal(t, tc.terminal)
+			h, ctx := newInterruptHandler(context.Background(), nil, func(int) {})
+			for _, sig := range tc.signals {
+				h.escalate(sig)
+			}
+			if got := buildStopGracePeriod(ctx); got != tc.want {
+				t.Fatalf("expected %s, got %s", tc.want, got)
+			}
+		})
+	}
+	if got := buildStopGracePeriod(context.Background()); got != buildProcessGracePeriod {
+		t.Fatalf("expected %s without interrupt handling (timeouts), got %s", buildProcessGracePeriod, got)
+	}
+}
+
+func TestStopBuildProcessSecondInterruptShortensWait(t *testing.T) {
+	stubStdinIsTerminal(t, true)
+	execPath, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(execPath, "-test.run=^TestHelperProcessIgnoreTermination$", "--")
+	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	configureCommandForCleanup(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	h, ctx := newInterruptHandler(context.Background(), nil, func(int) {})
+	h.escalate(os.Interrupt)
+	start := time.Now()
+	stopped := make(chan error, 1)
+	go func() { stopped <- stopBuildProcess(ctx, cmd, commandProcessGroupID(cmd), done) }()
+
+	time.Sleep(500 * time.Millisecond)
+	h.escalate(os.Interrupt)
+
+	select {
+	case <-stopped:
+		if elapsed := time.Since(start); elapsed >= interactiveBuildProcessGracePeriod {
+			t.Fatalf("a second Ctrl+C must shorten the wait, took %s", elapsed)
+		}
+	case <-time.After(interactiveBuildProcessGracePeriod):
+		t.Fatal("stopBuildProcess still waited for the full interactive grace period")
+	}
 }

@@ -42,8 +42,12 @@ successful build or pull, `incomplete` while a build runs or after an interrupte
 one, `missing`, and `unverified` for artifacts without a completion marker (for
 example built by an older sailwright version). Builds skip `exists` and
 `unverified` artifacts; rebuild an `unverified` one with `--no-cache` if it is
-broken. Ctrl+C stops all running builds and downloads, a second Ctrl+C skips the
-VNC video post-processing, and a third one exits immediately.
+broken. Ctrl+C stops all running builds and downloads and gives Packer up to 30
+seconds to remove its VM; a second Ctrl+C cuts that wait to 3 seconds and skips the
+VNC video post-processing, and a third one exits immediately. SIGTERM (for example
+a gateway `job_cancel`) and Ctrl+C without a terminal (for example a cancelled CI
+job) only allow 3 seconds. A build that already finished successfully when Ctrl+C
+arrives keeps its artifacts.
 
 Use `--help` on the root command or any subcommand to inspect supported flags and usage details:
 

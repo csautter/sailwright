@@ -34,6 +34,10 @@ type buildCompletionDecision struct {
 // SIGTERM before it is killed. It stays well below the 10 s the agent gateway waits.
 const buildProcessGracePeriod = 3 * time.Second
 
+// interactiveBuildProcessGracePeriod is the grace period after a Ctrl+C typed in a
+// terminal, long enough for Packer to unregister and remove its VM.
+const interactiveBuildProcessGracePeriod = 30 * time.Second
+
 // RunBuildScript runs a build script with the managed environment plus extraEnv.
 // Cancelling ctx stops dependency downloads and the build's whole process group; the
 // staged artifact is then discarded, so the final artifact path never holds a partial
@@ -129,11 +133,20 @@ func RunBuildScript(ctx context.Context, config VirtualMachineConfig, executable
 	startVncScreenCaptureOnSupportedHost(buildCtx, config, timeout, vnc_interrupt_retry_chan, &vnc_recording_config, vnc_snapshot_done, auxiliaryProcessSilent)
 
 	var waitErr error
+	// stopped tells whether this process asked the build to stop. A build that exited
+	// on its own with status 0 is complete, even if an interrupt arrived meanwhile.
+	stopped := false
 	select {
 	case waitErr = <-done:
 	case <-buildCtx.Done():
-		log.Printf("Stopping build process group: %v", context.Cause(buildCtx))
-		waitErr = stopBuildProcess(cmd, processGroupID, done, buildProcessGracePeriod)
+		select {
+		case waitErr = <-done:
+			// The build finished at the same moment; select picked the context.
+		default:
+			stopped = true
+			log.Printf("Stopping build process group: %v", context.Cause(buildCtx))
+			waitErr = stopBuildProcess(ctx, cmd, processGroupID, done)
+		}
 	}
 	// Take the terminal back right away, so that Ctrl+C reaches this process again
 	// during cleanup and post-processing.
@@ -148,7 +161,7 @@ func RunBuildScript(ctx context.Context, config VirtualMachineConfig, executable
 	}
 
 	stopVncScreenCaptureOnSupportedHost(vnc_interrupt_retry_chan)
-	decision := determineBuildCompletionDecision(waitErr, buildCtx.Err(), Interrupted(ctx))
+	decision := determineBuildCompletionDecision(waitErr, stopped, buildCtx.Err(), Interrupted(ctx))
 
 	// Settle the artifacts before post-processing: a supervisor that kills this process
 	// during the VNC video post-processing must not find a promoted partial artifact.
@@ -168,6 +181,8 @@ func RunBuildScript(ctx context.Context, config VirtualMachineConfig, executable
 	}
 
 	switch {
+	case decision.err == nil && Interrupted(ctx):
+		log.Printf("Script finished successfully before the interrupt took effect; its artifacts were kept.")
 	case decision.err == nil:
 		log.Printf("Script finished successfully.")
 	case decision.interrupted:
@@ -180,24 +195,47 @@ func RunBuildScript(ctx context.Context, config VirtualMachineConfig, executable
 	return decision.err
 }
 
-// stopBuildProcess stops a cancelled build and returns its wait error. On Unix the
-// build's process group gets SIGTERM and SIGKILL after the grace period. Windows has
-// no process group to signal, so the build process itself is killed once the grace
-// period is over; without this a timed-out build would wait for Packer forever.
-func stopBuildProcess(cmd *exec.Cmd, processGroupID int, done <-chan error, gracePeriod time.Duration) error {
-	terminateProcessGroup(processGroupID, gracePeriod)
+// stopBuildProcess stops a cancelled build and returns its wait error. The build gets
+// a polite stop request (SIGTERM to its process group on Unix; on Windows Ctrl+C
+// reaches Packer through the console) and is killed once the grace period is over:
+// without the kill a timed-out build would wait for Packer forever on Windows. The
+// grace period is longer after a Ctrl+C in a terminal, so that Packer can remove its
+// VM; a second Ctrl+C or a supervisor signal (SIGTERM) shortens it again.
+func stopBuildProcess(ctx context.Context, cmd *exec.Cmd, processGroupID int, done <-chan error) error {
+	gracePeriod := buildStopGracePeriod(ctx)
+	requestProcessGroupStop(processGroupID)
 	timer := time.NewTimer(gracePeriod)
 	defer timer.Stop()
-	select {
-	case err := <-done:
-		return err
-	case <-timer.C:
+	hurry := postProcessingContext(ctx).Done()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-hurry:
+			hurry = nil
+			if gracePeriod > buildProcessGracePeriod {
+				log.Printf("Shortening the wait for the build to stop to %s", buildProcessGracePeriod)
+				timer.Reset(buildProcessGracePeriod)
+			}
+		case <-timer.C:
+			log.Printf("Build did not stop in time; killing it")
+			killProcessGroup(processGroupID)
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			return <-done
+		}
 	}
-	if cmd.Process != nil {
-		log.Printf("Build process %d did not stop within %s; killing it", cmd.Process.Pid, gracePeriod)
-		_ = cmd.Process.Kill()
+}
+
+// buildStopGracePeriod returns how long a stopping build may take: longer after a
+// Ctrl+C typed in a terminal, short for timeouts and supervisor signals, whose sender
+// (e.g. the agent gateway) kills this process after a few seconds.
+func buildStopGracePeriod(ctx context.Context) time.Duration {
+	if h := interruptHandlerFromContext(ctx); h != nil && h.interactiveInterrupt() {
+		return interactiveBuildProcessGracePeriod
 	}
-	return <-done
+	return buildProcessGracePeriod
 }
 
 // buildContextError returns the error for a build that must not start or continue.
@@ -211,7 +249,18 @@ func buildContextError(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func determineBuildCompletionDecision(waitErr error, ctxErr error, interrupted bool) buildCompletionDecision {
+// determineBuildCompletionDecision decides how a build ended. stopped tells whether
+// sailwright asked the build process to stop (cancellation, timeout or interrupt).
+func determineBuildCompletionDecision(waitErr error, stopped bool, ctxErr error, interrupted bool) buildCompletionDecision {
+	if waitErr == nil && !stopped {
+		// The build exited 0 on its own before it was asked to stop, so its artifacts
+		// are complete; an interrupt that arrived meanwhile must not discard them.
+		// Post-processing still runs, a further Ctrl+C skips it.
+		return buildCompletionDecision{
+			runFfmpeg:    true,
+			buildSuccess: true,
+		}
+	}
 	if interrupted {
 		// Keep the VNC video of an interrupted build; a second Ctrl+C skips it.
 		return buildCompletionDecision{

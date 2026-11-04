@@ -39,8 +39,10 @@ type interruptHandlerKey struct{}
 // interruptHandler turns repeated interrupt signals into escalating cancellation for
 // everything that runs below one context: builds, downloads and their child processes.
 type interruptHandler struct {
-	mu          sync.Mutex
-	stage       int
+	mu    sync.Mutex
+	stage int
+	// supervisor is set once a signal other than Ctrl+C arrived (SIGTERM, SIGHUP, ...).
+	supervisor  bool
 	cancelBuild context.CancelCauseFunc
 	cancelPost  context.CancelCauseFunc
 	postCtx     context.Context
@@ -136,6 +138,9 @@ func Interrupted(ctx context.Context) bool {
 func (h *interruptHandler) escalate(sig os.Signal) {
 	h.mu.Lock()
 	previous := h.stage
+	if sig != os.Interrupt {
+		h.supervisor = true
+	}
 	if sig == os.Interrupt {
 		h.stage++
 	} else {
@@ -163,6 +168,21 @@ func (h *interruptHandler) escalate(sig os.Signal) {
 		killTrackedProcessGroups()
 		h.exit(interruptExitCode)
 	}
+}
+
+// stdinIsTerminal reports whether this process reads from a terminal, i.e. a Ctrl+C
+// was typed by a person rather than sent by a CI runner or another supervisor.
+var stdinIsTerminal = func() bool {
+	info, err := os.Stdin.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+// interactiveInterrupt reports whether the build was stopped by a single Ctrl+C typed
+// in a terminal, so a stopping build may take longer to clean up.
+func (h *interruptHandler) interactiveInterrupt() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.stage == interruptStageCancel && !h.supervisor && stdinIsTerminal()
 }
 
 func (h *interruptHandler) printf(format string, args ...any) {

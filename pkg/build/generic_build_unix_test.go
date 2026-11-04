@@ -51,6 +51,7 @@ func readProcessGroupID(t *testing.T, path string) int {
 
 func TestRunBuildScriptCancelStopsBuildAndDiscardsArtifact(t *testing.T) {
 	root := useTestDirectories(t)
+	stubStdinIsTerminal(t, false)
 	// The trap mimics Packer, which ignores the first SIGTERM while it cleans up.
 	config, args, pgidFile := fakeBuildConfig(t, root, `trap '' TERM; sleep 300 & wait`)
 

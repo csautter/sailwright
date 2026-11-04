@@ -49,7 +49,7 @@ func TestBuildScriptTimeoutAllowsFiveHourBuilds(t *testing.T) {
 }
 
 func TestDetermineBuildCompletionDecisionSuccess(t *testing.T) {
-	decision := determineBuildCompletionDecision(nil, nil, false)
+	decision := determineBuildCompletionDecision(nil, false, nil, false)
 	if decision.err != nil {
 		t.Fatalf("expected nil error, got %v", decision.err)
 	}
@@ -63,7 +63,7 @@ func TestDetermineBuildCompletionDecisionSuccess(t *testing.T) {
 
 func TestDetermineBuildCompletionDecisionFailureKeepsFfmpeg(t *testing.T) {
 	waitErr := errors.New("build failed")
-	decision := determineBuildCompletionDecision(waitErr, nil, false)
+	decision := determineBuildCompletionDecision(waitErr, false, nil, false)
 	if !errors.Is(decision.err, waitErr) {
 		t.Fatalf("expected wait error to be returned, got %v", decision.err)
 	}
@@ -76,7 +76,7 @@ func TestDetermineBuildCompletionDecisionFailureKeepsFfmpeg(t *testing.T) {
 }
 
 func TestDetermineBuildCompletionDecisionSkipsFfmpegOnContextCancellation(t *testing.T) {
-	decision := determineBuildCompletionDecision(nil, context.Canceled, false)
+	decision := determineBuildCompletionDecision(nil, true, context.Canceled, false)
 	if !errors.Is(decision.err, context.Canceled) {
 		t.Fatalf("expected context cancellation, got %v", decision.err)
 	}
@@ -86,7 +86,7 @@ func TestDetermineBuildCompletionDecisionSkipsFfmpegOnContextCancellation(t *tes
 }
 
 func TestDetermineBuildCompletionDecisionKeepsFfmpegOnInterrupt(t *testing.T) {
-	decision := determineBuildCompletionDecision(errors.New("exit status 1"), context.Canceled, true)
+	decision := determineBuildCompletionDecision(errors.New("exit status 1"), true, context.Canceled, true)
 	if !errors.Is(decision.err, ErrInterrupted) {
 		t.Fatalf("expected interrupt error, got %v", decision.err)
 	}
@@ -98,11 +98,20 @@ func TestDetermineBuildCompletionDecisionKeepsFfmpegOnInterrupt(t *testing.T) {
 	}
 }
 
-func TestDetermineBuildCompletionDecisionInterruptWinsOverSuccess(t *testing.T) {
-	// The build may exit 0 although Ctrl+C was pressed; it must not be promoted.
-	decision := determineBuildCompletionDecision(nil, nil, true)
+func TestDetermineBuildCompletionDecisionKeepsBuildThatFinishedBeforeInterrupt(t *testing.T) {
+	// The build exited 0 on its own; a Ctrl+C right afterwards must not discard it.
+	decision := determineBuildCompletionDecision(nil, false, context.Canceled, true)
+	if !decision.buildSuccess || decision.err != nil {
+		t.Fatalf("expected the finished build to be kept, got %+v", decision)
+	}
+}
+
+func TestDetermineBuildCompletionDecisionDiscardsStoppedBuildThatExitedZero(t *testing.T) {
+	// A build that exits 0 after sailwright asked it to stop may be incomplete (e.g. a
+	// script that ignores the failure of the Packer it ran); it must not be promoted.
+	decision := determineBuildCompletionDecision(nil, true, context.Canceled, true)
 	if decision.buildSuccess || decision.err == nil {
-		t.Fatalf("expected interrupted build to fail, got %+v", decision)
+		t.Fatalf("expected the stopped build to fail, got %+v", decision)
 	}
 }
 

@@ -36,3 +36,7 @@ func newBuildCommand(executable string, args []string, detached bool) (*exec.Cmd
 func isTerminalInterruptExit(err error) bool {
 	return false
 }
+
+// requestProcessGroupStop does nothing on Windows: there is no process group to signal,
+// and a Ctrl+C in the console reaches the build directly.
+func requestProcessGroupStop(processGroupID int) {}
