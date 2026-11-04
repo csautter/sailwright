@@ -22,6 +22,7 @@ GATEWAY_RELEASE_ASSET_BASENAME = $(GATEWAY_BINARY_NAME)_$(PACKAGE_VERSION)_$(GOO
 	build-gateway-target package-gateway-target clean-dist \
 	test-build-runner test-build test-deploy test-provision test-deploy-windows-hyperv test-clean-testcache \
 	test-build-integration test-build-specific test-macos-tart-runner test-gh-runner-func-request test-gh-runner-func-status test-gh-runner-func-delete \
+	test-terraform check-terraform deploy-summary-terraform-azure-gh-runner \
 	deploy-plan-terraform-azure-gh-runner deploy-apply-terraform-azure-gh-runner deploy-az-func-app gosec quickstart demo demo-gif demo-build-video
 
 # Quick-start automation: run the full install->build->create->start->provision
@@ -193,11 +194,20 @@ test-gh-runner-func-delete:
 	TERRAGRUNT_OUTPUT_DIR="$(TERRAGRUNT_OUTPUT_DIR)" \
 	bash ./scripts/gh-runner-func/test-endpoints.sh --delete-resource-group
 
+test-terraform:
+	python3 -m unittest discover -s deployments/terraform/scripts -p 'test_*.py'
+
+check-terraform:
+	bash deployments/terraform/scripts/check.sh
+
 deploy-plan-terraform-azure-gh-runner:
-	cd deployments/terraform/env/azure_dev/azure_gh_runner && terragrunt plan -out tf.plan
+	python3 deployments/terraform/scripts/local_plan.py plan
+
+deploy-summary-terraform-azure-gh-runner:
+	@python3 deployments/terraform/scripts/local_plan.py summary
 
 deploy-apply-terraform-azure-gh-runner:
-	cd deployments/terraform/env/azure_dev/azure_gh_runner && terragrunt apply tf.plan
+	python3 deployments/terraform/scripts/local_plan.py apply
 
 deploy-az-func-app:
 	# Usage:

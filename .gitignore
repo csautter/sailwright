@@ -82,3 +82,7 @@ test/e2e/out/
 .devcontainer/.generated/
 .devcontainer/mounts.local
 .devcontainer/local/
+
+# Saved infrastructure plans and local provenance (may contain sensitive data)
+tf.plan
+tf.plan.*

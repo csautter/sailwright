@@ -36,5 +36,7 @@ jobs:
         run: |
           bash deployments/terraform/scripts/install-check-tools.sh "$RUNNER_TEMP/terraform-tools"
           echo "$RUNNER_TEMP/terraform-tools" >> "$GITHUB_PATH"
+      - name: Test local plan safeguards
+        run: make test-terraform
       - name: Check formatting, providers, validation and security
         run: bash deployments/terraform/scripts/check.sh
