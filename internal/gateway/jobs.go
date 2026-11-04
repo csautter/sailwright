@@ -128,6 +128,7 @@ type job struct {
 	// the job's execute goroutine reads or writes it.
 	redactor *Redactor
 	// snapshotDir is the job's bundle snapshot, removed before the job is reported done.
+	// Only the job's execute goroutine reads or writes it after Submit.
 	snapshotDir string
 }
 
@@ -296,9 +297,12 @@ func (m *JobManager) Submit(spec JobSpec) (JobView, error) {
 func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 	id := j.snapshotView().ID
 	defer func() {
-		// finish already released the job; this only matters if execute returned
-		// without calling it (e.g. a panic), so the slot never stays blocked.
-		m.release(j)
+		// Defensive: every path calls finish today, which already released the job.
+		// This keeps the slot from leaking if a future early return skips finish.
+		m.removeJobSnapshot(j)
+		m.mu.Lock()
+		m.releaseSlotLocked(id)
+		m.mu.Unlock()
 		close(j.finished)
 		if m.onFinish != nil {
 			m.onFinish()
@@ -443,9 +447,11 @@ func (m *JobManager) finish(j *job, state JobState, code *int, message string, s
 		redactor = j.redactor
 	}
 	message = redactor.String(message)
-	// A job reported as done must have released its slot and snapshot: agents poll
-	// job_status and submit the next job right away.
-	m.release(j)
+	// A job reported as done must have released its snapshot and slot: agents poll
+	// job_status and submit the next job right away. The (possibly slow) removal runs
+	// first; the terminal state and the free slot are then published together, so no
+	// one sees a done job holding the slot or a free slot next to an unfinished job.
+	m.removeJobSnapshot(j)
 	m.mu.Lock()
 	j.update(func(v *JobView) {
 		v.State = state
@@ -453,6 +459,7 @@ func (m *JobManager) finish(j *job, state JobState, code *int, message string, s
 		v.Error = message
 		v.Finished = finished
 	})
+	m.releaseSlotLocked(j.snapshotView().ID)
 	m.mu.Unlock()
 	view := j.snapshotView()
 	var duration int64
@@ -463,18 +470,26 @@ func (m *JobManager) finish(j *job, state JobState, code *int, message string, s
 	fmt.Fprintf(m.console, "job %s %s\n", view.ID, state)
 }
 
-// release removes the job's snapshot and frees the active slot. It is idempotent.
-func (m *JobManager) release(j *job) {
-	if dir := j.snapshotDir; dir != "" {
-		_ = m.removeSnapshot(dir)
-		j.snapshotDir = ""
+// removeJobSnapshot deletes the job's bundle snapshot once. A failed removal is
+// reported; the leftover is cleaned up when the gateway starts next.
+func (m *JobManager) removeJobSnapshot(j *job) {
+	dir := j.snapshotDir
+	if dir == "" {
+		return
 	}
-	id := j.snapshotView().ID
-	m.mu.Lock()
+	j.snapshotDir = ""
+	if err := m.removeSnapshot(dir); err != nil {
+		id := j.snapshotView().ID
+		fmt.Fprintf(m.console, "job %s: could not remove snapshot %s: %v\n", id, dir, err)
+		m.record(AuditEvent{Event: "snapshot_remove_failed", JobID: id, Error: err.Error()})
+	}
+}
+
+// releaseSlotLocked frees the active slot if the job holds it. m.mu must be held.
+func (m *JobManager) releaseSlotLocked(id string) {
 	if m.active == id {
 		m.active = ""
 	}
-	m.mu.Unlock()
 }
 
 // Get returns a job view.
