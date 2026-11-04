@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"text/tabwriter"
 
@@ -38,7 +39,10 @@ type vmListingTargetJSON struct {
 	// it rather than the display text of the "create" column.
 	Exists *bool `json:"exists,omitempty"`
 	// Address stays null: address discovery is performed by `vm info`, not listings.
-	Address *string `json:"address"`
+	Address           *string `json:"address"`
+	NetworkMode       string  `json:"network_mode"`
+	NetworkDetail     string  `json:"network_detail"`
+	CredentialsOrigin string  `json:"credentials_origin"`
 }
 
 func addListJSONFlag(command *cobra.Command) {
@@ -113,7 +117,13 @@ func writeVirtualMachineCombinationJSON(
 		if existsOf != nil {
 			exists = existsOf(vm)
 		}
+		network, origin, private, err := guestSecurityInfo(vm, false)
+		if err != nil {
+			return err
+		}
+		warnGuestSecurity(os.Stderr, vm, network, origin, private)
 		listing.Targets = append(listing.Targets, vmListingTargetJSON{
+			NetworkMode: network.Mode, NetworkDetail: network.Detail, CredentialsOrigin: origin,
 			OS:     vm.OS,
 			Type:   vm.UbuntuType,
 			Arch:   listingArch(vm.Arch),
@@ -149,13 +159,18 @@ func writeVirtualMachineTable(
 	rowBuilder vmTableRowBuilder,
 ) error {
 	tw := tabwriter.NewWriter(writer, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, strings.Join(headers, "\t"))
+	fmt.Fprintln(tw, strings.Join(append(append([]string{}, headers...), "NET", "CREDS"), "\t"))
 	for _, vm := range vms {
 		row, err := rowBuilder(vm)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(tw, strings.Join(row, "\t"))
+		network, origin, private, err := guestSecurityInfo(vm, false)
+		if err != nil {
+			return err
+		}
+		warnGuestSecurity(os.Stderr, vm, network, origin, private)
+		fmt.Fprintln(tw, strings.Join(append(row, network.Mode, origin), "\t"))
 	}
 	return tw.Flush()
 }

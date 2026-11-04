@@ -320,6 +320,11 @@ var provisionListCmd = &cobra.Command{
 }
 
 func runProvision(vm alchemy_build.VirtualMachineConfig, roles []string, options alchemy_provision.ProvisionOptions) error {
+	if isProvisionSupported(vm) {
+		if err := guardGuestSecurity(vm, false, provisionAllowInsecureCredentials); err != nil {
+			return err
+		}
+	}
 	path, cleanup, err := alchemy_provision.PrepareSelection(roles, options.PlaybookPath)
 	if err != nil {
 		return err
@@ -334,6 +339,7 @@ func runProvision(vm alchemy_build.VirtualMachineConfig, roles []string, options
 
 func init() {
 	rootCmd.AddCommand(provisionCmd)
+	addGuestSecurityFlag(provisionCmd, &provisionAllowInsecureCredentials)
 	provisionCmd.AddCommand(provisionListCmd)
 	addListJSONFlag(provisionListCmd)
 

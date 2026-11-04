@@ -128,11 +128,17 @@ var startListCmd = &cobra.Command{
 }
 
 func runStart(vm alchemy_build.VirtualMachineConfig) error {
+	if isStartSupported(vm) {
+		if err := guardGuestSecurity(vm, false, startAllowInsecureCredentials); err != nil {
+			return err
+		}
+	}
 	return alchemy_deploy.RunStart(vm)
 }
 
 func init() {
 	rootCmd.AddCommand(startCmd)
+	addGuestSecurityFlag(startCmd, &startAllowInsecureCredentials)
 	startCmd.AddCommand(startListCmd)
 	addListJSONFlag(startListCmd)
 

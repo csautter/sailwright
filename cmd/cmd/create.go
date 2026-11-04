@@ -180,6 +180,12 @@ func runDeploy(vm alchemy_build.VirtualMachineConfig) error {
 		return err
 	}
 
+	if isCreateSupported(vm) {
+		if err := guardGuestSecurity(vm, true, createAllowInsecureCredentials); err != nil {
+			return err
+		}
+	}
+
 	switch vm.VirtualizationEngine {
 	case alchemy_build.VirtualizationEngineUtm:
 		return alchemy_deploy.RunUtmDeployOnMacOS(vm)
@@ -224,6 +230,7 @@ func createCommandArguments(vm alchemy_build.VirtualMachineConfig) string {
 
 func init() {
 	rootCmd.AddCommand(createCmd)
+	addGuestSecurityFlag(createCmd, &createAllowInsecureCredentials)
 	createCmd.AddCommand(createListCmd)
 	addListJSONFlag(createListCmd)
 
