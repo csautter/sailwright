@@ -226,6 +226,8 @@ class DeleteResourceGroupTest(unittest.TestCase):
 
 
 REQUEST_RUNNER_ENV = {
+    "ALLOWED_TENANT_ID": "tenant",
+    "ALLOWED_AUDIENCE": "api://broker",
     "VAULT_URL": "https://vault",
     "SUBSCRIPTION_ID": "sub",
     "LOCATION": "westeurope",
@@ -324,7 +326,7 @@ class RequestRunnerTest(unittest.TestCase):
 
     def test_spot_fallback_drops_spot_settings(self):
         self.compute.virtual_machines.begin_create_or_update.side_effect = [
-            Exception("no capacity"),
+            function_app.HttpResponseError("no capacity"),
             mock.DEFAULT,
         ]
 
@@ -528,7 +530,7 @@ class RequestRunnerTest(unittest.TestCase):
         response = self._request_runner()
         self.assertEqual(response.status_code, 504)
         self.assertEqual(json.loads(response.body)["stage"], "network")
-        poller.result.assert_called_once_with(timeout=12)
+        poller.result.assert_called_once_with(timeout=20)
         self.network.subnets.begin_create_or_update.assert_not_called()
         self.compute.virtual_machines.begin_create_or_update.assert_not_called()
 
@@ -577,6 +579,204 @@ class RequestRunnerTest(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertRegex(body["vm"], r"^gh-runner-vm-[a-f0-9]{32}$")
         self.assertEqual(body["resource-group"], "gh-runner-tmp-1-hv")
+
+    def test_vm_submission_does_not_start_a_background_poller(self):
+        self.assertEqual(self._request_runner().status_code, 202)
+        operation = self.compute.virtual_machines.begin_create_or_update
+        self.assertIs(operation.call_args.kwargs["polling"], False)
+        operation.return_value.result.assert_not_called()
+        operation.return_value.wait.assert_not_called()
+
+    def test_spot_failure_logs_arm_code_and_failed_fallback_is_mapped(self):
+        self.compute.virtual_machines.begin_create_or_update.side_effect = [
+            HttpResponseError(
+                "private-secret", 400, "OverconstrainedAllocationRequest"
+            ),
+            HttpResponseError("private-secret", 503, "AllocationFailed"),
+        ]
+        with (
+            mock.patch.dict(os.environ, {"VM_USE_SPOT": "true"}),
+            self.assertLogs(level="WARNING") as logs,
+        ):
+            response = self._request_runner()
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("OverconstrainedAllocationRequest", str(logs.output))
+        self.assertIn("AllocationFailed", str(logs.output))
+        self.assertNotIn("private-secret", response.body + str(logs.output))
+        for call in self.compute.virtual_machines.begin_create_or_update.call_args_list:
+            self.assertIs(call.kwargs["polling"], False)
+
+    def test_missing_auth_config_returns_setting_names(self):
+        request = _request({})
+        with (
+            mock.patch.object(
+                function_app,
+                "require_authenticated_caller",
+                return_value=(False, "server misconfiguration"),
+            ),
+            mock.patch.dict(os.environ, {"ALLOWED_AUDIENCE": ""}),
+        ):
+            response = function_app.request_runner(request)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.body)["missing"], ["ALLOWED_AUDIENCE"])
+
+    def test_valid_correlation_propagates_through_all_stages(self):
+        request = _request({"repo": "owner/repo", "resource-group": "gh-runner-tmp-ci"})
+        request.headers["X-Correlation-ID"] = "ci-run-123"
+        with (
+            mock.patch.object(
+                function_app, "require_authenticated_caller", return_value=(True, "")
+            ),
+            self.assertLogs(level="INFO") as logs,
+        ):
+            response = function_app.request_runner(request)
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.headers["X-Correlation-ID"], "ci-run-123")
+        events = [json.loads(record.getMessage()) for record in logs.records]
+        self.assertTrue(
+            all(event["correlation-id"] == "ci-run-123" for event in events)
+        )
+        self.assertTrue(
+            {"auth", "input", "pat", "github-token", "network", "vm"}.issubset(
+                {event["stage"] for event in events}
+            )
+        )
+
+    def test_network_wait_respects_remaining_request_budget(self):
+        poller = self.network.virtual_networks.begin_create_or_update.return_value
+        poller.done.return_value = False
+        with mock.patch.object(function_app, "monotonic", side_effect=[0, 170]):
+            response = self._request_runner()
+        self.assertEqual(response.status_code, 504)
+        poller.result.assert_called_once_with(timeout=0)
+        self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+
+
+class RunnerStatusTest(unittest.TestCase):
+    def setUp(self):
+        self.compute = mock.Mock()
+        self.resources = mock.Mock()
+        self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
+        function_app._runner_config.cache_clear()
+        self.addCleanup(function_app._runner_config.cache_clear)
+        for patch in (
+            mock.patch.object(
+                function_app, "ComputeManagementClient", return_value=self.compute
+            ),
+            mock.patch.object(
+                function_app, "ResourceManagementClient", return_value=self.resources
+            ),
+            mock.patch.object(function_app, "DefaultAzureCredential"),
+            mock.patch.dict(os.environ, REQUEST_RUNNER_ENV),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def _status(self, state="Creating", codes=()):
+        self.compute.virtual_machines.get.return_value = types.SimpleNamespace(
+            provisioning_state=state,
+            instance_view=types.SimpleNamespace(
+                statuses=[
+                    types.SimpleNamespace(code=code, message="private-secret")
+                    for code in codes
+                ]
+            ),
+        )
+        return function_app.handle_runner_status(
+            _request({"resource-group": "gh-runner-tmp-ci", "vm": "runner-123"})
+        )
+
+    def test_observes_late_provisioning_failure_after_acceptance(self):
+        response = self._status()
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(json.loads(response.body)["status"], "provisioning")
+        self.assertEqual(response.headers["Retry-After"], "10")
+        with self.assertLogs(level="ERROR") as logs:
+            response = self._status("Failed", ("ProvisioningState/failed",))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.body)["status"], "failed")
+        self.assertIn("ProvisioningState/failed", str(logs.output))
+        self.assertNotIn("private-secret", response.body + str(logs.output))
+        self.compute.virtual_machines.get.assert_called_with(
+            "gh-runner-tmp-ci", "runner-123", expand="instanceView"
+        )
+
+    def test_success_and_eviction_after_success(self):
+        response = self._status("Succeeded", ("PowerState/running",))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.body)["status"], "succeeded")
+        for code in (
+            "PowerState/deallocated",
+            "PowerState/stopped",
+            "ProvisioningState/failed",
+        ):
+            with self.subTest(code=code):
+                self.assertEqual(
+                    json.loads(self._status("Succeeded", (code,)).body)["status"],
+                    "failed",
+                )
+
+    def test_failed_and_canceled_without_instance_view(self):
+        for state in ("Failed", "Canceled", "Cancelled"):
+            self.assertEqual(json.loads(self._status(state).body)["status"], "failed")
+        self.compute.virtual_machines.get.return_value = types.SimpleNamespace(
+            provisioning_state="Succeeded", instance_view=None
+        )
+        response = function_app.handle_runner_status(
+            _request({"resource-group": "gh-runner-tmp-ci", "vm": "runner"})
+        )
+        self.assertEqual(json.loads(response.body)["status"], "succeeded")
+
+    def test_missing_vm_or_group(self):
+        for operation in (
+            self.resources.resource_groups.get,
+            self.compute.virtual_machines.get,
+        ):
+            with self.subTest(operation=operation):
+                operation.side_effect = ResourceNotFoundError()
+                response = self._status()
+                self.assertEqual(response.status_code, 404)
+                self.assertEqual(json.loads(response.body)["status"], "not-found")
+                operation.side_effect = None
+
+    def test_ownership_is_checked_before_reading_vm(self):
+        self.resources.resource_groups.get.return_value = _resource_group({})
+        self.assertEqual(self._status().status_code, 403)
+        self.compute.virtual_machines.get.assert_not_called()
+
+    def test_malformed_input_and_names(self):
+        for body in (
+            {},
+            [],
+            {"resource-group": "production", "vm": "runner"},
+            {"resource-group": "gh-runner-tmp-ci", "vm": "../runner"},
+        ):
+            response = function_app.handle_runner_status(_request(body))
+            self.assertEqual(response.status_code, 400)
+        self.resources.resource_groups.get.assert_not_called()
+
+    def test_status_query_failure_is_mapped_and_code_is_logged(self):
+        self.compute.virtual_machines.get.side_effect = HttpResponseError(
+            "private-secret", 500, "InternalOperationError"
+        )
+        with self.assertLogs(level="ERROR") as logs:
+            response = self._status()
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("InternalOperationError", str(logs.output))
+        self.assertNotIn("private-secret", response.body + str(logs.output))
+
+    def test_status_authentication(self):
+        with mock.patch.object(
+            function_app, "require_authenticated_caller", return_value=(False, "denied")
+        ):
+            self.assertEqual(function_app.runner_status(_request({})).status_code, 401)
+        self.resources.resource_groups.get.assert_not_called()
+
+    def test_status_only_requires_subscription_configuration(self):
+        with mock.patch.dict(os.environ, {"VAULT_URL": "", "SUBSCRIPTION_ID": ""}):
+            response = self._status()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.body)["missing"], ["SUBSCRIPTION_ID"])
 
 
 if __name__ == "__main__":

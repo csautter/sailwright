@@ -5,7 +5,7 @@ import os
 import re
 from functools import lru_cache
 from pathlib import Path
-from time import sleep
+from time import monotonic, sleep
 from uuid import uuid4
 
 import azure.functions as func
@@ -198,8 +198,11 @@ _SDK_OPTIONS = dict(
     read_timeout=5,
     retry_total=0,
 )
-_NETWORK_WAIT_SECONDS = 12
+_NETWORK_WAIT_SECONDS = 20
+_REQUEST_BUDGET_SECONDS = 180
 _REQUIRED_SETTINGS = (
+    "ALLOWED_TENANT_ID",
+    "ALLOWED_AUDIENCE",
     "VAULT_URL",
     "SUBSCRIPTION_ID",
     "LOCATION",
@@ -255,27 +258,31 @@ def _log_stage(context, event, level=logging.INFO, **fields):
     logging.log(level, json.dumps({**context, "event": event, **fields}))
 
 
-def _runner_response(context, status, message, **fields):
+def _runner_response(context, status_code, message, **fields):
     retry_after = fields.pop("retry_after", None)
     headers = {"X-Correlation-ID": context["correlation-id"]}
     if retry_after is not None:
         headers["Retry-After"] = str(retry_after)
     return func.HttpResponse(
         json.dumps({"message": message, **context, **fields}),
-        status_code=status,
+        status_code=status_code,
         mimetype="application/json",
         headers=headers,
     )
 
 
-def _dependency_error(context, error):
+def _arm_code(error):
     code = getattr(getattr(error, "error", None), "code", None)
     # ARM codes are identifiers. Discard arbitrary upstream text.
-    code = (
+    return (
         code
         if isinstance(code, str) and re.fullmatch(r"[a-zA-Z0-9._/-]{1,128}", code)
         else None
     )
+
+
+def _dependency_error(context, error):
+    code = _arm_code(error)
     _log_stage(
         context,
         "failed",
@@ -307,8 +314,10 @@ def _dependency_error(context, error):
     return _runner_response(context, 500, "Internal error preparing runner")
 
 
-def _network_result(poller):
-    result = poller.result(timeout=_NETWORK_WAIT_SECONDS)
+def _network_result(poller, deadline):
+    # Reserve time for the final VM submission (and its possible Spot fallback).
+    wait_seconds = min(_NETWORK_WAIT_SECONDS, max(0, deadline - monotonic() - 20))
+    result = poller.result(timeout=wait_seconds)
     # LROPoller.result(timeout=...) may return before completion without raising.
     if not poller.done():
         raise _BrokerFailure(
@@ -397,9 +406,19 @@ def _github_token(pat, repo, context):
 def request_runner(req: func.HttpRequest) -> func.HttpResponse:
     context = _request_context(req)
     context["stage"] = "auth"
-    authorized, _ = require_authenticated_caller(req)
+    authorized, reason = require_authenticated_caller(req)
     _log_stage(context, "authorized" if authorized else "rejected")
     if not authorized:
+        if reason == "server misconfiguration":
+            config, _ = _runner_config()
+            missing = [
+                key
+                for key in ("ALLOWED_AUDIENCE", "ALLOWED_TENANT_ID")
+                if not config[key]
+            ]
+            return _runner_response(
+                context, 503, "Missing required app settings", missing=missing
+            )
         return _runner_response(context, 401, "Unauthorized")
     return handle_request_runner(req, context)
 
@@ -420,6 +439,7 @@ def handle_request_runner(req: func.HttpRequest, context=None) -> func.HttpRespo
 
 
 def _provision_runner(req, context, config):
+    deadline = monotonic() + _REQUEST_BUDGET_SECONDS
     context["stage"] = "input"
     try:
         body = req.get_json()
@@ -495,7 +515,7 @@ def _provision_runner(req, context, config):
     context["stage"] = "network"
     # Create network resources
     network_client = NetworkManagementClient(
-        credential, config["SUBSCRIPTION_ID"], **_SDK_OPTIONS
+        credential, config["SUBSCRIPTION_ID"], polling_interval=1, **_SDK_OPTIONS
     )
 
     vnet_name = names["vnet"]
@@ -515,7 +535,8 @@ def _provision_runner(req, context, config):
                     address_prefixes=["10.0.0.0/16"]
                 ),
             ),
-        )
+        ),
+        deadline,
     )
 
     # Create Subnet if not exists
@@ -525,7 +546,8 @@ def _provision_runner(req, context, config):
             vnet_name,
             subnet_name,
             network_models.Subnet(address_prefix="10.0.0.0/24"),
-        )
+        ),
+        deadline,
     )
 
     # Create Public IP
@@ -538,7 +560,8 @@ def _provision_runner(req, context, config):
                 public_ip_allocation_method="Static",
                 sku=network_models.PublicIPAddressSku(name="Standard"),
             ),
-        )
+        ),
+        deadline,
     )
 
     # Create NSG (if not exists).
@@ -556,7 +579,8 @@ def _provision_runner(req, context, config):
             resource_group,
             nsg_name,
             network_models.NetworkSecurityGroup(location=location),
-        )
+        ),
+        deadline,
     )
 
     # Create NIC and associate NSG
@@ -577,7 +601,8 @@ def _provision_runner(req, context, config):
                 ],
                 network_security_group=network_models.NetworkSecurityGroup(id=nsg.id),
             ),
-        )
+        ),
+        deadline,
     )
 
     # Keyword arguments shared by the regular and the spot VirtualMachine, so
@@ -625,27 +650,149 @@ def _provision_runner(req, context, config):
         )
 
         try:
-            logging.info("Attempting to create spot VM")
+            _log_stage(context, "spot-attempt")
             compute.virtual_machines.begin_create_or_update(
-                resource_group, names["vm"], spot_vm
+                resource_group, names["vm"], spot_vm, polling=False
             )
-        except Exception as spot_error:
+        except HttpResponseError as spot_error:
             _log_stage(
                 context,
                 "spot-fallback",
                 logging.WARNING,
                 exception=type(spot_error).__name__,
+                **(
+                    {"arm-code": _arm_code(spot_error)} if _arm_code(spot_error) else {}
+                ),
             )
             # Retry without the spot configuration
             compute.virtual_machines.begin_create_or_update(
-                resource_group, names["vm"], regular_vm
+                resource_group, names["vm"], regular_vm, polling=False
             )
     else:
         compute.virtual_machines.begin_create_or_update(
-            resource_group, names["vm"], regular_vm
+            resource_group, names["vm"], regular_vm, polling=False
         )
     _log_stage(context, "submitted")
-    return _runner_response(context, 202, "Runner VM creation started", resources=names)
+    return _runner_response(
+        context,
+        202,
+        "Runner VM creation started",
+        resources=names,
+        status="provisioning",
+        **{"status-url": "/api/runner_status"},
+    )
+
+
+@app.route(route="runner_status", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+def runner_status(req: func.HttpRequest) -> func.HttpResponse:
+    context = _request_context(req)
+    context["stage"] = "auth"
+    authorized, reason = require_authenticated_caller(req)
+    _log_stage(context, "authorized" if authorized else "rejected")
+    if not authorized:
+        if reason == "server misconfiguration":
+            config, _ = _runner_config()
+            missing = [
+                key
+                for key in ("ALLOWED_AUDIENCE", "ALLOWED_TENANT_ID")
+                if not config[key]
+            ]
+            return _runner_response(
+                context, 503, "Missing required app settings", missing=missing
+            )
+        return _runner_response(context, 401, "Unauthorized")
+    return handle_runner_status(req, context)
+
+
+def handle_runner_status(req: func.HttpRequest, context=None) -> func.HttpResponse:
+    context = context or _request_context(req)
+    context["stage"] = "input"
+    try:
+        body = req.get_json()
+        resource_group = body["resource-group"]
+        vm_name = body["vm"]
+        if (
+            not isinstance(resource_group, str)
+            or not re.fullmatch(r"gh-runner-tmp[a-zA-Z0-9_.()-]{0,77}", resource_group)
+            or resource_group.endswith(".")
+        ):
+            raise ValueError("resource-group")
+        if not isinstance(vm_name, str) or not re.fullmatch(
+            r"[a-zA-Z0-9][a-zA-Z0-9-]{0,63}", vm_name
+        ):
+            raise ValueError("vm")
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return _runner_response(
+            context, 400, "Expected resource-group and vm from the creation response"
+        )
+    context.update({"resource-group": resource_group, "vm": vm_name})
+    context["stage"] = "config"
+    config, _ = _runner_config()
+    if not config["SUBSCRIPTION_ID"]:
+        return _runner_response(
+            context, 503, "Missing required app settings", missing=["SUBSCRIPTION_ID"]
+        )
+    try:
+        credential = DefaultAzureCredential(**_SDK_OPTIONS, process_timeout=5)
+        context["stage"] = "resource-group"
+        resources = ResourceManagementClient(
+            credential, config["SUBSCRIPTION_ID"], **_SDK_OPTIONS
+        )
+        group = resources.resource_groups.get(resource_group)
+        if (group.tags or {}).get(RG_OWNER_TAG) != RG_OWNER_TAG_VALUE:
+            _log_stage(context, "ownership-rejected", logging.WARNING)
+            return _runner_response(
+                context, 403, "Resource group is not owned by the runner broker"
+            )
+        context["stage"] = "vm-status"
+        compute = ComputeManagementClient(
+            credential, config["SUBSCRIPTION_ID"], **_SDK_OPTIONS
+        )
+        vm = compute.virtual_machines.get(
+            resource_group, vm_name, expand="instanceView"
+        )
+        state = (vm.provisioning_state or "unknown").lower()
+        statuses = vm.instance_view.statuses if vm.instance_view else []
+        # A VM can be evicted after provisioning succeeds. Neither a stopped VM
+        # nor a deallocated one can register a runner and pick up CI work.
+        failed_codes = [
+            status.code
+            for status in (statuses or [])
+            if status.code
+            and (
+                status.code.lower().startswith("provisioningstate/failed")
+                or status.code.lower()
+                in ("powerstate/deallocated", "powerstate/stopped")
+            )
+        ]
+        if state in ("failed", "canceled", "cancelled") or failed_codes:
+            code = failed_codes[0] if failed_codes else f"ProvisioningState/{state}"
+            _log_stage(
+                context, "provisioning-failed", logging.ERROR, **{"arm-code": code}
+            )
+            return _runner_response(
+                context,
+                200,
+                "Runner VM provisioning failed or the VM stopped; clean up the resource group",
+                status="failed",
+                **{"error-code": code},
+            )
+        status = "succeeded" if state == "succeeded" else "provisioning"
+        _log_stage(context, "observed", status=status)
+        return _runner_response(
+            context,
+            200 if status == "succeeded" else 202,
+            "Runner VM provisioning status",
+            status=status,
+            retry_after=10 if status == "provisioning" else None,
+        )
+    except ResourceNotFoundError:
+        _log_stage(context, "not-found", logging.WARNING)
+        return _runner_response(
+            context, 404, "Runner resource group or VM not found", status="not-found"
+        )
+    except Exception as error:
+        return _dependency_error(context, error)
 
 
 def validate_source_group_name(name: str) -> bool:
