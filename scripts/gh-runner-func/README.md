@@ -67,7 +67,7 @@ Registers a GitHub Actions runner token, creates a resource group, and provision
 |------------------------|--------|----------|-------------------------------------|-------------|
 | `repo`                 | string | ✅        | —                                   | GitHub repository in `owner/repo` format |
 | `resource-group`       | string | ❌        | `RESOURCE_GROUP` env var            | Target resource group name. Must start with `gh-runner-tmp`, use letters, digits, `_-.()` and not end in a period (up to 90 characters). Prefer a separate group per request for independent cleanup. |
-| `runner-name`          | string | ❌        | `"gh-runner-vm"`                    | Runner display name (letters, digits, hyphens; starts with a letter or digit, up to 64 characters). Truncated to 15 chars for the Windows computer name, which cannot be all numeric. Use a distinct name for each concurrent runner. |
+| `runner-name`          | string | ❌        | `"gh-runner-vm"`                    | Runner display name (letters, digits, hyphens; starts with a letter or digit, up to 64 characters). Truncated to 15 chars for the Windows computer name, which cannot be all numeric. The computer name is also the GitHub runner name, so concurrent runners must differ **within the first 15 characters**. |
 | `virtualization-flavor`| string | ❌        | `"hyperv"`                          | Virtualization technology. Allowed values: `hyperv`, `virtualbox`. |
 
 **Example**
@@ -88,11 +88,19 @@ Registers a GitHub Actions runner token, creates a resource group, and provision
 | `202` | VM creation accepted. The existing `message` and `vm` fields remain; `resource-group`, `resources`, `status: "provisioning"` and `status-url: "/api/runner_status"` identify the resources and how to monitor them. |
 | `400` | Invalid input, or GitHub returned `404` for the repository. |
 | `401` | Authentication/authorization check failed. |
-| `409` | Azure resource conflict; inspect the returned group and VM before retrying. |
-| `502` | Key Vault/Azure request rejected, GitHub authentication/authorization failed (`401`/`403`), invalid GitHub token response, or GitHub request failed after retries. |
-| `503` | Missing app settings (names in `missing`), Azure unavailable, or GitHub rate limited (`429`). Transient failures include a `Retry-After` header. |
-| `504` | GitHub request or network provisioning timed out. |
-| `500` | Unexpected internal preparation error. |
+| `409` | Azure resource conflict, or `resource-group` already exists without the broker's ownership tag or is being deleted. |
+| `502` | Key Vault/Azure request rejected, GitHub authentication/authorization failed (`401`/`403`), GitHub redirected the request (renamed repository), invalid GitHub token response, or GitHub request failed after retries. |
+| `503` | Missing app settings (names in `missing`; authorization settings are only logged), Azure unavailable, or GitHub rate limited (`429`). |
+| `504` | GitHub request or network provisioning timed out, or the request budget ran out before provisioning started. |
+| `500` | Unexpected internal error. |
+
+Failures **before** the first Azure write (input, Key Vault, GitHub, budget
+check) create nothing; transient ones carry a `Retry-After` header and are safe
+to retry. Failures **after** the first write (resource group, network, VM)
+return `"cleanup-required": true` and the generated `resources`, and never carry
+`Retry-After`: Azure may already hold resources, including a VM that was
+accepted before a client timeout. Delete the group (or the listed resources)
+before submitting again.
 
 **What the endpoint does**
 
@@ -111,9 +119,10 @@ Registers a GitHub Actions runner token, creates a resource group, and provision
 Send an optional `X-Correlation-ID` (1–64 letters, digits, `.`, `_`, or `-`),
 or let the broker generate one. Every creation/status response includes it in
 the header and `correlation-id` field, alongside the current `stage`. JSON logs
-identify auth, input, PAT, GitHub token, network and VM stages. Failures log the
-exception class and ARM error code when available; upstream bodies and exception
-messages are omitted to keep credentials out of logs.
+identify auth, input, PAT, GitHub token, resource group, network and VM stages.
+Failures log the exception class, ARM error code and upstream HTTP status when
+available; unexpected errors also log their stack frames (file, line, function).
+Upstream bodies and exception messages are omitted to keep credentials out of logs.
 
 The broker checks required settings on first use and caches the result per
 worker. Restart the Function App after correcting settings. Resource settings
@@ -124,15 +133,29 @@ field and input-stage log contain the actual generated names.
 Key Vault transport failures and transient HTTP failures, plus GitHub network
 errors and `5xx` responses, get at most three attempts with 0.5 s and 1 s backoff.
 GitHub `429` is returned immediately with `Retry-After` (60 s if unavailable).
-SDK and GitHub connections use a 3 s connect timeout and a 5 s read timeout.
-Network pollers wait at most 20 s each, shortened by a shared 180 s request
-budget with 20 s reserved for VM submission. VM provisioning is asynchronous.
+ARM calls (including LRO status polls) get at most three attempts from the
+Azure SDK with backoff of at most 2 s; a server `Retry-After` is capped at 2 s
+and no new attempt starts after 15 s. ARM PUTs use fixed resource names, so a
+retry after a lost response resends the same request instead of creating a
+second resource. Managed identity token requests get the same bounded retry.
+Connections use a 3 s connect timeout; read timeouts are 5 s for Key Vault,
+the managed identity endpoint and GitHub, and 10 s for ARM.
+
+Everything before the VM submission shares a 160 s request budget, which keeps
+the request under the ~230 s Function App front-end limit. Resource creation
+only starts with at least 60 s of budget left. Network pollers wait at most 20 s
+each, keeping 30 s for the VM submission. VM provisioning is asynchronous.
 
 A retry of `request_runner` creates new resources; it is **not idempotent**.
 After an uncertain response or network timeout, inspect the returned group/VM
 and clean up before submitting again. Accepted Azure operations may still finish
 following an HTTP timeout. Use a dedicated group per request when cleanup must
 not affect other runners.
+
+An existing `resource-group` is reused only when it carries the broker's
+`managed-by: gh-runner-broker` tag and is not being deleted; it is never
+rewritten. The broker refuses to adopt a foreign group with `409`, because
+tagging it would make it deletable through `delete_resource_group`.
 
 > **Security note:** The NSG adds no inbound rules — the runner only needs outbound connectivity to GitHub, and the default rules deny all inbound. RDP (3389) is intentionally **not** opened. For the rare debug session, use Azure Bastion / just-in-time VM access rather than a standing inbound rule.
 
@@ -146,7 +169,8 @@ so it works across Function worker restarts and requires no in-memory poller.
 It uses the same caller authentication as `request_runner`, and checks the
 resource group's `managed-by: gh-runner-broker` tag before reading the VM.
 
-Send the `resource-group` and actual `vm` from the creation response:
+Send the `resource-group` and actual `vm` from the creation response.
+`status-url` in that response is relative; prefix it with the base URL above.
 
 ```json
 {
@@ -160,13 +184,15 @@ Send the `resource-group` and actual `vm` from the creation response:
 | `202` | `provisioning` | Poll again after `Retry-After` (10 seconds), with an overall caller deadline. |
 | `200` | `succeeded` | ARM provisioning succeeded. Continue checking GitHub runner registration separately. |
 | `200` | `failed` | Stop waiting and clean up. `error-code` contains a provisioning/power-state code. Failed/canceled provisioning and stopped/deallocated VMs are reported here, including Spot eviction. |
+| `200` | `deleting` | The group or VM is being deleted. Stop waiting. |
 | `404` | `not-found` | The group or VM no longer exists. Stop waiting and inspect cleanup. |
 | `400` / `401` / `403` | — | Invalid input, unauthenticated caller, or group not owned by the broker. |
 | `502` / `503` / `504` | — | Status lookup failed; use `stage` and correlation ID for diagnosis. |
 
 Callers must inspect the JSON `status`, including on HTTP `200`, to fail CI early.
 Existing creation-only callers must add this polling step to observe late
-failures. This endpoint reports Azure VM state; it does not check the bootstrap
+failures. [`wait-runner-provisioned.sh`](wait-runner-provisioned.sh) implements
+the loop and is what `test-build-windows.yml` uses after `request_runner`. This endpoint reports Azure VM state; it does not check the bootstrap
 script or GitHub registration and does not automatically retry late Spot
 failures on demand. Continue polling while waiting for registration if Spot
 eviction needs to be detected after provisioning succeeds.
@@ -197,12 +223,14 @@ The endpoint does not wait for the deletion to finish: deleting a runner VM take
 
 | Status | Meaning |
 |--------|---------|
-| `202`  | Deletion started or still in progress. Body: `{"message": "...", "status": "deleting", "resource-group": "<name>"}` — call again later. |
-| `200`  | The resource group no longer exists. Body: `{"message": "Resource group '<name>' deleted.", "status": "deleted", "resource-group": "<name>"}` |
+| `202`  | Deletion started or still in progress. Body: `{"message": "...", "status": "deleting", "resource-group": "<name>", "correlation-id": "...", "stage": "..."}` — call again later. |
+| `200`  | The resource group no longer exists. Body: `{"message": "Resource group '<name>' deleted.", "status": "deleted", "resource-group": "<name>", ...}` |
+| `400`  | Invalid body or resource group name. |
 | `401`  | Authentication/authorization check failed. |
-| `500`  | Internal error, invalid name, or the resource group is not owned by the broker. |
+| `403`  | The resource group is not owned by the broker. |
+| `409` / `502` / `503` / `504` / `500` | Azure lookup or deletion failed; same JSON error model and correlation ID as `request_runner`. |
 
-> **Safety guard:** The function raises an exception if the resource group name does not start with `gh-runner-tmp`, preventing accidental deletion of unrelated groups.
+> **Safety guard:** Names must match the same `gh-runner-tmp` pattern as `request_runner`, and the group must carry the ownership tag, preventing accidental deletion of unrelated groups.
 
 ---
 
@@ -441,7 +469,8 @@ python3 -m unittest discover -s scripts/gh-runner-func
 
 Contract tests check the JSON request bodies the real, pinned Azure SDKs send to
 ARM, exercise accepted-then-failed provisioning through a fake SDK transport,
-and verify transport timeouts, so SDK changes show up before deployment. Run them in a separate virtual environment with the lock installed.
+and verify transport timeouts and the bounded ARM retry policy (capped
+`Retry-After`, PUT resent after a lost response), so SDK changes show up before deployment. Run them in a separate virtual environment with the lock installed.
 The stub-based tests above must not run in the same process:
 
 ```bash
@@ -464,6 +493,12 @@ bash scripts/gh-runner-func/test-endpoints.sh \
   --runner-name local-test \
   --flavor hyperv
 
+# Wait for provisioning (vm from the request_runner response)
+bash scripts/gh-runner-func/test-endpoints.sh \
+  --resource-group gh-runner-tmp-local-12345 \
+  --vm gh-runner-vm-<suffix> \
+  --runner-status
+
 # Delete a resource group
 bash scripts/gh-runner-func/test-endpoints.sh \
   --resource-group gh-runner-tmp-local-12345 \
@@ -479,6 +514,11 @@ bash scripts/gh-runner-func/test-endpoints.sh \
 Or using the Makefile targets:
 
 ```bash
+make test-gh-runner-func-status \
+  FUNCTION_APP_NAME=gh-runner-func-app-18632 \
+  RESOURCE_GROUP=gh-runner-tmp-local-1771769397 \
+  VM_NAME=gh-runner-vm-<suffix>
+
 make test-gh-runner-func-delete \
   FUNCTION_APP_NAME=gh-runner-func-app-18632 \
   RESOURCE_GROUP=gh-runner-tmp-local-1771769397
