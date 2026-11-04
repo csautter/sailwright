@@ -5,7 +5,6 @@ import (
 	"log"
 	"os"
 	"path"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -33,12 +32,17 @@ func RunUtmDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 
 	vmName := alchemy_build.GetVirtualMachineNameWithType(config)
 	args := []string{"--arch", config.Arch, "--os", vmName}
+	directory, err := alchemy_build.UtmVMDirectory()
+	if err != nil {
+		return err
+	}
 
-	if err := runCommandWithStreamingLogs(
+	if err := runCommandWithStreamingLogsWithEnv(
 		projectDir,
 		20*time.Minute,
 		"bash",
 		append([]string{scriptPath}, args...),
+		[]string{"SAILWRIGHT_UTM_VM_DIR=" + directory},
 		fmt.Sprintf("%s:%s", vmName, config.Arch),
 	); err != nil {
 		return fmt.Errorf("UTM deploy failed for %s:%s: %w", vmName, config.Arch, err)
@@ -226,20 +230,7 @@ func utmVirtualMachineName(config alchemy_build.VirtualMachineConfig) string {
 }
 
 func utmVirtualMachinePath(config alchemy_build.VirtualMachineConfig) (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve user home directory for UTM VM path: %w", err)
-	}
-
-	return filepath.Join(
-		homeDir,
-		"Library",
-		"Containers",
-		"com.utmapp.UTM",
-		"Data",
-		"Documents",
-		utmVirtualMachineName(config)+".utm",
-	), nil
+	return alchemy_build.UtmVirtualMachinePath(config)
 }
 
 func utmVirtualMachineStatus(config alchemy_build.VirtualMachineConfig) (string, error) {

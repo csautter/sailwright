@@ -92,3 +92,17 @@ and other runtime assets into `DEV_ALCHEMY_APP_DATA_DIR/project`.
 
 Later runs keep that managed tree in sync so the standalone `sailwright` binary
 can operate without a Sailwright source checkout.
+
+## UTM bundle location
+
+On macOS, UTM bundles default to
+`$HOME/Library/Containers/com.utmapp.UTM/Data/Documents`, independently of the
+build cache. Set `SAILWRIGHT_UTM_VM_DIR` to use another bundle directory for
+`create`, `start`, `stop`, `destroy`, listings and provisioning. The UTM helper
+scripts honor the same variable. Unset or empty retains the default; use an
+absolute path so different working directories select the same location.
+
+The override selects a location; it does not move existing VMs. Set it
+consistently across commands. Start and stop open the selected bundle and use
+its UUID, so a same-named VM in another directory is not selected. Destroy
+removes the selected bundle and leaves cached build artifacts intact.

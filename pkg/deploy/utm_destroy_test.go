@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -59,6 +60,7 @@ func TestUtmVirtualMachineNameIncludesTypeAndArch(t *testing.T) {
 }
 
 func TestUtmVirtualMachinePathUsesUtmDocumentsBundle(t *testing.T) {
+	t.Setenv("SAILWRIGHT_UTM_VM_DIR", "")
 	config := alchemy_build.VirtualMachineConfig{
 		OS:         "ubuntu",
 		UbuntuType: "server",
@@ -80,6 +82,50 @@ func TestUtmVirtualMachinePathUsesUtmDocumentsBundle(t *testing.T) {
 	)
 	if !strings.HasSuffix(got, wantSuffix) {
 		t.Fatalf("expected UTM VM path %q to end with %q", got, wantSuffix)
+	}
+}
+
+func TestUtmOverrideDestroyPreservesDefaultVM(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SAILWRIGHT_UTM_VM_DIR", "")
+	vm := alchemy_build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "server", Arch: "arm64"}
+	defaultVM, err := utmVirtualMachinePath(vm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(defaultVM, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SAILWRIGHT_UTM_VM_DIR", filepath.Join(t.TempDir(), "custom bundles"))
+	customVM, err := utmVirtualMachinePath(vm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := CreateTargetExists(vm); err != nil || exists {
+		t.Fatalf("default VM must not count as custom VM: exists=%v, err=%v", exists, err)
+	}
+	if err := os.MkdirAll(customVM, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := CreateTargetExists(vm); err != nil || !exists {
+		t.Fatalf("custom VM must be found: exists=%v, err=%v", exists, err)
+	}
+	for range 2 {
+		if err := RunUtmDestroyOnMacOS(vm); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if exists, err := DestroyTargetExists(vm); err != nil || exists {
+		t.Fatalf("custom VM must be absent: exists=%v, err=%v", exists, err)
+	}
+	if _, err := os.Stat(defaultVM); err != nil {
+		t.Fatalf("default VM must survive: %v", err)
+	}
+	state, err := inspectUtmStartTarget(vm)
+	if err != nil || state.Exists {
+		t.Fatalf("start must not find the default VM: state=%+v, err=%v", state, err)
 	}
 }
 

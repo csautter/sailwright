@@ -1697,6 +1697,7 @@ func TestExtractIPv4ForMacAddress(t *testing.T) {
 }
 
 func TestUtmConfigPlistPath(t *testing.T) {
+	t.Setenv("SAILWRIGHT_UTM_VM_DIR", "")
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 	t.Setenv("USERPROFILE", homeDir)
@@ -1712,6 +1713,19 @@ func TestUtmConfigPlistPath(t *testing.T) {
 	expected := filepath.Join(homeDir, "Library", "Containers", "com.utmapp.UTM", "Data", "Documents", "windows11-amd64-dev-alchemy.utm", "config.plist")
 	if path != expected {
 		t.Fatalf("expected %q, got %q", expected, path)
+	}
+}
+
+func TestUtmConfigPlistPathUsesOverride(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "UTM bundles with spaces")
+	t.Setenv("SAILWRIGHT_UTM_VM_DIR", directory)
+	got, err := utmConfigPlistPath(alchemy_build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "desktop", Arch: "arm64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(directory, "ubuntu-desktop-arm64-dev-alchemy.utm", "config.plist")
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 

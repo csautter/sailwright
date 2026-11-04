@@ -53,7 +53,7 @@ project_root=$(
 app_data_dir="${DEV_ALCHEMY_APP_DATA_DIR:-$HOME/Library/Application Support/dev-alchemy}"
 cache_dir="${DEV_ALCHEMY_CACHE_DIR:-$app_data_dir/cache}"
 
-utm_vm_dir="${SAILWRIGHT_UTM_VM_DIR:-/Users/$(whoami)/Library/Containers/com.utmapp.UTM/Data/Documents}"
+utm_vm_dir="${SAILWRIGHT_UTM_VM_DIR:-$HOME/Library/Containers/com.utmapp.UTM/Data/Documents}"
 
 qemu_img="$cache_dir/windows11/qemu-windows11-$arch.qcow2"
 if [[ "$os" == ubuntu* ]]; then

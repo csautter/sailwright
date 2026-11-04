@@ -86,8 +86,10 @@ committing that update automatically requests tier B.
 
 UTM tests parse `config.plist` with Python's `plistlib`, compare all six
 configurations and verify disk copies and repeatable bundle creation. Set
-`SAILWRIGHT_UTM_VM_DIR` to create bundles outside the normal UTM directory.
-Without the override, the existing destination is retained. The hosted check
+`SAILWRIGHT_UTM_VM_DIR` to keep bundles outside the normal UTM directory. Create,
+start/stop inspection, destroy and provisioning all use that destination; see
+[UTM bundle location](./managed-application-data.md#utm-bundle-location).
+Without the override, the existing destination is retained. The tier B check
 attempts AppleScript registration without starting guests. If GUI automation
 is unavailable or times out, it reports that limitation and retains bundle
 validation as coverage; confirm registration on a Mac when reviewing such a
