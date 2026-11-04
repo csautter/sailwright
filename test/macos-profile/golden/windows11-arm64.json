@@ -1,0 +1,54 @@
+{
+  "-accel": [
+    "tcg,thread=multi,tb-size=512"
+  ],
+  "-cpu": [
+    "max,sve=off,sme=off,pauth-impdef=on"
+  ],
+  "-device": [
+    "ramfb",
+    "qemu-xhci",
+    "usb-kbd",
+    "usb-tablet",
+    "usb-storage,drive=install,removable=true,bootindex=0",
+    "usb-storage,drive=virtio-drivers,removable=true",
+    "usb-storage,drive=utm-tools,removable=true",
+    "nvme,drive=nvme0,serial=deadbeef,bootindex=1",
+    "virtio-net-pci,netdev=user.0"
+  ],
+  "-display": [
+    "cocoa"
+  ],
+  "-drive": [
+    "file=<FIXTURE>/cache with spaces/qemu-uefi/usr/share/AAVMF/AAVMF_CODE.no-secboot.fd,if=pflash,unit=0,format=raw,readonly=on",
+    "file=<FIXTURE>/out/efivars.fd,if=pflash,unit=1,format=raw",
+    "if=none,id=install,format=raw,media=cdrom,file=<FIXTURE>/installer.iso,readonly=true",
+    "if=none,id=virtio-drivers,format=raw,media=cdrom,file=<FIXTURE>/cache with spaces/windows/virtio-win.iso,readonly=true",
+    "if=none,id=utm-tools,format=raw,media=cdrom,file=<FIXTURE>/cache with spaces/utm/utm-guest-tools-latest.iso,readonly=true",
+    "if=none,media=disk,id=nvme0,format=qcow2,file.filename=<FIXTURE>/cache with spaces/windows11/qemu-windows11-arm64.qcow2,discard=unmap,detect-zeroes=unmap"
+  ],
+  "-k": [
+    "de"
+  ],
+  "-m": [
+    "4096M"
+  ],
+  "-machine": [
+    "virt-10.0,highmem=on"
+  ],
+  "-name": [
+    "windows11-packer-arm64"
+  ],
+  "-netdev": [
+    "user,id=user.0,hostfwd=tcp::<SSH_PORT>-:5985"
+  ],
+  "-qmp": [
+    "unix:<WORK>/qmp.sock,server,nowait"
+  ],
+  "-smp": [
+    "4,cores=4"
+  ],
+  "-vnc": [
+    "127.0.0.1:<VNC_PORT>,password"
+  ]
+}

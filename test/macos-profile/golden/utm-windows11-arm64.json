@@ -1,0 +1,84 @@
+{
+  "Backend": "QEMU",
+  "ConfigurationVersion": 4,
+  "Display": [
+    {
+      "DownscalingFilter": "Linear",
+      "DynamicResolution": true,
+      "Hardware": "virtio-ramfb-gl",
+      "NativeResolution": false,
+      "UpscalingFilter": "Nearest"
+    }
+  ],
+  "Drive": [
+    {
+      "Identifier": "<UUID>",
+      "ImageType": "CD",
+      "Interface": "USB",
+      "InterfaceVersion": 1,
+      "ReadOnly": true
+    },
+    {
+      "Identifier": "<UUID>",
+      "ImageName": "windows11-arm64.qcow2",
+      "ImageType": "Disk",
+      "Interface": "NVMe",
+      "InterfaceVersion": 1,
+      "ReadOnly": false
+    }
+  ],
+  "Information": {
+    "Icon": "windows",
+    "IconCustom": false,
+    "Name": "windows11-arm64-dev-alchemy",
+    "UUID": "<UUID>"
+  },
+  "Input": {
+    "MaximumUsbShare": 3,
+    "UsbBusSupport": "3.0",
+    "UsbSharing": false
+  },
+  "Network": [
+    {
+      "Hardware": "virtio-net-pci",
+      "IsolateFromHost": false,
+      "MacAddress": "<MAC>",
+      "Mode": "Bridged",
+      "PortForward": []
+    }
+  ],
+  "QEMU": {
+    "AdditionalArguments": [],
+    "BalloonDevice": false,
+    "DebugLog": false,
+    "Hypervisor": true,
+    "PS2Controller": false,
+    "RNGDevice": true,
+    "RTCLocalTime": true,
+    "TPMDevice": true,
+    "TSO": false,
+    "UEFIBoot": true
+  },
+  "Serial": [],
+  "Sharing": {
+    "ClipboardSharing": true,
+    "DirectoryShareMode": "WebDAV",
+    "DirectoryShareReadOnly": false
+  },
+  "Sound": [
+    {
+      "Hardware": "intel-hda"
+    }
+  ],
+  "System": {
+    "Architecture": "aarch64",
+    "CPU": "default",
+    "CPUCount": 4,
+    "CPUFlagsAdd": [],
+    "CPUFlagsRemove": [],
+    "ForceMulticore": false,
+    "JITCacheSize": 0,
+    "MemorySize": 8192,
+    "Target": "virt"
+  }
+}

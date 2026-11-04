@@ -1,0 +1,52 @@
+{
+  "-boot": [
+    "order=c,menu=on"
+  ],
+  "-cpu": [
+    "Haswell"
+  ],
+  "-device": [
+    "qemu-xhci,id=usb",
+    "usb-storage,drive=install,removable=true,bootindex=0",
+    "usb-storage,drive=virtio-drivers,removable=true,bootindex=2",
+    "usb-storage,drive=utm-tools,removable=true,bootindex=3",
+    "ide-hd,drive=ide0,bootindex=1",
+    "e1000,netdev=user.0"
+  ],
+  "-display": [
+    "cocoa"
+  ],
+  "-drive": [
+    "if=none,id=install,format=raw,media=cdrom,file=<FIXTURE>/installer.iso,readonly=true",
+    "if=none,id=virtio-drivers,format=raw,media=cdrom,file=<FIXTURE>/cache with spaces/windows/virtio-win.iso,readonly=true",
+    "if=none,id=utm-tools,format=raw,media=cdrom,file=<FIXTURE>/cache with spaces/utm/utm-guest-tools-latest.iso,readonly=true",
+    "if=none,media=disk,id=ide0,format=qcow2,file.filename=<FIXTURE>/cache with spaces/windows11/qemu-windows11-amd64.qcow2,discard=unmap,detect-zeroes=unmap"
+  ],
+  "-fda": [
+    "<PACKER_TEMP>"
+  ],
+  "-k": [
+    "de"
+  ],
+  "-m": [
+    "4096M"
+  ],
+  "-machine": [
+    "type=q35,accel=tcg"
+  ],
+  "-name": [
+    "windows11-packer-amd64"
+  ],
+  "-netdev": [
+    "user,id=user.0,hostfwd=tcp::<SSH_PORT>-:5985"
+  ],
+  "-qmp": [
+    "unix:<WORK>/qmp.sock,server,nowait"
+  ],
+  "-smp": [
+    "4,cores=4"
+  ],
+  "-vnc": [
+    "127.0.0.1:<VNC_PORT>,password"
+  ]
+}
