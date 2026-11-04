@@ -85,10 +85,21 @@ func TestTartProcessNetworkMode(t *testing.T) {
 		{"/opt/homebrew/bin/tart run --net-bridged=en0 test", "test", "bridged", true},
 		{"tart run --net-bridged en0 test", "test", "bridged", true},
 		{"tart run --net-softnet test", "test", "nat", true},
+		{"tart run --net-softnet --no-graphics test", "test", "nat", true},
 		{"tart run test", "test", "nat", true},
+		{"tart run vm with spaces", "vm with spaces", "nat", true},
 		{"tart run --net-bridged=en0 vm with spaces", "vm with spaces", "bridged", true},
 		{"tart run --net-bridged=en0 other-test", "test", "", false},
 		{"sh -c tart run --net-bridged=en0 test", "test", "", false},
+		{"tart run --net-fd=3 test", "test", "unknown", true},
+		{"tart run --net-fd 3 test", "test", "unknown", true},
+		{"tart run --net-future=custom test", "test", "unknown", true},
+		{"tart run --disk other test", "test", "unknown", true},
+		{"tart run other test", "test", "unknown", true},
+		{"tart run other test\ntart run --net-bridged=en0 test", "test", "bridged", true},
+		{"tart run --net-bridged=en0 test\ntart run other test", "test", "bridged", true},
+		{"tart run other test\ntart run test", "test", "unknown", true},
+		{"tart run test\ntart run other test", "test", "unknown", true},
 	} {
 		got, found := tartProcessNetworkMode(tc.output, tc.name)
 		if found != tc.found || got.Mode != tc.want {

@@ -320,9 +320,11 @@ func tartPlannedNetworkMode() NetworkMode {
 }
 
 func tartProcessNetworkMode(output, name string) (NetworkMode, bool) {
+	var modes []NetworkMode
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
-		// ps prints argv without quoting; matching the entire trailing VM name also handles spaces.
+		// ps loses argv boundaries. A trailing name alone does not prove which VM
+		// this process runs; only understood options may precede a NAT target.
 		if !strings.HasSuffix(line, " "+name) {
 			continue
 		}
@@ -330,12 +332,27 @@ func tartProcessNetworkMode(output, name string) (NetworkMode, bool) {
 		if len(parts) < 2 || filepath.Base(parts[0]) != "tart" || parts[1] != "run" {
 			continue
 		}
-		for _, arg := range parts[2:] {
-			if arg == "--net-bridged" || strings.HasPrefix(arg, "--net-bridged=") {
-				return NetworkMode{"bridged", "Tart --net-bridged"}, true
-			}
-		}
-		return NetworkMode{"nat", "Tart running with NAT"}, true
+		modes = append(modes, tartRunArgumentsNetworkMode(parts[2:]))
 	}
-	return NetworkMode{}, false
+	if len(modes) == 0 {
+		return NetworkMode{}, false
+	}
+	return combineNetworkModes(modes), true
+}
+
+func tartRunArgumentsNetworkMode(args []string) NetworkMode {
+	mode := NetworkMode{"nat", "Tart running with NAT"}
+	for _, arg := range args {
+		if arg == "--net-bridged" || strings.HasPrefix(arg, "--net-bridged=") {
+			return NetworkMode{"bridged", "Tart --net-bridged"}
+		}
+		switch arg {
+		case "--net-softnet", "--no-graphics", "--no-audio", "--no-clipboard", "--no-usb-accessories":
+			// Known boolean flags do not introduce an unknown network backend or
+			// consume a value that could actually be part of another VM's name.
+		default:
+			mode = unknownNetwork("Tart network backend or process arguments ambiguous")
+		}
+	}
+	return mode
 }
