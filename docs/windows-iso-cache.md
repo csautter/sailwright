@@ -278,6 +278,16 @@ and checksum verification succeed. Remote objects are not pruned automatically: 
 delete obsolete `qemu-efi-aarch64_*.deb` and `utm-guest-tools-*.iso` objects manually, including
 the legacy `qemu-efi-aarch64_all.deb` and `utm-guest-tools-latest.iso` objects.
 
+### Local-cache migration tradeoff
+
+Automatic local pruning remains enabled during the versioned dependency-cache migration.
+Concurrent builds using different pinned versions in the same cache can prune each other's
+dependency files. This limitation is accepted for this migration; cross-version cache locking,
+leases, and a separate garbage-collection design are outside its scope.
+
+Failure to remove an obsolete local file is logged as a warning. Builds still verify the pinned
+file and fail if a required download or checksum verification fails.
+
 ## Tests
 
 - `go test ./pkg/build/... ./tools/...`: naming, due rule, manifest validation, deduplication,
