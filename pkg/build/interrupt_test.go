@@ -128,3 +128,12 @@ func containsInt(values []int, want int) bool {
 	}
 	return false
 }
+
+func TestInterruptSignalsLeaveSIGQUITToGo(t *testing.T) {
+	// Ctrl+\ must keep Go's default goroutine dump for debugging hung builds.
+	for _, sig := range interruptSignals {
+		if sig == syscall.SIGQUIT {
+			t.Fatal("SIGQUIT must not be handled as an interrupt")
+		}
+	}
+}

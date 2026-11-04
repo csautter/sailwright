@@ -13,13 +13,13 @@ import (
 )
 
 // ErrInterrupted is the cancellation cause of a build context after an interrupt
-// signal (Ctrl+C, SIGTERM, SIGHUP or SIGQUIT).
+// signal (Ctrl+C, SIGTERM or SIGHUP).
 var ErrInterrupted = errors.New("interrupted")
 
 // interruptExitCode is the conventional exit code after SIGINT (128 + 2).
 const interruptExitCode = 130
 
-// Interrupt stages. Each Ctrl+C moves one stage up; SIGTERM, SIGHUP and SIGQUIT come
+// Interrupt stages. Each Ctrl+C moves one stage up; SIGTERM and SIGHUP come
 // from supervisors (the agent gateway, a closed terminal) that only wait a few seconds,
 // so they skip post-processing right away.
 const (
@@ -32,7 +32,9 @@ const (
 	interruptStageExit
 )
 
-var interruptSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT}
+// interruptSignals deliberately leaves out SIGQUIT (Ctrl+\): Go's default handling,
+// which prints all goroutine stacks and exits, is the standard way to debug a hang.
+var interruptSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 
 type interruptHandlerKey struct{}
 
