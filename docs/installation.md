@@ -183,7 +183,9 @@ VM) and stops before the package installs when the edition or processor cannot
 run Hyper-V. The installer never restarts Windows on its own: when it reports a
 pending restart, restart Windows and run `sailwright.exe install --hyperv`
 again. Once Hyper-V is active it reports whether the Hyper-V management service
-runs and whether the Default Switch exists.
+runs and whether the Default Switch exists. `--hyperv` also installs `oscdimg`
+from the Windows ADK Deployment Tools and adds it to the machine `PATH`;
+Packer needs it to build Hyper-V images.
 
 Vagrant is installed in a pinned version through Chocolatey and added to the
 `PATH`.

@@ -1360,6 +1360,52 @@ function Ensure-HyperVEnabled {
     return (Ensure-HyperVClientFeature)
 }
 
+# Packer's Hyper-V builder writes the unattended-install CD with oscdimg, which
+# ships with the Deployment Tools of the Windows ADK.
+$windowsAdkInstallerUrl = "https://go.microsoft.com/fwlink/?linkid=2289980" # Windows ADK for Windows 11, version 22H2
+$windowsKitsRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits"
+
+function Get-OscdimgPath {
+    $preferred = Join-Path $windowsKitsRoot "10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe"
+    if (Test-Path -LiteralPath $preferred) {
+        return $preferred
+    }
+    if (-not (Test-Path -LiteralPath $windowsKitsRoot)) {
+        return $null
+    }
+
+    $found = Get-ChildItem -LiteralPath $windowsKitsRoot -Recurse -Filter "oscdimg.exe" -ErrorAction SilentlyContinue |
+        Sort-Object { $_.FullName -notlike "*\amd64\*" } |
+        Select-Object -First 1
+    if ($found) {
+        return $found.FullName
+    }
+    return $null
+}
+
+function Ensure-OscdimgInstalled {
+    $oscdimgPath = Get-OscdimgPath
+    if ($oscdimgPath) {
+        Write-Host "oscdimg is already installed at $oscdimgPath."
+    } else {
+        Write-Host "oscdimg not found. Installing the Windows ADK Deployment Tools (needed for Hyper-V builds)..."
+        $installer = Join-Path $env:TEMP "sailwright-adksetup.exe"
+        Invoke-WebRequest -Uri $windowsAdkInstallerUrl -OutFile $installer -UseBasicParsing
+        $process = Start-Process -FilePath $installer -ArgumentList @("/features", "OptionId.DeploymentTools", "/quiet", "/norestart") -Wait -PassThru
+        if ($process.ExitCode -notin @(0, 3010)) {
+            throw "The Windows ADK installer failed with exit code $($process.ExitCode)."
+        }
+
+        $oscdimgPath = Get-OscdimgPath
+        if (-not $oscdimgPath) {
+            throw "oscdimg.exe was not found after installing the Windows ADK Deployment Tools."
+        }
+        Write-Host "Installed oscdimg at $oscdimgPath."
+    }
+
+    Ensure-PathContains -PathEntry (Split-Path -Parent $oscdimgPath)
+}
+
 function Show-HyperVStatus {
     param(
         [Parameter(Mandatory = $true)]
@@ -1462,6 +1508,10 @@ function Invoke-DevAlchemySelfSetup {
         Ensure-PathContains -PathEntry "C:\Program Files\Vagrant\bin"
     } else {
         Write-Output "Skipping Vagrant installation because -Vagrant was not specified. Vagrant is only needed to create and run sailwright VMs; run 'sailwright install --vagrant' to add it."
+    }
+
+    if ($HyperV) {
+        Ensure-OscdimgInstalled
     }
 
     Ensure-PathContains -PathEntry (Join-Path (Get-GitForWindowsRoot) "bin")

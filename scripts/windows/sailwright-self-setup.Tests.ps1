@@ -88,6 +88,7 @@ BeforeAll {
         Mock Show-InstalledToolVersions { $script:ShownToolVersionsRoot = $CygwinRoot }
         Mock Ensure-HyperVEnabled { return $true }
         Mock Show-HyperVStatus {}
+        Mock Ensure-OscdimgInstalled {}
     }
 }
 
@@ -433,7 +434,16 @@ Describe "sailwright self setup Cygwin helpers" -Skip:(-not $IsWindows) {
             $null = Invoke-DevAlchemySelfSetup -HyperV
 
             Should -Invoke Ensure-HyperVEnabled -Times 1 -Exactly
+            Should -Invoke Ensure-OscdimgInstalled -Times 1 -Exactly
             Should -Invoke Show-HyperVStatus -Times 1 -Exactly -ParameterFilter { $RestartRequired -eq $true }
+        }
+
+        It "does not install oscdimg without -HyperV" {
+            Initialize-SelfSetupMainMocks
+
+            $null = Invoke-DevAlchemySelfSetup -Vagrant
+
+            Should -Invoke Ensure-OscdimgInstalled -Times 0 -Exactly
         }
 
         It "stops before package installs when Hyper-V cannot be enabled" {
@@ -552,6 +562,71 @@ Describe "sailwright self setup Hyper-V helpers" -Skip:(-not $IsWindows) {
             Mock Install-WindowsFeature { return [pscustomobject]@{ Success = $false; RestartNeeded = "No"; ExitCode = "Failed" } }
 
             { Ensure-HyperVServerFeature } | Should -Throw "*Hyper-V role failed*"
+        }
+    }
+
+    Context "Ensure-OscdimgInstalled" {
+        BeforeEach {
+            $script:OscdimgDir = "C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg"
+            $script:EnsuredOscdimgPaths = @()
+            Mock Ensure-PathContains { $script:EnsuredOscdimgPaths += $PathEntry }
+            Mock Invoke-WebRequest {}
+            Mock Start-Process { return [pscustomobject]@{ ExitCode = 0 } }
+        }
+
+        It "only adds an existing oscdimg to PATH" {
+            Mock Get-OscdimgPath { return "$script:OscdimgDir\oscdimg.exe" }
+
+            Ensure-OscdimgInstalled
+
+            Should -Invoke Invoke-WebRequest -Times 0 -Exactly
+            Should -Invoke Start-Process -Times 0 -Exactly
+            $script:EnsuredOscdimgPaths | Should -Be @($script:OscdimgDir)
+        }
+
+        It "installs the ADK Deployment Tools when oscdimg is missing" {
+            $script:OscdimgLookups = 0
+            Mock Get-OscdimgPath {
+                $script:OscdimgLookups++
+                if ($script:OscdimgLookups -gt 1) { return "$script:OscdimgDir\oscdimg.exe" }
+                return $null
+            }
+
+            Ensure-OscdimgInstalled
+
+            Should -Invoke Invoke-WebRequest -Times 1 -Exactly
+            Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter { ($ArgumentList -join " ") -eq "/features OptionId.DeploymentTools /quiet /norestart" }
+            $script:EnsuredOscdimgPaths | Should -Be @($script:OscdimgDir)
+        }
+
+        It "throws when the ADK installer fails" {
+            Mock Get-OscdimgPath { return $null }
+            Mock Start-Process { return [pscustomobject]@{ ExitCode = 1603 } }
+
+            { Ensure-OscdimgInstalled } | Should -Throw "*exit code 1603*"
+            Should -Invoke Ensure-PathContains -Times 0 -Exactly
+        }
+
+        It "throws when oscdimg is still missing after the install" {
+            Mock Get-OscdimgPath { return $null }
+
+            { Ensure-OscdimgInstalled } | Should -Throw "*oscdimg.exe was not found*"
+        }
+    }
+
+    Context "Get-OscdimgPath" {
+        It "prefers the amd64 Deployment Tools path" {
+            $preferred = Join-Path $windowsKitsRoot "10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe"
+            Mock Test-Path { return $true } -ParameterFilter { $LiteralPath -eq $preferred }
+            Mock Get-ChildItem { throw "search should not run" }
+
+            Get-OscdimgPath | Should -Be $preferred
+        }
+
+        It "returns null when the Windows Kits folder is missing" {
+            Mock Test-Path { return $false }
+
+            Get-OscdimgPath | Should -BeNullOrEmpty
         }
     }
 

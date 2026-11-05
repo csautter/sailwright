@@ -103,7 +103,7 @@ func installCommandForHost(hostOs alchemy_build.HostOsType, projectDir string, o
 	}
 }
 
-const installHyperVHint = "Hyper-V is only needed to build, create or run sailwright VMs with the Hyper-V engine on this Windows host. Local provisioning (sailwright provision local) and VirtualBox VMs work without it. Enabling Hyper-V needs hardware virtualization (nested virtualization when Windows itself runs in a VM) and a Windows restart."
+const installHyperVHint = "Hyper-V is only needed to build, create or run sailwright VMs with the Hyper-V engine on this Windows host. Local provisioning (sailwright provision local) and VirtualBox VMs work without it. Enabling Hyper-V needs hardware virtualization (nested virtualization when Windows itself runs in a VM) and a Windows restart; it also installs oscdimg from the Windows ADK for Hyper-V builds."
 
 const installVagrantHint = "Vagrant is only needed to create, start, stop or destroy sailwright VMs on this Windows host (the Hyper-V engine drives VMs through Vagrant). Local provisioning (sailwright provision local) works without it."
 
