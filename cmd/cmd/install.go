@@ -21,6 +21,7 @@ type installCommandSpec struct {
 type installCommandOptions struct {
 	withGo     bool
 	virtualBox bool
+	hyperV     bool
 }
 
 var runInstallCommand = func(spec installCommandSpec) error {
@@ -46,6 +47,9 @@ func installCommandForHost(hostOs alchemy_build.HostOsType, projectDir string, o
 	if options.virtualBox && hostOs != alchemy_build.HostOsWindows {
 		return installCommandSpec{}, fmt.Errorf("install --virtualbox is only supported for host OS: %s", hostOs)
 	}
+	if options.hyperV && hostOs != alchemy_build.HostOsWindows {
+		return installCommandSpec{}, fmt.Errorf("install --hyperv is only supported for host OS: %s", alchemy_build.HostOsWindows)
+	}
 
 	switch hostOs {
 	case alchemy_build.HostOsDarwin:
@@ -68,6 +72,9 @@ func installCommandForHost(hostOs alchemy_build.HostOsType, projectDir string, o
 		if options.virtualBox {
 			args = append(args, "-VirtualBox")
 		}
+		if options.hyperV {
+			args = append(args, "-HyperV")
+		}
 		return installCommandSpec{
 			executable: "powershell",
 			args:       args,
@@ -89,18 +96,57 @@ func installCommandForHost(hostOs alchemy_build.HostOsType, projectDir string, o
 	}
 }
 
+const installHyperVHint = "Hyper-V is only needed to build, create or run sailwright VMs with the Hyper-V engine on this Windows host. Local provisioning (sailwright provision local) and VirtualBox VMs work without it. Enabling Hyper-V needs hardware virtualization (nested virtualization when Windows itself runs in a VM) and a Windows restart."
+
+// resolveInstallHyperV decides whether the Windows installer enables Hyper-V.
+// Hyper-V is opt-in: an explicit --hyperv / --hyperv=false wins, an
+// interactive terminal is asked (default no), and non-interactive runs such
+// as the agent gateway skip it.
+func resolveInstallHyperV(cmd *cobra.Command, hostOs alchemy_build.HostOsType) (bool, error) {
+	if cmd.Flags().Changed("hyperv") || hostOs != alchemy_build.HostOsWindows {
+		return installHyperV, nil
+	}
+
+	if !isInteractiveInput(cmd.InOrStdin()) {
+		fmt.Fprintf(cmd.OutOrStdout(), "ℹ️  Skipping Hyper-V setup. %s Run \"sailwright install --hyperv\" to enable it.\n", installHyperVHint)
+		return false, nil
+	}
+
+	confirmed, err := promptForConfirmationFunc(cmd.InOrStdin(), cmd.OutOrStdout(), installHyperVHint+" Enable Hyper-V now? [y/N]: ")
+	if err != nil {
+		return false, fmt.Errorf("failed to read the Hyper-V answer: %w", err)
+	}
+	if !confirmed {
+		fmt.Fprintln(cmd.OutOrStdout(), "Skipping Hyper-V setup. Run \"sailwright install --hyperv\" to enable it later.")
+	}
+	return confirmed, nil
+}
+
 var installWithGo bool
 var installVirtualBox bool
+var installHyperV bool
 
 var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install host dependencies for the current operating system",
-	Args:  cobra.NoArgs,
+	Long: `Install host dependencies for the current operating system.
+
+On Windows, Hyper-V is opt-in: pass --hyperv to enable it (the optional
+features on Windows client editions, the Hyper-V role on Windows Server), or
+answer the prompt in an interactive terminal. Hyper-V is only needed for VMs
+with the Hyper-V engine. Enabling it needs a Windows restart; run
+"sailwright install --hyperv" again afterwards to verify the setup.`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		hostOs := alchemy_build.GetCurrentHostOs()
 		projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
 
-		spec, err := installCommandForHost(hostOs, projectDir, installCommandOptions{withGo: installWithGo, virtualBox: installVirtualBox})
+		hyperV, err := resolveInstallHyperV(cmd, hostOs)
+		if err != nil {
+			return err
+		}
+
+		spec, err := installCommandForHost(hostOs, projectDir, installCommandOptions{withGo: installWithGo, virtualBox: installVirtualBox, hyperV: hyperV})
 		if err != nil {
 			return err
 		}
@@ -113,5 +159,6 @@ var installCmd = &cobra.Command{
 func init() {
 	installCmd.Flags().BoolVar(&installWithGo, "with-go", false, "Also install the Go toolchain when supported on the current host OS")
 	installCmd.Flags().BoolVar(&installVirtualBox, "virtualbox", false, "Also install VirtualBox on Windows hosts")
+	installCmd.Flags().BoolVar(&installHyperV, "hyperv", false, "Also enable Hyper-V on Windows hosts (asked interactively when omitted; needs a restart)")
 	rootCmd.AddCommand(installCmd)
 }

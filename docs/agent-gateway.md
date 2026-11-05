@@ -305,7 +305,7 @@ screen_stuck_after: 15m            # hint when console and output stay unchanged
 | `vm_provision` | safe | `provision <vm>` with an embedded playbook, `--check`, `--verbosity` |
 | `artifact_pull` | safe | `pull <ref> --yes --no-docker-credentials` for allowlisted references |
 | `provision_local` | approval | `provision local --yes [--check]` on this host |
-| `install` | approval | `install [--with-go] [--virtualbox]` |
+| `install` | approval | `install [--with-go] [--virtualbox] [--hyperv]` |
 | `run_cli` | safe or approval | any command line; safe if it parses into the safe set |
 | `job_status`, `job_output`, `job_cancel`, `job_list` | control | job handling |
 | `job_screenshot` | safe | VM console image of a build job (read-only) |

@@ -97,7 +97,7 @@ func isFlagValue(args []string, i int) bool {
 	switch previous {
 	case "--check", "--dry-run", "--yes", "-y", "--headless", "--verbose", "-v", "--no-cache",
 		"--force-winrm-uninstall", "--force-ssh-uninstall", "--plain-http", "--insecure-skip-tls-verify",
-		"--password-stdin", "--no-docker-credentials", "--with-go", "--virtualbox", "--refresh", "--json", "--show-password",
+		"--password-stdin", "--no-docker-credentials", "--with-go", "--virtualbox", "--hyperv", "--refresh", "--json", "--show-password",
 		"--no-prebuilt", "--ask-become-pass", "-K":
 		return false
 	}

@@ -86,6 +86,8 @@ BeforeAll {
             }
         }
         Mock Show-InstalledToolVersions { $script:ShownToolVersionsRoot = $CygwinRoot }
+        Mock Ensure-HyperVEnabled { return $true }
+        Mock Show-HyperVStatus {}
     }
 }
 
@@ -390,6 +392,212 @@ Describe "sailwright self setup Cygwin helpers" -Skip:(-not $IsWindows) {
             @($script:EnsuredPackages | Where-Object { $_.PackageName -eq "virtualbox" }).Count | Should -Be 1
             $script:EnsuredPaths | Should -Contain "C:\Program Files\Oracle\VirtualBox"
             $script:CygwinEnsureCalls[0].InstallRoot | Should -Be $script:PreferredRoot
+        }
+
+        It "skips Hyper-V by default" {
+            Initialize-SelfSetupMainMocks
+
+            $output = Invoke-DevAlchemySelfSetup
+
+            Should -Invoke Ensure-HyperVEnabled -Times 0 -Exactly
+            Should -Invoke Show-HyperVStatus -Times 0 -Exactly
+            ($output -join "`n") | Should -Match "sailwright install --hyperv"
+            $script:ShownToolVersionsRoot | Should -Be $script:PreferredRoot
+        }
+
+        It "enables Hyper-V and reports a pending restart when -HyperV is supplied" {
+            Initialize-SelfSetupMainMocks
+
+            $null = Invoke-DevAlchemySelfSetup -HyperV
+
+            Should -Invoke Ensure-HyperVEnabled -Times 1 -Exactly
+            Should -Invoke Show-HyperVStatus -Times 1 -Exactly -ParameterFilter { $RestartRequired -eq $true }
+        }
+
+        It "stops before package installs when Hyper-V cannot be enabled" {
+            Initialize-SelfSetupMainMocks
+            Mock Ensure-HyperVEnabled { throw "no virtualization" }
+
+            { Invoke-DevAlchemySelfSetup -HyperV } | Should -Throw "no virtualization"
+            Should -Invoke Ensure-ChocolateyInstalled -Times 0 -Exactly
+        }
+    }
+}
+
+Describe "sailwright self setup Hyper-V helpers" -Skip:(-not $IsWindows) {
+    BeforeEach {
+        Mock Write-Host {}
+    }
+
+    Context "Ensure-HyperVClientFeature" {
+        BeforeEach {
+            Mock Assert-HyperVCapableProcessor {}
+            Mock Enable-WindowsOptionalFeature { return [pscustomobject]@{ RestartNeeded = $true } }
+        }
+
+        It "does nothing when all Hyper-V features are enabled" {
+            Mock Get-WindowsOptionalFeature { return [pscustomobject]@{ FeatureName = $FeatureName; State = "Enabled" } }
+            Mock Test-HyperVRestartPending { return $false }
+
+            Ensure-HyperVClientFeature | Should -BeFalse
+            Should -Invoke Enable-WindowsOptionalFeature -Times 0 -Exactly
+        }
+
+        It "reports a pending restart when DISM already shows the features as enabled" {
+            Mock Get-WindowsOptionalFeature { return [pscustomobject]@{ FeatureName = $FeatureName; State = "Enabled" } }
+            Mock Test-HyperVRestartPending { return $true }
+
+            Ensure-HyperVClientFeature | Should -BeTrue
+            Should -Invoke Enable-WindowsOptionalFeature -Times 0 -Exactly
+        }
+
+        It "reports a pending restart without enabling again" {
+            Mock Get-WindowsOptionalFeature {
+                $state = if ($FeatureName -eq "Microsoft-Hyper-V") { "EnablePending" } else { "Enabled" }
+                return [pscustomobject]@{ FeatureName = $FeatureName; State = $state }
+            }
+
+            Ensure-HyperVClientFeature | Should -BeTrue
+            Should -Invoke Enable-WindowsOptionalFeature -Times 0 -Exactly
+        }
+
+        It "enables Microsoft-Hyper-V-All without restarting when a feature is disabled" {
+            Mock Get-WindowsOptionalFeature { return [pscustomobject]@{ FeatureName = $FeatureName; State = "Disabled" } }
+
+            Ensure-HyperVClientFeature | Should -BeTrue
+            Should -Invoke Assert-HyperVCapableProcessor -Times 1 -Exactly
+            Should -Invoke Enable-WindowsOptionalFeature -Times 1 -Exactly -ParameterFilter {
+                $FeatureName -eq "Microsoft-Hyper-V-All" -and $All -and $NoRestart -and $Online
+            }
+        }
+
+        It "returns false when enabling needs no restart" {
+            Mock Get-WindowsOptionalFeature { return [pscustomobject]@{ FeatureName = $FeatureName; State = "Disabled" } }
+            Mock Enable-WindowsOptionalFeature { return [pscustomobject]@{ RestartNeeded = $false } }
+
+            Ensure-HyperVClientFeature | Should -BeFalse
+        }
+
+        It "throws on Windows editions without Hyper-V" {
+            Mock Get-WindowsOptionalFeature { return $null }
+
+            { Ensure-HyperVClientFeature } | Should -Throw "*not available on this Windows edition*"
+            Should -Invoke Enable-WindowsOptionalFeature -Times 0 -Exactly
+        }
+
+        It "does not enable Hyper-V when the processor check fails" {
+            Mock Get-WindowsOptionalFeature { return [pscustomobject]@{ FeatureName = $FeatureName; State = "Disabled" } }
+            Mock Assert-HyperVCapableProcessor { throw "no virtualization" }
+
+            { Ensure-HyperVClientFeature } | Should -Throw "no virtualization"
+            Should -Invoke Enable-WindowsOptionalFeature -Times 0 -Exactly
+        }
+    }
+
+    Context "Ensure-HyperVServerFeature" {
+        BeforeEach {
+            Mock Assert-HyperVCapableProcessor {}
+            # ServerManager cmdlets are missing on Windows client hosts; stub them so they can be mocked.
+            function Get-WindowsFeature { param([string[]]$Name) throw "Unmocked Get-WindowsFeature $Name" }
+            function Install-WindowsFeature { param([string]$Name, [switch]$IncludeManagementTools) throw "Unmocked Install-WindowsFeature $Name $IncludeManagementTools" }
+            Mock Install-WindowsFeature { return [pscustomobject]@{ Success = $true; RestartNeeded = "Yes"; ExitCode = "SuccessRestartRequired" } }
+        }
+
+        It "does nothing when the Hyper-V role is installed" {
+            Mock Get-WindowsFeature { foreach ($featureName in $Name) { [pscustomobject]@{ Name = $featureName; InstallState = "Installed" } } }
+            Mock Test-HyperVRestartPending { return $false }
+
+            Ensure-HyperVServerFeature | Should -BeFalse
+            Should -Invoke Install-WindowsFeature -Times 0 -Exactly
+        }
+
+        It "reports a pending restart without installing again" {
+            Mock Get-WindowsFeature { foreach ($featureName in $Name) { [pscustomobject]@{ Name = $featureName; InstallState = "InstallPending" } } }
+
+            Ensure-HyperVServerFeature | Should -BeTrue
+            Should -Invoke Install-WindowsFeature -Times 0 -Exactly
+        }
+
+        It "installs the role with management tools when it is missing" {
+            Mock Get-WindowsFeature { foreach ($featureName in $Name) { [pscustomobject]@{ Name = $featureName; InstallState = "Available" } } }
+
+            Ensure-HyperVServerFeature | Should -BeTrue
+            Should -Invoke Install-WindowsFeature -Times 1 -Exactly -ParameterFilter { $Name -eq "Hyper-V" -and $IncludeManagementTools }
+        }
+
+        It "throws when the role installation fails" {
+            Mock Get-WindowsFeature { foreach ($featureName in $Name) { [pscustomobject]@{ Name = $featureName; InstallState = "Available" } } }
+            Mock Install-WindowsFeature { return [pscustomobject]@{ Success = $false; RestartNeeded = "No"; ExitCode = "Failed" } }
+
+            { Ensure-HyperVServerFeature } | Should -Throw "*Hyper-V role failed*"
+        }
+    }
+
+    Context "Test-HyperVRestartPending" {
+        It "is false once the Hyper-V management service exists" {
+            Mock Get-Service { return [pscustomobject]@{ Name = "vmms"; Status = "Running" } }
+            Mock Test-Path { return $true }
+
+            Test-HyperVRestartPending | Should -BeFalse
+        }
+
+        It "is true when vmms is missing and servicing waits for a restart" {
+            Mock Get-Service { return $null }
+            Mock Test-Path { return $true } -ParameterFilter { $LiteralPath -like "*Component Based Servicing\RebootPending" }
+
+            Test-HyperVRestartPending | Should -BeTrue
+        }
+
+        It "is false when vmms is missing but no restart is pending" {
+            Mock Get-Service { return $null }
+            Mock Test-Path { return $false }
+
+            Test-HyperVRestartPending | Should -BeFalse
+        }
+    }
+
+    Context "Ensure-HyperVEnabled" {
+        It "uses the optional features on Windows client editions" {
+            Mock Test-IsWindowsServer { return $false }
+            Mock Ensure-HyperVClientFeature { return $true }
+            Mock Ensure-HyperVServerFeature { throw "server path should not run" }
+
+            Ensure-HyperVEnabled | Should -BeTrue
+        }
+
+        It "uses the Hyper-V role on Windows Server" {
+            Mock Test-IsWindowsServer { return $true }
+            Mock Ensure-HyperVClientFeature { throw "client path should not run" }
+            Mock Ensure-HyperVServerFeature { return $false }
+
+            Ensure-HyperVEnabled | Should -BeFalse
+        }
+    }
+
+    Context "Assert-HyperVCapableProcessor" {
+        It "skips the processor flags when a hypervisor is already running" {
+            Mock Get-CimInstance -ParameterFilter { $ClassName -eq "Win32_ComputerSystem" } { return [pscustomobject]@{ HypervisorPresent = $true } }
+            Mock Get-CimInstance -ParameterFilter { $ClassName -eq "Win32_Processor" } { throw "processor should not be queried" }
+
+            { Assert-HyperVCapableProcessor } | Should -Not -Throw
+        }
+
+        It "throws when the processor does not expose virtualization extensions" {
+            Mock Get-CimInstance -ParameterFilter { $ClassName -eq "Win32_ComputerSystem" } { return [pscustomobject]@{ HypervisorPresent = $false } }
+            Mock Get-CimInstance -ParameterFilter { $ClassName -eq "Win32_Processor" } {
+                return [pscustomobject]@{ Name = "cpu"; VMMonitorModeExtensions = $false; VirtualizationFirmwareEnabled = $false }
+            }
+
+            { Assert-HyperVCapableProcessor } | Should -Throw "*nested virtualization*"
+        }
+
+        It "throws when virtualization is disabled in firmware" {
+            Mock Get-CimInstance -ParameterFilter { $ClassName -eq "Win32_ComputerSystem" } { return [pscustomobject]@{ HypervisorPresent = $false } }
+            Mock Get-CimInstance -ParameterFilter { $ClassName -eq "Win32_Processor" } {
+                return [pscustomobject]@{ Name = "cpu"; VMMonitorModeExtensions = $true; VirtualizationFirmwareEnabled = $false }
+            }
+
+            { Assert-HyperVCapableProcessor } | Should -Throw "*disabled in the firmware*"
         }
     }
 }

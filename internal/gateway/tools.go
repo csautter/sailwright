@@ -159,6 +159,7 @@ type provisionLocalInput struct {
 type installInput struct {
 	WithGo     bool   `json:"with_go,omitempty"`
 	VirtualBox bool   `json:"virtualbox,omitempty"`
+	HyperV     bool   `json:"hyperv,omitempty" jsonschema:"Windows only: also enable Hyper-V (needs a host restart)"`
 	Reason     string `json:"reason,omitempty" jsonschema:"why this is needed; shown to the human approver"`
 }
 
@@ -332,6 +333,9 @@ func (g *Gateway) toolInstall(_ context.Context, req *mcp.CallToolRequest, in in
 	}
 	if in.VirtualBox {
 		argv = append(argv, "--virtualbox")
+	}
+	if in.HyperV {
+		argv = append(argv, "--hyperv")
 	}
 	return g.submitApproval("install", argv, g.dirs.Work, nil, "install changes host packages", in.Reason, false, req, structParams(in))
 }
