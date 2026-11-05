@@ -4,6 +4,10 @@ packer {
       version = ">= 1.1.5"
       source  = "github.com/hashicorp/hyperv"
     }
+    vagrant = {
+      version = ">= 1.1.7"
+      source  = "github.com/hashicorp/vagrant"
+    }
   }
 }
 
