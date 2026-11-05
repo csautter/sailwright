@@ -305,7 +305,7 @@ func runServe(parent context.Context, flags serveFlags) error {
 		return err
 	}
 	defer listeners.Close()
-	printBanner(cfg, pinned, listeners.SocketPath, listeners.ViewURL, approver.Enabled())
+	printBanner(cfg, pinned, listeners.SocketPath, listeners.ViewURL, approver)
 	if flags.bypass {
 		fmt.Println("WARNING: --bypass-approvals is set: every request and VM access is approved automatically. Use it only on disposable test hosts.")
 	}
@@ -451,15 +451,31 @@ The gateway must be stopped.`,
 	return command
 }
 
-func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, socketPath string, viewURL string, approvals bool) {
-	writeBanner(os.Stdout, cfg, pinned, socketPath, viewURL, approvals)
+func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, socketPath string, viewURL string, approver gateway.Approver) {
+	writeBanner(os.Stdout, cfg, pinned, socketPath, viewURL, approver)
 }
 
-func writeBanner(out io.Writer, cfg gateway.Config, pinned gateway.PinnedBinary, socketPath string, viewURL string, approvals bool) {
-	approvalState := "disabled (safe set only)"
-	if approvals {
-		approvalState = "enabled on this terminal"
+func bannerApprovalState(approver gateway.Approver) string {
+	switch {
+	case approver == nil || !approver.Enabled():
+		return "disabled (safe set only)"
+	case isAutoApprover(approver):
+		return "BYPASSED (--bypass-approvals approves everything automatically)"
+	default:
+		return "enabled on this terminal"
 	}
+}
+
+func isAutoApprover(approver gateway.Approver) bool {
+	switch approver.(type) {
+	case gateway.AutoApprover, *gateway.AutoApprover:
+		return true
+	}
+	return false
+}
+
+func writeBanner(out io.Writer, cfg gateway.Config, pinned gateway.PinnedBinary, socketPath string, viewURL string, approver gateway.Approver) {
+	approvalState := bannerApprovalState(approver)
 	socket := "not available on this OS (use TCP)"
 	if socketPath != "" {
 		socket = socketPath
