@@ -89,6 +89,11 @@ type vmLookup struct {
 
 const vmInfoCacheTTL = 2 * time.Second
 
+// vmQueryTimeout bounds one `vm info` or `vm identity` run. On Hyper-V both
+// start Vagrant and several PowerShell queries, which takes well over 30s on a
+// busy or nested Windows host right after a VM boots.
+const vmQueryTimeout = 2 * time.Minute
+
 func (r *CLIManagedVMResolver) Resolve(ctx context.Context, osName, osType, arch string) (ManagedVM, error) {
 	return r.resolve(ctx, osName, osType, arch, true)
 }
@@ -187,7 +192,7 @@ func (r *CLIManagedVMResolver) query(key string, lookup *vmLookup, osName, osTyp
 }
 
 func (r *CLIManagedVMResolver) run(parent context.Context, osName, osType, arch string) (ManagedVM, error) {
-	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	ctx, cancel := context.WithTimeout(parent, vmQueryTimeout)
 	defer cancel()
 	args := []string{"vm", "info", osName, "--arch", arch, "--json"}
 	if osType != "" {
@@ -268,7 +273,7 @@ func (r *CLIManagedVMResolver) Identify(ctx context.Context, osName, osType, arc
 	r.mu.Unlock()
 	defer r.workers.Done()
 	// Close cancels the lookup through the owner lifetime, like shared lookups.
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, vmQueryTimeout)
 	defer cancel()
 	defer context.AfterFunc(lifetime, cancel)()
 	args := []string{"vm", "identity", osName, "--arch", arch}
