@@ -187,5 +187,11 @@ runs and whether the Default Switch exists. `--hyperv` also installs `oscdimg`
 from the Windows ADK Deployment Tools and adds it to the machine `PATH`;
 Packer needs it to build Hyper-V images.
 
+Sailwright VMs on Hyper-V expose virtualization extensions to the guest by
+default. When Windows itself runs in a VM whose hypervisor cannot pass them on,
+Hyper-V refuses to start such a VM; `sailwright create` and `sailwright start`
+then turn the extensions off for that VM and retry once. Set
+`VAGRANT_HYPERV_NESTED_VIRTUALIZATION=false` to skip the first attempt.
+
 Vagrant is installed in a pinned version through Chocolatey and added to the
 `PATH`.
