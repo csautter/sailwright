@@ -1,7 +1,8 @@
 param(
     [switch]$WithGo,
     [switch]$VirtualBox,
-    [switch]$HyperV
+    [switch]$HyperV,
+    [switch]$Vagrant
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,6 +25,8 @@ $cygwinVersion = "3.6.9"
 $cygGetVersion = "1.2.2"
 # renovate: datasource=nuget depName=virtualbox versioning=nuget registryUrl=https://community.chocolatey.org/api/v2/
 $virtualBoxVersion = "7.2.8"
+# renovate: datasource=nuget depName=vagrant versioning=nuget registryUrl=https://community.chocolatey.org/api/v2/
+$vagrantVersion = "2.4.9"
 # renovate: datasource=pypi depName=ansible versioning=pep440
 $ansibleVersion = "14.5.0"
 # renovate: datasource=pypi depName=pywinrm versioning=pep440
@@ -64,7 +67,8 @@ function Invoke-SelfElevated {
     param(
         [switch]$WithGo,
         [switch]$VirtualBox,
-        [switch]$HyperV
+        [switch]$HyperV,
+        [switch]$Vagrant
     )
 
     $scriptPath = $PSCommandPath
@@ -89,6 +93,9 @@ function Invoke-SelfElevated {
     }
     if ($HyperV) {
         $argumentList += "-HyperV"
+    }
+    if ($Vagrant) {
+        $argumentList += "-Vagrant"
     }
 
     Write-Output "Requesting administrator privileges through UAC..."
@@ -1404,11 +1411,12 @@ function Invoke-DevAlchemySelfSetup {
     param(
         [switch]$WithGo,
         [switch]$VirtualBox,
-        [switch]$HyperV
+        [switch]$HyperV,
+        [switch]$Vagrant
     )
 
     if (-not (Test-IsAdministrator)) {
-        Invoke-SelfElevated -WithGo:$WithGo -VirtualBox:$VirtualBox -HyperV:$HyperV
+        Invoke-SelfElevated -WithGo:$WithGo -VirtualBox:$VirtualBox -HyperV:$HyperV -Vagrant:$Vagrant
     }
 
     # Hyper-V is opt-in: it is only needed for VMs with the Hyper-V engine.
@@ -1447,6 +1455,15 @@ function Invoke-DevAlchemySelfSetup {
         Write-Output "Skipping VirtualBox installation because -VirtualBox was not specified."
     }
 
+    # Vagrant is opt-in: sailwright drives VMs on Windows through it, but local
+    # provisioning does not need it.
+    if ($Vagrant) {
+        Ensure-ChocolateyPackage -PackageName "vagrant" -Version $vagrantVersion
+        Ensure-PathContains -PathEntry "C:\Program Files\Vagrant\bin"
+    } else {
+        Write-Output "Skipping Vagrant installation because -Vagrant was not specified. Vagrant is only needed to create and run sailwright VMs; run 'sailwright install --vagrant' to add it."
+    }
+
     Ensure-PathContains -PathEntry (Join-Path (Get-GitForWindowsRoot) "bin")
 
     foreach ($package in $cygwinPackages) {
@@ -1463,5 +1480,5 @@ function Invoke-DevAlchemySelfSetup {
 }
 
 if ($env:DEV_ALCHEMY_SELF_SETUP_IMPORT_ONLY -ne "1") {
-    Invoke-DevAlchemySelfSetup -WithGo:$WithGo -VirtualBox:$VirtualBox -HyperV:$HyperV
+    Invoke-DevAlchemySelfSetup -WithGo:$WithGo -VirtualBox:$VirtualBox -HyperV:$HyperV -Vagrant:$Vagrant
 }

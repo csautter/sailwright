@@ -12,6 +12,8 @@ the ways below; all of them install the same release archives from
 | Windows | [Install script](#install-script) | [Manual install](#manual-install) |
 
 After installing, set up the host dependencies with `sailwright install`.
+On Windows, Hyper-V and Vagrant are opt-in; see
+[Windows host dependencies](#windows-host-dependencies).
 
 ## Homebrew
 
@@ -137,3 +139,37 @@ keeps the error-handling settings local to the example.
 
 The README's [Manual install](../README.md#manual-install) section has a
 Windows example as well.
+
+## Windows host dependencies
+
+`sailwright install` on Windows installs the tools every workflow needs
+(Chocolatey, Git, make, Packer, Azure CLI, Python, Cygwin with Ansible). Two
+components are opt-in because local use, such as `sailwright provision local`,
+does not need them:
+
+| Component | Flag | Needed for |
+| --- | --- | --- |
+| Hyper-V | `--hyperv` | building, creating or running VMs with the Hyper-V engine |
+| Vagrant | `--vagrant` | creating, starting, stopping or destroying VMs (sailwright drives Windows VMs through Vagrant) |
+
+Without a flag, an interactive terminal explains each component and asks
+whether to add it (default: no). Non-interactive runs, such as CI or the agent
+gateway, skip both and print a hint. Pass `--hyperv=false` or
+`--vagrant=false` to skip the question. To create and run Hyper-V VMs, add
+both:
+
+```powershell
+sailwright.exe install --hyperv --vagrant
+```
+
+Hyper-V setup enables the optional features on Windows 10/11 Pro, Enterprise
+and Education, or installs the Hyper-V role on Windows Server. It needs
+hardware virtualization (nested virtualization when Windows itself runs in a
+VM) and stops before the package installs when the edition or processor cannot
+run Hyper-V. The installer never restarts Windows on its own: when it reports a
+pending restart, restart Windows and run `sailwright.exe install --hyperv`
+again. Once Hyper-V is active it reports whether the Hyper-V management service
+runs and whether the Default Switch exists.
+
+Vagrant is installed in a pinned version through Chocolatey and added to the
+`PATH`.

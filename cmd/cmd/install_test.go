@@ -316,3 +316,114 @@ func TestResolveInstallHyperVNeverAsksOnOtherHosts(t *testing.T) {
 		}
 	}
 }
+
+func TestInstallCommandForHostWindowsWithVagrant(t *testing.T) {
+	projectDir := filepath.Join("tmp", "dev-alchemy")
+
+	spec, err := installCommandForHost(alchemy_build.HostOsWindows, projectDir, installCommandOptions{hyperV: true, vagrant: true})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	expectedScriptPath := filepath.Join(projectDir, "scripts", "windows", "sailwright-self-setup.ps1")
+	expectedArgs := []string{"-ExecutionPolicy", "Bypass", "-File", expectedScriptPath, "-HyperV", "-Vagrant"}
+	if !reflect.DeepEqual(spec.args, expectedArgs) {
+		t.Fatalf("expected args %v, got %v", expectedArgs, spec.args)
+	}
+}
+
+func TestInstallCommandForHostVagrantUnsupported(t *testing.T) {
+	for _, hostOs := range []alchemy_build.HostOsType{alchemy_build.HostOsDarwin, alchemy_build.HostOsLinux} {
+		if _, err := installCommandForHost(hostOs, "/tmp/dev-alchemy", installCommandOptions{vagrant: true}); err == nil {
+			t.Fatalf("expected unsupported --vagrant error for %s", hostOs)
+		}
+	}
+}
+
+func newInstallVagrantTestCommand(t *testing.T, input io.Reader, args ...string) (*cobra.Command, *bytes.Buffer) {
+	t.Helper()
+	previous := installVagrant
+	t.Cleanup(func() { installVagrant = previous })
+	installVagrant = false
+
+	command := &cobra.Command{}
+	command.Flags().BoolVar(&installVagrant, "vagrant", false, "")
+	if err := command.Flags().Parse(args); err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	var output bytes.Buffer
+	command.SetIn(input)
+	command.SetOut(&output)
+	return command, &output
+}
+
+func TestResolveInstallVagrantExplicitFlagSkipsPrompt(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"--vagrant"}, true},
+		{[]string{"--vagrant=false"}, false},
+	} {
+		command, _ := newInstallVagrantTestCommand(t, bytes.NewBufferString(""), tc.args...)
+		previous := promptForConfirmationFunc
+		promptForConfirmationFunc = func(_ io.Reader, _ io.Writer, _ string) (bool, error) {
+			t.Fatalf("%v: unexpected prompt", tc.args)
+			return false, nil
+		}
+
+		got, err := resolveInstallVagrant(command, alchemy_build.HostOsWindows)
+		promptForConfirmationFunc = previous
+		if err != nil || got != tc.want {
+			t.Fatalf("%v: got %v, %v, want %v", tc.args, got, err, tc.want)
+		}
+	}
+}
+
+func TestResolveInstallVagrantAsksInteractiveWindowsUsers(t *testing.T) {
+	command, _ := newInstallVagrantTestCommand(t, bytes.NewBufferString(""))
+	previous := promptForConfirmationFunc
+	t.Cleanup(func() { promptForConfirmationFunc = previous })
+	var asked string
+	promptForConfirmationFunc = func(_ io.Reader, _ io.Writer, prompt string) (bool, error) {
+		asked = prompt
+		return true, nil
+	}
+
+	got, err := resolveInstallVagrant(command, alchemy_build.HostOsWindows)
+	if err != nil || !got {
+		t.Fatalf("got %v, %v, want true", got, err)
+	}
+	if !strings.Contains(asked, "Install Vagrant now? [y/N]") || !strings.Contains(asked, "Local provisioning") {
+		t.Fatalf("unexpected Vagrant prompt %q", asked)
+	}
+}
+
+func TestResolveInstallVagrantDefaultsToNo(t *testing.T) {
+	command, output := newInstallVagrantTestCommand(t, bytes.NewBufferString("\n"))
+
+	got, err := resolveInstallVagrant(command, alchemy_build.HostOsWindows)
+	if err != nil || got {
+		t.Fatalf("got %v, %v, want false for an empty answer", got, err)
+	}
+	if !strings.Contains(output.String(), "sailwright install --vagrant") {
+		t.Fatalf("expected a hint how to add Vagrant later, got %q", output.String())
+	}
+}
+
+func TestResolveInstallVagrantSkipsNonInteractiveRuns(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	t.Cleanup(func() { _ = devNull.Close() })
+	command, output := newInstallVagrantTestCommand(t, devNull)
+
+	got, err := resolveInstallVagrant(command, alchemy_build.HostOsWindows)
+	if err != nil || got {
+		t.Fatalf("got %v, %v, want false", got, err)
+	}
+	if !strings.Contains(output.String(), "Skipping Vagrant installation") || !strings.Contains(output.String(), "create, start, stop or destroy") {
+		t.Fatalf("expected a skip hint, got %q", output.String())
+	}
+}

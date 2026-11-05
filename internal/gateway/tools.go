@@ -160,6 +160,7 @@ type installInput struct {
 	WithGo     bool   `json:"with_go,omitempty"`
 	VirtualBox bool   `json:"virtualbox,omitempty"`
 	HyperV     bool   `json:"hyperv,omitempty" jsonschema:"Windows only: also enable Hyper-V (needs a host restart)"`
+	Vagrant    bool   `json:"vagrant,omitempty" jsonschema:"Windows only: also install Vagrant, needed to create and run VMs"`
 	Reason     string `json:"reason,omitempty" jsonschema:"why this is needed; shown to the human approver"`
 }
 
@@ -336,6 +337,9 @@ func (g *Gateway) toolInstall(_ context.Context, req *mcp.CallToolRequest, in in
 	}
 	if in.HyperV {
 		argv = append(argv, "--hyperv")
+	}
+	if in.Vagrant {
+		argv = append(argv, "--vagrant")
 	}
 	return g.submitApproval("install", argv, g.dirs.Work, nil, "install changes host packages", in.Reason, false, req, structParams(in))
 }

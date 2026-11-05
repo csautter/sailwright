@@ -405,6 +405,28 @@ Describe "sailwright self setup Cygwin helpers" -Skip:(-not $IsWindows) {
             $script:ShownToolVersionsRoot | Should -Be $script:PreferredRoot
         }
 
+        It "skips Vagrant by default with a hint" {
+            Initialize-SelfSetupMainMocks
+
+            $output = Invoke-DevAlchemySelfSetup
+
+            @($script:EnsuredPackages | Where-Object { $_.PackageName -eq "vagrant" }).Count | Should -Be 0
+            $script:EnsuredPaths | Should -Not -Contain "C:\Program Files\Vagrant\bin"
+            ($output -join "`n") | Should -Match "sailwright install --vagrant"
+        }
+
+        It "installs the pinned Vagrant and adds its path when -Vagrant is supplied" {
+            Initialize-SelfSetupMainMocks
+
+            $null = Invoke-DevAlchemySelfSetup -Vagrant
+
+            $vagrantPackages = @($script:EnsuredPackages | Where-Object { $_.PackageName -eq "vagrant" })
+            $vagrantPackages.Count | Should -Be 1
+            $vagrantPackages[0].Version | Should -Be $vagrantVersion
+            $script:EnsuredPaths | Should -Contain "C:\Program Files\Vagrant\bin"
+            Should -Invoke Ensure-HyperVEnabled -Times 0 -Exactly
+        }
+
         It "enables Hyper-V and reports a pending restart when -HyperV is supplied" {
             Initialize-SelfSetupMainMocks
 

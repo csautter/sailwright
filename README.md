@@ -224,23 +224,8 @@ sailwright.exe install --with-go --virtualbox
 
 This runs
 [scripts/windows/sailwright-self-setup.ps1](./scripts/windows/sailwright-self-setup.ps1).
-
-Hyper-V is opt-in. You only need it to build, create or run VMs with the
-Hyper-V engine; local provisioning and VirtualBox VMs work without it. In an
-interactive terminal `sailwright.exe install` asks whether to enable it
-(default: no). Pass `--hyperv` to enable it without asking, or
-`--hyperv=false` to skip the question:
-
-```powershell
-sailwright.exe install --hyperv
-```
-
-This enables the optional features on Windows 10/11 Pro, Enterprise and
-Education, or the Hyper-V role on Windows Server. Hyper-V needs hardware
-virtualization (nested virtualization when Windows itself runs in a VM). The
-installer never restarts Windows on its own; when it reports a pending restart,
-restart Windows and run `sailwright.exe install --hyperv` again to verify
-Hyper-V.
+To create and run VMs, also pass `--hyperv --vagrant` (both are opt-in); see
+[Windows host dependencies](./docs/installation.md#windows-host-dependencies).
 
 ### 3. Discover what your host supports
 
