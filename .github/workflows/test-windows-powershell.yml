@@ -144,6 +144,9 @@ jobs:
           Get-ChildItem -Path "HKLM:\SOFTWARE\Python\PythonCore" -ErrorAction SilentlyContinue |
               ForEach-Object { Write-Output "PythonCore $($_.PSChildName) -> $((Get-ItemProperty -Path "$($_.PSPath)\InstallPath" -ErrorAction SilentlyContinue).'(default)')" }
 
+      # Hyper-V stays off here (opt-in, and the job is non-interactive):
+      # GitHub-hosted runners offer no nested virtualization. The Pester
+      # tests cover the Hyper-V setup.
       - name: Run sailwright install
         shell: pwsh
         run: go run ./cmd/main.go install
