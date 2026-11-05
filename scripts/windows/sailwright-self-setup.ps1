@@ -597,7 +597,9 @@ function Get-CygwinRootDirIfAvailable {
         "D:\cygwin"
     )
     foreach ($candidate in $fallbackCandidates) {
-        if (Test-Path (Join-Path $candidate "bin\bash.exe")) {
+        # Join-Path resolves the drive and throws DriveNotFoundException in
+        # Windows PowerShell 5.1 when a candidate drive such as D: is absent.
+        if (Test-Path -LiteralPath ([System.IO.Path]::Combine($candidate, "bin\bash.exe"))) {
             return $candidate
         }
     }
