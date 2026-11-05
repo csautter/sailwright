@@ -11,9 +11,8 @@ the ways below; all of them install the same release archives from
 | Linux | [Install script](#install-script) | [Homebrew](#homebrew) |
 | Windows | [Install script](#install-script) | [Manual install](#manual-install) |
 
-After installing, set up the host dependencies with `sailwright install`.
-On Windows, Hyper-V and Vagrant are opt-in; see
-[Windows host dependencies](#windows-host-dependencies).
+After installing, set up the host dependencies with `sailwright install`; see
+[Host dependencies](#host-dependencies).
 
 ## Homebrew
 
@@ -140,23 +139,38 @@ keeps the error-handling settings local to the example.
 The README's [Manual install](../README.md#manual-install) section has a
 Windows example as well.
 
-## Windows host dependencies
+## Host dependencies
 
-`sailwright install` on Windows installs the tools every workflow needs
-(Chocolatey, Git, make, Packer, Azure CLI, Python, Cygwin with Ansible). Two
-components are opt-in because local use, such as `sailwright provision local`,
-does not need them:
+`sailwright install` installs the host tools Sailwright needs on the current
+operating system:
+
+| Host | Script it runs |
+| --- | --- |
+| macOS | [scripts/macos/sailwright-install-dependencies.sh](../scripts/macos/sailwright-install-dependencies.sh) |
+| Ubuntu / Debian | [scripts/linux/sailwright-install-dependencies.sh](../scripts/linux/sailwright-install-dependencies.sh) |
+| Windows | [scripts/windows/sailwright-self-setup.ps1](../scripts/windows/sailwright-self-setup.ps1) |
+
+On every host, `sailwright install --with-go` also bootstraps the Go toolchain.
+
+### Windows host dependencies
+
+Run `sailwright.exe install` from your normal shell; Windows prompts for
+elevation through UAC if needed. It installs the tools every workflow needs
+(Chocolatey, Git, make, Packer, Azure CLI, Python, Cygwin with Ansible).
+Further components are optional:
 
 | Component | Flag | Needed for |
 | --- | --- | --- |
+| VirtualBox | `--virtualbox` | VMs with the VirtualBox engine |
 | Hyper-V | `--hyperv` | building, creating or running VMs with the Hyper-V engine |
-| Vagrant | `--vagrant` | creating, starting, stopping or destroying VMs (sailwright drives Windows VMs through Vagrant) |
+| Vagrant | `--vagrant` | creating, starting, stopping or destroying VMs (Sailwright drives Windows VMs through Vagrant) |
 
-Without a flag, an interactive terminal explains each component and asks
-whether to add it (default: no). Non-interactive runs, such as CI or the agent
-gateway, skip both and print a hint. Pass `--hyperv=false` or
-`--vagrant=false` to skip the question. To create and run Hyper-V VMs, add
-both:
+Hyper-V and Vagrant are not needed for local use such as
+`sailwright provision local`. Without their flags, an interactive terminal
+explains each one and asks whether to add it (default: no). Non-interactive
+runs, such as CI or the agent gateway, skip both and print a hint. Pass
+`--hyperv=false` or `--vagrant=false` to skip the question. To create and run
+Hyper-V VMs, add both:
 
 ```powershell
 sailwright.exe install --hyperv --vagrant

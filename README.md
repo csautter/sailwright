@@ -190,42 +190,14 @@ cd sailwright
 
 ### 2. Install host dependencies
 
-#### macOS
-
 ```bash
 sailwright install
 ```
 
-This runs
-[scripts/macos/sailwright-install-dependencies.sh](./scripts/macos/sailwright-install-dependencies.sh).
-
-#### Ubuntu / Debian
-
-```bash
-sailwright install
-```
-
-This runs
-[scripts/linux/sailwright-install-dependencies.sh](./scripts/linux/sailwright-install-dependencies.sh).
-
-On macOS, Linux, and Windows, `sailwright install --with-go` also bootstraps the
-Go toolchain.
-
-#### Windows
-
-Run the command from your normal shell. Windows will prompt for elevation
-through UAC if needed:
-
-```powershell
-sailwright.exe install
-# optionally with Go and VirtualBox support:
-sailwright.exe install --with-go --virtualbox
-```
-
-This runs
-[scripts/windows/sailwright-self-setup.ps1](./scripts/windows/sailwright-self-setup.ps1).
-To create and run VMs, also pass `--hyperv --vagrant` (both are opt-in); see
-[Windows host dependencies](./docs/installation.md#windows-host-dependencies).
+`sailwright install` sets up the tools Sailwright needs on the current host
+(macOS, Ubuntu/Debian or Windows). Run it from your normal shell; it asks for
+elevation when needed. Optional components and per-platform details are in
+[Host dependencies](./docs/installation.md#host-dependencies).
 
 ### 3. Discover what your host supports
 
