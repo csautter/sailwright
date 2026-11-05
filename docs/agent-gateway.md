@@ -399,6 +399,12 @@ Type "approve 3f2a9c1d" or "deny 3f2a9c1d" and press Enter.
 - Other console commands: `approve-sudo <id>`, `pending`.
 - Without an interactive terminal (or with `--no-approvals`) the approval
   tools are disabled and only the safe set is available.
+- `serve --bypass-approvals` is for disposable test hosts only. It approves
+  every request and every access request for VMs the gateway did not create,
+  pins the binary without asking, and works without a terminal. Any agent
+  with the token can then run everything the gateway grammar accepts. The
+  console prints each automatic decision, and `audit.jsonl` marks it with
+  `"auto_approved": true`. It cannot be combined with `--no-approvals`.
 
 ## Disk usage
 

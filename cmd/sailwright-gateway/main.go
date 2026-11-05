@@ -42,6 +42,7 @@ type serveFlags struct {
 	binarySHA256 string
 	listen       string
 	noApprovals  bool
+	bypass       bool
 	follow       bool
 }
 
@@ -87,6 +88,8 @@ need "approve <id>" from you. Agents cannot approve their own requests.`,
 	command.Flags().StringVar(&flags.binarySHA256, "binary-sha256", "", "Expected SHA-256 of the binary; skips the interactive confirmation")
 	command.Flags().StringVar(&flags.listen, "listen", "", "Listen address, an IP literal with port, or \"off\" (default 127.0.0.1:7391; off on Linux)")
 	command.Flags().BoolVar(&flags.noApprovals, "no-approvals", false, "Disable the approval console; only the safe set is available")
+	command.Flags().BoolVar(&flags.bypass, "bypass-approvals", false, "DANGEROUS, disposable test hosts only: approve every request and VM access automatically and pin the binary without asking")
+	command.MarkFlagsMutuallyExclusive("no-approvals", "bypass-approvals")
 	command.Flags().BoolVar(&flags.follow, "follow", false, "Mirror job output to this terminal (approval prompts still appear)")
 	return command
 }
@@ -193,7 +196,9 @@ func runServe(parent context.Context, flags serveFlags) error {
 	if err != nil {
 		return err
 	}
-	if cfg.BinarySHA256 == "" {
+	if cfg.BinarySHA256 == "" && flags.bypass {
+		fmt.Printf("pinning %s (sha256 %s) without confirmation (--bypass-approvals)\n", pinned.Source, pinned.SHA256)
+	} else if cfg.BinarySHA256 == "" {
 		if !interactive {
 			return errors.New("cannot confirm the binary without a terminal; pass --binary-sha256")
 		}
@@ -236,6 +241,8 @@ func runServe(parent context.Context, flags serveFlags) error {
 	var approver gateway.Approver = gateway.DisabledApprover{}
 	switch {
 	case flags.noApprovals:
+	case flags.bypass:
+		approver = gateway.AutoApprover{Out: os.Stdout}
 	case !interactive:
 		fmt.Println("stdin is not a terminal: the approval console is disabled, only the safe set is available")
 	default:
@@ -299,6 +306,9 @@ func runServe(parent context.Context, flags serveFlags) error {
 	}
 	defer listeners.Close()
 	printBanner(cfg, pinned, listeners.SocketPath, listeners.ViewURL, approver.Enabled())
+	if flags.bypass {
+		fmt.Println("WARNING: --bypass-approvals is set: every request and VM access is approved automatically. Use it only on disposable test hosts.")
+	}
 	serveErr := g.ServeListeners(ctx, listeners)
 	listeners.Close()
 	closed = true

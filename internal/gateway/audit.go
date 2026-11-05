@@ -27,6 +27,8 @@ type AuditEvent struct {
 	Error        string         `json:"error,omitempty"`
 	HTTPStatus   int            `json:"http_status,omitempty"`
 	SudoPassword bool           `json:"sudo_password,omitempty"`
+	// AutoApproved marks decisions made by --bypass-approvals instead of the operator.
+	AutoApproved bool `json:"auto_approved,omitempty"`
 }
 
 // AuditLog appends events to a JSONL file.

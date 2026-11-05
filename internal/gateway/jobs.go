@@ -299,7 +299,7 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 			Become: spec.Become, BecomeWarning: spec.BecomeWarning,
 		})
 		decision := approval.Decision
-		m.record(AuditEvent{Event: "approval_decision", Tool: spec.Tool, JobID: id, Decision: string(decision), Argv: spec.Argv, Snapshot: spec.Snapshot, SudoPassword: approval.BecomePassword != ""})
+		m.record(AuditEvent{Event: "approval_decision", Tool: spec.Tool, JobID: id, Decision: string(decision), Argv: spec.Argv, Snapshot: spec.Snapshot, SudoPassword: approval.BecomePassword != "", AutoApproved: approval.Auto})
 		if decision == DecisionApproved && approval.BecomePassword != "" {
 			if !spec.Become {
 				m.finish(j, JobFailed, nil, "a sudo password was supplied for a request that does not support it", time.Time{})

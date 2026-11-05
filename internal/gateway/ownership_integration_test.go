@@ -242,3 +242,55 @@ func TestVMInfoHidesForeignLookupDetails(t *testing.T) {
 		t.Fatalf("foreign lookup failure: %v", err)
 	}
 }
+
+func TestBypassApprovalsApprovesJobsAndForeignVMs(t *testing.T) {
+	h := gatewaytest.Start(t, gatewaytest.Options{AutoApprovals: true, GateForeignVMs: true})
+	session := h.Connect(t)
+	ubuntu := map[string]any{"os": "ubuntu", "type": "server", "arch": "amd64"}
+
+	// A VM the operator created is granted without a human.
+	if err := os.WriteFile(filepath.Join(h.FakeStateDir, "ubuntu-server-amd64"), []byte("running"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.Gateway.RefreshTargets(context.Background())
+	var info gateway.VMInfoOutput
+	mustCall(t, session, "vm_info", ubuntu, &info)
+	if info.Password != "vm-secret-value" {
+		t.Fatalf("auto-approved vm_info: %+v", info)
+	}
+
+	// Approval-tier jobs run without waiting for "approve <id>".
+	var view gateway.JobView
+	mustCall(t, session, "install", map[string]any{"hyperv": true, "vagrant": true}, &view)
+	if got := waitJob(t, session, view.ID); got.State != gateway.JobSucceeded {
+		t.Fatalf("auto-approved install: %+v", got)
+	}
+	var argv []string
+	for _, inv := range h.Invocations(t) {
+		if len(inv.Argv) > 0 && inv.Argv[0] == "install" {
+			argv = inv.Argv
+		}
+	}
+	if strings.Join(argv, " ") != "install --hyperv --vagrant" {
+		t.Fatalf("install argv: %v", argv)
+	}
+
+	audit, err := os.ReadFile(filepath.Join(h.StateDir, "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []string{`"event":"vm_access_decision"`, `"event":"approval_decision"`} {
+		found := false
+		for _, line := range strings.Split(string(audit), "\n") {
+			if strings.Contains(line, event) && strings.Contains(line, `"auto_approved":true`) && strings.Contains(line, `"decision":"approved"`) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("audit has no auto-approved %s:\n%s", event, audit)
+		}
+	}
+	if !strings.Contains(h.Console.String(), "auto-approved (--bypass-approvals)") {
+		t.Fatalf("console does not show auto approvals:\n%s", h.Console.String())
+	}
+}

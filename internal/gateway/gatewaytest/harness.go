@@ -70,6 +70,8 @@ type Options struct {
 	// GateForeignVMs enables the shared-state rule that VMs the gateway did not
 	// create need operator approval, while keeping the test's isolated state.
 	GateForeignVMs bool
+	// AutoApprovals uses the --bypass-approvals approver instead of the console.
+	AutoApprovals bool
 }
 
 // Harness is a running gateway with a fake CLI behind it.
@@ -151,6 +153,9 @@ func Start(t testing.TB, opts Options) *Harness {
 		approver = gateway.NewConsoleApprover(bufio.NewReader(reader), h.Console, cfg.ApprovalTTLValue).
 			HideInputWith(func() (func(), error) { return func() {}, nil })
 		t.Cleanup(func() { _ = writer.Close() })
+	}
+	if opts.AutoApprovals {
+		approver = gateway.AutoApprover{Out: h.Console}
 	}
 
 	// #nosec G101 -- fake values that prove secrets are redacted and host variables dropped.
