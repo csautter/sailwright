@@ -491,6 +491,31 @@ func TestPrepareVirtioWinISOCacheRemovesOlderVersionsOnly(t *testing.T) {
 	}
 }
 
+func TestPrepareVirtioWinISOCacheTreatsCacheDirectoryLiterally(t *testing.T) {
+	root := t.TempDir()
+	// "cache[1]" as a glob pattern would match the sibling directory "cache1" instead.
+	dir := filepath.Join(root, "cache[1]")
+	sibling := filepath.Join(root, "cache1")
+	for _, d := range []string{dir, sibling} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	content := []byte("virtio-win")
+	destination := filepath.Join(dir, virtioWinISOCacheFileName("0.1.310-1"))
+	writeTestBytes(t, destination, content)
+	olderPath := filepath.Join(dir, virtioWinISOCacheFileName("0.1.302-1"))
+	writeTestBytes(t, olderPath, []byte("older virtio-win"))
+	siblingPath := filepath.Join(sibling, virtioWinISOCacheFileName("0.1.302-1"))
+	writeTestBytes(t, siblingPath, []byte("sibling virtio-win"))
+
+	prepareVirtioWinISOCache(destination, fmt.Sprintf("sha256:%x", sha256.Sum256(content)))
+
+	assertFileContent(t, destination, content)
+	assertFilesMissing(t, olderPath)
+	assertFileContent(t, siblingPath, []byte("sibling virtio-win"))
+}
+
 func TestPrepareVirtioWinISOCacheWithoutCachedISOs(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), virtioWinISOCacheFileName("0.1.302-1"))
 	prepareVirtioWinISOCache(destination, "sha256:00")

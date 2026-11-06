@@ -250,16 +250,31 @@ func prepareVirtioWinISOCache(destination, checksum string) {
 }
 
 // prepareVersionedWebFileCache prunes older versions and migrates a verified legacy file.
-// Temporary downloads and unrelated cache files are left alone.
+// Temporary downloads and unrelated cache files are left alone. pattern is matched against base
+// names only, so glob metacharacters in the cache directory path are taken literally.
 func prepareVersionedWebFileCache(destination, checksum, pattern, legacyName string) {
 	dir := filepath.Dir(destination)
-	paths, err := filepath.Glob(filepath.Join(dir, pattern))
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		log.Printf("Warning: could not list cached downloads in %s: %v", dir, err)
+		if !os.IsNotExist(err) {
+			log.Printf("Warning: could not list cached downloads in %s: %v", dir, err)
+		}
 		return
 	}
 	legacyPath := filepath.Join(dir, legacyName)
-	for _, path := range paths {
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		matched, err := filepath.Match(pattern, entry.Name())
+		if err != nil {
+			log.Printf("Warning: invalid cache file pattern %q: %v", pattern, err)
+			return
+		}
+		if !matched {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
 		if path == destination {
 			continue
 		}
