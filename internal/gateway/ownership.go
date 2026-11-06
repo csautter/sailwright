@@ -296,7 +296,7 @@ func (g *Gateway) requestVMAccess(tool, osName, osType, arch, instanceID string,
 		})
 		approved := approval.Decision == DecisionApproved
 		g.ownership.endRequest(key, approved, instanceID)
-		_ = g.audit.Record(AuditEvent{Event: "vm_access_decision", Tool: tool, JobID: id, Decision: string(approval.Decision), Params: map[string]any{"os": osName, "type": osType, "arch": arch, "name": name}, Risk: []string{riskForeignVM}, Auto: approval.Auto})
+		_ = g.audit.Record(AuditEvent{Event: "vm_access_decision", Tool: tool, JobID: id, Decision: string(approval.Decision), Params: map[string]any{"os": osName, "type": osType, "arch": arch, "name": name}, Risk: []string{riskForeignVM}, AutoApproved: approval.Auto})
 		decided <- approval.Decision
 	}()
 	// The console answers "busy" at once while another approval is open.
