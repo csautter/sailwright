@@ -151,9 +151,13 @@ func RunBuildScript(ctx context.Context, config VirtualMachineConfig, executable
 	// Take the terminal back right away, so that Ctrl+C reaches this process again
 	// during cleanup and post-processing.
 	terminal.restore()
-	if terminal.attached && isTerminalInterruptExit(waitErr) {
-		// Ctrl+C went to the build that owned the terminal; handle it like our own.
-		reportInterrupt(ctx)
+	if terminal.attached {
+		var terminalInterrupt bool
+		waitErr, terminalInterrupt = terminalCommandExit(waitErr)
+		if terminalInterrupt {
+			// Ctrl+C went to the build that owned the terminal; handle it like our own.
+			reportInterrupt(ctx)
+		}
 	}
 	if buildCtx.Err() != nil {
 		// Members of the group that survived the leader, e.g. a stopped QEMU.

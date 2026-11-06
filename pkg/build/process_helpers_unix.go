@@ -179,14 +179,25 @@ func fileDescriptorAsInt(file *os.File) (int, bool) {
 
 // terminalInterruptWrapper runs a build command that owns the terminal. Ctrl+C then
 // reaches only the command's process group, and Packer exits with status 1 after
-// handling SIGINT, so the wrapper remembers the SIGINT and exits with 130 instead. The
-// shell runs the trap only after the foreground command finished (POSIX), so the
-// command still handles the signal itself.
+// handling SIGINT, so the wrapper remembers the SIGINT and exits with 130 instead. A
+// command that still exited 0 had finished its build, so the wrapper exits with
+// terminalInterruptAfterSuccessExitCode: the artifacts are kept, but the interrupt
+// still stops the other builds. Without a SIGINT, a command's own 130 or 199 becomes 1,
+// so neither status is mistaken for Ctrl+C. The shell runs the trap only after the
+// foreground command finished (POSIX), so the command still handles the signal itself.
 const terminalInterruptWrapper = `trap 'interrupted=1' INT
 "$@"
 status=$?
-if [ -n "$interrupted" ]; then exit 130; fi
+if [ -n "$interrupted" ]; then
+	if [ "$status" -eq 0 ]; then exit 199; fi
+	exit 130
+fi
+case "$status" in 130|199) exit 1 ;; esac
 exit "$status"`
+
+// terminalInterruptAfterSuccessExitCode is the exit status of terminalInterruptWrapper
+// when the command succeeded although Ctrl+C arrived meanwhile.
+const terminalInterruptAfterSuccessExitCode = 199
 
 // commandTerminal tells how a build command uses the terminal.
 type commandTerminal struct {
@@ -229,18 +240,25 @@ func newBuildCommand(executable string, args []string, detached bool) (*exec.Cmd
 	return cmd, noTerminal
 }
 
-// isTerminalInterruptExit reports whether a command that owned the terminal ended
-// because of Ctrl+C.
-func isTerminalInterruptExit(err error) bool {
+// terminalCommandExit interprets the wait error of a command that owned the terminal.
+// interrupted tells whether Ctrl+C reached the command; waitErr is nil when the
+// command finished successfully anyway.
+func terminalCommandExit(err error) (waitErr error, interrupted bool) {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
-		return false
+		return err, false
 	}
 	status, ok := exitErr.Sys().(syscall.WaitStatus)
 	if ok && status.Signaled() && status.Signal() == syscall.SIGINT {
-		return true
+		return err, true
 	}
-	return exitErr.ExitCode() == interruptExitCode
+	switch exitErr.ExitCode() {
+	case interruptExitCode:
+		return err, true
+	case terminalInterruptAfterSuccessExitCode:
+		return nil, true
+	}
+	return err, false
 }
 
 // requestProcessGroupStop asks a process group to stop with SIGTERM. A stopped process

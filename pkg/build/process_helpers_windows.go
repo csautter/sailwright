@@ -33,8 +33,8 @@ func newBuildCommand(executable string, args []string, detached bool) (*exec.Cmd
 	return exec.Command(executable, args...), commandTerminal{restore: func() {}}
 }
 
-func isTerminalInterruptExit(err error) bool {
-	return false
+func terminalCommandExit(err error) (waitErr error, interrupted bool) {
+	return err, false
 }
 
 // requestProcessGroupStop does nothing on Windows: there is no process group to signal,

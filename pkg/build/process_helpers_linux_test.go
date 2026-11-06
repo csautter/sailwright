@@ -46,20 +46,29 @@ func runTerminalHandoff() int {
 }
 
 // runTerminalInterrupt runs a build command that owns the terminal and handles SIGINT
-// like Packer does (clean up, exit 1). It exits 0 when the command's exit is detected
-// as a Ctrl+C from the terminal.
+// like Packer does (clean up, exit 1), or exits 0 with SAILWRIGHT_TEST_TTY_EXIT=0 like
+// a build that finished as Ctrl+C arrived. It exits 0 when the command's exit is
+// detected as a Ctrl+C from the terminal and keeps the command's success or failure.
 func runTerminalInterrupt() int {
-	cmd, terminal := newBuildCommand("sh", []string{"-c", "trap 'exit 1' INT; echo ready; while :; do sleep 0.1; done"}, false)
+	exitStatus := os.Getenv("SAILWRIGHT_TEST_TTY_EXIT")
+	if exitStatus == "" {
+		exitStatus = "1"
+	}
+	cmd, terminal := newBuildCommand("sh", []string{"-c", "trap 'exit " + exitStatus + "' INT; echo ready; while :; do sleep 0.1; done"}, false)
 	if !terminal.attached {
 		fmt.Fprintln(os.Stderr, "build command did not get the terminal")
 		return 5
 	}
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	err := cmd.Run()
+	waitErr, interrupted := terminalCommandExit(cmd.Run())
 	terminal.restore()
-	if !isTerminalInterruptExit(err) {
-		fmt.Fprintf(os.Stderr, "Ctrl+C was not detected, command ended with %v\n", err)
+	if !interrupted {
+		fmt.Fprintf(os.Stderr, "Ctrl+C was not detected, command ended with %v\n", waitErr)
 		return 4
+	}
+	if (waitErr == nil) != (exitStatus == "0") {
+		fmt.Fprintf(os.Stderr, "command with exit status %s ended with %v\n", exitStatus, waitErr)
+		return 6
 	}
 	return 0
 }
@@ -154,6 +163,16 @@ func TestTerminalHandoffDoesNotStopTheProcess(t *testing.T) {
 // the terminal: the signal reaches only the build, which exits 1 after cleaning up, and
 // sailwright must still recognise it as an interrupt to stop the other builds.
 func TestTerminalInterruptOfBuildCommandIsDetected(t *testing.T) {
+	for _, exitStatus := range []string{"1", "0"} {
+		t.Run("exit="+exitStatus, func(t *testing.T) {
+			testTerminalInterruptOfBuildCommand(t, exitStatus)
+		})
+	}
+}
+
+// testTerminalInterruptOfBuildCommand sends Ctrl+C to a build command that exits with
+// exitStatus when it gets SIGINT.
+func testTerminalInterruptOfBuildCommand(t *testing.T, exitStatus string) {
 	master, slave := openPTY(t)
 	defer master.Close()
 	defer slave.Close()
@@ -163,7 +182,7 @@ func TestTerminalInterruptOfBuildCommandIsDetected(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(self)
-	cmd.Env = append(os.Environ(), ttyScenarioEnv+"=terminal-interrupt")
+	cmd.Env = append(os.Environ(), ttyScenarioEnv+"=terminal-interrupt", "SAILWRIGHT_TEST_TTY_EXIT="+exitStatus)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	if err := cmd.Start(); err != nil {
@@ -211,5 +230,22 @@ func TestTerminalInterruptOfBuildCommandIsDetected(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		t.Fatal("build command did not stop after Ctrl+C")
+	}
+}
+
+// A command that exits 130 or 199 by itself must not be taken for a Ctrl+C, and must
+// not count as a success.
+func TestTerminalWrapperDoesNotMistakeOwnExitStatusForInterrupt(t *testing.T) {
+	for _, status := range []string{"130", "199", "3"} {
+		t.Run("exit="+status, func(t *testing.T) {
+			cmd := exec.Command("/bin/sh", "-c", terminalInterruptWrapper, "sailwright-build", "sh", "-c", "exit "+status)
+			waitErr, interrupted := terminalCommandExit(cmd.Run())
+			if interrupted {
+				t.Fatalf("exit %s without Ctrl+C was taken for an interrupt", status)
+			}
+			if waitErr == nil {
+				t.Fatalf("exit %s must stay a failure", status)
+			}
+		})
 	}
 }
