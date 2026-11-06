@@ -616,6 +616,11 @@ tunnel at another LAN host on the guest's port. The gateway protects the host
 OS from the agent, not your network, and an agent in a devcontainer usually
 reaches the LAN directly anyway. If you restrict the container's network, keep
 in mind that tunnels to bridged guests are a path around that restriction.
+The same applies to every network the host has an interface in, including a
+VPN or corporate network adapter with a wide prefix (for example a /16): while
+it is connected, a guest can point tunnels at ports 22, 5985 and 5986 of hosts
+in that range. Run the gateway on hosts where that is acceptable, or disconnect
+such adapters while agents use VM access.
 Loopback, link-local, multicast, unspecified and host-owned addresses are
 rejected, including mapped IPv4 addresses. Bridged/LAN guests are allowed;
 `bridged` or `unknown` network modes produce a `LAN_OR_UNKNOWN_NETWORK` audit

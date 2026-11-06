@@ -178,3 +178,9 @@ Guest passwords stay in the gateway's redactor for the whole run, at any
 length, except a password equal to the guest username. Such a password is not
 secret and would otherwise turn common words such as `vagrant` or `packer`
 into the redaction marker in all later output.
+
+The on-link rule trusts every subnet the host has an interface in, including
+VPN and corporate adapters with wide prefixes. A guest that forges its address
+can reach ports 22, 5985 and 5986 of hosts there while such an adapter is
+connected. This is accepted for the same reason as bridged LAN guests and is
+documented for operators.
