@@ -1,11 +1,12 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
+	"github.com/csautter/dev-alchemy/internal/selfupdate"
 	"github.com/csautter/dev-alchemy/pkg/provision"
-
 	"github.com/spf13/cobra"
 )
 
@@ -30,7 +31,16 @@ var rootCmd = &cobra.Command{
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
 	installOperationLocks()
+
+	executable, _ := selfupdate.Executable()
+	selfupdate.Cleanup(executable)
+	finish := startUpdateCheck()
 	err := rootCmd.Execute()
+	finish()
+	var available updateAvailableError
+	if errors.As(err, &available) {
+		os.Exit(2)
+	}
 	if err != nil {
 		os.Exit(1)
 	}

@@ -60,6 +60,12 @@ func AssessRisk(args []string, bundleRoot string) []string {
 	switch command {
 	case "install":
 		flags[RiskHostModifying] = true
+	case "update":
+		// Only the exact check invocation is read-only. Repeated flags can override
+		// --check, and additional flags can modify settings or select an install.
+		if len(args) != 2 || args[1] != "--check" {
+			flags[RiskHostModifying] = true
+		}
 	case "push":
 		flags[RiskNetworkWrite] = true
 	case "provision":
@@ -98,7 +104,7 @@ func isFlagValue(args []string, i int) bool {
 	case "--check", "--dry-run", "--yes", "-y", "--headless", "--verbose", "-v", "--no-cache",
 		"--force-winrm-uninstall", "--force-ssh-uninstall", "--plain-http", "--insecure-skip-tls-verify",
 		"--password-stdin", "--no-docker-credentials", "--with-go", "--virtualbox", "--hyperv", "--vagrant", "--refresh", "--json", "--show-password",
-		"--no-prebuilt", "--ask-become-pass", "-K":
+		"--no-gateway", "--require-signature", "--no-prebuilt", "--ask-become-pass", "-K":
 		return false
 	}
 	return true

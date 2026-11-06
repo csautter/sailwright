@@ -240,3 +240,21 @@ func directoryOverride(name, fallback string) string {
 	}
 	return fallback
 }
+
+// UserSettingsDirectories resolves CLI settings and cache paths without creating
+// a project or unpacking runtime assets. It shares the managed directory policy.
+func UserSettingsDirectories() (Directories, error) {
+	config, err := resolveDefaultConfigDir()
+	if err != nil {
+		return Directories{}, err
+	}
+	data, err := resolveDefaultAppDataDir()
+	if err != nil {
+		return Directories{}, err
+	}
+	cache := os.Getenv(devAlchemyCacheEnvVar)
+	if cache == "" {
+		cache = filepath.Join(data, "cache")
+	}
+	return Directories{ConfigDir: config, CacheDir: cache}, nil
+}

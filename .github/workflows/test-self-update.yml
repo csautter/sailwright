@@ -1,0 +1,41 @@
+name: Test Self Update
+
+on:
+  pull_request:
+    paths:
+      - 'cmd/**'
+      - 'internal/selfupdate/**'
+      - 'pkg/build/directories.go'
+      - 'scripts/install.*'
+      - 'test/selfupdate/**'
+      - 'Makefile'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/test-self-update.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Test updater and interval logic
+        run: go test -race ./internal/selfupdate
+      - name: Install and update real release binaries against local fixtures
+        run: python -m unittest discover -s test/selfupdate -v
