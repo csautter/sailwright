@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -102,5 +104,58 @@ func TestCompletedDownloadIsMovedToFinalPath(t *testing.T) {
 	}
 	if _, err := os.Stat(localPath + partialDownloadSuffix); !os.IsNotExist(err) {
 		t.Fatalf("expected the partial file to be gone, got err=%v", err)
+	}
+}
+
+// Parallel builds share dependencies such as ISOs; concurrent reconciliations of the
+// same file must download it once instead of replacing each other's partial file.
+func TestConcurrentReconciliationsDownloadSharedDependencyOnce(t *testing.T) {
+	var requests atomic.Int32
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			return
+		}
+		requests.Add(1)
+		<-release
+		_, _ = w.Write([]byte("payload"))
+	}))
+	defer server.Close()
+	dep := WebFileDependency{LocalPath: filepath.Join(t.TempDir(), "shared.iso"), Source: server.URL + "/shared.iso"}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 3)
+	for range 3 {
+		wg.Go(func() { errs <- reconcileWebFileDependency(context.Background(), nil, dep) })
+	}
+	time.Sleep(200 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("expected one download of the shared dependency, got %d", got)
+	}
+	content, err := os.ReadFile(dep.LocalPath)
+	if err != nil || string(content) != "payload" {
+		t.Fatalf("expected downloaded payload, got %q, %v", content, err)
+	}
+}
+
+func TestWaitingForDependencyLockStopsOnCancel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "locked.iso")
+	unlock, err := lockWebFileDependency(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := lockWebFileDependency(ctx, path); err == nil {
+		t.Fatal("expected waiting for a held lock to stop on cancellation")
 	}
 }

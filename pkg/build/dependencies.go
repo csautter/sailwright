@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/go-getter"
@@ -395,16 +396,57 @@ func DependencyReconciliation(ctx context.Context, vmconfig VirtualMachineConfig
 		if err := buildContextError(ctx); err != nil {
 			return err
 		}
-		if !checkIfWebFileDependencyExists(dep) {
-			if err := downloadWebFileDependency(ctx, p, dep); err != nil {
-				if ctxErr := buildContextError(ctx); ctxErr != nil {
-					return fmt.Errorf("download of %s stopped: %w", dep.LocalPath, ctxErr)
-				}
-				return fmt.Errorf("failed to download web file dependency: %w", err)
-			}
+		if err := reconcileWebFileDependency(ctx, p, dep); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// reconcileWebFileDependency downloads dep unless it exists. Parallel builds share
+// dependencies such as ISOs, so only one of them downloads a given file at a time:
+// the others wait and then find it in place. Otherwise one download would delete or
+// promote the partial file of another.
+func reconcileWebFileDependency(ctx context.Context, p *mpb.Progress, dep WebFileDependency) error {
+	unlock, err := lockWebFileDependency(ctx, dep.LocalPath)
+	if err != nil {
+		return fmt.Errorf("download of %s stopped: %w", dep.LocalPath, err)
+	}
+	defer unlock()
+	if checkIfWebFileDependencyExists(dep) {
+		return nil
+	}
+	if err := downloadWebFileDependency(ctx, p, dep); err != nil {
+		if ctxErr := buildContextError(ctx); ctxErr != nil {
+			return fmt.Errorf("download of %s stopped: %w", dep.LocalPath, ctxErr)
+		}
+		return fmt.Errorf("failed to download web file dependency: %w", err)
+	}
+	return nil
+}
+
+var (
+	webFileDependencyLocksMu sync.Mutex
+	webFileDependencyLocks   = map[string]chan struct{}{}
+)
+
+// lockWebFileDependency serialises the downloads of one local path within this
+// process. Waiting for the lock stops when ctx is cancelled.
+func lockWebFileDependency(ctx context.Context, localPath string) (func(), error) {
+	webFileDependencyLocksMu.Lock()
+	lock, ok := webFileDependencyLocks[localPath]
+	if !ok {
+		lock = make(chan struct{}, 1)
+		webFileDependencyLocks[localPath] = lock
+	}
+	webFileDependencyLocksMu.Unlock()
+
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, nil
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	}
 }
 
 func webFileDependenciesForVMConfig(vmconfig VirtualMachineConfig) []WebFileDependency {
