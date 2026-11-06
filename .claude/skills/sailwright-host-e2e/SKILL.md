@@ -117,6 +117,28 @@ The opt-in `TestVMAccess` scenario in `test/e2e` verifies SSH and scp and
 performs cleanup. See `docs/agent-gateway.md` for its invocation. Never include
 passwords from `vm_info` in reports, shell arguments or committed files.
 
+## Windows Hyper-V test host
+
+When the user authorizes a disposable Windows development VM as gateway host,
+run everything natively there: build `sailwright.exe` and
+`sailwright-gateway.exe`, start the gateway (with `--bypass-approvals` only if
+the user asked to automate approvals on a throwaway host) and run the e2e
+tests from PowerShell. Do not set up WSL or Docker just to simulate the
+devcontainer: they add another Hyper-V guest and `TestVMAccess` already runs
+on Windows (Windows OpenSSH with `SSH_ASKPASS`, no connection sharing). Follow
+`docs/agent-gateway.md#testing-on-a-windows-hyper-v-host` for the commands.
+
+- Check `Get-Service vmms`, the Default Switch and free memory before
+  creating a VM; the Ubuntu guest takes 8 GB and 4 vCPUs.
+- When a guest never reports an IP or Packer waits for SSH, look at the
+  Hyper-V Worker-Admin events (18590 crash with the kernel panic text, 18514
+  reset, 3108 nested virtualization refused) and a console screenshot before
+  changing anything. A guest that boots but crawls on a nested host usually
+  points to the outer VM's CPU topology or memory; report that to the user
+  instead of working around it in sailwright.
+- Background jobs can be stopped by Claude Code when the host runs low on
+  memory. Do not restart them on your own; tell the user.
+
 ## Develop roles with an Ansible controller in the container
 
 1. Create/start a disposable guest as above and call `vm_info`.

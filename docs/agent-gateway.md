@@ -649,6 +649,12 @@ and destroys the VM even after failure. It needs a real host gateway and is
 skipped unless explicitly enabled. The ordinary gateway suite uses a fake CLI
 and TCP guest to test policy and stream handling without a hypervisor.
 
+On a Windows gateway host the test also runs natively, without a devcontainer
+or WSL: it uses the Windows OpenSSH client, passes the guest password through
+`SSH_ASKPASS` (Windows has no `sshpass`) and turns off connection sharing,
+which Windows OpenSSH does not support. See
+[Testing on a Windows Hyper-V host](#testing-on-a-windows-hyper-v-host).
+
 ## Limitations
 
 - GUI access (RDP/VNC) is not exposed by the tunnel.
@@ -688,3 +694,57 @@ HTTP/1 can help diagnose the network path. Start the local gateway with
 `env_passthrough` list so the pinned CLI receives it too. Restart the gateway
 after changing those settings. This is an optional registry-transfer workaround;
 it does not change guest networking or virtualization acceleration.
+
+### Testing on a Windows Hyper-V host
+
+Run gateway, CLI and client natively on Windows; a devcontainer or WSL is not
+needed to exercise the gateway, and WSL is one more Hyper-V guest competing for
+CPU and memory. On a disposable test host, approvals can be automated:
+
+```powershell
+go build -o .\dist\windows-amd64\sailwright.exe ./cmd/main.go
+go build -o .\dist\windows-amd64\sailwright-gateway.exe ./cmd/sailwright-gateway
+.\dist\windows-amd64\sailwright-gateway.exe serve `
+  --binary (Resolve-Path .\dist\windows-amd64\sailwright.exe) --bypass-approvals
+```
+
+In a second PowerShell, with `dist\windows-amd64` on `PATH` for the
+`sailwright-gateway vm tunnel` ProxyCommand:
+
+```powershell
+$env:Path = "$PWD\dist\windows-amd64;$env:Path"
+$env:SAILWRIGHT_GATEWAY_URL = 'http://127.0.0.1:7391/mcp'
+$env:SAILWRIGHT_GATEWAY_DIR = "$env:USERPROFILE\.sailwright-gateway"
+$env:SAILWRIGHT_VM_ACCESS_E2E = '1'
+$env:SAILWRIGHT_E2E_TARGET = 'ubuntu/server/amd64'
+Set-Location test\e2e
+go test -tags e2e . -run '^TestVMAccess$' -count=1 -timeout 55m -v
+```
+
+The audit log (`%APPDATA%\sailwright-gateway\audit.jsonl`) then shows
+`vm_info`, paired `tunnel_opened`/`tunnel_closed` events with bytes in both
+directions, and `"auto_approved": true` on every decision `--bypass-approvals`
+made. `owned_vms.json` next to it holds the VM's Hyper-V id
+(`(Get-VM).Id.Guid`) while the VM exists.
+
+When Windows itself runs in a VM (nested virtualization):
+
+- Hyper-V cannot pass virtualization extensions on to its guests. `sailwright
+  create` and `start` detect Hyper-V's refusal (Worker-Admin event 3108),
+  turn the extensions off for that VM and retry once; set
+  `VAGRANT_HYPERV_NESTED_VIRTUALIZATION=false` to skip the first attempt.
+- Give the outer VM enough memory for Windows, the 8 GB guest and the tools,
+  about 24 GB, and a CPU topology that matches the physical CPU (for example
+  `host-passthrough` with 4 cores × 2 threads on an 8-core/16-thread CPU).
+  With more virtual cores than physical cores, guests with 4 vCPUs slowed
+  down so far that they never reported an IP within Vagrant's 600 s.
+- Packer installs of Ubuntu take about 1.5 hours.
+
+To debug a guest that does not come up, read the Hyper-V events first:
+`Get-WinEvent -LogName Microsoft-Windows-Hyper-V-Worker-Admin` shows guest
+resets (18514), guest kernel crashes with the panic text (18590) and refused
+starts (3108). A screenshot of the console comes from
+`Msvm_VirtualSystemManagementService.GetVirtualSystemThumbnailImage`. For the
+kernel log, connect COM1 to a named pipe (`Set-VMComPort -Number 1 -Path
+\\.\pipe\name`) and add `console=ttyS0,115200` to the guest's kernel command
+line; the serial console itself slows a nested guest down considerably.
