@@ -8,24 +8,30 @@ on:
     branches: [main]
     paths:
       - 'cmd/**'
-      - 'internal/gateway/**'
+      - 'internal/**'
       - 'pkg/deploy/**'
+      - 'pkg/provision/**'
       - 'pkg/build/**'
       - 'pkg/oci/**'
       - 'test/e2e/**'
+      - 'test/workflowcheck/**'
+      - 'runtimeassets.go'
       - 'scripts/ci/*gateway*'
       - '.github/workflows/test-gateway-guest-access.yml'
       - 'go.mod'
       - 'go.sum'
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'cmd/**'
-      - 'internal/gateway/**'
+      - 'internal/**'
       - 'pkg/deploy/**'
+      - 'pkg/provision/**'
       - 'pkg/build/**'
       - 'pkg/oci/**'
       - 'test/e2e/**'
+      - 'test/workflowcheck/**'
+      - 'runtimeassets.go'
       - 'scripts/ci/*gateway*'
       - '.github/workflows/test-gateway-guest-access.yml'
       - 'go.mod'
@@ -54,13 +60,8 @@ jobs:
         run: python3 -I -m unittest discover -s scripts/ci -p 'test_gateway*.py'
 
   linux-libvirt:
-    # Guest creation/downloads are deliberate: weekly, manual, or labeled PRs.
-    # An opted-in PR keeps this coverage on later commits while the label remains.
-    if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:guest-access'))
+    # The measured full Linux job takes about three minutes. Run it on every
+    # matching PR/main update; the workflow paths filter unrelated changes.
     needs: [validate]
     runs-on: ubuntu-24.04
     timeout-minutes: 90

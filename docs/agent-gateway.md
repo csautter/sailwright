@@ -647,17 +647,26 @@ The tunnel transports SSH or WinRM; it never runs a host shell.
 ### Real guest access in CI
 
 [Gateway guest access](../.github/workflows/test-gateway-guest-access.yml) runs
-cheap safety/audit tests on relevant pull requests and pushes to `main`, without
-Go setup, image downloads or VMs. The full guest job runs weekly (Monday 04:17
-UTC), on manual dispatch, or on a PR carrying the `ci:guest-access` label. Adding
-the label starts a run; later commits retain full coverage while it remains.
-Remove the label to return to cheap checks. For a deliberate guest run:
+the full Linux guest test automatically on relevant pull requests (opening,
+updates, reopening and marking ready) and pushes to `main`, after cheap safety
+and audit checks pass. No label or opt-in setting is required. Path filters cover
+CLI/gateway code, shared internals (including operation locks), deployment,
+provisioning and VM discovery, build configuration, OCI pulls, embedded-asset
+code, E2E/workflow tests, the CI scripts/workflow and Go dependencies. Changes limited to `docs/`
+and unrelated paths do not start this workflow.
+
+The workflow also runs weekly (Monday 04:17 UTC) to catch changes in the published
+image or runner environment, and supports manual dispatch. After it is on main,
+a deliberate branch run can be started with:
 
 ```bash
-gh pr edit <number> --add-label ci:guest-access
-# After this workflow is on main, a manual run can select a branch:
 gh workflow run test-gateway-guest-access.yml --ref <branch>
 ```
+
+The first successful real Linux CI run took 2m43s for the full libvirt job,
+including 46s in `TestVMAccess`; preliminary safety checks took 15s
+([run evidence](https://github.com/csautter/sailwright/actions/runs/42274250886)).
+This measured runtime supports automatic coverage on relevant source changes.
 
 The full job provisions libvirt/QEMU on a fresh GitHub-hosted Ubuntu 24.04 amd64 runner, pulls the public
 `ghcr.io/<repository-owner>/ubuntu-24:server-amd64-linux-build` QCOW2 artifact,

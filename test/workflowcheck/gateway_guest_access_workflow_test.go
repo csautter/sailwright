@@ -9,11 +9,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Keep the costly real-guest test wired in: the normal Go suite skips it.
+// Keep automatic real-guest coverage wired in: the normal Go suite skips it.
 func TestGatewayGuestAccessWorkflow(t *testing.T) {
 	wf := loadWorkflow(t, "test-gateway-guest-access.yml")
 	for event, paths := range map[string][]string{"push": wf.On.Push.Paths, "pull_request": wf.On.PullRequest.Paths} {
-		for _, path := range []string{"internal/gateway/**", "cmd/**", "pkg/deploy/**", "test/e2e/**", "scripts/ci/*gateway*"} {
+		for _, path := range []string{
+			"cmd/**", "internal/**", "pkg/deploy/**", "pkg/provision/**",
+			"pkg/build/**", "pkg/oci/**", "test/e2e/**", "test/workflowcheck/**",
+			"runtimeassets.go", "scripts/ci/*gateway*",
+			".github/workflows/test-gateway-guest-access.yml", "go.mod", "go.sum",
+		} {
 			if !slices.Contains(paths, path) {
 				t.Errorf("%s must cover %s", event, path)
 			}
@@ -22,16 +27,18 @@ func TestGatewayGuestAccessWorkflow(t *testing.T) {
 	validate := wf.job(t, "validate")
 	for _, step := range validate.Steps {
 		if strings.HasPrefix(step.Uses, "actions/setup-go@") || strings.Contains(step.Run, "go test") {
-			t.Fatal("ordinary PR validation must not install Go or boot guests")
+			t.Fatal("the preliminary safety check must not install Go or boot guests")
 		}
 	}
 	job := wf.job(t, "linux-libvirt")
 	if !slices.Contains(job.Needs, "validate") {
 		t.Fatal("real guest work must wait for cheap safety checks")
 	}
-	wantGate := "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:guest-access'))"
-	if strings.Join(strings.Fields(job.If), " ") != wantGate {
-		t.Errorf("real guests must run only weekly, manually or on explicitly opted-in PRs; got %s", job.If)
+	if job.If != "" {
+		t.Fatalf("matching PR and main changes must run the real guest test without opt-in conditions; got %s", job.If)
+	}
+	if !slices.Contains(wf.On.Push.Branches, "main") {
+		t.Fatal("main pushes must run real guest coverage")
 	}
 	content, err := os.ReadFile(repoPath(t, ".github/workflows/test-gateway-guest-access.yml"))
 	if err != nil {
@@ -49,8 +56,13 @@ func TestGatewayGuestAccessWorkflow(t *testing.T) {
 	if len(events.On.Schedule) != 1 || events.On.Schedule[0].Cron != "17 4 * * 1" {
 		t.Fatal("real guests need a weekly regression run")
 	}
-	if !slices.Contains(events.On.PullRequest.Types, "labeled") {
-		t.Fatal("applying the opt-in label must trigger guest CI")
+	for _, event := range []string{"opened", "synchronize", "reopened", "ready_for_review"} {
+		if !slices.Contains(events.On.PullRequest.Types, event) {
+			t.Errorf("PR %s must trigger guest CI", event)
+		}
+	}
+	if slices.Contains(events.On.PullRequest.Types, "labeled") {
+		t.Fatal("label changes must not duplicate automatic guest runs")
 	}
 	if !slices.Equal(job.RunsOn, stringList{"ubuntu-24.04"}) {
 		t.Fatal("guest access must use a disposable hosted Linux runner")
