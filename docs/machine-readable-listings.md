@@ -15,6 +15,11 @@ sailwright build list --json
 renamed. `fields` carries the command-specific columns of the table output, and
 `address` is reserved for the VM network address and is always `null` for now.
 
+`create list --json` also reports `"exists": true|false` per target, which says
+whether the VM exists. Tools should use it rather than the display text in
+`fields.create` (such as `already created`), which may change. Other listings
+omit `exists`.
+
 ## VM connection details and identity
 
 `sailwright vm info <os> [--type T] [--arch A]` shows how to reach a running

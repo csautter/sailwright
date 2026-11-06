@@ -38,6 +38,7 @@ type target struct {
 	Arch   string            `json:"arch"`
 	Engine string            `json:"engine"`
 	Fields map[string]string `json:"fields"`
+	Exists *bool             `json:"exists,omitempty"`
 	Addr   *string           `json:"address"`
 }
 
@@ -225,6 +226,10 @@ func printListing(command string) {
 		}
 		// Mirrors the columns of the real `start list` and `create list`.
 		targets[i].Fields = map[string]string{"state": state, "start": start, "create": create, "status": status}
+		if command == "create" {
+			exists := state != "missing"
+			targets[i].Exists = &exists
+		}
 	}
 	out, _ := json.Marshal(map[string]any{"schema_version": 1, "targets": targets})
 	fmt.Println("diagnostic line before the document")

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -226,6 +227,56 @@ func TestPrintAvailableCreateCombinationsIncludesExistingTargetState(t *testing.
 	}
 	if !strings.Contains(output, "macos") || !strings.Contains(output, "public image") || !strings.Contains(output, "ready to create") {
 		t.Fatalf("expected tart row to keep public image artifact state, got %q", output)
+	}
+}
+
+// The gateway decides from `exists` whether a VM it owned is gone; the display text
+// of the "create" column may change freely.
+func TestCreateListJSONReportsExists(t *testing.T) {
+	previousTargetInspector := inspectCreateTargetExists
+	previousArtifactInspector := inspectCreateArtifactExists
+	previousJSON := listOutputJSON
+	t.Cleanup(func() {
+		inspectCreateTargetExists = previousTargetInspector
+		inspectCreateArtifactExists = previousArtifactInspector
+		listOutputJSON = previousJSON
+	})
+	listOutputJSON = true
+	inspected := 0
+	inspectCreateTargetExists = func(vm alchemy_build.VirtualMachineConfig) (bool, error) {
+		inspected++
+		return vm.OS == "windows11", nil
+	}
+	inspectCreateArtifactExists = func(alchemy_build.VirtualMachineConfig) (bool, error) { return true, nil }
+	vms := []alchemy_build.VirtualMachineConfig{
+		{OS: "windows11", Arch: "amd64", HostOs: alchemy_build.HostOsWindows, VirtualizationEngine: alchemy_build.VirtualizationEngineHyperv},
+		{OS: "ubuntu", UbuntuType: "server", Arch: "amd64", HostOs: alchemy_build.HostOsWindows, VirtualizationEngine: alchemy_build.VirtualizationEngineHyperv},
+		{OS: "macos", Arch: "arm64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineTart},
+	}
+
+	var buf bytes.Buffer
+	if err := writeCreateCombinations(&buf, vms); err != nil {
+		t.Fatal(err)
+	}
+	var listing struct {
+		Targets []struct {
+			OS     string `json:"os"`
+			Exists *bool  `json:"exists"`
+		} `json:"targets"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &listing); err != nil {
+		t.Fatalf("%v: %s", err, buf.String())
+	}
+	if len(listing.Targets) != len(vms) {
+		t.Fatalf("targets: %s", buf.String())
+	}
+	for _, target := range listing.Targets {
+		if target.Exists == nil || *target.Exists != (target.OS == "windows11") {
+			t.Fatalf("exists of %s: %s", target.OS, buf.String())
+		}
+	}
+	if inspected != len(vms) {
+		t.Fatalf("each VM must be inspected once, got %d inspections", inspected)
 	}
 }
 

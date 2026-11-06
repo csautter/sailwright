@@ -18,9 +18,10 @@ const createStartedFileEnv = "SAILWRIGHT_CREATE_STARTED_FILE"
 const (
 	ownershipFileName      = "owned_vms.json"
 	ownershipSchemaVersion = 1
-	// createdState is the `create list` value for a target whose VM exists.
-	createdState  = "already created"
-	riskForeignVM = "VM_NOT_CREATED_BY_GATEWAY"
+	// legacyCreatedState is the `create list` display value for a target whose VM
+	// exists. Only listings without the structured `exists` field rely on it.
+	legacyCreatedState = "already created"
+	riskForeignVM      = "VM_NOT_CREATED_BY_GATEWAY"
 	// busyProbe is how long requestVMAccess waits for an immediate "busy" answer.
 	busyProbe = 200 * time.Millisecond
 )
@@ -190,7 +191,7 @@ func (o *vmOwnership) prune(createTargets []Target, listedAt time.Time) error {
 	for _, target := range createTargets {
 		key := vmKey(target.OS, target.Type, target.Arch)
 		// Only a listing that says so proves the VM is gone.
-		if state := target.Fields["create"]; state == "" || state == createdState {
+		if !listedAsMissing(target) {
 			continue
 		}
 		if grant, ok := o.granted[key]; ok && grant.at.Before(listedAt) {
@@ -205,6 +206,15 @@ func (o *vmOwnership) prune(createTargets []Target, listedAt time.Time) error {
 		return nil
 	}
 	return o.saveLocked()
+}
+
+// listedAsMissing reports whether a `create list` entry says its VM does not exist.
+func listedAsMissing(target Target) bool {
+	if target.Exists != nil {
+		return !*target.Exists
+	}
+	state := target.Fields["create"]
+	return state != "" && state != legacyCreatedState
 }
 
 func (o *vmOwnership) saveLocked() error {

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOwnershipConfirmChecksInstance(t *testing.T) {
@@ -61,5 +62,39 @@ func TestOwnershipDisabledAllowsEverything(t *testing.T) {
 	}
 	if ok, err := o.confirm("ubuntu/server/amd64", "any"); !ok || err != nil || o.knowsInstance("ubuntu/server/amd64") {
 		t.Fatalf("isolated mode gated a VM: %v %v", ok, err)
+	}
+}
+
+// prune trusts the structured `exists` field over the "create" display text, and
+// still understands CLIs that only report the text.
+func TestOwnershipPruneUsesStructuredExists(t *testing.T) {
+	o, err := loadVMOwnership(true, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{"a//amd64", "b//amd64", "c//amd64", "d//amd64", "e//amd64"}
+	for _, key := range keys {
+		if err := o.created(key, "job", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	yes, no := true, false
+	listing := []Target{
+		// Renamed display text must not drop a VM that exists.
+		{OS: "a", Arch: "amd64", Exists: &yes, Fields: map[string]string{"create": "exists"}},
+		{OS: "b", Arch: "amd64", Exists: &no, Fields: map[string]string{"create": "ready to create"}},
+		// Older CLIs without `exists`.
+		{OS: "c", Arch: "amd64", Fields: map[string]string{"create": "already created"}},
+		{OS: "d", Arch: "amd64", Fields: map[string]string{"create": "ready to create"}},
+		// No information at all proves nothing.
+		{OS: "e", Arch: "amd64"},
+	}
+	if err := o.prune(listing, time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]bool{"a//amd64": true, "b//amd64": false, "c//amd64": true, "d//amd64": false, "e//amd64": true} {
+		if got := o.allowed(key); got != want {
+			t.Errorf("%s owned after prune = %v, want %v", key, got, want)
+		}
 	}
 }

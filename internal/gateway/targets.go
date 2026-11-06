@@ -21,6 +21,8 @@ type Target struct {
 	Arch   string            `json:"arch"`
 	Engine string            `json:"engine"`
 	Fields map[string]string `json:"fields,omitempty"`
+	// Exists is reported by `create list` (nil from CLIs before it was added).
+	Exists *bool `json:"exists,omitempty"`
 }
 
 type targetListing struct {

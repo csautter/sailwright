@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -35,9 +36,17 @@ func defaultCreateVirtualMachinesForHostOS(hostOs alchemy_build.HostOsType) []al
 }
 
 func printAvailableCreateCombinations() error {
-	vms := availableCreateVirtualMachines()
-	return printVirtualMachineCombinationTable(
-		os.Stdout,
+	return writeCreateCombinations(os.Stdout, availableCreateVirtualMachines())
+}
+
+func writeCreateCombinations(writer io.Writer, vms []alchemy_build.VirtualMachineConfig) error {
+	// The row builder already inspected each VM; report that, not a second query.
+	exists := map[string]bool{}
+	existsKey := func(vm alchemy_build.VirtualMachineConfig) string {
+		return vm.OS + "/" + vm.UbuntuType + "/" + vm.Arch + "/" + string(vm.VirtualizationEngine)
+	}
+	return printVirtualMachineCombinationTableWithExists(
+		writer,
 		fmt.Sprintf("Available create combinations for host OS: %s", alchemy_build.GetCurrentHostOs()),
 		"No create combinations are available for the current host OS.",
 		vms,
@@ -47,6 +56,7 @@ func printAvailableCreateCombinations() error {
 			if err != nil {
 				return nil, fmt.Errorf("failed to inspect create target for OS=%s, type=%s, arch=%s: %w", vm.OS, vm.UbuntuType, vm.Arch, err)
 			}
+			exists[existsKey(vm)] = targetExists
 
 			if vm.VirtualizationEngine == alchemy_build.VirtualizationEngineTart {
 				createState := "ready to create"
@@ -74,6 +84,13 @@ func printAvailableCreateCombinations() error {
 			}
 
 			return []string{vm.OS, displayVirtualMachineType(vm), vm.Arch, virtualMachineTargetStatus(vm), artifactState, createState}, nil
+		},
+		func(vm alchemy_build.VirtualMachineConfig) *bool {
+			value, ok := exists[existsKey(vm)]
+			if !ok {
+				return nil
+			}
+			return &value
 		},
 	)
 }
