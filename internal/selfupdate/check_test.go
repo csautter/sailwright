@@ -167,12 +167,15 @@ func TestCheckerNeverWaitsAndCachesFailure(t *testing.T) {
 		t.Fatalf("pending check: %+v", cache)
 	}
 	close(release)
-	deadline := time.Now().Add(5 * time.Second)
-	for !readCache(t, file).LastCheck.Equal(now) {
-		if time.Now().After(deadline) {
-			t.Fatal("failed check did not start the interval")
-		}
-		time.Sleep(time.Millisecond)
+	// Wait for the background writer before reading the cache. Polling the file
+	// can overlap its replacement, which Windows rejects with a sharing violation.
+	defer func(previous time.Duration) { noticeGrace = previous }(noticeGrace)
+	noticeGrace = 5 * time.Second
+	if got := finish(); got != "" {
+		t.Fatalf("failed check produced a notice: %q", got)
+	}
+	if cache := readCache(t, file); !cache.LastCheck.Equal(now) {
+		t.Fatalf("failed check did not start the interval: %+v", cache)
 	}
 	// Past the retry window but within the interval: a failure still counts.
 	now = now.Add(retryAfter + time.Minute)
