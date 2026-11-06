@@ -192,7 +192,15 @@ Send the `resource-group` and actual `vm` from the creation response.
 Callers must inspect the JSON `status`, including on HTTP `200`, to fail CI early.
 Existing creation-only callers must add this polling step to observe late
 failures. [`wait-runner-provisioned.sh`](wait-runner-provisioned.sh) implements
-the loop and is what `test-build-windows.yml` uses after `request_runner`. This endpoint reports Azure VM state; it does not check the bootstrap
+the loop and is what `test-build-windows.yml` uses after `request_runner` when
+its response advertises `status-url: "/api/runner_status"`. During rollout, an
+older broker without that field keeps the existing creation-only behavior and
+CI emits a notice. Deploy the updated Function App with
+`make deploy-az-func-app FUNCTION_APP_NAME=<name>` to enable polling. A status
+request returning 404 without a JSON `status` fails immediately with a deployment
+hint; a JSON `status: "not-found"` remains a terminal resource failure.
+
+This endpoint reports Azure VM state; it does not check the bootstrap
 script or GitHub registration and does not automatically retry late Spot
 failures on demand. Continue polling while waiting for registration if Spot
 eviction needs to be detected after provisioning succeeds.

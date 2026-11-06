@@ -71,6 +71,11 @@ while true; do
   else
     status="$(json_status < "${err_file}")"
     if [[ "${status}" == "unknown" ]]; then
+      error_text="$(cat "${err_file}")"
+      if [[ "${error_text}" =~ (^|[^0-9])404([^0-9]|$)|Not[[:space:]]?Found ]]; then
+        echo "::error::runner_status route unavailable (404 without a JSON status). Deploy the updated Function App before polling." >&2
+        exit 1
+      fi
       errors=$(( errors + 1 ))
       echo "Status request failed (${errors}/${PROVISION_MAX_ERRORS}): $(head -c 500 "${err_file}")"
     fi

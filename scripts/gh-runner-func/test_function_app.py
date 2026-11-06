@@ -760,6 +760,8 @@ class RequestRunnerTest(unittest.TestCase):
         with self.assertLogs(level="ERROR") as logs:
             response = self._request_runner()
         self.assertEqual(response.status_code, 500)
+        self.assertNotIn("frames", json.loads(response.body))
+        self.assertNotIn("function_app.py:", response.body)
         event = json.loads(logs.records[-1].getMessage())
         self.assertEqual(event["exception"], "AttributeError")
         self.assertTrue(
