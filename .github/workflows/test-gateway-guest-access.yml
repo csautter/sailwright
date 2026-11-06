@@ -1,0 +1,62 @@
+name: Test real gateway guest access
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'internal/gateway/**'
+      - 'pkg/deploy/**'
+      - 'pkg/build/**'
+      - 'pkg/oci/**'
+      - 'test/e2e/**'
+      - 'scripts/ci/*gateway*'
+      - '.github/workflows/test-gateway-guest-access.yml'
+      - 'go.mod'
+      - 'go.sum'
+  pull_request:
+    paths:
+      - 'cmd/**'
+      - 'internal/gateway/**'
+      - 'pkg/deploy/**'
+      - 'pkg/build/**'
+      - 'pkg/oci/**'
+      - 'test/e2e/**'
+      - 'scripts/ci/*gateway*'
+      - '.github/workflows/test-gateway-guest-access.yml'
+      - 'go.mod'
+      - 'go.sum'
+
+permissions:
+  contents: read
+
+# Let each run finish its cleanup; do not cancel a guest-owning job on new pushes.
+concurrency:
+  group: gateway-guest-access-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux-libvirt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Check audit evidence and cleanup failure paths with fake tools
+        run: python3 -I -m unittest discover -s scripts/ci -p 'test_gateway*.py'
+      - name: Provision disposable libvirt runner and test gateway SSH/SCP
+        timeout-minutes: 80
+        run: bash scripts/ci/gateway-guest-access-linux.sh
+      - name: Upload guest access and cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gateway-guest-access-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifact/gateway-guest-access/
+          if-no-files-found: error
+          retention-days: 7
