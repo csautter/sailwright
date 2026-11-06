@@ -360,8 +360,8 @@ func (g *Gateway) toolRunCLI(_ context.Context, req *mcp.CallToolRequest, in run
 		return g.submitSafe("run_cli", op, req, params)
 	}
 
-	if g.jobs.Active() != "" {
-		return nil, JobView{}, fmt.Errorf("%w (active job %s)", ErrBusy, g.jobs.Active())
+	if active := g.jobs.Active(); active != "" {
+		return nil, JobView{}, fmt.Errorf("%w (active job %s)", ErrBusy, active)
 	}
 
 	argv := append([]string(nil), in.Args...)

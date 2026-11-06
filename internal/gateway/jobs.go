@@ -127,6 +127,11 @@ type job struct {
 	// redactor adds per-job secrets (a sudo password); nil means the manager's. Only
 	// the job's execute goroutine reads or writes it.
 	redactor *Redactor
+	// cleanupBecomePassword is also deferred as a fallback; removal is idempotent.
+	cleanupBecomePassword func()
+	// snapshotDir is the job's bundle snapshot, removed before the job is reported done.
+	// Only the job's execute goroutine reads or writes it after Submit.
+	snapshotDir string
 }
 
 func (j *job) snapshotView() JobView {
@@ -164,11 +169,13 @@ type JobManager struct {
 	outputLimit int
 	binarySHA   string
 	onFinish    func()
-	console     io.Writer
-	follow      io.Writer
-	cacheDir    string
-	screensDir  string
-	stuckAfter  time.Duration
+	// removeSnapshot deletes a snapshot directory; tests replace it to observe ordering.
+	removeSnapshot func(dir string) error
+	console        io.Writer
+	follow         io.Writer
+	cacheDir       string
+	screensDir     string
+	stuckAfter     time.Duration
 
 	running sync.WaitGroup
 
@@ -217,7 +224,8 @@ func NewJobManager(opts JobManagerOptions) *JobManager {
 		logsDir: opts.LogsDir, stagingDir: opts.StagingDir, dataDir: opts.DataDir, minFreeGB: opts.MinFreeGB, outputLimit: opts.OutputLimit,
 		binarySHA: opts.BinarySHA, onFinish: opts.OnFinish, console: console, follow: opts.Follow,
 		cacheDir: opts.CacheDir, screensDir: opts.ScreensDir, stuckAfter: opts.StuckAfter,
-		jobs: map[string]*job{},
+		removeSnapshot: RemoveSnapshot,
+		jobs:           map[string]*job{},
 	}
 }
 
@@ -241,11 +249,9 @@ func (m *JobManager) Submit(spec JobSpec) (JobView, error) {
 	}
 
 	m.mu.Lock()
-	if m.active != "" {
-		if active, ok := m.jobs[m.active]; ok && !active.snapshotView().Done() {
-			m.mu.Unlock()
-			return JobView{}, fmt.Errorf("%w (active job %s)", ErrBusy, m.active)
-		}
+	if active := m.activeLocked(); active != "" {
+		m.mu.Unlock()
+		return JobView{}, fmt.Errorf("%w (active job %s)", ErrBusy, active)
 	}
 	id, err := newJobID()
 	if err != nil {
@@ -265,6 +271,9 @@ func (m *JobManager) Submit(spec JobSpec) (JobView, error) {
 		output:   newOutputBuffer(m.outputLimit),
 		cancel:   cancel,
 		finished: make(chan struct{}),
+	}
+	if spec.Snapshot != nil {
+		j.snapshotDir = spec.Snapshot.Dir
 	}
 	if spec.Target != nil && spec.Target.Kind == OpBuild && m.screensDir != "" {
 		j.screens = newScreenRecorder(vncSnapshotDir(m.cacheDir, *spec.Target), filepath.Join(m.screensDir, id), m.stuckAfter, j.output.LastWrite, func(idle time.Duration) {
@@ -290,13 +299,11 @@ func (m *JobManager) Submit(spec JobSpec) (JobView, error) {
 func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 	id := j.snapshotView().ID
 	defer func() {
-		if spec.Snapshot != nil {
-			_ = RemoveSnapshot(spec.Snapshot.Dir)
-		}
+		// Defensive: every path calls finish today, which already released the job.
+		// This keeps the slot from leaking if a future early return skips finish.
+		m.removeJobSnapshot(j)
 		m.mu.Lock()
-		if m.active == id {
-			m.active = ""
-		}
+		m.releaseSlotLocked(id)
 		m.mu.Unlock()
 		close(j.finished)
 		if m.onFinish != nil {
@@ -344,6 +351,7 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 				m.finish(j, JobFailed, nil, "could not pass the sudo password: "+err.Error(), time.Time{})
 				return
 			}
+			j.cleanupBecomePassword = cleanup
 			defer cleanup()
 			argv = WithBecomePasswordFile(argv, path)
 			redactor = m.redactor.WithRequired(approval.BecomePassword)
@@ -442,19 +450,54 @@ func (m *JobManager) finish(j *job, state JobState, code *int, message string, s
 		redactor = j.redactor
 	}
 	message = redactor.String(message)
-	j.update(func(v *JobView) {
-		v.State = state
-		v.ExitCode = code
-		v.Error = message
-		v.Finished = finished
-	})
+	if j.cleanupBecomePassword != nil {
+		j.cleanupBecomePassword()
+	}
+	// A job reported as done must have released its snapshot and slot: agents poll
+	// job_status and submit the next job right away. The (possibly slow) removal runs
+	// first; the terminal state and the free slot are then published together, so no
+	// one sees a done job holding the slot or a free slot next to an unfinished job.
+	m.removeJobSnapshot(j)
+	// Record completion while the job still blocks submissions, so the next
+	// job_submitted event cannot overtake this job_finished event.
 	view := j.snapshotView()
 	var duration int64
 	if !started.IsZero() {
 		duration = finished.Sub(started).Milliseconds()
 	}
 	m.record(AuditEvent{Event: "job_finished", Tool: view.Tool, JobID: view.ID, ExitCode: code, DurationMS: duration, Error: message, Decision: string(state)})
+	m.mu.Lock()
+	j.update(func(v *JobView) {
+		v.State = state
+		v.ExitCode = code
+		v.Error = message
+		v.Finished = finished
+	})
+	m.releaseSlotLocked(j.snapshotView().ID)
+	m.mu.Unlock()
 	fmt.Fprintf(m.console, "job %s %s\n", view.ID, state)
+}
+
+// removeJobSnapshot deletes the job's bundle snapshot once. A failed removal is
+// reported; the leftover is cleaned up when the gateway starts next.
+func (m *JobManager) removeJobSnapshot(j *job) {
+	dir := j.snapshotDir
+	if dir == "" {
+		return
+	}
+	j.snapshotDir = ""
+	if err := m.removeSnapshot(dir); err != nil {
+		id := j.snapshotView().ID
+		fmt.Fprintf(m.console, "job %s: could not remove snapshot %s: %v\n", id, dir, err)
+		m.record(AuditEvent{Event: "snapshot_remove_failed", JobID: id, Error: err.Error()})
+	}
+}
+
+// releaseSlotLocked frees the active slot if the job holds it. m.mu must be held.
+func (m *JobManager) releaseSlotLocked(id string) {
+	if m.active == id {
+		m.active = ""
+	}
 }
 
 // Get returns a job view.
@@ -518,14 +561,23 @@ func (m *JobManager) List() []JobView {
 	return views
 }
 
-// Active returns the active job id, if any.
+// Active returns the id of the job that blocks new submissions, if any.
 func (m *JobManager) Active() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if active, ok := m.jobs[m.active]; ok && active.snapshotView().Done() {
+	return m.activeLocked()
+}
+
+// activeLocked is the single busy check for Submit and callers that pre-check
+// before doing expensive work; a finished job never counts as active.
+func (m *JobManager) activeLocked() string {
+	if m.active == "" {
 		return ""
 	}
-	return m.active
+	if active, ok := m.jobs[m.active]; ok && !active.snapshotView().Done() {
+		return m.active
+	}
+	return ""
 }
 
 // ScreenshotResult is a console frame of a build job, or the reason there is none.

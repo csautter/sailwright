@@ -314,7 +314,9 @@ screen_stuck_after: 15m            # hint when console and output stay unchanged
 | `job_screenshot` | safe | VM console image of a build job (read-only) |
 
 Operations run as jobs. Poll `job_status` and read `job_output` from
-`next_offset`. Only one job runs at a time.
+`next_offset`. Only one job runs at a time. Once `job_status` reports a final
+state, the job's snapshot is removed and the next job can be submitted right
+away.
 
 To watch a job on the host, follow the log file the gateway prints when the job
 starts (`tail -f <state-dir>/logs/<job>.log`), or start the gateway with
