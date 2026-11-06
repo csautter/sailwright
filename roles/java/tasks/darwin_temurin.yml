@@ -33,7 +33,7 @@
       ansible.builtin.get_url:
         url: "{{ temurin_installer.link }}"
         checksum: "sha256:{{ temurin_installer.checksum }}"
-        dest: "{{ temurin_tmp.path }}/{{ temurin_installer.name }}"
+        dest: "{{ temurin_tmp.path }}/{{ temurin_installer.name | basename }}"
         mode: '0644'
 
     - name: Run the Temurin {{ temurin_version }} installer
@@ -41,7 +41,7 @@
         argv:
           - /usr/sbin/installer
           - -pkg
-          - "{{ temurin_tmp.path }}/{{ temurin_installer.name }}"
+          - "{{ temurin_tmp.path }}/{{ temurin_installer.name | basename }}"
           - -target
           - /
         creates: "/Library/Java/JavaVirtualMachines/temurin-{{ temurin_version }}.jdk/Contents/Home/bin/java"

@@ -30,15 +30,35 @@
         - not ansible_check_mode
         - k9s_installed_version != k9s_version
       block:
-        - name: Download and extract k9s binary
-          ansible.builtin.unarchive:
-            src: "https://github.com/derailed/k9s/releases/download/v{{ k9s_version }}/k9s_Linux_{{ k9s_arch }}.tar.gz"
-            dest: /usr/local/bin
-            remote_src: true
-            include:
-              - k9s
-            mode: '0755'
-          become: true
+        - name: Create a private download directory for k9s
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: k9s
+          register: k9s_tmp
+
+        - name: Download and extract the verified k9s release
+          block:
+            - name: Download k9s archive with its release checksum
+              ansible.builtin.get_url:
+                url: "https://github.com/derailed/k9s/releases/download/v{{ k9s_version }}/k9s_Linux_{{ k9s_arch }}.tar.gz"
+                checksum: "sha256:https://github.com/derailed/k9s/releases/download/v{{ k9s_version }}/checksums.sha256"
+                dest: "{{ k9s_tmp.path }}/k9s_Linux_{{ k9s_arch }}.tar.gz"
+                mode: '0644'
+
+            - name: Extract the verified k9s binary
+              ansible.builtin.unarchive:
+                src: "{{ k9s_tmp.path }}/k9s_Linux_{{ k9s_arch }}.tar.gz"
+                dest: /usr/local/bin
+                remote_src: true
+                include:
+                  - k9s
+                mode: '0755'
+              become: true
+          always:
+            - name: Remove the k9s download directory
+              ansible.builtin.file:
+                path: "{{ k9s_tmp.path }}"
+                state: absent
 
     - name: Report pending k9s installation in check mode
       ansible.builtin.debug:

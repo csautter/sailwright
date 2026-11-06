@@ -34,11 +34,15 @@
     - name: Install the Toolbox release
       when: not toolbox_marker.stat.exists and not ansible_check_mode
       block:
-        - name: Create a private download directory for Toolbox
+        # Stage on the same filesystem as the installation so promotion uses
+        # rename. Keep the old release until extraction and validation succeed.
+        - name: Create a private staging directory for Toolbox
           ansible.builtin.tempfile:
+            path: /opt
             state: directory
-            suffix: toolbox
+            prefix: .sailwright-toolbox-
           register: toolbox_tmp
+          become: true
 
         - name: Download and extract the Toolbox release
           block:
@@ -49,15 +53,9 @@
                 dest: "{{ toolbox_tmp.path }}/{{ toolbox_download.link | basename }}"
                 mode: "0644"
 
-            - name: Remove the previous Toolbox release
+            - name: Create the staged Toolbox directory
               ansible.builtin.file:
-                path: "{{ toolbox_directory }}"
-                state: absent
-              become: true
-
-            - name: Create the Toolbox directory
-              ansible.builtin.file:
-                path: "{{ toolbox_directory }}"
+                path: "{{ toolbox_tmp.path }}/release"
                 state: directory
                 mode: "0755"
               become: true
@@ -65,23 +63,74 @@
             - name: Extract JetBrains Toolbox archive
               ansible.builtin.unarchive:
                 src: "{{ toolbox_tmp.path }}/{{ toolbox_download.link | basename }}"
-                dest: "{{ toolbox_directory }}"
+                dest: "{{ toolbox_tmp.path }}/release"
                 remote_src: true
                 extra_opts:
                   - --strip-components=1
               become: true
 
-            - name: Record the installed Toolbox build
+            - name: Check the staged Toolbox binary
+              ansible.builtin.stat:
+                path: "{{ toolbox_tmp.path }}/release/bin/jetbrains-toolbox"
+              register: toolbox_staged_binary
+
+            - name: Ensure the staged Toolbox binary exists
+              ansible.builtin.assert:
+                that:
+                  - toolbox_staged_binary.stat.isreg | default(false)
+                  - toolbox_staged_binary.stat.executable | default(false)
+                fail_msg: "The Toolbox archive does not contain an executable bin/jetbrains-toolbox."
+
+            - name: Record the staged Toolbox build
               ansible.builtin.copy:
-                dest: "{{ toolbox_directory }}/.sailwright-build-{{ toolbox_build }}"
+                dest: "{{ toolbox_tmp.path }}/release/.sailwright-build-{{ toolbox_build }}"
                 content: "{{ toolbox_build }}\n"
                 mode: "0644"
-              become: true
+
+            - name: Check for a previous Toolbox installation
+              ansible.builtin.stat:
+                path: "{{ toolbox_directory }}"
+              register: toolbox_previous
+
+            - name: Preserve the previous Toolbox installation
+              ansible.builtin.command:
+                argv: [mv, "{{ toolbox_directory }}", "{{ toolbox_tmp.path }}/previous"]
+              when: toolbox_previous.stat.exists
+
+            - name: Promote the staged Toolbox installation
+              block:
+                - name: Move the staged Toolbox release into place
+                  ansible.builtin.command:
+                    argv: [mv, "{{ toolbox_tmp.path }}/release", "{{ toolbox_directory }}"]
+              rescue:
+                - name: Restore the previous Toolbox installation
+                  ansible.builtin.command:
+                    argv: [mv, "{{ toolbox_tmp.path }}/previous", "{{ toolbox_directory }}"]
+                  when: toolbox_previous.stat.exists
+
+                - name: Report the failed Toolbox promotion
+                  ansible.builtin.fail:
+                    msg: "Could not promote the staged Toolbox release: {{ ansible_failed_result.msg }}"
+
+            - name: Remove the previous Toolbox installation after promotion
+              ansible.builtin.file:
+                path: "{{ toolbox_tmp.path }}/previous"
+                state: absent
+          become: true
           always:
-            - name: Remove the Toolbox download directory
+            # If restoring an old installation also fails, retain its backup.
+            - name: Check for a retained Toolbox backup
+              ansible.builtin.stat:
+                path: "{{ toolbox_tmp.path }}/previous"
+              register: toolbox_backup
+              become: true
+
+            - name: Remove the Toolbox staging directory
               ansible.builtin.file:
                 path: "{{ toolbox_tmp.path }}"
                 state: absent
+              when: not toolbox_backup.stat.exists
+              become: true
 
     - name: Report pending Toolbox installation in check mode
       ansible.builtin.debug:
