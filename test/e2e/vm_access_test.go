@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -18,16 +19,90 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// TestVMAccess exercises the actual container SSH/scp clients and gateway transport.
+// askpassEnv makes the test binary act as SSH_ASKPASS: it prints the value and
+// exits. Windows has no sshpass, but its OpenSSH honours SSH_ASKPASS.
+const askpassEnv = "SAILWRIGHT_E2E_ASKPASS_SECRET"
+
+func TestMain(m *testing.M) {
+	if secret, ok := os.LookupEnv(askpassEnv); ok {
+		fmt.Println(secret)
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+// sshClient runs the guest ssh and scp commands with the guest password.
+type sshClient struct {
+	ssh, scp string
+	// extra options go before the other arguments; command-line options win over ssh_config.
+	extra   []string
+	askpass bool
+}
+
+// newSSHClient uses sshpass on Linux and macOS, as in the devcontainer. On
+// Windows it uses the system OpenSSH with SSH_ASKPASS and without connection
+// sharing, which Windows OpenSSH does not support.
+func newSSHClient() (sshClient, error) {
+	if runtime.GOOS != "windows" {
+		for _, binary := range []string{"ssh", "scp", "sshpass"} {
+			if _, err := exec.LookPath(binary); err != nil {
+				return sshClient{}, fmt.Errorf("client prerequisite %s: %w", binary, err)
+			}
+		}
+		return sshClient{ssh: "ssh", scp: "scp"}, nil
+	}
+	client := sshClient{askpass: true, extra: []string{"-o", "ControlMaster=no", "-o", "ControlPath=none"}}
+	system := filepath.Join(os.Getenv("SystemRoot"), "System32", "OpenSSH")
+	for _, name := range []string{"ssh", "scp"} {
+		path := filepath.Join(system, name+".exe")
+		if _, err := os.Stat(path); err != nil {
+			if path, err = exec.LookPath(name); err != nil {
+				return sshClient{}, fmt.Errorf("client prerequisite %s: %w", name, err)
+			}
+		}
+		if name == "ssh" {
+			client.ssh = path
+		} else {
+			client.scp = path
+		}
+	}
+	return client, nil
+}
+
+func (c sshClient) command(ctx context.Context, binary string, password string, argv ...string) (*exec.Cmd, error) {
+	path := c.ssh
+	if binary == "scp" {
+		path = c.scp
+	}
+	argv = append(append([]string(nil), c.extra...), argv...)
+	if !c.askpass {
+		cmd := exec.CommandContext(ctx, "sshpass", append([]string{"-e", path}, argv...)...)
+		cmd.Env = append(os.Environ(), "SSHPASS="+password)
+		return cmd, nil
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, path, argv...)
+	cmd.Env = append(os.Environ(), "SSH_ASKPASS="+self, "SSH_ASKPASS_REQUIRE=force", "DISPLAY=sailwright-e2e", askpassEnv+"="+password)
+	return cmd, nil
+}
+
+// TestVMAccess exercises the actual SSH/scp clients and gateway transport, from
+// the devcontainer (sshpass) or natively on a Windows gateway host (SSH_ASKPASS).
 // It is opt-in because it creates and destroys the selected managed VM.
 func TestVMAccess(t *testing.T) {
 	if os.Getenv("SAILWRIGHT_VM_ACCESS_E2E") != "1" {
 		t.Skip("set SAILWRIGHT_VM_ACCESS_E2E=1 to test a disposable Ubuntu VM over the gateway")
 	}
-	for _, binary := range []string{"ssh", "scp", "sshpass", "sailwright-gateway"} {
-		if _, err := exec.LookPath(binary); err != nil {
-			t.Fatalf("container prerequisite %s: %v", binary, err)
-		}
+	sshClient, err := newSSHClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The ProxyCommand in the generated ssh_config runs sailwright-gateway.
+	if _, err := exec.LookPath("sailwright-gateway"); err != nil {
+		t.Fatalf("client prerequisite sailwright-gateway: %v", err)
 	}
 	target := os.Getenv("SAILWRIGHT_E2E_TARGET")
 	if target == "" {
@@ -130,19 +205,23 @@ func TestVMAccess(t *testing.T) {
 	}
 	config := filepath.Join(directory, "ssh_config")
 	// Keep ephemeral guest host keys separate from the user's SSH files.
-	content := info.SSHConfig + "  StrictHostKeyChecking accept-new\n  UserKnownHostsFile " + filepath.Join(directory, "known_hosts") + "\n"
+	content := info.SSHConfig + "  StrictHostKeyChecking accept-new\n  UserKnownHostsFile " + filepath.ToSlash(filepath.Join(directory, "known_hosts")) + "\n"
 	if err := os.WriteFile(config, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	alias := "sailwright-" + strings.ReplaceAll(target, "/", "-")
 	run := func(binary string, argv ...string) string {
-		cmd := exec.CommandContext(ctx, "sshpass", append([]string{"-e", binary}, argv...)...)
-		cmd.Env = append(os.Environ(), "SSHPASS="+info.Password)
+		cmd, err := sshClient.command(ctx, binary, info.Password, argv...)
+		if err != nil {
+			t.Fatal(err)
+		}
 		output, err := cmd.CombinedOutput()
 		if err != nil {
-			t.Fatalf("guest %s failed: %v", binary, err)
+			// The password is never part of the output: it reaches ssh through
+			// SSHPASS or the askpass helper only.
+			t.Fatalf("guest %s failed: %v\n%s", binary, err, output)
 		}
-		return string(output)
+		return strings.ReplaceAll(string(output), "\r\n", "\n")
 	}
 	if output := run("ssh", "-F", config, alias, "uname -a"); !strings.Contains(output, "Linux") {
 		t.Fatal("unexpected guest kernel")
