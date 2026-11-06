@@ -39,30 +39,17 @@ func newRepository(ref remoteReference, opts RegistryOptions) (*remote.Repositor
 	if err != nil {
 		return nil, err
 	}
-	if credential != nil || httpClient != nil {
-		repo.Client = &auth.Client{
-			Client:     registryAuthHTTPClient(httpClient),
-			Header:     auth.DefaultClient.Header.Clone(),
-			Cache:      auth.NewCache(),
-			Credential: credential,
-		}
+	repo.Client = &auth.Client{
+		Client:     httpClient,
+		Header:     auth.DefaultClient.Header.Clone(),
+		Cache:      auth.NewCache(),
+		Credential: credential,
 	}
 
 	return repo, nil
 }
 
-func registryAuthHTTPClient(client *http.Client) *http.Client {
-	if client != nil {
-		return client
-	}
-	return retry.DefaultClient
-}
-
 func registryHTTPClient(opts RegistryOptions) (*http.Client, error) {
-	if !opts.InsecureSkipTLSVerify && opts.CAFile == "" {
-		return nil, nil
-	}
-
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: opts.InsecureSkipTLSVerify, // #nosec G402 -- controlled by the explicit --insecure-skip-tls-verify registry option.
 	}
@@ -84,6 +71,11 @@ func registryHTTPClient(opts RegistryOptions) (*http.Client, error) {
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = tlsConfig
+	// Large registry blobs can fail mid-stream with HTTP/2 PROTOCOL_ERROR.
+	// Request retries cannot recover a body that already started streaming, so
+	// use HTTP/1.1 for registry requests, including redirected blob downloads.
+	transport.Protocols = new(http.Protocols)
+	transport.Protocols.SetHTTP1(true)
 	return &http.Client{Transport: retry.NewTransport(transport)}, nil
 }
 
