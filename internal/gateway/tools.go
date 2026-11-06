@@ -39,7 +39,9 @@ func (g *Gateway) newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{Name: "list_targets", Description: "Run `sailwright <command> list --json` and return the targets with their current state.", Annotations: readOnly}, g.toolListTargets)
 	mcp.AddTool(server, &mcp.Tool{Name: "command_help", Description: "Show `sailwright [command] [list] --help`.", Annotations: readOnly}, g.toolCommandHelp)
 
-	mcp.AddTool(server, &mcp.Tool{Name: "vm_info", Description: "Get guest connection credentials, SSH ProxyCommand config and Ansible inventory for a running managed VM.", Annotations: readOnly}, g.toolVMInfo)
+	// Not read-only: for a VM the gateway did not create, the call asks the operator
+	// for access, which also opens start, stop, provision and destroy.
+	mcp.AddTool(server, &mcp.Tool{Name: "vm_info", Description: "Get guest connection credentials, SSH ProxyCommand config and Ansible inventory for a running managed VM. For a VM this gateway did not create, it asks the operator for access (credentials, tunnels and lifecycle tools) and fails until they approve."}, g.toolVMInfo)
 	mcp.AddTool(server, &mcp.Tool{Name: "vm_build", Description: "Build a VM image (safe set, starts a job)."}, g.toolBuild)
 	mcp.AddTool(server, &mcp.Tool{Name: "vm_create", Description: "Create a VM from a built image (safe set, starts a job)."}, g.vmTool(OpCreate))
 	mcp.AddTool(server, &mcp.Tool{Name: "vm_start", Description: "Start a VM (safe set, starts a job)."}, g.vmTool(OpStart))

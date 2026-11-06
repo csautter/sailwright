@@ -527,7 +527,11 @@ checks. `sailwright provision` on Hyper-V uses the same discovery. Gateway jobs 
 Call MCP `vm_info` with the same target to receive guest credentials, an
 `ssh_config` block and an Ansible inventory. These contain sensitive guest
 credentials; keep inventory files private. The gateway does not write them to
-audit or job logs. Its config remains separate from your CLI config.
+audit or job logs. Its config remains separate from your CLI config. On
+Hyper-V hosts the call can take tens of seconds, since the CLI queries Vagrant
+and Hyper-V. For a VM the gateway did not create, `vm_info` is not read-only:
+it opens an access request that, once approved, also unlocks `vm_start`,
+`vm_stop`, `vm_provision` and `vm_destroy` for that VM.
 
 Save `ssh_config` to a container file, then use its `Host` alias. The block
 shares one connection between ssh and scp calls (`ControlMaster auto`,
