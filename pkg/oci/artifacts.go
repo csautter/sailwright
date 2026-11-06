@@ -2,6 +2,7 @@ package oci
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -175,11 +176,22 @@ func Pull(ctx context.Context, vm alchemy_build.VirtualMachineConfig, reference 
 	for _, artifact := range layout.files {
 		finalPaths = append(finalPaths, artifact.Path)
 	}
-	if err := alchemy_build.MarkBuildArtifactsPending(finalPaths); err != nil {
+	restoreMarkers, err := alchemy_build.MarkBuildArtifactsPending(finalPaths)
+	if err != nil {
 		return TransferResult{}, err
 	}
 	if err := promotePulledArtifacts(stagingRoot, layout.files); err != nil {
-		return TransferResult{}, err
+		switch {
+		case errors.Is(err, errPullBackupCleanup):
+			// The pulled artifacts are in place; only stale backups are left.
+			reportTransferStatus(opts.Progress, "Warning: %v", err)
+		case errors.Is(err, errPullRollbackFailed):
+			// The set may mix pulled and previous files, so it stays incomplete.
+			return TransferResult{}, err
+		default:
+			// Rolled back: the previous artifacts keep their state.
+			return TransferResult{}, errors.Join(err, restoreMarkers())
+		}
 	}
 	// The layers were verified against their digests, so the artifacts are complete.
 	if err := alchemy_build.MarkBuildArtifactsComplete(finalPaths); err != nil {

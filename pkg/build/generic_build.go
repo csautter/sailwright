@@ -632,10 +632,21 @@ func RemoveBuildArtifactsForConfig(config VirtualMachineConfig) {
 }
 
 func promoteStagedBuildArtifacts(finalArtifacts []string, stagedArtifacts []string) error {
-	if err := MarkBuildArtifactsPending(finalArtifacts); err != nil {
+	restoreMarkers, err := MarkBuildArtifactsPending(finalArtifacts)
+	if err != nil {
 		return err
 	}
 	var errs []error
+	replaced := 0
+	defer func() {
+		// Nothing was replaced, so the previous artifacts keep their state instead of
+		// turning incomplete and being rebuilt.
+		if len(errs) > 0 && replaced == 0 {
+			if restoreErr := restoreMarkers(); restoreErr != nil {
+				log.Printf("Failed to restore completion markers after a failed promotion: %v", restoreErr)
+			}
+		}
+	}()
 	for i, finalArtifact := range finalArtifacts {
 		stagedArtifact := stagedArtifacts[i]
 		if _, err := os.Stat(stagedArtifact); err != nil {
@@ -649,7 +660,9 @@ func promoteStagedBuildArtifacts(finalArtifacts []string, stagedArtifacts []stri
 
 		if err := replaceBuildArtifact(finalArtifact, stagedArtifact); err != nil {
 			errs = append(errs, err)
+			continue
 		}
+		replaced++
 	}
 	return errors.Join(errs...)
 }

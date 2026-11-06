@@ -188,12 +188,40 @@ func writeArtifactCompletionMarker(artifact string) error {
 // or pull replaces any of them. If the replacement stops partway, the set stays
 // incomplete instead of mixing new and old artifacts without markers, which would
 // count as unverified and usable. MarkBuildArtifactsComplete replaces the markers once
-// the whole set is in place.
-func MarkBuildArtifactsPending(artifacts []string) error {
+// the whole set is in place. restore puts the previous markers back, for a replacement
+// that left every artifact as it was.
+func MarkBuildArtifactsPending(artifacts []string) (restore func() error, err error) {
+	previous := make(map[string][]byte, len(artifacts))
+	for _, artifact := range artifacts {
+		// #nosec G304 -- the marker path is derived from a managed build artifact path.
+		data, err := os.ReadFile(artifactCompletionMarkerPath(artifact))
+		if err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read completion marker for %s: %w", artifact, err)
+		}
+		previous[artifact] = data
+	}
+	restore = func() error {
+		var errs []error
+		for artifact, data := range previous {
+			markerPath := artifactCompletionMarkerPath(artifact)
+			if data == nil {
+				if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
+					errs = append(errs, fmt.Errorf("remove pending marker for %s: %w", artifact, err))
+				}
+				continue
+			}
+			// #nosec G306 -- the marker holds no secrets and must stay readable for non-root CI steps after sudo-created builds.
+			if err := os.WriteFile(markerPath, data, 0o644); err != nil {
+				errs = append(errs, fmt.Errorf("restore completion marker for %s: %w", artifact, err))
+			}
+		}
+		return errors.Join(errs...)
+	}
+
 	for _, artifact := range artifacts {
 		// #nosec G301 -- cache artifact directories must remain traversable for non-root CI steps after sudo-created builds.
 		if err := os.MkdirAll(filepath.Dir(artifact), 0o755); err != nil {
-			return fmt.Errorf("create artifact directory for %s: %w", artifact, err)
+			return nil, errors.Join(fmt.Errorf("create artifact directory for %s: %w", artifact, err), restore())
 		}
 		if err := writeArtifactMarkerFile(artifact, artifactCompletionMarker{
 			Format:            artifactCompletionMarkerFormat,
@@ -201,10 +229,10 @@ func MarkBuildArtifactsPending(artifacts []string) error {
 			Size:              -1,
 			Pending:           true,
 		}); err != nil {
-			return err
+			return nil, errors.Join(err, restore())
 		}
 	}
-	return nil
+	return restore, nil
 }
 
 func writeArtifactMarkerFile(artifact string, marker artifactCompletionMarker) error {

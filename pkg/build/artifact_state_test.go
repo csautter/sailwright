@@ -228,3 +228,26 @@ func TestPartlyPromotedArtifactSetIsIncomplete(t *testing.T) {
 	}
 	assertArtifactState(t, ArtifactStateExists, first, second)
 }
+
+// A promotion that fails before replacing anything keeps the previous artifacts'
+// state, so a good set is not rebuilt.
+func TestFailedPromotionWithoutReplacementKeepsPreviousState(t *testing.T) {
+	dir := t.TempDir()
+	complete := filepath.Join(dir, "disk.qcow2")
+	unmarked := filepath.Join(dir, "efivars.fd")
+	writeTestFile(t, complete, "old disk")
+	writeTestFile(t, unmarked, "old vars")
+	if err := MarkBuildArtifactsComplete([]string{complete}); err != nil {
+		t.Fatal(err)
+	}
+
+	missingStaged := []string{
+		filepath.Join(dir, "disk"+stagedBuildArtifactInfix+"1.qcow2"),
+		filepath.Join(dir, "efivars"+stagedBuildArtifactInfix+"1.fd"),
+	}
+	if err := promoteStagedBuildArtifacts([]string{complete, unmarked}, missingStaged); err == nil {
+		t.Fatal("expected promotion without staged artifacts to fail")
+	}
+	assertArtifactState(t, ArtifactStateExists, complete)
+	assertArtifactState(t, ArtifactStateUnverified, unmarked)
+}
