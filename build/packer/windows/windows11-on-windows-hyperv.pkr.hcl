@@ -73,7 +73,9 @@ source "hyperv-iso" "win11" {
   communicator   = "winrm"
   winrm_username = "Administrator"
   winrm_password = "P@ssw0rd!"
-  winrm_timeout  = "60m"
+  # Packer waits for WinRM from the first boot on, so this covers the whole Windows
+  # setup; on nested or slow hosts that takes well over an hour (QEMU uses 4h too).
+  winrm_timeout = "4h"
 
   enable_secure_boot = true
   generation         = 2
