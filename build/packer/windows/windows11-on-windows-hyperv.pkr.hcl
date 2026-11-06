@@ -83,14 +83,12 @@ source "hyperv-iso" "win11" {
 
   boot_wait = "500ms"
 
-  # Send multiple keypresses to ensure we catch the "press any key" prompt
-  # The prompt typically has a 5-second timeout window
-  boot_command = [
-    "<spacebar><wait1s>",
-    "<spacebar><wait1s>",
-    "<spacebar><wait1s>",
-    "<spacebar>"
-  ]
+  # The "press any key to boot from CD or DVD" prompt waits about 5 seconds, but on
+  # slow or nested hosts it appears several seconds after power-on. Press space
+  # every second for 20 seconds so the prompt is caught wherever it shows up; a
+  # miss leaves the VM at "No operating system was loaded" until winrm_timeout.
+  # Later presses land while Setup loads and are ignored (autounattend.xml).
+  boot_command = [for i in range(20) : "<spacebar><wait1s>"]
 
   # The "autounattend.xml" file is an unattended setup configuration for Windows installation.
   cd_files = [
