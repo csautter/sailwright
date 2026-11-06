@@ -49,7 +49,6 @@ case "${0##*/}" in
   cat "$6"; exit;;
  bash)
   [ "$1" != '-lc' ]
-  [ ! -s "$MOCK_STATE/ids" ] || exit 13
   mkdir -p "$MOCK_BUNDLE"
   printf 'bbbbbbbb-1111-2222-3333-444444444444' > "$MOCK_BUNDLE/config.plist"
   exit;;
@@ -239,7 +238,7 @@ func TestMacOSInstanceIdentity(t *testing.T) {
 	}
 }
 
-func TestUtmCreateCleansOrphanBeforeGeneratingBundle(t *testing.T) {
+func TestUtmCreateDefersOrphanRepairUntilStart(t *testing.T) {
 	vm, bundle, state := mockMacOSLifecycle(t)
 	writeMacFixture(t, filepath.Join(state, "ids"), oldUtmID)
 	writeMacFixture(t, filepath.Join(state, "status"), "stopped")
@@ -251,8 +250,50 @@ func TestUtmCreateCleansOrphanBeforeGeneratingBundle(t *testing.T) {
 		t.Fatalf("created bundle %s: %s %v %v", bundle, id, exists, err)
 	}
 	ids, _ := os.ReadFile(filepath.Join(state, "ids"))
+	if string(ids) != oldUtmID {
+		t.Fatalf("create changed registration: %s", ids)
+	}
+	calls, _ := os.ReadFile(filepath.Join(state, "calls"))
+	if strings.Contains(string(calls), "osascript") {
+		t.Fatalf("bundle creation requires GUI automation: %s", calls)
+	}
+	writeMacFixture(t, filepath.Join(bundle, "disk"), "valuable guest disk")
+	writeMacFixture(t, filepath.Join(state, "preserve"), "")
+	if err := RunUtmStartOnMacOS(vm); err != nil {
+		t.Fatal(err)
+	}
+	ids, _ = os.ReadFile(filepath.Join(state, "ids"))
 	if string(ids) != newUtmID {
-		t.Fatalf("replacement not registered: %s", ids)
+		t.Fatalf("start did not repair orphan registration: %s", ids)
+	}
+	if disk, err := os.ReadFile(filepath.Join(bundle, "disk")); err != nil || string(disk) != "valuable guest disk" {
+		t.Fatalf("start damaged created disk: %q %v", disk, err)
+	}
+}
+
+func TestTartInstanceIdentityRejectsEscapingPaths(t *testing.T) {
+	vm, _, state := mockMacOSLifecycle(t)
+	vm.OS, vm.UbuntuType, vm.VirtualizationEngine = "macos", "", alchemy_build.VirtualizationEngineTart
+	for _, name := range []string{".", "..", "../outside", "/outside", "nested/vm"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("TART_MACOS_VM_NAME", name)
+			if _, _, err := InspectInstanceID(vm); err == nil {
+				t.Fatal("accepted invalid VM name")
+			}
+		})
+	}
+	vms := filepath.Join(os.Getenv("TART_HOME"), "vms")
+	if err := os.MkdirAll(vms, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(vms, tartMacOSVMName(vm))); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := InspectInstanceID(vm); err == nil {
+		t.Fatal("accepted symlink outside Tart home")
+	}
+	if calls, _ := os.ReadFile(filepath.Join(state, "calls")); len(calls) != 0 {
+		t.Fatalf("queried identity for unsafe path: %s", calls)
 	}
 }
 

@@ -145,11 +145,21 @@ func inspectTartInstanceID(config alchemy_build.VirtualMachineConfig) (string, b
 		tartHome = filepath.Join(home, ".tart")
 	}
 	name := tartMacOSVMName(config)
-	if name == "." || name == ".." || filepath.Base(name) != name {
+	if !filepath.IsLocal(name) || name == "." || filepath.Base(name) != name {
 		return "", false, fmt.Errorf("invalid local Tart VM name %q", name)
 	}
+	// Confine lookups to Tart's home, including symlink resolution. Checking the
+	// name alone does not prevent vms or the VM entry from linking outside it.
+	root, err := os.OpenRoot(tartHome)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	defer root.Close()
 	vmPath := filepath.Join(tartHome, "vms", name)
-	info, err := os.Stat(vmPath)
+	info, err := root.Stat(filepath.Join("vms", name))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", false, nil

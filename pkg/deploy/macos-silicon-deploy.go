@@ -24,15 +24,10 @@ func RunUtmDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 		return fmt.Errorf("UTM deploy is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
 
-	// Remove orphan registrations before generating a replacement bundle.
-	if _, exists, err := inspectUtmInstanceID(config); err != nil {
-		return err
-	} else if !exists {
-		if err := removeUtmRegistrations(config, ""); err != nil {
-			return err
-		}
-	}
-
+	// Creating the bundle is an offline operation. Defer registration repair to
+	// start, which preserves this bundle while removing any stale registration.
+	// Querying UTM here would launch its GUI and require Automation consent even
+	// when the caller only wants to prepare a disk (including CI deploy smoke tests).
 	scriptPath := path.Join(alchemy_build.GetDirectoriesInstance().ProjectDir, "deployments/utm/create-utm-vm.sh")
 	projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
 
@@ -47,9 +42,6 @@ func RunUtmDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 		fmt.Sprintf("%s:%s", vmName, config.Arch),
 	); err != nil {
 		return fmt.Errorf("UTM deploy failed for %s:%s: %w", vmName, config.Arch, err)
-	}
-	if err := ensureUtmRegistration(config); err != nil {
-		return err
 	}
 	log.Printf("UTM deploy completed for %s:%s", vmName, config.Arch)
 	return nil
