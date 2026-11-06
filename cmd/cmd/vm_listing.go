@@ -13,6 +13,10 @@ import (
 
 type vmTableRowBuilder func(vm alchemy_build.VirtualMachineConfig) ([]string, error)
 
+// vmExistsReporter reports, after the row of vm was built, whether its VM exists;
+// nil leaves `exists` out of the JSON listing.
+type vmExistsReporter func(vm alchemy_build.VirtualMachineConfig) *bool
+
 // vmListingSchemaVersion is the version of the JSON document printed by `<command> list --json`.
 const vmListingSchemaVersion = 1
 
@@ -30,7 +34,10 @@ type vmListingTargetJSON struct {
 	Arch   string            `json:"arch"`
 	Engine string            `json:"engine"`
 	Fields map[string]string `json:"fields"`
-	// Address is reserved for the VM network address and is always null for now.
+	// Exists is set by listings that inspect the VM (`create list`). Tools must use
+	// it rather than the display text of the "create" column.
+	Exists *bool `json:"exists,omitempty"`
+	// Address stays null: address discovery is performed by `vm info`, not listings.
 	Address *string `json:"address"`
 }
 
@@ -46,8 +53,20 @@ func printVirtualMachineCombinationTable(
 	headers []string,
 	rowBuilder vmTableRowBuilder,
 ) error {
+	return printVirtualMachineCombinationTableWithExists(writer, title, emptyMessage, vms, headers, rowBuilder, nil)
+}
+
+func printVirtualMachineCombinationTableWithExists(
+	writer io.Writer,
+	title string,
+	emptyMessage string,
+	vms []alchemy_build.VirtualMachineConfig,
+	headers []string,
+	rowBuilder vmTableRowBuilder,
+	existsOf vmExistsReporter,
+) error {
 	if listOutputJSON {
-		return writeVirtualMachineCombinationJSON(writer, vms, headers, rowBuilder)
+		return writeVirtualMachineCombinationJSON(writer, vms, headers, rowBuilder, existsOf)
 	}
 
 	fmt.Fprintf(writer, "%s\n", title)
@@ -74,6 +93,7 @@ func writeVirtualMachineCombinationJSON(
 	vms []alchemy_build.VirtualMachineConfig,
 	headers []string,
 	rowBuilder vmTableRowBuilder,
+	existsOf vmExistsReporter,
 ) error {
 	listing := vmListingJSON{SchemaVersion: vmListingSchemaVersion, Targets: []vmListingTargetJSON{}}
 	for _, vm := range vms {
@@ -89,12 +109,17 @@ func writeVirtualMachineCombinationJSON(
 			}
 			fields[key] = row[i]
 		}
+		var exists *bool
+		if existsOf != nil {
+			exists = existsOf(vm)
+		}
 		listing.Targets = append(listing.Targets, vmListingTargetJSON{
 			OS:     vm.OS,
 			Type:   vm.UbuntuType,
 			Arch:   listingArch(vm.Arch),
 			Engine: string(vm.VirtualizationEngine),
 			Fields: fields,
+			Exists: exists,
 		})
 	}
 

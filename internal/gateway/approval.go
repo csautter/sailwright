@@ -46,6 +46,8 @@ type ApprovalRequest struct {
 type Approval struct {
 	Decision       Decision
 	BecomePassword string
+	// Auto is set when AutoApprover decided without the operator.
+	Auto bool
 }
 
 // Approver decides approval requests through a channel the agent cannot reach.
@@ -72,6 +74,26 @@ func (DisabledApprover) Enabled() bool { return false }
 // Request always denies.
 func (DisabledApprover) Request(context.Context, ApprovalRequest) Approval {
 	return Approval{Decision: DecisionDenied}
+}
+
+// AutoApprover approves every request without asking. It exists for disposable test
+// environments (serve --bypass-approvals) and removes the human check entirely: any
+// agent with the token can run every command the gateway grammar accepts. Each
+// decision is still printed so the console shows what ran.
+type AutoApprover struct {
+	Out io.Writer
+}
+
+// Enabled reports true so approval-gated tools and VM access requests are offered.
+func (AutoApprover) Enabled() bool { return true }
+
+// Request approves immediately. Become requests get no sudo password.
+func (a AutoApprover) Request(_ context.Context, req ApprovalRequest) Approval {
+	if a.Out != nil {
+		fmt.Fprintf(a.Out, "approval %s: auto-approved (--bypass-approvals) %s: sailwright %s\n",
+			req.ID, sanitizeForTerminal(req.Tool), quoteArgv(req.Argv))
+	}
+	return Approval{Decision: DecisionApproved, Auto: true}
 }
 
 // ConsoleApprover asks the operator on the gateway's own foreground terminal. It has

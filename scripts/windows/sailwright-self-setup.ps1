@@ -1,6 +1,8 @@
 param(
     [switch]$WithGo,
-    [switch]$VirtualBox
+    [switch]$VirtualBox,
+    [switch]$HyperV,
+    [switch]$Vagrant
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,6 +25,8 @@ $cygwinVersion = "3.6.9"
 $cygGetVersion = "1.2.2"
 # renovate: datasource=nuget depName=virtualbox versioning=nuget registryUrl=https://community.chocolatey.org/api/v2/
 $virtualBoxVersion = "7.2.8"
+# renovate: datasource=nuget depName=vagrant versioning=nuget registryUrl=https://community.chocolatey.org/api/v2/
+$vagrantVersion = "2.4.9"
 # renovate: datasource=pypi depName=ansible versioning=pep440
 $ansibleVersion = "14.5.0"
 # renovate: datasource=pypi depName=pywinrm versioning=pep440
@@ -62,7 +66,9 @@ function Test-IsAdministrator {
 function Invoke-SelfElevated {
     param(
         [switch]$WithGo,
-        [switch]$VirtualBox
+        [switch]$VirtualBox,
+        [switch]$HyperV,
+        [switch]$Vagrant
     )
 
     $scriptPath = $PSCommandPath
@@ -84,6 +90,12 @@ function Invoke-SelfElevated {
     }
     if ($VirtualBox) {
         $argumentList += "-VirtualBox"
+    }
+    if ($HyperV) {
+        $argumentList += "-HyperV"
+    }
+    if ($Vagrant) {
+        $argumentList += "-Vagrant"
     }
 
     Write-Output "Requesting administrator privileges through UAC..."
@@ -597,7 +609,9 @@ function Get-CygwinRootDirIfAvailable {
         "D:\cygwin"
     )
     foreach ($candidate in $fallbackCandidates) {
-        if (Test-Path (Join-Path $candidate "bin\bash.exe")) {
+        # Join-Path resolves the drive and throws DriveNotFoundException in
+        # Windows PowerShell 5.1 when a candidate drive such as D: is absent.
+        if (Test-Path -LiteralPath ([System.IO.Path]::Combine($candidate, "bin\bash.exe"))) {
             return $candidate
         }
     }
@@ -1229,6 +1243,224 @@ function Ensure-AzureCliInstalled {
     Ensure-ChocolateyPackage -PackageName "azure-cli" -Version $Version
 }
 
+# Windows client editions ship Hyper-V as optional features. The parent
+# feature pulls in the hypervisor, the services and the management tools,
+# including the Hyper-V PowerShell module sailwright uses.
+$hyperVClientFeatureName = "Microsoft-Hyper-V-All"
+$hyperVClientRequiredFeatures = @(
+    "Microsoft-Hyper-V",
+    "Microsoft-Hyper-V-Management-PowerShell"
+)
+# Windows Server installs Hyper-V as a role; -IncludeManagementTools adds the
+# Hyper-V PowerShell module.
+$hyperVServerRequiredFeatures = @(
+    "Hyper-V",
+    "Hyper-V-PowerShell"
+)
+
+function Test-IsWindowsServer {
+    # Win32_OperatingSystem.ProductType: 1 = workstation, 2 = domain controller, 3 = server.
+    return ((Get-CimInstance -ClassName Win32_OperatingSystem).ProductType -ne 1)
+}
+
+function Assert-HyperVCapableProcessor {
+    # Once a hypervisor runs (Hyper-V itself, or the outer hypervisor of a
+    # nested setup) Windows stops reporting the processor virtualization
+    # flags, so they cannot be checked.
+    if ((Get-CimInstance -ClassName Win32_ComputerSystem).HypervisorPresent) {
+        return
+    }
+
+    foreach ($processor in @(Get-CimInstance -ClassName Win32_Processor)) {
+        if (-not $processor.VMMonitorModeExtensions) {
+            throw "Hyper-V needs hardware virtualization (Intel VT-x or AMD-V), but the processor '$($processor.Name)' does not expose it. When Windows runs as a virtual machine, enable nested virtualization on the outer hypervisor. Run 'sailwright install' without --hyperv to install the other dependencies without Hyper-V."
+        }
+        if (-not $processor.VirtualizationFirmwareEnabled) {
+            throw "Hyper-V needs hardware virtualization, but it is disabled in the firmware of this host. Enable Intel VT-x or AMD-V (SVM) in the BIOS/UEFI settings, or run 'sailwright install' without --hyperv to install the other dependencies without Hyper-V."
+        }
+    }
+}
+
+# DISM reports freshly enabled features as Enabled before the restart that
+# actually installs them, so the Hyper-V management service is still missing.
+function Test-HyperVRestartPending {
+    if (Get-Service -Name "vmms" -ErrorAction SilentlyContinue) {
+        return $false
+    }
+    return (Test-Path -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending")
+}
+
+# Returns $true when Windows must restart to finish enabling Hyper-V.
+function Ensure-HyperVClientFeature {
+    $features = @(
+        foreach ($featureName in $hyperVClientRequiredFeatures) {
+            $feature = Get-WindowsOptionalFeature -Online -FeatureName $featureName -ErrorAction SilentlyContinue
+            if (-not $feature) {
+                throw "Hyper-V is not available on this Windows edition (optional feature $featureName is missing). Hyper-V needs Windows 10/11 Pro, Enterprise or Education. Run 'sailwright install' without --hyperv to install the other dependencies without Hyper-V."
+            }
+            $feature
+        }
+    )
+
+    $notEnabled = @($features | Where-Object { "$($_.State)" -ne "Enabled" })
+    if ($notEnabled.Count -eq 0) {
+        if (Test-HyperVRestartPending) {
+            Write-Host "Hyper-V is enabled and waits for a Windows restart."
+            return $true
+        }
+        Write-Host "Hyper-V is already enabled."
+        return $false
+    }
+    if (@($notEnabled | Where-Object { "$($_.State)" -ne "EnablePending" }).Count -eq 0) {
+        Write-Host "Hyper-V is enabled and waits for a Windows restart."
+        return $true
+    }
+
+    Assert-HyperVCapableProcessor
+    Write-Host "Enabling Hyper-V ($hyperVClientFeatureName)..."
+    $result = Enable-WindowsOptionalFeature -Online -FeatureName $hyperVClientFeatureName -All -NoRestart
+    return [bool]$result.RestartNeeded
+}
+
+# Returns $true when Windows must restart to finish installing the Hyper-V role.
+function Ensure-HyperVServerFeature {
+    if (-not (Get-Command Get-WindowsFeature -ErrorAction SilentlyContinue)) {
+        throw "Get-WindowsFeature is not available, so the Hyper-V role cannot be installed on this Windows Server. Run 'sailwright install' without --hyperv to install the other dependencies without Hyper-V."
+    }
+
+    $features = @(Get-WindowsFeature -Name $hyperVServerRequiredFeatures)
+    $notInstalled = @($features | Where-Object { "$($_.InstallState)" -ne "Installed" })
+    if ($notInstalled.Count -eq 0) {
+        if (Test-HyperVRestartPending) {
+            Write-Host "The Hyper-V role is installed and waits for a Windows restart."
+            return $true
+        }
+        Write-Host "The Hyper-V role is already installed."
+        return $false
+    }
+    if (@($notInstalled | Where-Object { "$($_.InstallState)" -ne "InstallPending" }).Count -eq 0) {
+        Write-Host "The Hyper-V role is installed and waits for a Windows restart."
+        return $true
+    }
+
+    Assert-HyperVCapableProcessor
+    Write-Host "Installing the Hyper-V role with management tools..."
+    $result = Install-WindowsFeature -Name "Hyper-V" -IncludeManagementTools
+    if (-not $result.Success) {
+        throw "Installing the Hyper-V role failed (exit code $($result.ExitCode))."
+    }
+    return ("$($result.RestartNeeded)" -eq "Yes")
+}
+
+# Returns $true when Windows must restart to finish enabling Hyper-V.
+function Ensure-HyperVEnabled {
+    if (Test-IsWindowsServer) {
+        return (Ensure-HyperVServerFeature)
+    }
+    return (Ensure-HyperVClientFeature)
+}
+
+# Packer's Hyper-V builder writes the unattended-install CD with oscdimg, which
+# ships with the Deployment Tools of the Windows ADK.
+$windowsAdkInstallerUrl = "https://go.microsoft.com/fwlink/?linkid=2289980" # Windows ADK for Windows 11, version 22H2
+$windowsKitsRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits"
+
+function Get-OscdimgPath {
+    $preferred = Join-Path $windowsKitsRoot "10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe"
+    if (Test-Path -LiteralPath $preferred) {
+        return $preferred
+    }
+    if (-not (Test-Path -LiteralPath $windowsKitsRoot)) {
+        return $null
+    }
+
+    $found = Get-ChildItem -LiteralPath $windowsKitsRoot -Recurse -Filter "oscdimg.exe" -ErrorAction SilentlyContinue |
+        Sort-Object { $_.FullName -notlike "*\amd64\*" } |
+        Select-Object -First 1
+    if ($found) {
+        return $found.FullName
+    }
+    return $null
+}
+
+# Assert-MicrosoftSignedFile refuses a download that is not validly signed by
+# Microsoft before it runs elevated. The ADK comes from a redirect link that
+# cannot be pinned to a hash, so the signature is what ties it to Microsoft.
+function Assert-MicrosoftSignedFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Description
+    )
+
+    $signature = Get-AuthenticodeSignature -FilePath $Path
+    $subject = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { "" }
+    if ("$($signature.Status)" -ne "Valid" -or $subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
+        throw "The $Description at $Path is not validly signed by Microsoft (signature status: $($signature.Status); signer: '$subject'). It was not run."
+    }
+}
+
+function Ensure-OscdimgInstalled {
+    $oscdimgPath = Get-OscdimgPath
+    if ($oscdimgPath) {
+        Write-Host "oscdimg is already installed at $oscdimgPath."
+    } else {
+        Write-Host "oscdimg not found. Installing the Windows ADK Deployment Tools (needed for Hyper-V builds)..."
+        # A fresh directory per run, so no other process can swap the installer
+        # between the signature check and the elevated start.
+        $downloadDir = Join-Path $env:TEMP ("sailwright-adk-" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
+        try {
+            $installer = Join-Path $downloadDir "adksetup.exe"
+            Invoke-WebRequest -Uri $windowsAdkInstallerUrl -OutFile $installer -UseBasicParsing
+            Assert-MicrosoftSignedFile -Path $installer -Description "Windows ADK installer"
+            $process = Start-Process -FilePath $installer -ArgumentList @("/features", "OptionId.DeploymentTools", "/quiet", "/norestart") -Wait -PassThru
+            if ($process.ExitCode -notin @(0, 3010)) {
+                throw "The Windows ADK installer failed with exit code $($process.ExitCode)."
+            }
+        } finally {
+            Remove-Item -LiteralPath $downloadDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        $oscdimgPath = Get-OscdimgPath
+        if (-not $oscdimgPath) {
+            throw "oscdimg.exe was not found after installing the Windows ADK Deployment Tools."
+        }
+        Write-Host "Installed oscdimg at $oscdimgPath."
+    }
+
+    Ensure-PathContains -PathEntry (Split-Path -Parent $oscdimgPath)
+}
+
+function Show-HyperVStatus {
+    param(
+        [Parameter(Mandatory = $true)]
+        [bool]$RestartRequired
+    )
+
+    if ($RestartRequired) {
+        Write-Warning "Restart Windows to finish enabling Hyper-V, then run 'sailwright install --hyperv' again to verify the setup."
+        return
+    }
+
+    $service = Get-Service -Name "vmms" -ErrorAction SilentlyContinue
+    if (-not $service -or "$($service.Status)" -ne "Running") {
+        Write-Warning "Hyper-V is enabled, but the Hyper-V Virtual Machine Management service (vmms) is not running. Check that the hypervisor starts (bcdedit /enum '{current}' should show hypervisorlaunchtype Auto) and that hardware or nested virtualization is available."
+        return
+    }
+
+    Write-Output "Hyper-V is ready (vmms is running)."
+    if (-not (Test-IsWindowsServer)) {
+        if (Get-VMSwitch -Name "Default Switch" -ErrorAction SilentlyContinue) {
+            Write-Output "Hyper-V Default Switch is available."
+        } else {
+            Write-Warning "The Hyper-V Default Switch was not found. Set VAGRANT_HYPERV_SWITCH to an existing switch for Hyper-V VMs."
+        }
+    }
+}
+
 function Show-InstalledToolVersions {
     param(
         [switch]$WithGo,
@@ -1252,11 +1484,23 @@ function Show-InstalledToolVersions {
 function Invoke-DevAlchemySelfSetup {
     param(
         [switch]$WithGo,
-        [switch]$VirtualBox
+        [switch]$VirtualBox,
+        [switch]$HyperV,
+        [switch]$Vagrant
     )
 
     if (-not (Test-IsAdministrator)) {
-        Invoke-SelfElevated -WithGo:$WithGo -VirtualBox:$VirtualBox
+        Invoke-SelfElevated -WithGo:$WithGo -VirtualBox:$VirtualBox -HyperV:$HyperV -Vagrant:$Vagrant
+    }
+
+    # Hyper-V is opt-in: it is only needed for VMs with the Hyper-V engine.
+    # When requested, enable it first so missing virtualization support or an
+    # unsupported Windows edition fails before the longer package installs.
+    $hyperVRestartRequired = $false
+    if ($HyperV) {
+        $hyperVRestartRequired = Ensure-HyperVEnabled
+    } else {
+        Write-Output "Skipping Hyper-V setup because -HyperV was not specified. Hyper-V is only needed for VMs with the Hyper-V engine; run 'sailwright install --hyperv' to enable it."
     }
 
     Ensure-ChocolateyInstalled
@@ -1285,6 +1529,19 @@ function Invoke-DevAlchemySelfSetup {
         Write-Output "Skipping VirtualBox installation because -VirtualBox was not specified."
     }
 
+    # Vagrant is opt-in: sailwright drives VMs on Windows through it, but local
+    # provisioning does not need it.
+    if ($Vagrant) {
+        Ensure-ChocolateyPackage -PackageName "vagrant" -Version $vagrantVersion
+        Ensure-PathContains -PathEntry "C:\Program Files\Vagrant\bin"
+    } else {
+        Write-Output "Skipping Vagrant installation because -Vagrant was not specified. Vagrant is only needed to create and run sailwright VMs; run 'sailwright install --vagrant' to add it."
+    }
+
+    if ($HyperV) {
+        Ensure-OscdimgInstalled
+    }
+
     Ensure-PathContains -PathEntry (Join-Path (Get-GitForWindowsRoot) "bin")
 
     foreach ($package in $cygwinPackages) {
@@ -1294,8 +1551,12 @@ function Invoke-DevAlchemySelfSetup {
     Ensure-CygwinPipPackage -PackageName "ansible" -Version $ansibleVersion -CygwinRoot $cygwinRoot
     Ensure-CygwinPipPackage -PackageName "pywinrm" -Version $pywinrmVersion -CygwinRoot $cygwinRoot
     Show-InstalledToolVersions -WithGo:$WithGo -CygwinRoot $cygwinRoot
+
+    if ($HyperV) {
+        Show-HyperVStatus -RestartRequired $hyperVRestartRequired
+    }
 }
 
 if ($env:DEV_ALCHEMY_SELF_SETUP_IMPORT_ONLY -ne "1") {
-    Invoke-DevAlchemySelfSetup -WithGo:$WithGo -VirtualBox:$VirtualBox
+    Invoke-DevAlchemySelfSetup -WithGo:$WithGo -VirtualBox:$VirtualBox -HyperV:$HyperV -Vagrant:$Vagrant
 }

@@ -21,7 +21,7 @@ const (
 	maxAgentNoteLength = 2000
 	serverInstructions = `This server drives the sailwright CLI on the host machine through a fixed policy.
 
-- Safe tools (vm_*, artifact_pull, list_targets, command_help) run immediately.
+- Safe tools (vm_*, artifact_pull, list_targets, command_help) run immediately. With shared host state, VMs this gateway did not create belong to the operator: lifecycle tools on them wait for approval, and vm_info asks the operator for access first; call it again after approval.
 - provision_local, install and run_cli calls outside the safe set wait for a human to approve them on the host terminal. You cannot approve them yourself. Explain why you need the call in the "reason" field.
 - Long operations are jobs: poll job_status and read job_output with the returned next_offset. Only one job runs at a time.
 - Use list_targets first to see which os/type/arch combinations exist on this host.
@@ -39,6 +39,9 @@ func (g *Gateway) newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{Name: "list_targets", Description: "Run `sailwright <command> list --json` and return the targets with their current state.", Annotations: readOnly}, g.toolListTargets)
 	mcp.AddTool(server, &mcp.Tool{Name: "command_help", Description: "Show `sailwright [command] [list] --help`.", Annotations: readOnly}, g.toolCommandHelp)
 
+	// Not read-only: for a VM the gateway did not create, the call asks the operator
+	// for access, which also opens start, stop, provision and destroy.
+	mcp.AddTool(server, &mcp.Tool{Name: "vm_info", Description: "Get guest connection credentials, SSH ProxyCommand config and Ansible inventory for a running managed VM. For a VM this gateway did not create, it asks the operator for access (credentials, tunnels and lifecycle tools) and fails until they approve."}, g.toolVMInfo)
 	mcp.AddTool(server, &mcp.Tool{Name: "vm_build", Description: "Build a VM image (safe set, starts a job)."}, g.toolBuild)
 	mcp.AddTool(server, &mcp.Tool{Name: "vm_create", Description: "Create a VM from a built image (safe set, starts a job)."}, g.vmTool(OpCreate))
 	mcp.AddTool(server, &mcp.Tool{Name: "vm_start", Description: "Start a VM (safe set, starts a job)."}, g.vmTool(OpStart))
@@ -158,6 +161,8 @@ type provisionLocalInput struct {
 type installInput struct {
 	WithGo     bool   `json:"with_go,omitempty"`
 	VirtualBox bool   `json:"virtualbox,omitempty"`
+	HyperV     bool   `json:"hyperv,omitempty" jsonschema:"Windows only: also enable Hyper-V (needs a host restart)"`
+	Vagrant    bool   `json:"vagrant,omitempty" jsonschema:"Windows only: also install Vagrant, needed to create and run VMs"`
 	Reason     string `json:"reason,omitempty" jsonschema:"why this is needed; shown to the human approver"`
 }
 
@@ -226,7 +231,7 @@ func (g *Gateway) toolGatewayInfo(_ context.Context, _ *mcp.CallToolRequest, _ e
 		BinarySource:    g.pinned.Source,
 		DataDir:         g.cfg.DataDir,
 		ApprovalEnabled: g.approver.Enabled(),
-		SafeTools:       []string{"list_targets", "command_help", "vm_build", "vm_create", "vm_start", "vm_stop", "vm_destroy", "vm_provision", "artifact_pull", "job_screenshot", "run_cli (safe subset)"},
+		SafeTools:       []string{"list_targets", "command_help", "vm_info", "vm_build", "vm_create", "vm_start", "vm_stop", "vm_destroy", "vm_provision", "artifact_pull", "job_screenshot", "run_cli (safe subset)"},
 		ApprovalTools:   []string{"provision_local", "install", "run_cli (everything else)"},
 		Playbooks:       grammar.Playbooks,
 		PullAllowlist:   g.cfg.PullAllowlist,
@@ -234,7 +239,7 @@ func (g *Gateway) toolGatewayInfo(_ context.Context, _ *mcp.CallToolRequest, _ e
 		ActiveJob:       g.jobs.Active(),
 		Targets:         g.catalog.Summary(),
 		TargetErrors:    g.catalog.Errors(),
-		VMAccess:        "not available yet",
+		VMAccess:        "SSH and WinRM through vm_info and vm tunnel",
 		Limits: GatewayLimits{
 			JobTimeoutSeconds:  int64(g.cfg.JobTimeoutValue.Seconds()),
 			ApprovalTTLSeconds: int64(g.cfg.ApprovalTTLValue.Seconds()),
@@ -331,6 +336,12 @@ func (g *Gateway) toolInstall(_ context.Context, req *mcp.CallToolRequest, in in
 	}
 	if in.VirtualBox {
 		argv = append(argv, "--virtualbox")
+	}
+	if in.HyperV {
+		argv = append(argv, "--hyperv")
+	}
+	if in.Vagrant {
+		argv = append(argv, "--vagrant")
 	}
 	return g.submitApproval("install", argv, g.dirs.Work, nil, "install changes host packages", in.Reason, false, req, structParams(in))
 }
@@ -468,7 +479,7 @@ func (g *Gateway) submitSafe(tool string, op Operation, req *mcp.CallToolRequest
 	if err := op.Validate(grammar); err != nil {
 		return nil, JobView{}, err
 	}
-	view, err := g.jobs.Submit(JobSpec{
+	spec := JobSpec{
 		Tool:             tool,
 		Tier:             tierSafe,
 		Argv:             op.Argv(grammar),
@@ -478,8 +489,53 @@ func (g *Gateway) submitSafe(tool string, op Operation, req *mcp.CallToolRequest
 		Peer:             peerOf(req),
 		RequiresFreeDisk: op.Kind == OpBuild || op.Kind == OpCreate || op.Kind == OpPull,
 		Target:           &JobTarget{Kind: op.Kind, OS: op.OS, Type: op.Type, Arch: op.Arch},
-	})
+	}
+	target := VMTarget{OS: op.OS, Type: op.Type, Arch: op.Arch}
+	key := target.Key()
+	switch op.Kind {
+	case OpCreate:
+		if err := g.watchCreate(&spec, target); err != nil {
+			return nil, JobView{}, err
+		}
+	case OpDestroy:
+		spec.OnFinished = func(_ string, succeeded bool) {
+			if succeeded {
+				g.recordOwnership(g.ownership.destroyed(key))
+			}
+		}
+	}
+	if vmInstanceOps[op.Kind] {
+		foreign := &Escalation{
+			Risk:    []string{riskForeignVM},
+			NotSafe: fmt.Sprintf("VM %s was not created by this gateway and may be your own", key),
+		}
+		if !g.ownership.allowed(key) {
+			// Another VM in the shared state, possibly the operator's: ask first.
+			spec.Tier, spec.NeedsApproval = tierApproval, true
+			spec.Risk, spec.NotSafe = foreign.Risk, foreign.NotSafe
+		} else {
+			// Confirming the instance queries the hypervisor, which can take minutes
+			// on Hyper-V, so the job does it right before the command runs.
+			spec.Recheck = func(ctx context.Context) *Escalation {
+				if g.instanceAllowed(ctx, target) {
+					return nil
+				}
+				return foreign
+			}
+		}
+	}
+	view, err := g.jobs.Submit(spec)
 	return nil, view, err
+}
+
+// vmInstanceOps act on an existing VM, which may be the operator's in shared mode.
+var vmInstanceOps = map[OpKind]bool{OpStart: true, OpStop: true, OpDestroy: true, OpProvision: true}
+
+func (g *Gateway) recordOwnership(err error) {
+	if err != nil {
+		fmt.Fprintf(g.console, "warning: cannot update the gateway VM ownership record: %v\n", err)
+		_ = g.audit.Record(AuditEvent{Event: "ownership_error", Error: err.Error()})
+	}
 }
 
 func (g *Gateway) submitApproval(tool string, argv []string, dir string, snapshot *Snapshot, notSafe string, note string, become bool, req *mcp.CallToolRequest, params map[string]any) (*mcp.CallToolResult, JobView, error) {

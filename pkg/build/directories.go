@@ -68,13 +68,13 @@ func (u *Directories) GetDirectories() Directories {
 		u.ConfigDir = configDir
 	}
 	if u.CacheDir == "" {
-		u.CacheDir = filepath.Join(u.AppDataDir, "cache")
+		u.CacheDir = directoryOverride(devAlchemyCacheEnvVar, filepath.Join(u.AppDataDir, "cache"))
 	}
 	if u.VagrantDir == "" {
-		u.VagrantDir = filepath.Join(u.AppDataDir, ".vagrant")
+		u.VagrantDir = directoryOverride(devAlchemyVagrantEnvVar, filepath.Join(u.AppDataDir, ".vagrant"))
 	}
 	if u.PackerCacheDir == "" {
-		u.PackerCacheDir = filepath.Join(u.AppDataDir, "packer_cache")
+		u.PackerCacheDir = directoryOverride(devAlchemyPackerCacheEnvVar, filepath.Join(u.AppDataDir, "packer_cache"))
 	}
 	if err := ensureDirectoriesExist(u.AppDataDir, u.ConfigDir, u.CacheDir, u.VagrantDir, u.PackerCacheDir); err != nil {
 		log.Fatalf("Managed application directories could not be created: %v", err)
@@ -128,6 +128,12 @@ func (u *Directories) ManagedEnv() []string {
 
 func resolveDefaultAppDataDir() (string, error) {
 	return resolveDefaultAppDataDirForOS(runtime.GOOS, os.Getenv, os.UserHomeDir, os.UserConfigDir)
+}
+
+// DefaultAppDataDirForOS exposes the app-data contract so sailwright-gateway tests
+// can verify that the gateway's shared-state resolution mirrors it.
+func DefaultAppDataDirForOS(goos string, getenv func(string) string, userHomeDir, userConfigDir func() (string, error)) (string, error) {
+	return resolveDefaultAppDataDirForOS(goos, getenv, userHomeDir, userConfigDir)
 }
 
 func resolveDefaultConfigDir() (string, error) {
@@ -226,4 +232,11 @@ func ensureDirectoriesExist(paths ...string) error {
 		}
 	}
 	return nil
+}
+
+func directoryOverride(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return filepath.Clean(value)
+	}
+	return fallback
 }

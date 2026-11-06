@@ -108,6 +108,12 @@
 				<HideEULAPage>true</HideEULAPage>
 				<HideWirelessSetupInOOBE>false</HideWirelessSetupInOOBE>
 				<HideOnlineAccountScreens>false</HideOnlineAccountScreens>
+				<NetworkLocation>Work</NetworkLocation>
+				<!-- Skip the remaining OOBE pages as the QEMU build does. On slow hosts the
+				     zero-day-patch step otherwise stops at "Something went wrong (OOBEZDP)"
+				     and waits for a click, so WinRM never comes up. -->
+				<SkipMachineOOBE>true</SkipMachineOOBE>
+				<SkipUserOOBE>true</SkipUserOOBE>
 			</OOBE>
 			<FirstLogonCommands>
 				<SynchronousCommand wcm:action="add">

@@ -157,7 +157,8 @@ func Pull(ctx context.Context, vm alchemy_build.VirtualMachineConfig, reference 
 	defer fs.Close()
 
 	reportTransferStatus(opts.Progress, "Downloading OCI artifact")
-	if _, err := copyArtifact(ctx, repo, remoteRef.reference, fs, "pulled", descriptorTotal(append(remoteManifest.layers, manifestDesc)...), opts.Progress); err != nil {
+	source := resumableTarget{ReadOnlyTarget: repo, progress: opts.Progress}
+	if _, err := copyArtifact(ctx, source, remoteRef.reference, fs, "pulled", descriptorTotal(append(remoteManifest.layers, manifestDesc)...), opts.Progress); err != nil {
 		return TransferResult{}, fmt.Errorf("pull OCI artifact %s: %w", reference, err)
 	}
 

@@ -1,5 +1,5 @@
 // Command sailwright-gateway is the host-side gateway that lets an agent in a
-// devcontainer drive a pinned sailwright binary over MCP. See docs/agent-gateway.md.
+// local process or devcontainer drive a pinned sailwright binary over MCP. See docs/agent-gateway.md.
 //
 // The name follows the sailwright extension contract (sailwright-<name> on PATH), but
 // the gateway runs standalone and does not depend on the extension interface.
@@ -42,6 +42,7 @@ type serveFlags struct {
 	binarySHA256 string
 	listen       string
 	noApprovals  bool
+	bypass       bool
 	follow       bool
 }
 
@@ -56,6 +57,7 @@ func newRootCommand() *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&stateDir, "state-dir", "", "Gateway state directory (default: <user config dir>/sailwright-gateway)")
 
+	root.AddCommand(newVMCommand())
 	root.AddCommand(newServeCommand(&stateDir), newTokenCommand(&stateDir), newCleanCommand(&stateDir), newConnectCommand())
 	return root
 }
@@ -86,6 +88,8 @@ need "approve <id>" from you. Agents cannot approve their own requests.`,
 	command.Flags().StringVar(&flags.binarySHA256, "binary-sha256", "", "Expected SHA-256 of the binary; skips the interactive confirmation")
 	command.Flags().StringVar(&flags.listen, "listen", "", "Listen address, an IP literal with port, or \"off\" (default 127.0.0.1:7391; off on Linux)")
 	command.Flags().BoolVar(&flags.noApprovals, "no-approvals", false, "Disable the approval console; only the safe set is available")
+	command.Flags().BoolVar(&flags.bypass, "bypass-approvals", false, "DANGEROUS, disposable test hosts only: approve every request and VM access automatically and pin the binary without asking")
+	command.MarkFlagsMutuallyExclusive("no-approvals", "bypass-approvals")
 	command.Flags().BoolVar(&flags.follow, "follow", false, "Mirror job output to this terminal (approval prompts still appear)")
 	return command
 }
@@ -121,15 +125,17 @@ func newConnectCommand() *cobra.Command {
 	var check bool
 	command := &cobra.Command{
 		Use:   "connect",
-		Short: "Bridge MCP over stdio to a running gateway (run inside the devcontainer)",
+		Short: "Bridge MCP over stdio to a gateway on this machine or a container host",
 		Long: `Serves the gateway's tools over stdio so any agent harness can start it as an
 MCP server. The gateway is found automatically:
 
   1. SAILWRIGHT_GATEWAY_URL (http://... or unix:///path/to/gateway.sock)
   2. the socket in SAILWRIGHT_GATEWAY_DIR (default /run/sailwright-gateway)
-  3. http://host.docker.internal:7391/mcp
+  3. ~/.sailwright-gateway when no mounted token is present
 
-The token is read from SAILWRIGHT_GATEWAY_TOKEN or the token file in that directory.`,
+The selected directory supplies the socket and token. Container directories fall
+back to http://host.docker.internal:7391/mcp; the local user directory falls back
+to http://127.0.0.1:7391/mcp. SAILWRIGHT_GATEWAY_TOKEN overrides the file token.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			endpoint, err := client.Discover(os.Getenv)
 			if err != nil {
@@ -190,7 +196,9 @@ func runServe(parent context.Context, flags serveFlags) error {
 	if err != nil {
 		return err
 	}
-	if cfg.BinarySHA256 == "" {
+	if cfg.BinarySHA256 == "" && flags.bypass {
+		fmt.Printf("pinning %s (sha256 %s) without confirmation (--bypass-approvals)\n", pinned.Source, pinned.SHA256)
+	} else if cfg.BinarySHA256 == "" {
 		if !interactive {
 			return errors.New("cannot confirm the binary without a terminal; pass --binary-sha256")
 		}
@@ -203,9 +211,38 @@ func runServe(parent context.Context, flags serveFlags) error {
 		}
 	}
 
+	dirs := gateway.NewManagedDirs(cfg)
+	if err := dirs.Ensure(); err != nil {
+		return err
+	}
+	// The installed CLI is probed without passthrough secrets; it is not the pinned copy.
+	installedEnv := gateway.BuildChildEnv(dirs, nil, os.Getenv)
+	if err := gateway.CheckCompatibility(parent, pinned, dirs, gateway.BuildChildEnv(dirs, cfg.EnvPassthrough, os.Getenv), installedEnv, cfg.StateIsolation == "shared", os.Stdout); err != nil {
+		return err
+	}
+	if cfg.SharedCacheDir != "" {
+		fmt.Println("warning: shared_cache_dir is deprecated; state_isolation: shared reuses the CLI cache without it")
+	}
+	if cfg.LegacyIsolation {
+		fmt.Printf("note: keeping isolated VM state in %s from an older gateway; set state_isolation: shared to share VMs and caches with the CLI after destroying those VMs\n", filepath.Join(cfg.DataDir, "app"))
+	}
+	if cfg.StateIsolation == "shared" {
+		old := filepath.Join(cfg.DataDir, "app")
+		marker := filepath.Join(cfg.StateDir, ".shared-data-notice")
+		if _, err := os.Stat(old); err == nil {
+			if _, err := os.Stat(marker); os.IsNotExist(err) {
+				fmt.Printf("note: %s is no longer used (including its extracted project/ directory); after destroying old VMs remove it to free space, or set state_isolation: isolated to keep using it\n", old)
+				if err := os.WriteFile(marker, []byte("shown\n"), 0o600); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	var approver gateway.Approver = gateway.DisabledApprover{}
 	switch {
 	case flags.noApprovals:
+	case flags.bypass:
+		approver = gateway.AutoApprover{Out: os.Stdout}
 	case !interactive:
 		fmt.Println("stdin is not a terminal: the approval console is disabled, only the safe set is available")
 	default:
@@ -268,7 +305,10 @@ func runServe(parent context.Context, flags serveFlags) error {
 		return err
 	}
 	defer listeners.Close()
-	printBanner(cfg, pinned, listeners.SocketPath, listeners.ViewURL, approver.Enabled())
+	printBanner(cfg, pinned, listeners.SocketPath, listeners.ViewURL, approver)
+	if flags.bypass {
+		fmt.Println("WARNING: --bypass-approvals is set: every request and VM access is approved automatically. Use it only on disposable test hosts.")
+	}
 	serveErr := g.ServeListeners(ctx, listeners)
 	listeners.Close()
 	closed = true
@@ -411,15 +451,31 @@ The gateway must be stopped.`,
 	return command
 }
 
-func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, socketPath string, viewURL string, approvals bool) {
-	writeBanner(os.Stdout, cfg, pinned, socketPath, viewURL, approvals)
+func printBanner(cfg gateway.Config, pinned gateway.PinnedBinary, socketPath string, viewURL string, approver gateway.Approver) {
+	writeBanner(os.Stdout, cfg, pinned, socketPath, viewURL, approver)
 }
 
-func writeBanner(out io.Writer, cfg gateway.Config, pinned gateway.PinnedBinary, socketPath string, viewURL string, approvals bool) {
-	approvalState := "disabled (safe set only)"
-	if approvals {
-		approvalState = "enabled on this terminal"
+func bannerApprovalState(approver gateway.Approver) string {
+	switch {
+	case approver == nil || !approver.Enabled():
+		return "disabled (safe set only)"
+	case isAutoApprover(approver):
+		return "BYPASSED (--bypass-approvals approves everything automatically)"
+	default:
+		return "enabled on this terminal"
 	}
+}
+
+func isAutoApprover(approver gateway.Approver) bool {
+	switch approver.(type) {
+	case gateway.AutoApprover, *gateway.AutoApprover:
+		return true
+	}
+	return false
+}
+
+func writeBanner(out io.Writer, cfg gateway.Config, pinned gateway.PinnedBinary, socketPath string, viewURL string, approver gateway.Approver) {
+	approvalState := bannerApprovalState(approver)
 	socket := "not available on this OS (use TCP)"
 	if socketPath != "" {
 		socket = socketPath
@@ -444,7 +500,7 @@ sailwright-gateway %s
   token file: %s
   audit log:  %s
 
-In the devcontainer, agents connect with: sailwright-gateway connect
+Agents on this machine or in the configured devcontainer connect with: sailwright-gateway connect
 Press Ctrl+C to stop.
 `, version, tcpURL, socket, cfg.AgentDir, pinned.Source, pinned.SHA256, cfg.DataDir, approvalState, liveView,
 		gateway.TokenPath(cfg.StateDir), cfg.StateDir+string(os.PathSeparator)+"audit.jsonl")

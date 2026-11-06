@@ -11,7 +11,8 @@ the ways below; all of them install the same release archives from
 | Linux | [Install script](#install-script) | [Homebrew](#homebrew) |
 | Windows | [Install script](#install-script) | [Manual install](#manual-install) |
 
-After installing, set up the host dependencies with `sailwright install`.
+After installing, set up the host dependencies with `sailwright install`; see
+[Host dependencies](#host-dependencies).
 
 ## Homebrew
 
@@ -137,3 +138,66 @@ keeps the error-handling settings local to the example.
 
 The README's [Manual install](../README.md#manual-install) section has a
 Windows example as well.
+
+## Host dependencies
+
+`sailwright install` installs the host tools Sailwright needs on the current
+operating system:
+
+| Host | Script it runs |
+| --- | --- |
+| macOS | [scripts/macos/sailwright-install-dependencies.sh](../scripts/macos/sailwright-install-dependencies.sh) |
+| Ubuntu / Debian | [scripts/linux/sailwright-install-dependencies.sh](../scripts/linux/sailwright-install-dependencies.sh) |
+| Windows | [scripts/windows/sailwright-self-setup.ps1](../scripts/windows/sailwright-self-setup.ps1) |
+
+On every host, `sailwright install --with-go` also bootstraps the Go toolchain.
+
+### Windows host dependencies
+
+Run `sailwright.exe install` from your normal shell; Windows prompts for
+elevation through UAC if needed. It installs the tools every workflow needs
+(Chocolatey, Git, make, Packer, Azure CLI, Python, Cygwin with Ansible).
+Further components are optional:
+
+| Component | Flag | Needed for |
+| --- | --- | --- |
+| VirtualBox | `--virtualbox` | VMs with the VirtualBox engine |
+| Hyper-V | `--hyperv` | building, creating or running VMs with the Hyper-V engine |
+| Vagrant | `--vagrant` | creating, starting, stopping or destroying VMs (Sailwright drives Windows VMs through Vagrant) |
+
+Hyper-V and Vagrant are not needed for local use such as
+`sailwright provision local`. Without their flags, an interactive terminal
+explains each one and asks whether to add it (default: no). Non-interactive
+runs, such as CI or the agent gateway, skip both and print a hint. Pass
+`--hyperv=false` or `--vagrant=false` to skip the question. To create and run
+Hyper-V VMs, add both:
+
+```powershell
+sailwright.exe install --hyperv --vagrant
+```
+
+Hyper-V setup enables the optional features on Windows 10/11 Pro, Enterprise
+and Education, or installs the Hyper-V role on Windows Server. It needs
+hardware virtualization (nested virtualization when Windows itself runs in a
+VM) and stops before the package installs when the edition or processor cannot
+run Hyper-V. The installer never restarts Windows on its own: when it reports a
+pending restart, restart Windows and run `sailwright.exe install --hyperv`
+again. Once Hyper-V is active it reports whether the Hyper-V management service
+runs and whether the Default Switch exists. `--hyperv` also installs `oscdimg`
+from the Windows ADK Deployment Tools and adds it to the machine `PATH`;
+Packer needs it to build Hyper-V images. The ADK installer is downloaded from
+Microsoft and only runs when it carries a valid Microsoft Authenticode
+signature.
+
+Sailwright VMs on Hyper-V expose virtualization extensions to the guest by
+default. When Windows itself runs in a VM whose hypervisor cannot pass them on,
+Hyper-V refuses to start such a VM; `sailwright create` and `sailwright start`
+then turn the extensions off for that VM and retry once. The fallback is
+remembered in the VM's Vagrant directory (file
+`sailwright-nested-virtualization-unsupported`), so later starts go without the
+extensions right away; delete the file to try again. Set
+`VAGRANT_HYPERV_NESTED_VIRTUALIZATION=false` to skip the first attempt, or
+`true` to always try with the extensions.
+
+Vagrant is installed in a pinned version through Chocolatey and added to the
+`PATH`.

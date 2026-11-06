@@ -43,21 +43,24 @@ type Options struct {
 
 // Gateway wires policy, execution, jobs and the MCP server together.
 type Gateway struct {
-	cfg        Config
-	dirs       ManagedDirs
-	pinned     PinnedBinary
-	runner     *Runner
-	catalog    *TargetCatalog
-	jobs       *JobManager
-	approver   Approver
-	audit      *AuditLog
-	redactor   *Redactor
-	vmResolver ManagedVMResolver
-	token      string
-	viewToken  string
-	console    io.Writer
-	version    string
-	server     *mcp.Server
+	cfg         Config
+	dirs        ManagedDirs
+	pinned      PinnedBinary
+	runner      *Runner
+	catalog     *TargetCatalog
+	jobs        *JobManager
+	approver    Approver
+	audit       *AuditLog
+	redactor    *Redactor
+	vmResolver  ManagedVMResolver
+	ownership   *vmOwnership
+	tunnelSlots chan struct{}
+	tunnelDial  func(context.Context, string, string) (net.Conn, error)
+	token       string
+	viewToken   string
+	console     io.Writer
+	version     string
+	server      *mcp.Server
 
 	backgroundMu     sync.Mutex
 	background       sync.WaitGroup
@@ -108,28 +111,34 @@ func New(opts Options) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	redactor := NewRedactor(append(PassthroughSecrets(cfg.EnvPassthrough, opts.Getenv), opts.Token, viewToken)...)
+	redactor := NewRedactor(append(PassthroughSecrets(cfg.EnvPassthrough, opts.Getenv), opts.Token, viewToken, defaultGuestPassword)...)
 	audit, err := OpenAuditLog(filepath.Join(cfg.StateDir, auditFileName), redactor)
 	if err != nil {
 		return nil, err
 	}
 
 	g := &Gateway{
-		cfg:        cfg,
-		dirs:       dirs,
-		pinned:     opts.Pinned,
-		runner:     &Runner{Binary: opts.Pinned, Env: BuildChildEnv(dirs, cfg.EnvPassthrough, opts.Getenv)},
-		catalog:    NewTargetCatalog(),
-		approver:   opts.Approver,
-		audit:      audit,
-		redactor:   redactor,
-		vmResolver: noVMResolver{},
-		token:      opts.Token,
-		viewToken:  viewToken,
-		console:    opts.Console,
-		version:    opts.Version,
+		cfg:       cfg,
+		dirs:      dirs,
+		pinned:    opts.Pinned,
+		runner:    &Runner{Binary: opts.Pinned, Env: BuildChildEnv(dirs, cfg.EnvPassthrough, opts.Getenv)},
+		catalog:   NewTargetCatalog(),
+		approver:  opts.Approver,
+		audit:     audit,
+		redactor:  redactor,
+		token:     opts.Token,
+		viewToken: viewToken,
+		console:   opts.Console,
+		version:   opts.Version,
 	}
+	g.ownership, err = loadVMOwnership(cfg.GateForeignVMs, cfg.StateDir)
+	if err != nil {
+		return nil, err
+	}
+	g.tunnelSlots = make(chan struct{}, cfg.MaxTunnels)
+	g.tunnelDial = (&net.Dialer{}).DialContext
 	g.backgroundCtx, g.backgroundCancel = context.WithCancel(context.Background())
+	g.vmResolver = &CLIManagedVMResolver{Context: g.backgroundCtx, Runner: g.runner, Work: dirs.Work, Redactor: redactor, Console: opts.Console}
 	g.jobs = NewJobManager(JobManagerOptions{
 		Runner:      g.runner,
 		Approver:    g.approver,
@@ -137,7 +146,7 @@ func New(opts Options) (*Gateway, error) {
 		Redactor:    redactor,
 		LogsDir:     dirs.Logs,
 		StagingDir:  dirs.Staging,
-		DataDir:     cfg.DataDir,
+		DataDir:     dirs.Cache,
 		MinFreeGB:   cfg.MinFreeDiskGB,
 		OutputLimit: cfg.OutputLimitBytes,
 		BinarySHA:   opts.Pinned.SHA256,
@@ -160,6 +169,9 @@ func (g *Gateway) Close() error {
 	g.closed = true
 	g.backgroundMu.Unlock()
 	g.backgroundCancel()
+	if resolver, ok := g.vmResolver.(io.Closer); ok {
+		_ = resolver.Close()
+	}
 	g.jobs.CancelAll()
 	g.jobs.WaitAll()
 	g.background.Wait()
@@ -185,7 +197,7 @@ func (g *Gateway) Handler() http.Handler {
 		AllowedHosts:   g.cfg.AllowedHosts,
 		AllowedOrigins: g.cfg.AllowedOrigins,
 		Audit:          g.audit,
-	}, mcpHandler)
+	}, mcpHandler, http.HandlerFunc(g.serveTunnel))
 }
 
 // Serve opens all listeners and serves until ctx is cancelled.
@@ -209,11 +221,17 @@ func (g *Gateway) RefreshTargets(ctx context.Context) {
 	ctx = context.WithValue(ctx, quietInfoKey{}, true)
 	var failed []string
 	for _, command := range listCommands {
+		listedAt := time.Now().UTC()
 		targets, err := g.listTargets(ctx, command)
 		if err != nil {
 			failed = append(failed, command)
 		}
 		g.catalog.Set(command, targets, err)
+		if command == string(OpCreate) && err == nil {
+			if err := g.ownership.prune(targets, listedAt); err != nil {
+				failed = append(failed, "ownership: "+err.Error())
+			}
+		}
 	}
 	g.refreshPlaybooks()
 	event := AuditEvent{Event: "targets_refreshed", BinarySHA256: g.pinned.SHA256}

@@ -67,6 +67,11 @@ type Options struct {
 	PullAllowlist []string
 	JobTimeout    string
 	FollowOutput  bool
+	// GateForeignVMs enables the shared-state rule that VMs the gateway did not
+	// create need operator approval, while keeping the test's isolated state.
+	GateForeignVMs bool
+	// AutoApprovals uses the --bypass-approvals approver instead of the console.
+	AutoApprovals bool
 }
 
 // Harness is a running gateway with a fake CLI behind it.
@@ -111,6 +116,7 @@ func Start(t testing.TB, opts Options) *Harness {
 		jobTimeout = "2m"
 	}
 	cfg := gateway.Config{
+		StateIsolation:  "isolated",
 		StateDir:        h.StateDir,
 		Listen:          "127.0.0.1:0",
 		EnvPassthrough:  []string{"FAKE_CLI_RECORD", "FAKE_CLI_STATE", "FAKE_VM_PASSWORD"},
@@ -120,10 +126,13 @@ func Start(t testing.TB, opts Options) *Harness {
 		ApprovalTTL:     durationString(opts.ApprovalTTL),
 		MinFreeDiskGB:   -1,
 		AgentDir:        agentDir,
+		// The fake CLI reports guests on TEST-NET-1, which is not on-link.
+		TunnelAllowedCIDRs: []string{"192.0.2.0/24"},
 	}
 	if err := cfg.Resolve(); err != nil {
 		t.Fatal(err)
 	}
+	cfg.GateForeignVMs = opts.GateForeignVMs
 
 	token, err := gateway.LoadOrCreateToken(h.StateDir)
 	if err != nil {
@@ -144,6 +153,9 @@ func Start(t testing.TB, opts Options) *Harness {
 		approver = gateway.NewConsoleApprover(bufio.NewReader(reader), h.Console, cfg.ApprovalTTLValue).
 			HideInputWith(func() (func(), error) { return func() {}, nil })
 		t.Cleanup(func() { _ = writer.Close() })
+	}
+	if opts.AutoApprovals {
+		approver = gateway.AutoApprover{Out: h.Console}
 	}
 
 	// #nosec G101 -- fake values that prove secrets are redacted and host variables dropped.

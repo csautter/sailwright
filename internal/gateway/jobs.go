@@ -56,7 +56,26 @@ type JobSpec struct {
 	BecomeWarning string
 	// Target is the VM of a safe-set operation; build jobs record console frames for it.
 	Target *JobTarget
+	// Env adds NAME=value entries to this job's child environment.
+	Env []string
+	// OnFinished runs after the command ran, before the job is reported done.
+	// succeeded is true only for exit code 0.
+	OnFinished func(jobID string, succeeded bool)
+	// Recheck runs in the job right before the command starts, under the job's
+	// context, for jobs that do not need approval yet. A non-nil result makes the
+	// job wait for operator approval after all. Slow checks (hypervisor queries)
+	// belong here rather than in the tool call, which must return quickly, and
+	// running them last narrows the gap between check and use.
+	Recheck func(ctx context.Context) *Escalation
 }
+
+// Escalation is why a job that looked safe needs operator approval.
+type Escalation struct {
+	Risk    []string
+	NotSafe string
+}
+
+const errNoApprovalConsole = "this request needs host approval, but the gateway has no approval console (start it in a foreground terminal)"
 
 // JobView is the agent-visible state of a job.
 type JobView struct {
@@ -218,7 +237,7 @@ func (m *JobManager) liveViewURL() string {
 // Submit starts a job unless another one is active.
 func (m *JobManager) Submit(spec JobSpec) (JobView, error) {
 	if spec.NeedsApproval && !m.approver.Enabled() {
-		return JobView{}, errors.New("this request needs host approval, but the gateway has no approval console (start it in a foreground terminal)")
+		return JobView{}, errors.New(errNoApprovalConsole)
 	}
 
 	m.mu.Lock()
@@ -287,6 +306,26 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 
 	argv := spec.Argv
 	redactor := m.redactor
+	if !spec.NeedsApproval && spec.Recheck != nil {
+		escalation := spec.Recheck(ctx)
+		if ctx.Err() != nil {
+			m.finish(j, JobCancelled, nil, "cancelled", time.Time{})
+			return
+		}
+		if escalation != nil {
+			if !m.approver.Enabled() {
+				m.finish(j, JobFailed, nil, errNoApprovalConsole, time.Time{})
+				return
+			}
+			spec.Tier, spec.NeedsApproval, spec.Risk, spec.NotSafe = tierApproval, true, escalation.Risk, escalation.NotSafe
+			j.update(func(v *JobView) {
+				v.Tier = tierApproval
+				v.State = JobPendingApproval
+				v.Risk = escalation.Risk
+			})
+			m.record(AuditEvent{Event: "job_escalated", Tool: spec.Tool, JobID: id, Tier: tierApproval, Risk: escalation.Risk})
+		}
+	}
 	if spec.NeedsApproval {
 		approval := m.approver.Request(ctx, ApprovalRequest{
 			ID: id, Tool: spec.Tool, Argv: m.redactor.Strings(spec.Argv), Dir: spec.Dir, Risk: spec.Risk,
@@ -294,7 +333,7 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 			Become: spec.Become, BecomeWarning: spec.BecomeWarning,
 		})
 		decision := approval.Decision
-		m.record(AuditEvent{Event: "approval_decision", Tool: spec.Tool, JobID: id, Decision: string(decision), Argv: spec.Argv, Snapshot: spec.Snapshot, SudoPassword: approval.BecomePassword != ""})
+		m.record(AuditEvent{Event: "approval_decision", Tool: spec.Tool, JobID: id, Decision: string(decision), Argv: spec.Argv, Snapshot: spec.Snapshot, SudoPassword: approval.BecomePassword != "", AutoApproved: approval.Auto})
 		if decision == DecisionApproved && approval.BecomePassword != "" {
 			if !spec.Become {
 				m.finish(j, JobFailed, nil, "a sudo password was supplied for a request that does not support it", time.Time{})
@@ -370,10 +409,17 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 
 	runCtx, cancelTimeout := context.WithTimeout(ctx, spec.Timeout)
 	defer cancelTimeout()
-	code, err := m.runner.Run(runCtx, argv, spec.Dir, writer)
+	runner := m.runner
+	if len(spec.Env) > 0 {
+		runner = runner.WithEnv(spec.Env...)
+	}
+	code, err := runner.Run(runCtx, argv, spec.Dir, writer)
 	_ = writer.Flush()
 	// Keep the final frame before the job is reported as finished.
 	stopScreens()
+	if spec.OnFinished != nil {
+		spec.OnFinished(id, err == nil && code == 0)
+	}
 
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
@@ -476,6 +522,9 @@ func (m *JobManager) List() []JobView {
 func (m *JobManager) Active() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if active, ok := m.jobs[m.active]; ok && active.snapshotView().Done() {
+		return ""
+	}
 	return m.active
 }
 

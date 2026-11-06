@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -35,9 +36,17 @@ func defaultCreateVirtualMachinesForHostOS(hostOs alchemy_build.HostOsType) []al
 }
 
 func printAvailableCreateCombinations() error {
-	vms := availableCreateVirtualMachines()
-	return printVirtualMachineCombinationTable(
-		os.Stdout,
+	return writeCreateCombinations(os.Stdout, availableCreateVirtualMachines())
+}
+
+func writeCreateCombinations(writer io.Writer, vms []alchemy_build.VirtualMachineConfig) error {
+	// The row builder already inspected each VM; report that, not a second query.
+	exists := map[string]bool{}
+	existsKey := func(vm alchemy_build.VirtualMachineConfig) string {
+		return vm.OS + "/" + vm.UbuntuType + "/" + vm.Arch + "/" + string(vm.VirtualizationEngine)
+	}
+	return printVirtualMachineCombinationTableWithExists(
+		writer,
 		fmt.Sprintf("Available create combinations for host OS: %s", alchemy_build.GetCurrentHostOs()),
 		"No create combinations are available for the current host OS.",
 		vms,
@@ -47,6 +56,7 @@ func printAvailableCreateCombinations() error {
 			if err != nil {
 				return nil, fmt.Errorf("failed to inspect create target for OS=%s, type=%s, arch=%s: %w", vm.OS, vm.UbuntuType, vm.Arch, err)
 			}
+			exists[existsKey(vm)] = targetExists
 
 			if vm.VirtualizationEngine == alchemy_build.VirtualizationEngineTart {
 				createState := "ready to create"
@@ -74,6 +84,13 @@ func printAvailableCreateCombinations() error {
 			}
 
 			return []string{vm.OS, displayVirtualMachineType(vm), vm.Arch, virtualMachineTargetStatus(vm), artifactState, createState}, nil
+		},
+		func(vm alchemy_build.VirtualMachineConfig) *bool {
+			value, ok := exists[existsKey(vm)]
+			if !ok {
+				return nil
+			}
+			return &value
 		},
 	)
 }
@@ -105,9 +122,7 @@ Example:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		osName := args[0]
 
-		if osName != "ubuntu" {
-			osType = ""
-		}
+		osType = alchemy_build.TargetType(osName, osType)
 
 		if osName == "all" {
 			availableVMs := availableCreateVirtualMachines()
@@ -161,6 +176,9 @@ func runDeploy(vm alchemy_build.VirtualMachineConfig) error {
 			createCommandArguments(vm),
 		)
 	}
+	if err := markCreateStarted(os.Getenv(createStartedFileEnvVar), vm); err != nil {
+		return err
+	}
 
 	switch vm.VirtualizationEngine {
 	case alchemy_build.VirtualizationEngineUtm:
@@ -174,6 +192,23 @@ func runDeploy(vm alchemy_build.VirtualMachineConfig) error {
 	default:
 		return fmt.Errorf("❌ deploy is not implemented for virtualization engine: %s", vm.VirtualizationEngine)
 	}
+}
+
+// createStartedFileEnvVar names a file that create writes once it has confirmed,
+// under the target's operation lock, that no VM exists and deployment begins.
+// sailwright-gateway sets it so a failed create still counts as the gateway's VM.
+const createStartedFileEnvVar = "SAILWRIGHT_CREATE_STARTED_FILE"
+
+func markCreateStarted(path string, vm alchemy_build.VirtualMachineConfig) error {
+	if path == "" {
+		return nil
+	}
+	target := vm.OS + "/" + vm.UbuntuType + "/" + vm.Arch + "\n"
+	// #nosec G306 G703 -- the path is chosen by the gateway that started this process.
+	if err := os.WriteFile(path, []byte(target), 0o600); err != nil {
+		return fmt.Errorf("record create start for %s: %w", createStartedFileEnvVar, err)
+	}
+	return nil
 }
 
 func createCommandArguments(vm alchemy_build.VirtualMachineConfig) string {

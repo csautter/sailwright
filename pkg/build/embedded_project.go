@@ -42,6 +42,9 @@ func ensureProjectDir(workingDir string, appDataDir string) (string, error) {
 		return projectDir, nil
 	}
 
+	if root := os.Getenv("SAILWRIGHT_EMBEDDED_DATA_DIR"); root != "" {
+		return ensureEmbeddedProjectDir(root)
+	}
 	return ensureEmbeddedProjectDir(appDataDir)
 }
 
@@ -91,6 +94,7 @@ func isSailwrightCheckout(dir string) bool {
 
 func ensureEmbeddedProjectDir(appDataDir string) (string, error) {
 	projectDir := filepath.Join(appDataDir, embeddedProjectDirName)
+	// #nosec G703 -- extraction root is selected by the operator or managed gateway environment.
 	if err := os.MkdirAll(projectDir, managedDirPermission); err != nil {
 		return "", fmt.Errorf("create embedded project directory: %w", err)
 	}

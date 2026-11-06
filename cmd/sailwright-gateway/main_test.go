@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"net/netip"
 	"strings"
@@ -11,16 +12,34 @@ import (
 
 func TestBannerShowsTCPState(t *testing.T) {
 	var off bytes.Buffer
-	writeBanner(&off, gateway.Config{}, gateway.PinnedBinary{}, "/run/agent/gateway.sock", "", false)
+	writeBanner(&off, gateway.Config{}, gateway.PinnedBinary{}, "/run/agent/gateway.sock", "", gateway.DisabledApprover{})
 	if !strings.Contains(off.String(), "TCP off (agent socket only; set listen: to enable)") {
 		t.Fatalf("expected the TCP-off hint, got:\n%s", off.String())
 	}
 
 	var on bytes.Buffer
 	cfg := gateway.Config{ListenAddr: netip.MustParseAddrPort("127.0.0.1:7391")}
-	writeBanner(&on, cfg, gateway.PinnedBinary{}, "", "", false)
+	writeBanner(&on, cfg, gateway.PinnedBinary{}, "", "", gateway.DisabledApprover{})
 	if !strings.Contains(on.String(), "http://127.0.0.1:7391/mcp") || strings.Contains(on.String(), "TCP off") {
 		t.Fatalf("expected the TCP URL, got:\n%s", on.String())
+	}
+}
+
+func TestBannerShowsApprovalState(t *testing.T) {
+	cases := []struct {
+		approver gateway.Approver
+		want     string
+	}{
+		{gateway.DisabledApprover{}, "approvals:  disabled (safe set only)"},
+		{gateway.AutoApprover{}, "approvals:  BYPASSED"},
+		{gateway.NewConsoleApprover(bufio.NewReader(strings.NewReader("")), &bytes.Buffer{}, 0), "approvals:  enabled on this terminal"},
+	}
+	for _, tc := range cases {
+		var out bytes.Buffer
+		writeBanner(&out, gateway.Config{}, gateway.PinnedBinary{}, "", "", tc.approver)
+		if !strings.Contains(out.String(), tc.want) {
+			t.Fatalf("expected %q, got:\n%s", tc.want, out.String())
+		}
 	}
 }
 
@@ -36,6 +55,8 @@ func runClean(t *testing.T, stateDir string) (string, error) {
 }
 
 func TestCleanRefusesWhileStateDirIsLocked(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 	stateDir := t.TempDir()
 	lock, err := gateway.AcquireStateLock(stateDir)
 	if err != nil {

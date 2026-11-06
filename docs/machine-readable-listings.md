@@ -14,3 +14,38 @@ sailwright build list --json
 `schema_version` is `1`. Within a version only fields are added, never removed or
 renamed. `fields` carries the command-specific columns of the table output, and
 `address` is reserved for the VM network address and is always `null` for now.
+
+`create list --json` also reports `"exists": true|false` per target, which says
+whether the VM exists. Tools should use it rather than the display text in
+`fields.create` (such as `already created`), which may change. Other listings
+omit `exists`.
+
+## VM connection details and identity
+
+`sailwright vm info <os> [--type T] [--arch A]` shows how to reach a running
+VM. Text output masks the guest password; add `--show-password` to print it.
+`--json` prints a versioned document that always includes the credentials:
+
+```json
+{"schema_version":1,"os":"ubuntu","type":"server","arch":"amd64","engine":"qemu","state":"running","address":"192.168.122.40","network_mode":"nat","protocol":"ssh","port":22,"username":"packer","password":"…","instance_id":"8f0c2a1e-3b4d-4c5e-9f60-718293a4b5c6"}
+```
+
+`sailwright vm identity <os> [--type T] [--arch A]` prints whether the VM
+exists and its hypervisor instance id, also for a stopped VM:
+
+```json
+{"schema_version":1,"os":"ubuntu","type":"server","arch":"amd64","engine":"qemu","exists":true,"instance_id":"8f0c2a1e-3b4d-4c5e-9f60-718293a4b5c6"}
+```
+
+`instance_id` is the libvirt domain UUID or the Hyper-V VM Id. It changes when
+a VM is destroyed and created again under the same name. It is omitted for UTM
+and Tart, which have no identifier Sailwright reads.
+
+## Concurrent operations
+
+`build`, `create`, `start`, `stop`, `destroy`, `provision`, `pull` and `push`
+take an operating-system file lock in the app-data `locks/` directory. Two
+operations on the same target, or any operation during an `all` or registry
+transfer, do not run at the same time. A busy operation fails immediately and
+names the process holding the lock. Set `SAILWRIGHT_LOCK_TIMEOUT` to a Go
+duration such as `30s` to wait instead.

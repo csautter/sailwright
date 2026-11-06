@@ -422,6 +422,7 @@ func ensureLinuxLibvirtImageDir(imageDir string) error {
 	if linuxLibvirtImageDirOverride() != "" {
 		return nil
 	}
+	// #nosec G302 -- managed image directories intentionally allow libvirt group read/traversal (0750).
 	if err := os.Chmod(imageDir, linuxLibvirtImageDirPermission); err != nil {
 		return fmt.Errorf("failed to set managed libvirt image directory permissions to %04o: %w", linuxLibvirtImageDirPermission, err)
 	}

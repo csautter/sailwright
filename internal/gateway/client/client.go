@@ -1,12 +1,7 @@
-// Package client finds and connects to a sailwright-gateway from inside a container.
-//
-// Discovery order:
-//  1. SAILWRIGHT_GATEWAY_URL, either http(s)://host:port/mcp or unix:///path/to/gateway.sock
-//  2. the agent socket in SAILWRIGHT_GATEWAY_DIR (default /run/sailwright-gateway), if
-//     it accepts connections (Linux containers with the agent dir bind-mounted)
-//  3. http://host.docker.internal:7391/mcp (Docker Desktop on macOS and Windows)
-//
-// The token comes from SAILWRIGHT_GATEWAY_TOKEN or <dir>/token.
+// Package client connects agents to a sailwright-gateway on the same machine or
+// through a mounted agent directory in a devcontainer. Explicit endpoint and token
+// settings take precedence over discovery; mounted container credentials take
+// precedence over the current user's local gateway.
 package client
 
 import (
@@ -31,6 +26,8 @@ const (
 
 	DefaultDir    = "/run/sailwright-gateway"
 	DefaultTCPURL = "http://host.docker.internal:7391/mcp"
+	LocalTCPURL   = "http://127.0.0.1:7391/mcp"
+	UserDirName   = ".sailwright-gateway"
 
 	socketName  = "gateway.sock"
 	tokenName   = "token"
@@ -57,13 +54,31 @@ func (e Endpoint) String() string {
 	return e.URL
 }
 
-// Discover resolves the gateway endpoint from the environment and the mounted agent dir.
+// Discover resolves the gateway from explicit settings, the container mount, or
+// the current user's agent directory. Credentials always belong to the selected
+// directory, so discovering a local gateway cannot replace a mounted host token.
 func Discover(getenv func(string) string) (Endpoint, error) {
-	dir := strings.TrimSpace(getenv(EnvDir))
-	if dir == "" {
-		dir = DefaultDir
+	home, _ := os.UserHomeDir()
+	localDir := ""
+	if home != "" {
+		localDir = filepath.Join(home, UserDirName)
 	}
+	return discover(getenv, DefaultDir, localDir)
+}
 
+func discover(getenv func(string) string, mountedDir, localDir string) (Endpoint, error) {
+	dir := strings.TrimSpace(getenv(EnvDir))
+	fallback := DefaultTCPURL
+	if dir == "" {
+		dir = mountedDir
+		// A mounted token remains authoritative even on Docker Desktop, where the
+		// mounted Unix socket cannot accept connections across the Docker VM.
+		if _, err := os.Stat(filepath.Join(mountedDir, tokenName)); os.IsNotExist(err) && localDir != "" {
+			if _, err := os.Stat(filepath.Join(localDir, tokenName)); err == nil || socketReachable(filepath.Join(localDir, socketName)) {
+				dir, fallback = localDir, LocalTCPURL
+			}
+		}
+	}
 	var endpoint Endpoint
 	switch raw := strings.TrimSpace(getenv(EnvURL)); {
 	case strings.HasPrefix(raw, "unix://"):
@@ -73,15 +88,14 @@ func Discover(getenv func(string) string) (Endpoint, error) {
 	case socketReachable(filepath.Join(dir, socketName)):
 		endpoint = Endpoint{URL: socketURL, Socket: filepath.Join(dir, socketName), Source: "socket in " + dir}
 	default:
-		endpoint = Endpoint{URL: DefaultTCPURL, Source: "default TCP address"}
+		endpoint = Endpoint{URL: fallback, Source: "TCP fallback for " + dir}
 	}
-
 	endpoint.Token = strings.TrimSpace(getenv(EnvToken))
 	if endpoint.Token == "" {
-		// #nosec G304 -- fixed file name inside the configured gateway dir.
+		// #nosec G304 -- fixed file name inside the selected operator-owned agent directory.
 		data, err := os.ReadFile(filepath.Join(dir, tokenName))
 		if err != nil {
-			return Endpoint{}, fmt.Errorf("no gateway token: set %s or mount the gateway agent dir at %s (%v)", EnvToken, dir, err)
+			return Endpoint{}, fmt.Errorf("no gateway token: start a local gateway, mount its agent directory at %s, or set %s/%s (%v)", mountedDir, EnvDir, EnvToken, err)
 		}
 		endpoint.Token = strings.TrimSpace(string(data))
 	}

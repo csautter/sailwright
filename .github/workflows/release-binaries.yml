@@ -350,6 +350,11 @@ jobs:
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           brew tap-new --no-git local/check
+          # Newer Homebrew refuses to load formulae from untrusted taps; this
+          # throwaway tap only holds the formulae generated above.
+          if brew help trust >/dev/null 2>&1; then
+            brew trust local/check
+          fi
           tap_dir="$(brew --repository local/check)"
           cp sailwright.rb sailwright-gateway.rb "${tap_dir}/Formula/"
           brew style local/check/sailwright local/check/sailwright-gateway

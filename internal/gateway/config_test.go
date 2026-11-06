@@ -99,3 +99,16 @@ func TestResolveListenOff(t *testing.T) {
 		t.Fatal("unexpected per-OS listen defaults")
 	}
 }
+
+func TestResolveTunnelAllowedCIDRs(t *testing.T) {
+	cfg := Config{StateDir: t.TempDir(), AgentDir: t.TempDir(), StateIsolation: "isolated", TunnelAllowedCIDRs: []string{" 10.20.0.7/16 "}}
+	if err := cfg.Resolve(); err != nil || len(cfg.TunnelPrefixes) != 1 || cfg.TunnelPrefixes[0].String() != "10.20.0.0/16" {
+		t.Fatalf("resolve: %v %v", err, cfg.TunnelPrefixes)
+	}
+	for _, cidr := range []string{"0.0.0.0/0", "::/0", "10.0.0.1"} {
+		cfg := Config{StateDir: t.TempDir(), AgentDir: t.TempDir(), StateIsolation: "isolated", TunnelAllowedCIDRs: []string{cidr}}
+		if err := cfg.Resolve(); err == nil {
+			t.Errorf("tunnel_allowed_cidrs %q should be rejected", cidr)
+		}
+	}
+}

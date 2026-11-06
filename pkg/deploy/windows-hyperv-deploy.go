@@ -2,6 +2,8 @@ package deploy
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,7 +19,14 @@ const (
 	hypervVagrantDotfileEnvVar  = "VAGRANT_DOTFILE_PATH"
 	hypervVagrantCpuEnvVar      = "VAGRANT_VM_CPUS"
 	hypervVagrantMemoryEnvVar   = "VAGRANT_VM_MEMORY_MB"
-	hypervVagrantUpTimeout      = 60 * time.Minute
+	// hypervNestedVirtualizationEnvVar=false keeps virtualization extensions
+	// hidden from the guest (read by the Hyper-V Vagrantfiles).
+	hypervNestedVirtualizationEnvVar = "VAGRANT_HYPERV_NESTED_VIRTUALIZATION"
+	// hypervNestedUnsupportedMarker, in the VM's Vagrant dotfile directory,
+	// remembers that Hyper-V refused nested virtualization for the VM, so later
+	// starts skip the attempt that is bound to fail.
+	hypervNestedUnsupportedMarker = "sailwright-nested-virtualization-unsupported"
+	hypervVagrantUpTimeout        = 60 * time.Minute
 )
 
 var (
@@ -71,18 +80,109 @@ func RunHypervVagrantDeployOnWindows(config alchemy_build.VirtualMachineConfig) 
 		return fmt.Errorf("failed to add Vagrant box for %s:%s:%s: %w", config.OS, config.UbuntuType, config.Arch, err)
 	}
 
-	if err := runHypervVagrantCommandWithEnv(
-		settings.VagrantDir,
-		hypervVagrantUpTimeout,
-		"vagrant",
-		[]string{"up", "--provider", "hyperv"},
-		settings.VagrantEnv,
-		fmt.Sprintf("%s:%s:%s:vagrant-up", config.OS, config.UbuntuType, config.Arch),
-	); err != nil {
+	if err := runHypervVagrantUp(config, settings); err != nil {
 		return fmt.Errorf("failed to start Vagrant VM for %s:%s:%s: %w", config.OS, config.UbuntuType, config.Arch, err)
 	}
 
 	return nil
+}
+
+// runHypervVagrantUp runs `vagrant up`. When Hyper-V refuses to start the VM
+// because the host cannot offer nested virtualization (Windows itself runs in
+// a VM), it turns the extensions off for that VM and tries once more.
+//
+// The fallback is remembered in the VM's Vagrant dotfile directory, so later
+// starts go without the extensions right away. An explicit
+// VAGRANT_HYPERV_NESTED_VIRTUALIZATION in the environment always wins.
+func runHypervVagrantUp(config alchemy_build.VirtualMachineConfig, settings hypervVagrantDeploySettings) error {
+	logPrefix := fmt.Sprintf("%s:%s:%s:vagrant-up", config.OS, config.UbuntuType, config.Arch)
+	upArgs := []string{"up", "--provider", "hyperv"}
+	marker := hypervNestedUnsupportedMarkerPath(settings.VagrantEnv)
+	_, explicit := os.LookupEnv(hypervNestedVirtualizationEnvVar)
+	if !explicit && marker != "" {
+		if _, statErr := os.Stat(marker); statErr == nil {
+			log.Printf("Hyper-V refused nested virtualization for this VM before; starting it without virtualization extensions (delete %s to try again)", marker)
+			env := append(append([]string(nil), settings.VagrantEnv...), hypervNestedVirtualizationEnvVar+"=false")
+			return runHypervVagrantCommandWithEnv(settings.VagrantDir, hypervVagrantUpTimeout, "vagrant", upArgs, env, logPrefix)
+		}
+	}
+	err := runHypervVagrantCommandWithEnv(settings.VagrantDir, hypervVagrantUpTimeout, "vagrant", upArgs, settings.VagrantEnv, logPrefix)
+	if err == nil {
+		return nil
+	}
+	disabled, probeErr := hypervDisableUnsupportedNestedVirtualization(settings.VagrantDir, settings.VagrantEnv)
+	if probeErr != nil {
+		log.Printf("could not check whether nested virtualization blocked the Hyper-V start: %v", probeErr)
+		return err
+	}
+	if !disabled {
+		return err
+	}
+	log.Printf("Hyper-V cannot offer nested virtualization on this host; retrying without exposing virtualization extensions to the VM (set %s=false to skip this attempt)", hypervNestedVirtualizationEnvVar)
+	retryEnv := append(append([]string(nil), settings.VagrantEnv...), hypervNestedVirtualizationEnvVar+"=false")
+	if retryErr := runHypervVagrantCommandWithEnv(settings.VagrantDir, hypervVagrantUpTimeout, "vagrant", upArgs, retryEnv, logPrefix); retryErr != nil {
+		return fmt.Errorf("%w; retry without nested virtualization: %v", err, retryErr)
+	}
+	if marker != "" {
+		if markErr := writeHypervNestedUnsupportedMarker(marker); markErr != nil {
+			log.Printf("could not remember that nested virtualization is unsupported for this VM: %v", markErr)
+		}
+	}
+	return nil
+}
+
+// hypervNestedUnsupportedMarkerPath returns the marker file in the Vagrant
+// dotfile directory named by env, or "" when env names none.
+func hypervNestedUnsupportedMarkerPath(env []string) string {
+	const prefix = hypervVagrantDotfileEnvVar + "="
+	for _, entry := range env {
+		if dir, ok := strings.CutPrefix(entry, prefix); ok && strings.TrimSpace(dir) != "" {
+			return filepath.Join(strings.TrimSpace(dir), hypervNestedUnsupportedMarker)
+		}
+	}
+	return ""
+}
+
+func writeHypervNestedUnsupportedMarker(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return err
+	}
+	content := "Hyper-V refused to start this VM with nested virtualization on " + time.Now().UTC().Format(time.RFC3339) + ".\n" +
+		"Sailwright starts it without virtualization extensions. Delete this file to try again.\n"
+	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+// hypervNestedVirtualizationScript turns off virtualization extensions on a
+// stopped VM, but only right after Hyper-V logged for that VM that the platform
+// does not support nested virtualization (Worker-Admin event 3108). The event
+// text names no VM; its user is the VM's worker account NT VIRTUAL
+// MACHINE\<VM id>, whose SID S-1-5-83-1-a-b-c-d holds the id's four 32-bit parts.
+const hypervNestedVirtualizationScript = `$vm = Get-VM -Name %s -ErrorAction SilentlyContinue
+if ($null -eq $vm -or $vm.State -ne 'Off') { 'unchanged'; exit 0 }
+if (-not (Get-VMProcessor -VM $vm).ExposeVirtualizationExtensions) { 'unchanged'; exit 0 }
+$idBytes = $vm.Id.ToByteArray()
+$vmSid = 'S-1-5-83-1-' + ((0..3 | ForEach-Object { [BitConverter]::ToUInt32($idBytes, $_ * 4) }) -join '-')
+$refused = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Hyper-V-Worker-Admin'; Id=3108; StartTime=(Get-Date).AddMinutes(-15)} -ErrorAction SilentlyContinue |
+  Where-Object { $_.UserId -and $_.UserId.Value -eq $vmSid }
+if (-not $refused) { 'unchanged'; exit 0 }
+Set-VMProcessor -VM $vm -ExposeVirtualizationExtensions $false -ErrorAction Stop
+'disabled'`
+
+func hypervDisableUnsupportedNestedVirtualization(workingDir string, env []string) (bool, error) {
+	vmName, err := hypervVagrantVMName(env)
+	if err != nil {
+		return false, err
+	}
+	output, err := runHypervCommandWithCombinedOutput(
+		workingDir,
+		time.Minute,
+		"powershell",
+		[]string{"-NoProfile", "-NonInteractive", "-Command", fmt.Sprintf(hypervNestedVirtualizationScript, powershellSingleQuote(vmName))},
+	)
+	if err != nil {
+		return false, fmt.Errorf("%w; output: %s", err, strings.TrimSpace(output))
+	}
+	return strings.TrimSpace(output) == "disabled", nil
 }
 
 func RunHypervVagrantDestroyOnWindows(config alchemy_build.VirtualMachineConfig) error {
@@ -154,14 +254,7 @@ func RunHypervVagrantStartOnWindows(config alchemy_build.VirtualMachineConfig) e
 		return err
 	}
 
-	if err := runHypervVagrantCommandWithEnv(
-		settings.VagrantDir,
-		hypervVagrantUpTimeout,
-		"vagrant",
-		[]string{"up", "--provider", "hyperv"},
-		settings.VagrantEnv,
-		fmt.Sprintf("%s:%s:%s:vagrant-up", config.OS, config.UbuntuType, config.Arch),
-	); err != nil {
+	if err := runHypervVagrantUp(config, settings); err != nil {
 		return fmt.Errorf("failed to start Vagrant VM for %s:%s:%s: %w", config.OS, config.UbuntuType, config.Arch, err)
 	}
 

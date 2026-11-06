@@ -4,6 +4,11 @@
 //
 // Special targets: os "failos" exits 3, os "slowos" sleeps for a minute.
 //
+// VMs carry an instance id in "<state>.instance" (create writes a new one), reported
+// by `vm info` and `vm identity`. A "create-fails-after-start" file in the state dir
+// makes create leave a stopped VM and fail after writing $SAILWRIGHT_CREATE_STARTED_FILE.
+// An "identity-delay" file holding a Go duration slows `vm identity` like Hyper-V.
+//
 // build writes console frames like the real VNC recording into
 // $DEV_ALCHEMY_CACHE_DIR/<os>/qemu-out-<slug>-vncsnapshot.
 package main
@@ -33,6 +38,7 @@ type target struct {
 	Arch   string            `json:"arch"`
 	Engine string            `json:"engine"`
 	Fields map[string]string `json:"fields"`
+	Exists *bool             `json:"exists,omitempty"`
 	Addr   *string           `json:"address"`
 }
 
@@ -51,6 +57,49 @@ func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
 		fmt.Println("Usage: sailwright [command]")
+		return
+	}
+	if args[0] == "--gateway-metadata" {
+		if value := os.Getenv("FAKE_CLI_METADATA"); value != "" {
+			fmt.Println(value)
+		} else {
+			fmt.Println(`{"schema_version":1,"lock_version":2,"version":"fake"}`)
+		}
+		return
+	}
+	if len(args) > 2 && args[0] == "vm" && args[1] == "identity" {
+		id := targetID(append([]string{"identity"}, args[2:]...))
+		typ, arch := targetTypeArch(args)
+		if delay, err := time.ParseDuration(readState("identity-delay")); err == nil {
+			time.Sleep(delay)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "os": args[2], "type": typ, "arch": arch, "engine": "qemu", "exists": readState(id) != "", "instance_id": readState(id + ".instance")})
+		return
+	}
+	if len(args) > 2 && args[0] == "vm" && args[1] == "info" {
+		targetArgs := append([]string{"info"}, args[2:]...)
+		id := targetID(targetArgs)
+		if !knownOS(args[2]) || readState(id) != "running" {
+			fmt.Fprintln(os.Stderr, "VM is not running")
+			os.Exit(1)
+		}
+		typ, arch := targetTypeArch(args)
+		address := os.Getenv("FAKE_VM_ADDRESS")
+		if address == "" {
+			address = "192.0.2.10"
+		}
+		protocol, port := "ssh", 22
+		if args[2] == "windows11" {
+			protocol, port = "winrm", 5985
+		}
+		if delay, err := time.ParseDuration(os.Getenv("FAKE_VM_INFO_DELAY")); err == nil {
+			time.Sleep(delay)
+		}
+		if warning := os.Getenv("FAKE_VM_INFO_WARNING"); warning != "" {
+			fmt.Fprintln(os.Stderr, warning)
+		}
+		password := os.Getenv("FAKE_VM_PASSWORD")
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "os": args[2], "type": typ, "arch": arch, "engine": "qemu", "state": "running", "address": address, "network_mode": "unknown", "protocol": protocol, "port": port, "username": "packer", "password": password, "instance_id": readState(id + ".instance")})
 		return
 	}
 	if args[0] == "__session" {
@@ -95,7 +144,20 @@ func main() {
 	case "install", "pull":
 		fmt.Printf("%s ok\n", command)
 	case "create":
+		// Like the real CLI, create refuses an existing VM.
+		if readState(id) != "" {
+			fmt.Fprintf(os.Stderr, "Error: VM for %s already exists\n", id)
+			os.Exit(1)
+		}
+		if marker := os.Getenv("SAILWRIGHT_CREATE_STARTED_FILE"); marker != "" {
+			_ = os.WriteFile(marker, []byte(id+"\n"), 0o600) // #nosec G703 -- test fixture.
+		}
 		writeState(id, "stopped")
+		writeState(id+".instance", fmt.Sprintf("fake-%d", time.Now().UnixNano()))
+		if readState("create-fails-after-start") != "" {
+			fmt.Fprintln(os.Stderr, "Error: deployment failed after the VM was defined")
+			os.Exit(4)
+		}
 		fmt.Println("created")
 	case "start":
 		writeState(id, "running")
@@ -151,10 +213,10 @@ func printListing(command string) {
 		if state == "" {
 			state = "missing"
 		}
-		start := "ready to start"
+		start, create := "ready to start", "already created"
 		switch state {
 		case "missing":
-			start = "create required"
+			start, create = "create required", "ready to create"
 		case "running":
 			start = "already running"
 		}
@@ -163,11 +225,35 @@ func printListing(command string) {
 			status = "unstable"
 		}
 		// Mirrors the columns of the real `start list` and `create list`.
-		targets[i].Fields = map[string]string{"state": state, "start": start, "status": status}
+		targets[i].Fields = map[string]string{"state": state, "start": start, "create": create, "status": status}
+		if command == "create" {
+			exists := state != "missing"
+			targets[i].Exists = &exists
+		}
 	}
 	out, _ := json.Marshal(map[string]any{"schema_version": 1, "targets": targets})
 	fmt.Println("diagnostic line before the document")
 	fmt.Println(string(out))
+}
+
+// targetTypeArch reads the CLI defaults and flags of `vm <info|identity> <os> ...`.
+func targetTypeArch(args []string) (string, string) {
+	typ, arch := "", "amd64"
+	if args[2] == "ubuntu" {
+		typ = "server"
+	}
+	for i := 3; i+1 < len(args); i++ {
+		if args[i] == "--type" {
+			typ = args[i+1]
+		}
+		if args[i] == "--arch" {
+			arch = args[i+1]
+		}
+	}
+	if args[2] != "ubuntu" {
+		typ = ""
+	}
+	return typ, arch
 }
 
 func targetID(args []string) string {
@@ -280,6 +366,7 @@ func removeState(id string) {
 	if path := stateFile(id); path != "" {
 		removeFile(path)
 		removeFile(path + ".provisioned")
+		removeFile(path + ".instance")
 	}
 }
 

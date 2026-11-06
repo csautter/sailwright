@@ -58,25 +58,32 @@ type WorkspaceMapping struct {
 
 // Config is the operator-owned gateway configuration. It is never writable through MCP.
 type Config struct {
-	Listen             string             `yaml:"listen"`
-	AllowedHosts       []string           `yaml:"allowed_hosts"`
-	AllowedSourceCIDRs []string           `yaml:"allowed_source_cidrs"`
-	AllowedOrigins     []string           `yaml:"allowed_origins"`
-	Binary             string             `yaml:"binary"`
-	BinarySHA256       string             `yaml:"binary_sha256"`
-	DataDir            string             `yaml:"data_dir"`
-	SharedCacheDir     string             `yaml:"shared_cache_dir"`
-	EnvPassthrough     []string           `yaml:"env_passthrough"`
-	PullAllowlist      []string           `yaml:"pull_allowlist"`
-	AgentWorkspaces    []WorkspaceMapping `yaml:"agent_workspaces"`
-	JobTimeout         string             `yaml:"job_timeout"`
-	ApprovalTTL        string             `yaml:"approval_ttl"`
-	MinFreeDiskGB      int                `yaml:"min_free_disk_gb"`
-	CleanPromptMinGB   int                `yaml:"clean_prompt_min_gb"`
-	OutputLimitBytes   int                `yaml:"output_limit_bytes"`
-	SnapshotMaxBytes   int64              `yaml:"snapshot_max_bytes"`
-	SnapshotMaxFiles   int                `yaml:"snapshot_max_files"`
-	AgentDir           string             `yaml:"agent_dir"`
+	Listen                 string             `yaml:"listen"`
+	AllowedHosts           []string           `yaml:"allowed_hosts"`
+	AllowedSourceCIDRs     []string           `yaml:"allowed_source_cidrs"`
+	AllowedOrigins         []string           `yaml:"allowed_origins"`
+	Binary                 string             `yaml:"binary"`
+	BinarySHA256           string             `yaml:"binary_sha256"`
+	DataDir                string             `yaml:"data_dir"`
+	StateIsolation         string             `yaml:"state_isolation"`
+	SharedCacheDir         string             `yaml:"shared_cache_dir"`
+	EnvPassthrough         []string           `yaml:"env_passthrough"`
+	PullAllowlist          []string           `yaml:"pull_allowlist"`
+	AgentWorkspaces        []WorkspaceMapping `yaml:"agent_workspaces"`
+	JobTimeout             string             `yaml:"job_timeout"`
+	ApprovalTTL            string             `yaml:"approval_ttl"`
+	MinFreeDiskGB          int                `yaml:"min_free_disk_gb"`
+	CleanPromptMinGB       int                `yaml:"clean_prompt_min_gb"`
+	OutputLimitBytes       int                `yaml:"output_limit_bytes"`
+	SnapshotMaxBytes       int64              `yaml:"snapshot_max_bytes"`
+	SnapshotMaxFiles       int                `yaml:"snapshot_max_files"`
+	AgentDir               string             `yaml:"agent_dir"`
+	MaxTunnels             int                `yaml:"max_tunnels"`
+	TunnelIdleTimeout      string             `yaml:"tunnel_idle_timeout"`
+	TunnelIdleTimeoutValue time.Duration      `yaml:"-"`
+	// TunnelAllowedCIDRs adds guest networks a tunnel may reach besides the
+	// subnets of the host's own interfaces, for routed guest networks.
+	TunnelAllowedCIDRs []string `yaml:"tunnel_allowed_cidrs"`
 	// ViewListen is the loopback address of the live view for build screenshots
 	// ("off" disables it); port 0 picks a free port.
 	ViewListen string `yaml:"view_listen"`
@@ -85,10 +92,21 @@ type Config struct {
 	ScreenStuckAfter string `yaml:"screen_stuck_after"`
 
 	// Resolved values, filled by Resolve.
+	// LegacyIsolation is set when state_isolation was unset and isolated mode was
+	// selected because <data_dir>/app from an older gateway exists.
+	LegacyIsolation bool `yaml:"-"`
+	// GateForeignVMs requires operator approval before the agent uses a VM this
+	// gateway did not create. Set for shared state, where the operator's VMs live.
+	GateForeignVMs        bool           `yaml:"-"`
+	SharedAppData         string         `yaml:"-"`
+	SharedCache           string         `yaml:"-"`
+	SharedVagrant         string         `yaml:"-"`
+	SharedPackerCache     string         `yaml:"-"`
 	StateDir              string         `yaml:"-"`
 	ListenAddr            netip.AddrPort `yaml:"-"` // invalid when the TCP listener is off
 	ViewAddr              netip.AddrPort `yaml:"-"` // invalid when the live view is off
 	SourcePrefixes        []netip.Prefix `yaml:"-"`
+	TunnelPrefixes        []netip.Prefix `yaml:"-"`
 	JobTimeoutValue       time.Duration  `yaml:"-"`
 	ApprovalTTLValue      time.Duration  `yaml:"-"`
 	ScreenStuckAfterValue time.Duration  `yaml:"-"`
@@ -242,6 +260,23 @@ func (c *Config) Resolve() error {
 	if c.DataDir == "" {
 		c.DataDir = filepath.Join(c.StateDir, "data")
 	}
+	if c.StateIsolation == "" {
+		// Gateways from before shared state kept VMs in <data_dir>/app. Keep using that
+		// state until the operator opts in, so an upgrade never orphans managed VMs.
+		c.StateIsolation = "shared"
+		if info, err := os.Stat(filepath.Join(c.DataDir, "app")); err == nil && info.IsDir() {
+			c.StateIsolation, c.LegacyIsolation = "isolated", true
+		}
+	}
+	if c.StateIsolation != "shared" && c.StateIsolation != "isolated" {
+		return fmt.Errorf("state_isolation must be shared or isolated")
+	}
+	if c.StateIsolation == "shared" {
+		c.GateForeignVMs = true
+		if err := c.resolveSharedDirs(os.Getenv, runtime.GOOS); err != nil {
+			return err
+		}
+	}
 	if c.AgentDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -261,6 +296,27 @@ func (c *Config) Resolve() error {
 		}
 	}
 
+	if c.MaxTunnels == 0 {
+		c.MaxTunnels = 16
+	}
+	if c.MaxTunnels < 1 || c.MaxTunnels > 1024 {
+		return fmt.Errorf("max_tunnels must be between 1 and 1024")
+	}
+	c.TunnelPrefixes = nil
+	for _, cidr := range c.TunnelAllowedCIDRs {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(cidr))
+		if err != nil {
+			return fmt.Errorf("invalid tunnel_allowed_cidrs entry %q: %w", cidr, err)
+		}
+		if prefix.Bits() == 0 {
+			return fmt.Errorf("tunnel_allowed_cidrs entry %q would allow every address", cidr)
+		}
+		c.TunnelPrefixes = append(c.TunnelPrefixes, prefix.Masked())
+	}
+	c.TunnelIdleTimeoutValue, err = parseDurationDefault(c.TunnelIdleTimeout, 5*time.Minute)
+	if err != nil || c.TunnelIdleTimeoutValue <= 0 {
+		return fmt.Errorf("invalid tunnel_idle_timeout")
+	}
 	c.JobTimeoutValue, err = parseDurationDefault(c.JobTimeout, defaultJobTimeout)
 	if err != nil {
 		return fmt.Errorf("job_timeout: %w", err)
@@ -324,7 +380,7 @@ func (c *Config) Resolve() error {
 		return errors.New("binary_sha256 must be 64 lowercase hex characters")
 	}
 
-	for _, dir := range []string{c.StateDir, c.DataDir, c.AgentDir, c.SharedCacheDir} {
+	for _, dir := range []string{c.StateDir, c.DataDir, c.AgentDir, c.SharedCacheDir, c.SharedAppData, c.SharedCache, c.SharedVagrant, c.SharedPackerCache} {
 		if dir == "" {
 			continue
 		}
@@ -333,7 +389,10 @@ func (c *Config) Resolve() error {
 		}
 	}
 	// The agent dir is mounted into containers, so it must not expose gateway state.
-	for _, dir := range []string{c.StateDir, c.DataDir} {
+	for _, dir := range []string{c.StateDir, c.DataDir, c.SharedAppData, c.SharedCache, c.SharedVagrant, c.SharedPackerCache, c.SharedCacheDir} {
+		if dir == "" {
+			continue
+		}
 		if isWithin(c.AgentDir, dir) || isWithin(dir, c.AgentDir) {
 			return fmt.Errorf("agent_dir %s must not overlap the gateway directory %s", c.AgentDir, dir)
 		}

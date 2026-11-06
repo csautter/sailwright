@@ -85,9 +85,7 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		osName := args[0]
 
-		if osName != "ubuntu" {
-			osType = ""
-		}
+		osType = alchemy_build.TargetType(osName, osType)
 
 		if osName == "all" {
 			availableVMs := availableStartVirtualMachines()

@@ -14,10 +14,10 @@ const (
 	peerHeader          = "X-Sailwright-Gateway-Peer"
 	maxRequestBodyBytes = 1 << 20
 	mcpPath             = "/mcp"
+	tunnelPath          = "/tunnel"
 )
 
-// SecurityPolicy holds the request checks shared by every endpoint (/mcp now, /tunnel
-// later).
+// SecurityPolicy holds the request checks shared by MCP and VM tunnels.
 type SecurityPolicy struct {
 	Token          string
 	SourcePrefixes []netip.Prefix
@@ -26,10 +26,14 @@ type SecurityPolicy struct {
 	Audit          *AuditLog
 }
 
-// NewHTTPHandler wraps the MCP handler with the security middleware and routes it.
-func NewHTTPHandler(policy SecurityPolicy, mcpHandler http.Handler) http.Handler {
+// NewHTTPHandler wraps the MCP and (optional, may be nil) tunnel handlers with the
+// security middleware and routes them.
+func NewHTTPHandler(policy SecurityPolicy, mcpHandler, tunnelHandler http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(mcpPath, mcpHandler)
+	if tunnelHandler != nil {
+		mux.Handle(tunnelPath, tunnelHandler)
+	}
 	return policy.Middleware(mux)
 }
 
@@ -65,7 +69,9 @@ func (p SecurityPolicy) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		if r.URL.Path != tunnelPath {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
 		r.Header.Set(peerHeader, peer)
 		next.ServeHTTP(w, r)
 	})

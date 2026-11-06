@@ -193,6 +193,16 @@ The OCI client reads Docker credentials by default, so `docker login` works for
 authenticated registries. Use `--username`, `--password-stdin`, or
 `--access-token` when you want command-specific credentials.
 
+OCI transfers use HTTP/1.1, including redirects to blob storage, to avoid
+HTTP/2 `PROTOCOL_ERROR` failures partway through large VM image downloads.
+This transport setting is limited to the OCI client; no `GODEBUG` override is needed.
+Interrupted blob reads retry up to five times with exponential backoff. When the
+registry supports byte ranges, downloads resume from the last received byte;
+otherwise the client reads the prefix again. Only newly received bytes count
+toward progress, and artifacts must still pass size and digest verification
+before entering the local cache. Resumption applies within the running pull;
+restarting the CLI starts a new download.
+
 The Linux GitHub Actions build workflow publishes completed Ubuntu artifacts to
 GitHub Container Registry on pushes to `main` and on manual `workflow_dispatch`
 runs started from `main`. Artifacts are stored under

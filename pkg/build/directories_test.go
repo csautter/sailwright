@@ -206,3 +206,55 @@ func TestEnsureDirectoriesExist_CreatesPrivateDirectories(t *testing.T) {
 		t.Fatalf("expected permissions %o, got %o", managedDirPermission, got)
 	}
 }
+
+func TestManagedDirectoryOverrides(t *testing.T) {
+	for _, name := range []string{devAlchemyCacheEnvVar, devAlchemyVagrantEnvVar, devAlchemyPackerCacheEnvVar} {
+		t.Run(name, func(t *testing.T) {
+			want := t.TempDir()
+			t.Setenv(name, want)
+			if got := directoryOverride(name, "fallback"); got != want {
+				t.Fatalf("got %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestGetDirectoriesHonorsManagedOverrides(t *testing.T) {
+	app, config, project := t.TempDir(), t.TempDir(), t.TempDir()
+	cache, vagrant, packer := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv(projectDirEnvVar, project)
+	t.Setenv(devAlchemyCacheEnvVar, cache)
+	t.Setenv(devAlchemyVagrantEnvVar, vagrant)
+	t.Setenv(devAlchemyPackerCacheEnvVar, packer)
+	dirs := &Directories{WorkingDir: t.TempDir(), AppDataDir: app, ConfigDir: config}
+	dirs.GetDirectories()
+	if dirs.CacheDir != cache || dirs.VagrantDir != vagrant || dirs.PackerCacheDir != packer {
+		t.Fatalf("managed overrides ignored: %+v", dirs)
+	}
+}
+
+func TestTargetTypeFollowsVMConfigurations(t *testing.T) {
+	typed := map[string]bool{}
+	for _, config := range AvailableVirtualMachineConfigs() {
+		if config.UbuntuType != "" {
+			typed[config.OS] = true
+		}
+	}
+	if !typed["ubuntu"] {
+		t.Fatal("expected ubuntu to have typed targets")
+	}
+	for _, config := range AvailableVirtualMachineConfigs() {
+		want := ""
+		if typed[config.OS] {
+			want = "desktop"
+		}
+		if got := TargetType(config.OS, "desktop"); got != want {
+			t.Errorf("TargetType(%s) = %q, want %q", config.OS, got, want)
+		}
+	}
+	for _, osName := range []string{"all", "local"} {
+		if got := TargetType(osName, "server"); got != "" {
+			t.Errorf("TargetType(%s) = %q", osName, got)
+		}
+	}
+}

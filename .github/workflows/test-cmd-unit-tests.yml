@@ -8,8 +8,8 @@ on:
       - "cmd/main.go"
       - "cmd/cmd/**"
       - "cmd/sailwright-gateway/**"
-      - "internal/gateway/**"
-      - "internal/winpsenv/**"
+      - "internal/**"
+      - "pkg/provision/**"
       - "scripts/gh-runner-func/**"
       - "test/e2e/**"
       - ".github/workflows/test-cmd-unit-tests.yml"
@@ -41,8 +41,8 @@ on:
       - "cmd/main.go"
       - "cmd/cmd/**"
       - "cmd/sailwright-gateway/**"
-      - "internal/gateway/**"
-      - "internal/winpsenv/**"
+      - "internal/**"
+      - "pkg/provision/**"
       - "scripts/gh-runner-func/**"
       - "test/e2e/**"
       - ".github/workflows/test-cmd-unit-tests.yml"
@@ -105,11 +105,8 @@ jobs:
       - name: Run tools tests
         run: go test ./tools/...
 
-      - name: Run Windows PowerShell environment tests
-        run: go test ./internal/winpsenv/...
-
-      - name: Run gateway and E2E runner tests
-        run: go test ${{ runner.os == 'Linux' && '-race' || '' }} ./internal/gateway/... ./cmd/sailwright-gateway/... ./test/e2e/...
+      - name: Run gateway, operation lock and E2E runner tests
+        run: go test ${{ runner.os == 'Linux' && '-race' || '' }} ./internal/... ./cmd/sailwright-gateway/... ./test/e2e/...
 
       - name: Run E2E smoke scenario against the CLI
         shell: bash

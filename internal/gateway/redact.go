@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 )
 
@@ -15,34 +16,108 @@ const (
 	redactedMarker     = "***"
 	minRedactedSecret  = 4
 	maxPendingLineSize = 64 << 10
+
+	// defaultGuestPassword is the documented password of disposable sailwright guests
+	// (pkg/provision). It is redacted before any guest has been resolved.
+	defaultGuestPassword = "P@ssw0rd!" // #nosec G101 -- documented default for disposable guests, redacted, never used to authenticate.
 )
 
 // ansiPattern matches terminal escape sequences (CSI, OSC and single-character escapes).
 var ansiPattern = regexp.MustCompile(`\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-Z\\-_])`)
 
-// Redactor replaces known secret values with a marker.
+// Redactor replaces known secret values with a marker. A redactor derived with With
+// or WithRequired also applies its parent's current secrets, so secrets the parent
+// learns later (AddRequired) are hidden in derived output too.
 type Redactor struct {
+	mu      sync.RWMutex
 	secrets []string
-	minLen  int // shortest value kept, carried so With does not drop short required secrets
+	minLen  int // shortest optional value With accepts; accepted secrets are always kept
+	parent  *Redactor
+
+	// merged caches all() for derived redactors, valid while redactorGeneration
+	// still equals mergedGen.
+	cacheMu   sync.Mutex
+	merged    []string
+	mergedGen uint64
+	hasMerged bool
+}
+
+// redactorGeneration changes whenever any redactor learns a secret (AddRequired), so
+// derived redactors know their merged list may be stale. Secrets are added rarely and
+// output is redacted per chunk, so one global counter is enough.
+var redactorGeneration atomic.Uint64
+
+// all returns the secrets of r and its ancestors, longest first.
+func (r *Redactor) all() []string {
+	if r.parent == nil {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		return r.secrets
+	}
+	// Read the generation before the secrets: a concurrent AddRequired bumps it after
+	// its update, so a list merged from older secrets is never cached as current.
+	gen := redactorGeneration.Load()
+	r.cacheMu.Lock()
+	if r.hasMerged && r.mergedGen == gen {
+		merged := r.merged
+		r.cacheMu.Unlock()
+		return merged
+	}
+	r.cacheMu.Unlock()
+	r.mu.RLock()
+	own := r.secrets
+	r.mu.RUnlock()
+	merged := mergeSecrets(r.parent.all(), own)
+	r.cacheMu.Lock()
+	r.merged, r.mergedGen, r.hasMerged = merged, gen, true
+	r.cacheMu.Unlock()
+	return merged
+}
+
+// mergeSecrets combines accepted secret lists without re-escaping them.
+func mergeSecrets(lists ...[]string) []string {
+	seen := map[string]bool{}
+	var merged []string
+	for _, list := range lists {
+		for _, secret := range list {
+			if !seen[secret] {
+				seen[secret] = true
+				merged = append(merged, secret)
+			}
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool { return len(merged[i]) > len(merged[j]) })
+	return merged
 }
 
 // NewRedactor builds a redactor; very short values are ignored to avoid mangling output.
 func NewRedactor(secrets ...string) *Redactor {
-	return newRedactor(minRedactedSecret, secrets)
+	return newRedactor(minRedactedSecret, nil, minRedactedSecret, secrets)
 }
 
-func newRedactor(minLen int, secrets []string) *Redactor {
+// newRedactor keeps every existing (already accepted) secret and adds the new values
+// that are at least addMinLen long. minLen is the threshold later With calls apply.
+func newRedactor(minLen int, existing []string, addMinLen int, added []string) *Redactor {
 	var kept []string
-	for _, secret := range secrets {
-		if secret == "" || len(secret) < minLen {
-			continue
+	seen := map[string]bool{}
+	keep := func(secret string) {
+		if secret == "" || seen[secret] {
+			return
 		}
 		kept = append(kept, secret)
+		seen[secret] = true
+	}
+	for _, secret := range existing {
+		keep(secret)
+	}
+	for _, secret := range added {
+		if len(secret) < addMinLen {
+			continue
+		}
+		keep(secret)
 		// Also catch the JSON-escaped form used in structured logs and tool results.
 		if escaped, err := json.Marshal(secret); err == nil {
-			if inner := string(escaped[1 : len(escaped)-1]); inner != secret {
-				kept = append(kept, inner)
-			}
+			keep(string(escaped[1 : len(escaped)-1]))
 		}
 	}
 	// Longest first so a secret that contains another one is fully replaced.
@@ -52,10 +127,14 @@ func newRedactor(minLen int, secrets []string) *Redactor {
 
 // maxSecretLen is the length of the longest secret that is redacted.
 func (r *Redactor) maxSecretLen() int {
-	if r == nil || len(r.secrets) == 0 {
+	if r == nil {
 		return 0
 	}
-	return len(r.secrets[0]) // sorted longest first
+	secrets := r.all()
+	if len(secrets) == 0 {
+		return 0
+	}
+	return len(secrets[0]) // sorted longest first
 }
 
 // safeCut moves cut back to the start of any secret occurrence that straddles it, so
@@ -64,9 +143,10 @@ func (r *Redactor) safeCut(buf []byte, cut int) int {
 	if r == nil {
 		return cut
 	}
+	secrets := r.all()
 	for moved := true; moved; {
 		moved = false
-		for _, secret := range r.secrets {
+		for _, secret := range secrets {
 			from := max(0, cut-len(secret)+1)
 			if i := bytes.Index(buf[from:], []byte(secret)); i >= 0 && from+i < cut && from+i+len(secret) > cut {
 				cut, moved = from+i, true
@@ -78,23 +158,23 @@ func (r *Redactor) safeCut(buf []byte, cut int) int {
 
 // With returns a redactor that also hides the given secrets, keeping r's minimum length.
 func (r *Redactor) With(secrets ...string) *Redactor {
-	var all []string
-	minLen := minRedactedSecret
-	if r != nil {
-		all = append(all, r.secrets...)
-		minLen = r.minLen
+	if r == nil {
+		return NewRedactor(secrets...)
 	}
-	return newRedactor(minLen, append(all, secrets...))
+	derived := newRedactor(r.minLen, nil, r.minLen, secrets)
+	derived.parent = r
+	return derived
 }
 
 // WithRequired is like With but also hides short values. Use it for secrets that must
 // never appear, such as a sudo password, accepting that output may be mangled.
 func (r *Redactor) WithRequired(secrets ...string) *Redactor {
-	var all []string
-	if r != nil {
-		all = append(all, r.secrets...)
+	if r == nil {
+		return newRedactor(minRedactedSecret, nil, 1, secrets)
 	}
-	return newRedactor(1, append(all, secrets...))
+	derived := newRedactor(r.minLen, nil, 1, secrets)
+	derived.parent = r
+	return derived
 }
 
 // String redacts a string. A nil redactor returns the value unchanged.
@@ -102,7 +182,7 @@ func (r *Redactor) String(value string) string {
 	if r == nil {
 		return value
 	}
-	for _, secret := range r.secrets {
+	for _, secret := range r.all() {
 		value = strings.ReplaceAll(value, secret, redactedMarker)
 	}
 	return value
@@ -203,4 +283,18 @@ func sanitizeForTerminal(value string) string {
 		}
 	}
 	return b.String()
+}
+
+// AddRequired registers newly resolved guest secrets for subsequent audit and job output.
+func (r *Redactor) AddRequired(secrets ...string) {
+	r.mu.Lock()
+	// Short guest passwords are still hidden, but the threshold for later optional
+	// secrets (With) stays unchanged.
+	before := len(r.secrets)
+	r.secrets = newRedactor(r.minLen, r.secrets, 1, secrets).secrets
+	learned := len(r.secrets) != before // existing secrets are kept and deduplicated
+	r.mu.Unlock()
+	if learned {
+		redactorGeneration.Add(1)
+	}
 }

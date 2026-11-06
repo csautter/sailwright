@@ -21,6 +21,8 @@ type installCommandSpec struct {
 type installCommandOptions struct {
 	withGo     bool
 	virtualBox bool
+	hyperV     bool
+	vagrant    bool
 }
 
 var runInstallCommand = func(spec installCommandSpec) error {
@@ -46,6 +48,12 @@ func installCommandForHost(hostOs alchemy_build.HostOsType, projectDir string, o
 	if options.virtualBox && hostOs != alchemy_build.HostOsWindows {
 		return installCommandSpec{}, fmt.Errorf("install --virtualbox is only supported for host OS: %s", hostOs)
 	}
+	if options.hyperV && hostOs != alchemy_build.HostOsWindows {
+		return installCommandSpec{}, fmt.Errorf("install --hyperv is only supported for host OS: %s", alchemy_build.HostOsWindows)
+	}
+	if options.vagrant && hostOs != alchemy_build.HostOsWindows {
+		return installCommandSpec{}, fmt.Errorf("install --vagrant is only supported for host OS: %s", alchemy_build.HostOsWindows)
+	}
 
 	switch hostOs {
 	case alchemy_build.HostOsDarwin:
@@ -68,6 +76,12 @@ func installCommandForHost(hostOs alchemy_build.HostOsType, projectDir string, o
 		if options.virtualBox {
 			args = append(args, "-VirtualBox")
 		}
+		if options.hyperV {
+			args = append(args, "-HyperV")
+		}
+		if options.vagrant {
+			args = append(args, "-Vagrant")
+		}
 		return installCommandSpec{
 			executable: "powershell",
 			args:       args,
@@ -89,18 +103,89 @@ func installCommandForHost(hostOs alchemy_build.HostOsType, projectDir string, o
 	}
 }
 
+const installHyperVHint = "Hyper-V is only needed to build, create or run sailwright VMs with the Hyper-V engine on this Windows host. Local provisioning (sailwright provision local) and VirtualBox VMs work without it. Enabling Hyper-V needs hardware virtualization (nested virtualization when Windows itself runs in a VM) and a Windows restart; it also installs oscdimg from the Windows ADK for Hyper-V builds."
+
+const installVagrantHint = "Vagrant is only needed to create, start, stop or destroy sailwright VMs on this Windows host (the Hyper-V engine drives VMs through Vagrant). Local provisioning (sailwright provision local) works without it."
+
+// installOptIn describes a Windows-only installer component that is off by
+// default and offered interactively.
+type installOptIn struct {
+	flag     string
+	label    string
+	hint     string
+	question string
+}
+
+var (
+	installHyperVOptIn  = installOptIn{flag: "hyperv", label: "Hyper-V setup", hint: installHyperVHint, question: "Enable Hyper-V now?"}
+	installVagrantOptIn = installOptIn{flag: "vagrant", label: "Vagrant installation", hint: installVagrantHint, question: "Install Vagrant now?"}
+)
+
+// resolveInstallOptIn decides whether an opt-in Windows component is
+// installed: an explicit --flag / --flag=false wins, an interactive terminal
+// is asked (default no), and non-interactive runs such as the agent gateway
+// skip it with a hint.
+func resolveInstallOptIn(cmd *cobra.Command, hostOs alchemy_build.HostOsType, optIn installOptIn, flagValue bool) (bool, error) {
+	if cmd.Flags().Changed(optIn.flag) || hostOs != alchemy_build.HostOsWindows {
+		return flagValue, nil
+	}
+
+	if !isInteractiveInput(cmd.InOrStdin()) {
+		fmt.Fprintf(cmd.OutOrStdout(), "ℹ️  Skipping %s. %s Run \"sailwright install --%s\" to add it.\n", optIn.label, optIn.hint, optIn.flag)
+		return false, nil
+	}
+
+	confirmed, err := promptForConfirmationFunc(cmd.InOrStdin(), cmd.OutOrStdout(), optIn.hint+" "+optIn.question+" [y/N]: ")
+	if err != nil {
+		return false, fmt.Errorf("failed to read the answer for --%s: %w", optIn.flag, err)
+	}
+	if !confirmed {
+		fmt.Fprintf(cmd.OutOrStdout(), "Skipping %s. Run \"sailwright install --%s\" to add it later.\n", optIn.label, optIn.flag)
+	}
+	return confirmed, nil
+}
+
+func resolveInstallHyperV(cmd *cobra.Command, hostOs alchemy_build.HostOsType) (bool, error) {
+	return resolveInstallOptIn(cmd, hostOs, installHyperVOptIn, installHyperV)
+}
+
+func resolveInstallVagrant(cmd *cobra.Command, hostOs alchemy_build.HostOsType) (bool, error) {
+	return resolveInstallOptIn(cmd, hostOs, installVagrantOptIn, installVagrant)
+}
+
 var installWithGo bool
 var installVirtualBox bool
+var installHyperV bool
+var installVagrant bool
 
 var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install host dependencies for the current operating system",
-	Args:  cobra.NoArgs,
+	Long: `Install host dependencies for the current operating system.
+
+On Windows, Hyper-V is opt-in: pass --hyperv to enable it (the optional
+features on Windows client editions, the Hyper-V role on Windows Server), or
+answer the prompt in an interactive terminal. Hyper-V is only needed for VMs
+with the Hyper-V engine. Enabling it needs a Windows restart; run
+"sailwright install --hyperv" again afterwards to verify the setup.
+
+Vagrant is opt-in on Windows as well: pass --vagrant or answer the prompt.
+It is needed to create and run sailwright VMs, not for local provisioning.`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		hostOs := alchemy_build.GetCurrentHostOs()
 		projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
 
-		spec, err := installCommandForHost(hostOs, projectDir, installCommandOptions{withGo: installWithGo, virtualBox: installVirtualBox})
+		hyperV, err := resolveInstallHyperV(cmd, hostOs)
+		if err != nil {
+			return err
+		}
+		vagrant, err := resolveInstallVagrant(cmd, hostOs)
+		if err != nil {
+			return err
+		}
+
+		spec, err := installCommandForHost(hostOs, projectDir, installCommandOptions{withGo: installWithGo, virtualBox: installVirtualBox, hyperV: hyperV, vagrant: vagrant})
 		if err != nil {
 			return err
 		}
@@ -113,5 +198,7 @@ var installCmd = &cobra.Command{
 func init() {
 	installCmd.Flags().BoolVar(&installWithGo, "with-go", false, "Also install the Go toolchain when supported on the current host OS")
 	installCmd.Flags().BoolVar(&installVirtualBox, "virtualbox", false, "Also install VirtualBox on Windows hosts")
+	installCmd.Flags().BoolVar(&installHyperV, "hyperv", false, "Also enable Hyper-V on Windows hosts (asked interactively when omitted; needs a restart)")
+	installCmd.Flags().BoolVar(&installVagrant, "vagrant", false, "Also install Vagrant on Windows hosts, needed to create and run VMs (asked interactively when omitted)")
 	rootCmd.AddCommand(installCmd)
 }

@@ -71,3 +71,116 @@ policy on the host.
 - Only one job runs at a time, and remote (non-local) hosts are not supported.
 
 See [Agent Gateway](../agent-gateway.md) for usage and configuration.
+
+## Amendment: shared CLI data (2026-10-31)
+
+The original isolated-state decision is amended. App-data and caches are shared
+with the operator's CLI by default for new gateways, with `state_isolation:
+isolated` available for the previous layout. When the setting is unset and
+`data_dir/app` from an older gateway exists, isolated mode is kept so upgrades
+never orphan managed VMs. Config remains gateway-owned because role sources
+execute Ansible code on the host. Embedded assets from the pinned binary are
+extracted into a separate gateway directory to avoid cross-version replacement.
+
+The CLI coordinates operations with OS file locks in app-data. Target operations
+use the same lock regardless of command; whole-set operations and registry
+transfers exclude target operations. Startup checks a versioned state-schema and
+locking contract, warns about compatible CLI version differences, and refuses
+unsafe sharing. Gateway cleanup never deletes shared caches. Existing isolated
+state is preserved and accompanied by a one-time migration notice.
+
+Consequences of the amendment:
+
+- In shared mode builds and pulls replace cached images the operator also uses.
+  VM instances are gated by ownership: VMs the gateway created (a successful
+  `create` job, since `create` refuses existing VMs) are open to the agent;
+  for any other VM, lifecycle jobs need approval, tunnels are refused and
+  `vm_info` raises an asynchronous access request whose approval lasts for the
+  gateway run. Ownership is dropped on destroy or when `create list` reports the
+  VM gone. See the instance identity amendment for VMs recreated between
+  listings and for failed creates.
+- "Only the pinned copy runs" has one exception: at startup the gateway runs
+  `sailwright --gateway-metadata` from PATH, without passthrough secrets, to
+  compare state contracts. An installed CLI without the contract is a warning,
+  not a refusal; an incompatible reported contract is refused in shared mode.
+- The shared app-data layout is mirrored from `pkg/build` and enforced by
+  `TestSharedAppDataMirrorsCLIDefaults`.
+- Tunnel destinations come only from the pinned CLI, but some engines learn
+  them from the guest. A guest under agent control can therefore point the
+  tunnel at another address on ports 22, 5985 or 5986. The tunnel amendment
+  below limits this to the host's directly connected subnets; the remainder is
+  accepted: the gateway's purpose is to keep the agent off the host OS, and the
+  agent's container normally has direct network access.
+- Shared mode lets the agent replace the operator's cached images with
+  `vm_build` and `artifact_pull`. This is accepted and they stay in the safe
+  set: builds run only the templates embedded in the pinned binary and pulls
+  only allowlisted references, so the agent cannot put content of its own into
+  an image. It can only replace an image with another build or allowlisted
+  artifact, such as an older tag. Operators who need their cache untouched
+  use `state_isolation: isolated`.
+
+## Amendment: lock protocol version 2 (2026-11-01)
+
+The Windows lock byte moves from offset zero to offset 2^62 so other processes
+can read the lock holder metadata. This changes the cross-process locking
+contract even though the app-data schema is unchanged. The CLI and gateway now
+advertise and require lock protocol 2 for shared state. A CLI reporting protocol
+1 must be updated together with the pinned CLI before sharing state.
+
+## Amendment: conservative network reporting (2026-11-01)
+
+Suppressing the tunnel LAN warning requires a known NAT or user network. Libvirt
+mode is determined from active domain and network XML, rather than the connection
+URI or network name. Failed queries and ambiguous modes remain unknown. Tart
+also reports unknown because the querying process environment cannot establish
+the network mode of an already running guest. Bridged and unknown modes continue
+to allow tunnels with the audit warning.
+
+## Amendment: VM instance identity and failed creates (2026-11-01)
+
+Ownership keyed only by target name could not tell a VM the operator destroyed
+and recreated between two listings from the one the gateway created. The CLI now
+reports the hypervisor instance id (libvirt domain UUID, Hyper-V VM Id) in
+`vm info --json` and in a new `vm identity` command that also answers for stopped
+VMs. The gateway stores the id with each ownership record and grant. `vm_info`
+and tunnels compare it with the id of their fresh lookup; lifecycle jobs on a
+VM whose record has an id run `vm identity` first, and a failed lookup there
+fails closed into an approval job. The job runs that check itself, right
+before its command and cancellable with the job, not the tool call: on Hyper-V
+the query can take minutes, longer than MCP clients wait, and checking last
+narrows the gap between check and use. A different id drops the record, so the VM
+counts as the operator's. A record made without an id (the lookup after create
+failed) adopts the first id it sees. UTM and Tart expose no id that sailwright
+reads, so the listing-based gap remains on macOS hosts.
+
+A failed `create` used to leave a VM that was neither the gateway's nor
+deletable without approval. The gateway now passes each create job a private
+marker path in `SAILWRIGHT_CREATE_STARTED_FILE`. The CLI writes it after it has
+checked, while holding the target's operation lock, that no VM exists, and
+before deployment starts; it aborts the create if the marker cannot be written.
+A create job that fails after writing the marker records ownership when the VM
+exists afterwards. A create refused for an existing VM writes no marker and
+claims nothing. A pinned CLI without these features behaves as before.
+
+## Amendment: tunnel destinations and guest password redaction (2026-11-02)
+
+Tunnels only connect to guest addresses inside a subnet of one of the host's
+own interfaces, plus the operator's `tunnel_allowed_cidrs` for routed guest
+networks. This covers NAT bridges and switches (libvirt, Hyper-V, UTM, Tart)
+and bridged guests on the LAN, and removes routed destinations, such as the
+internet and other VLANs, that a guest reporting a forged address could
+otherwise reach. On Hyper-V, where the CLI accepts any reported address when
+the host has no address on the switch, such a guest is now unreachable through
+a tunnel unless its network is listed. A tunnel's port must also match the
+guest protocol (22 for SSH, 5985 and 5986 for WinRM).
+
+Guest passwords stay in the gateway's redactor for the whole run, at any
+length, except a password equal to the guest username. Such a password is not
+secret and would otherwise turn common words such as `vagrant` or `packer`
+into the redaction marker in all later output.
+
+The on-link rule trusts every subnet the host has an interface in, including
+VPN and corporate adapters with wide prefixes. A guest that forges its address
+can reach ports 22, 5985 and 5986 of hosts there while such an adapter is
+connected. This is accepted for the same reason as bridged LAN guests and is
+documented for operators.

@@ -31,7 +31,6 @@ autoinstall:
     - linux-cloud-tools-virtual
     - linux-tools-virtual
     - linux-cloud-tools-common
-    - linux-azure
     - net-tools
     - cloud-init
   late-commands:
