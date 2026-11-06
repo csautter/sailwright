@@ -646,6 +646,64 @@ for example `vm info ubuntu/server/amd64 failed: ... exited with 1: VM is not
 running`, and `vm_info` returns the same reason to the agent.
 The tunnel transports SSH or WinRM; it never runs a host shell.
 
+### Real guest access in CI
+
+[Gateway guest access](../.github/workflows/test-gateway-guest-access.yml) runs
+the full Linux guest test automatically on relevant pull requests (opening,
+updates, reopening and marking ready) and pushes to `main`, after cheap safety
+and audit checks pass. No label or opt-in setting is required. Path filters cover
+CLI/gateway code, shared internals (including operation locks), deployment,
+provisioning and VM discovery, build configuration, OCI pulls, embedded-asset
+code, E2E/workflow tests, the CI scripts/workflow and Go dependencies. Changes limited to `docs/`
+and unrelated paths do not start this workflow.
+
+The workflow also runs weekly (Monday 04:17 UTC) to catch changes in the published
+image or runner environment, and supports manual dispatch. After it is on main,
+a deliberate branch run can be started with:
+
+```bash
+gh workflow run test-gateway-guest-access.yml --ref <branch>
+```
+
+The first successful real Linux CI run took 2m43s for the full libvirt job,
+including 46s in `TestVMAccess`; preliminary safety checks took 15s
+([run evidence](https://github.com/csautter/sailwright/actions/runs/42274250886)).
+This measured runtime supports automatic coverage on relevant source changes.
+
+The full job provisions libvirt/QEMU on a fresh GitHub-hosted Ubuntu 24.04 amd64 runner, pulls the public
+`ghcr.io/<repository-owner>/ubuntu-24:server-amd64-linux-build` QCOW2 artifact,
+and starts an authenticated gateway with isolated state outside the checkout.
+The image must already be published; registry, image and virtualization failures
+fail the job. It reuses the Go build cache and downloads a prebuilt image rather
+than building one; QCOW2 images are not added to Actions caches. A full run's
+runtime depends on runner setup, compilation, image transfer and guest boot;
+the timeout is a failure bound, not its expected duration. No cloud runner
+broker, registration token or repository secrets are required. Existing runner infrastructure work in [PR #300](https://github.com/csautter/sailwright/pull/300)
+remains separate.
+
+The runner script refuses self-hosted runners and any existing libvirt domains.
+`TestVMAccess` is explicitly enabled with both the `e2e` tag and
+`SAILWRIGHT_VM_ACCESS_E2E=1`: it creates/starts only the missing Ubuntu server
+guest, uses the generated SSH config for `uname -a` and SCP/file verification,
+checks that WinRM port 5985 is refused, closes shared SSH connections, and
+verifies the VM is missing after destroy. It does not run host provisioning.
+
+An EXIT trap stops the gateway and attempts fallback cleanup of only the selected
+domain when its disk matches this run's private directory. Partial-create disks
+are also cleaned via the target's CLI destroy command. Remaining domains/disks
+fail the run; runner disposal is the final containment if cleanup cannot finish.
+The workflow reserves time for cleanup and always uploads `gateway-guest-access`
+evidence: tested commit/tool versions, test output, domain inventories before
+and after, cleanup outcome, gateway audit JSONL and its verification result.
+Audit verification requires `vm_info`, paired tunnel open/close events, and
+nonzero traffic in both directions. Tokens, generated inventories/passwords,
+private gateway state and raw gateway logs are excluded. Artifacts expire after
+seven days. This proves guest access separately from the image-build workflows.
+
+Linux checks do not validate native macOS or Windows behavior. Native test
+follow-ups are [macOS #302](https://github.com/csautter/sailwright/issues/302)
+and [Windows #303](https://github.com/csautter/sailwright/issues/303).
+
 ### Testing disposable guest access
 
 Build the Ubuntu image on the host first, then use a target that does not
@@ -740,6 +798,50 @@ The audit log (`%APPDATA%\sailwright-gateway\audit.jsonl`) then shows
 directions, and `"auto_approved": true` on every decision `--bypass-approvals`
 made. `owned_vms.json` next to it holds the VM's Hyper-V id
 (`(Get-VM).Id.Guid`) while the VM exists.
+
+#### Actual Windows guest WinRM scenario
+
+Track native execution and attach sanitized evidence to
+[Windows test issue #303](https://github.com/csautter/sailwright/issues/303).
+On a disposable native Windows Hyper-V host, first build the Windows 11 amd64
+image with `sailwright build windows11 --arch amd64 --headless`. Keep the target
+VM absent before the test. Run the CLI and gateway from the build under test as
+shown above, with the same isolated directory overrides in both terminals.
+Use a fresh gateway state directory outside the checkout and `--bypass-approvals`
+only on this disposable host. Do not reuse or destroy unrelated VMs.
+
+The client needs `ansible`, `pywinrm` and the `ansible.windows` collection (install
+with `ansible-galaxy collection install ansible.windows` in Cygwin). On Windows,
+set `CYGWIN_BASH_PATH` to the repository's installed Cygwin `bin/bash.exe`.
+The test preflights Ansible/pywinrm in that shell and converts its temporary
+inventory path with `cygpath`; the gateway, Go test and Hyper-V commands run
+natively. No WSL guest is required.
+
+```powershell
+$env:SAILWRIGHT_VM_ACCESS_E2E = '1'
+$env:SAILWRIGHT_E2E_TARGET = 'windows11//amd64'
+$env:CYGWIN_BASH_PATH = 'C:\tools\cygwin\bin\bash.exe'
+# Retain the gateway URL/directory and PATH from the native host setup above.
+go test -tags e2e . -run '^TestWindowsVMAccess$' -count=1 -timeout 56m -v
+```
+
+Run this from `test/e2e`, as in the Ubuntu example. The scenario refuses an
+existing target, creates/starts Windows, calls authenticated `vm_info`, rejects
+SSH port 22, starts `sailwright-gateway vm tunnel` on loopback, and uses the
+returned inventory unchanged to run `ansible.windows.win_shell`. The command
+must return `Win32NT` from **inside the guest**. It then closes the listener,
+destroys the selected VM and verifies it is missing. Inventory files are private
+temporary files and command output is suppressed on failure to protect guest
+credentials. Leave loopback port 15985 (HTTP) or 15986 (HTTPS) free.
+
+The test uses the guest protocol/port reported by `vm_info`; the default images
+use HTTP 5985. To cover HTTPS 5986, prepare a separate supported image/configuration
+with that listener and rerun, recording which configuration was exercised.
+Do not claim both transports based on one run. Attach the tested commit, native
+host/tool versions, test output, sanitized audit with paired bidirectional
+tunnels, and VM/disk cleanup evidence to #303. Build-only tests, fake gateway
+tests and Linux cross-compilation do not establish native WinRM access. The
+additional identity/recreation/approval cases in #303 remain manual follow-ups.
 
 When Windows itself runs in a VM (nested virtualization):
 

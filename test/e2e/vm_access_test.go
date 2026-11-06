@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,12 +94,41 @@ func (c sshClient) command(ctx context.Context, binary string, password string, 
 // the devcontainer (sshpass) or natively on a Windows gateway host (SSH_ASKPASS).
 // It is opt-in because it creates and destroys the selected managed VM.
 func TestVMAccess(t *testing.T) {
+	runVMAccess(t, false)
+}
+
+// TestWindowsVMAccess runs an actual WinRM command through the gateway listener.
+// On a native Windows Hyper-V host it uses Ansible in CYGWIN_BASH_PATH.
+func TestWindowsVMAccess(t *testing.T) {
+	runVMAccess(t, true)
+}
+
+func runVMAccess(t *testing.T, windowsGuest bool) {
 	if os.Getenv("SAILWRIGHT_VM_ACCESS_E2E") != "1" {
-		t.Skip("set SAILWRIGHT_VM_ACCESS_E2E=1 to test a disposable Ubuntu VM over the gateway")
+		t.Skip("set SAILWRIGHT_VM_ACCESS_E2E=1 to test a disposable guest over the gateway")
 	}
-	sshClient, err := newSSHClient()
-	if err != nil {
-		t.Fatal(err)
+	var sshClient sshClient
+	var err error
+	if windowsGuest {
+		if runtime.GOOS == "windows" {
+			// Cygwin's ansible is a Python script, not a native executable.
+			bash := os.Getenv("CYGWIN_BASH_PATH")
+			if bash == "" {
+				t.Fatal("set CYGWIN_BASH_PATH to the native Cygwin bin/bash.exe")
+			}
+			preflightCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := exec.CommandContext(preflightCtx, bash, "-lc", "ansible --version >/dev/null && python3 -c 'import winrm'").Run(); err != nil {
+				t.Fatal("Cygwin ansible/pywinrm preflight failed:", err)
+			}
+		} else if _, err := exec.LookPath("ansible"); err != nil {
+			t.Fatal("WinRM scenario requires ansible and pywinrm on the client PATH:", err)
+		}
+	} else {
+		sshClient, err = newSSHClient()
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	// The ProxyCommand in the generated ssh_config runs sailwright-gateway.
 	if _, err := exec.LookPath("sailwright-gateway"); err != nil {
@@ -107,10 +137,13 @@ func TestVMAccess(t *testing.T) {
 	target := os.Getenv("SAILWRIGHT_E2E_TARGET")
 	if target == "" {
 		target = "ubuntu/server/amd64"
+		if windowsGuest {
+			target = "windows11//amd64"
+		}
 	}
 	parts := strings.Split(target, "/")
-	if len(parts) != 3 || parts[0] != "ubuntu" {
-		t.Fatal("VM access scenario needs an Ubuntu os/type/arch target")
+	if len(parts) != 3 || (!windowsGuest && parts[0] != "ubuntu") || (windowsGuest && (parts[0] != "windows11" || parts[1] != "")) {
+		t.Fatal("use ubuntu/server/<arch> for SSH or windows11//<arch> for WinRM")
 	}
 	args := map[string]any{"os": parts[0], "type": parts[1], "arch": parts[2]}
 	endpoint, err := client.Discover(os.Getenv)
@@ -183,6 +216,23 @@ func TestVMAccess(t *testing.T) {
 		defer cleanupCancel()
 		if err := job(cleanupCtx, "vm_destroy"); err != nil {
 			t.Error("VM cleanup:", err)
+			return
+		}
+		var after gateway.ListTargetsOutput
+		if err := call(cleanupCtx, "list_targets", map[string]any{"command": "destroy"}, &after); err != nil {
+			t.Error("cleanup listing:", err)
+			return
+		}
+		missing := false
+		for _, vm := range after.Targets {
+			if vm.OS == parts[0] && vm.Type == parts[1] && vm.Arch == parts[2] {
+				missing = vm.Fields["state"] == "missing"
+			}
+		}
+		if !missing {
+			t.Error("cleanup did not confirm selected VM is missing")
+		} else {
+			t.Log("cleanup verified: selected VM is missing")
 		}
 	}()
 	if err := job(ctx, "vm_create"); err != nil {
@@ -194,6 +244,45 @@ func TestVMAccess(t *testing.T) {
 	var info gateway.VMInfoOutput
 	if err := call(ctx, "vm_info", args, &info); err != nil {
 		t.Fatal(err)
+	}
+	if info.Protocol != map[bool]string{false: "ssh", true: "winrm"}[windowsGuest] {
+		t.Fatal("unexpected guest protocol:", info.Protocol)
+	}
+	// IP discovery can finish before sshd/WinRM is listening. Wait through the
+	// gateway itself; direct guest probes would bypass the path under test.
+	readyCtx, readyCancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer readyCancel()
+	for {
+		conn, err := endpoint.OpenTunnel(readyCtx, parts[0], parts[1], parts[2], info.Port)
+		if err == nil {
+			conn.Close()
+			break
+		}
+		if readyCtx.Err() != nil {
+			t.Fatal("guest service did not become reachable through gateway:", err)
+		}
+		if !strings.Contains(err.Error(), "HTTP 502: cannot connect to guest service") {
+			t.Fatal("guest tunnel readiness:", err)
+		}
+		select {
+		case <-readyCtx.Done():
+			t.Fatal("guest tunnel readiness timed out")
+		case <-time.After(time.Second):
+		}
+	}
+	refusedPort := 5985
+	if windowsGuest {
+		refusedPort = 22
+	}
+	if conn, err := endpoint.OpenTunnel(ctx, parts[0], parts[1], parts[2], refusedPort); err == nil {
+		conn.Close()
+		t.Fatal("gateway accepted a port for the wrong guest protocol")
+	} else if !strings.Contains(err.Error(), "HTTP 403: port does not match the VM's guest protocol") {
+		t.Fatal("unexpected tunnel refusal:", err)
+	}
+	if windowsGuest {
+		testWinRMAccess(t, ctx, target, info)
+		return
 	}
 	directory := t.TempDir()
 	// The generated config shares connections through a socket in ~/.ssh, which
@@ -210,6 +299,16 @@ func TestVMAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	alias := "sailwright-" + strings.ReplaceAll(target, "/", "-")
+	// Close the shared connection before destroying the guest, so audit byte counts
+	// and tunnel_closed are flushed and no background SSH client outlives the test.
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		cmd, err := sshClient.command(closeCtx, "ssh", info.Password, "-F", config, "-O", "exit", alias)
+		if err == nil {
+			_ = cmd.Run()
+		}
+	}()
 	run := func(binary string, argv ...string) string {
 		cmd, err := sshClient.command(ctx, binary, info.Password, argv...)
 		if err != nil {
@@ -223,7 +322,7 @@ func TestVMAccess(t *testing.T) {
 		}
 		return strings.ReplaceAll(string(output), "\r\n", "\n")
 	}
-	if output := run("ssh", "-F", config, alias, "uname -a"); !strings.Contains(output, "Linux") {
+	if output := run("ssh", "-F", config, "-o", "ConnectionAttempts=30", "-o", "ConnectTimeout=5", alias, "uname -a"); !strings.Contains(output, "Linux") {
 		t.Fatal("unexpected guest kernel")
 	}
 	source := filepath.Join(directory, "sailwright-access.txt")
@@ -236,4 +335,67 @@ func TestVMAccess(t *testing.T) {
 	if output := run("ssh", "-F", config, alias, "cat "+remote); output != payload {
 		t.Fatal("guest file contents differ")
 	}
+}
+
+// testWinRMAccess uses the generated inventory unchanged. The CLI listener opens
+// authenticated gateway tunnels; Ansible must never connect to the guest IP.
+func testWinRMAccess(t *testing.T, ctx context.Context, target string, info gateway.VMInfoOutput) {
+	t.Helper()
+	if info.Port != 5985 && info.Port != 5986 {
+		t.Fatal("unexpected WinRM port")
+	}
+	port := 15985
+	if info.Port == 5986 {
+		port = 15986
+	}
+	// Refuse an occupied local port rather than sending guest credentials to
+	// an unrelated listener. This host must be disposable and locally trusted.
+	address := fmt.Sprintf("127.0.0.1:%d", port)
+	probe, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatal("WinRM local listener port is unavailable:", err)
+	}
+	probe.Close()
+	listenerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	command := exec.CommandContext(listenerCtx, "sailwright-gateway", "vm", "tunnel", target, fmt.Sprint(info.Port), "--listen", fmt.Sprintf("127.0.0.1:%d", port))
+	// Keep listener output out of logs: inventory and guest credentials are private.
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cancel(); _ = command.Wait() }()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+		if err == nil {
+			conn.Close()
+			break
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			t.Fatal("WinRM tunnel listener did not become ready")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	inventory := filepath.Join(t.TempDir(), "inventory.json")
+	if err := os.WriteFile(inventory, []byte(info.AnsibleInventory), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// win_shell executes inside the Windows guest; a successful image build or
+	// TCP connection is insufficient evidence of gateway guest access.
+	ansibleArgs := []string{"-m", "ansible.windows.win_shell", "-a", "[System.Environment]::OSVersion.Platform.ToString()", "-e", "ansible_winrm_connection_timeout=120"}
+	cmd := exec.CommandContext(ctx, "ansible", append([]string{"all", "-i", inventory}, ansibleArgs...)...)
+	if runtime.GOOS == "windows" {
+		// Pass data as positional arguments, and convert only the inventory path.
+		// Never interpolate credentials, paths or PowerShell into shell source.
+		argv := append([]string{"-lc", `inventory=$(cygpath -u "$1") || exit; shift; exec ansible all -i "$inventory" "$@"`, "sailwright-winrm-e2e", inventory}, ansibleArgs...)
+		cmd = exec.CommandContext(ctx, os.Getenv("CYGWIN_BASH_PATH"), argv...)
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("guest WinRM command failed: %v (output suppressed to protect guest credentials)", err)
+	}
+	if !strings.Contains(string(output), "Win32NT") {
+		t.Fatal("WinRM command did not report a Windows guest")
+	}
+	t.Log("actual guest WinRM command returned Win32NT through the gateway")
 }
