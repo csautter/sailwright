@@ -61,7 +61,21 @@ type JobSpec struct {
 	// OnFinished runs after the command ran, before the job is reported done.
 	// succeeded is true only for exit code 0.
 	OnFinished func(jobID string, succeeded bool)
+	// Recheck runs in the job right before the command starts, under the job's
+	// context, for jobs that do not need approval yet. A non-nil result makes the
+	// job wait for operator approval after all. Slow checks (hypervisor queries)
+	// belong here rather than in the tool call, which must return quickly, and
+	// running them last narrows the gap between check and use.
+	Recheck func(ctx context.Context) *Escalation
 }
+
+// Escalation is why a job that looked safe needs operator approval.
+type Escalation struct {
+	Risk    []string
+	NotSafe string
+}
+
+const errNoApprovalConsole = "this request needs host approval, but the gateway has no approval console (start it in a foreground terminal)"
 
 // JobView is the agent-visible state of a job.
 type JobView struct {
@@ -223,7 +237,7 @@ func (m *JobManager) liveViewURL() string {
 // Submit starts a job unless another one is active.
 func (m *JobManager) Submit(spec JobSpec) (JobView, error) {
 	if spec.NeedsApproval && !m.approver.Enabled() {
-		return JobView{}, errors.New("this request needs host approval, but the gateway has no approval console (start it in a foreground terminal)")
+		return JobView{}, errors.New(errNoApprovalConsole)
 	}
 
 	m.mu.Lock()
@@ -292,6 +306,26 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 
 	argv := spec.Argv
 	redactor := m.redactor
+	if !spec.NeedsApproval && spec.Recheck != nil {
+		escalation := spec.Recheck(ctx)
+		if ctx.Err() != nil {
+			m.finish(j, JobCancelled, nil, "cancelled", time.Time{})
+			return
+		}
+		if escalation != nil {
+			if !m.approver.Enabled() {
+				m.finish(j, JobFailed, nil, errNoApprovalConsole, time.Time{})
+				return
+			}
+			spec.Tier, spec.NeedsApproval, spec.Risk, spec.NotSafe = tierApproval, true, escalation.Risk, escalation.NotSafe
+			j.update(func(v *JobView) {
+				v.Tier = tierApproval
+				v.State = JobPendingApproval
+				v.Risk = escalation.Risk
+			})
+			m.record(AuditEvent{Event: "job_escalated", Tool: spec.Tool, JobID: id, Tier: tierApproval, Risk: escalation.Risk})
+		}
+	}
 	if spec.NeedsApproval {
 		approval := m.approver.Request(ctx, ApprovalRequest{
 			ID: id, Tool: spec.Tool, Argv: m.redactor.Strings(spec.Argv), Dir: spec.Dir, Risk: spec.Risk,

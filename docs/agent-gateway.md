@@ -85,7 +85,10 @@ The agent, and everything it reads, is treated as untrusted.
   On libvirt and Hyper-V, records and grants also name the hypervisor instance
   id (`sailwright vm identity`). A VM you destroy and recreate under the same
   name is a new instance, so `vm_info`, tunnels and lifecycle jobs treat it as
-  yours even before the next target listing. UTM and Tart report no instance
+  yours even before the next target listing. Lifecycle jobs check the instance
+  right before their command runs, not when the agent calls the tool: a Hyper-V
+  query can take a minute, so the call returns a running job at once, and the
+  job turns into an approval job if the instance changed. UTM and Tart report no instance
   id: there, a VM you destroy and recreate before the gateway next lists
   targets (after any job, and at startup) is still treated as the gateway's,
   so the agent gets its credentials, tunnels and lifecycle jobs without

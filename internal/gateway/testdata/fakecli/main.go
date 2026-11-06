@@ -7,6 +7,7 @@
 // VMs carry an instance id in "<state>.instance" (create writes a new one), reported
 // by `vm info` and `vm identity`. A "create-fails-after-start" file in the state dir
 // makes create leave a stopped VM and fail after writing $SAILWRIGHT_CREATE_STARTED_FILE.
+// An "identity-delay" file holding a Go duration slows `vm identity` like Hyper-V.
 //
 // build writes console frames like the real VNC recording into
 // $DEV_ALCHEMY_CACHE_DIR/<os>/qemu-out-<slug>-vncsnapshot.
@@ -68,6 +69,9 @@ func main() {
 	if len(args) > 2 && args[0] == "vm" && args[1] == "identity" {
 		id := targetID(append([]string{"identity"}, args[2:]...))
 		typ, arch := targetTypeArch(args)
+		if delay, err := time.ParseDuration(readState("identity-delay")); err == nil {
+			time.Sleep(delay)
+		}
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"schema_version": 1, "os": args[2], "type": typ, "arch": arch, "engine": "qemu", "exists": readState(id) != "", "instance_id": readState(id + ".instance")})
 		return
 	}

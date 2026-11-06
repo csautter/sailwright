@@ -502,11 +502,25 @@ func (g *Gateway) submitSafe(tool string, op Operation, req *mcp.CallToolRequest
 			}
 		}
 	}
-	if vmInstanceOps[op.Kind] && !g.instanceAllowed(context.Background(), target) {
-		// Another VM in the shared state, possibly the operator's: ask first.
-		spec.Tier, spec.NeedsApproval = tierApproval, true
-		spec.Risk = []string{riskForeignVM}
-		spec.NotSafe = fmt.Sprintf("VM %s was not created by this gateway and may be your own", key)
+	if vmInstanceOps[op.Kind] {
+		foreign := &Escalation{
+			Risk:    []string{riskForeignVM},
+			NotSafe: fmt.Sprintf("VM %s was not created by this gateway and may be your own", key),
+		}
+		if !g.ownership.allowed(key) {
+			// Another VM in the shared state, possibly the operator's: ask first.
+			spec.Tier, spec.NeedsApproval = tierApproval, true
+			spec.Risk, spec.NotSafe = foreign.Risk, foreign.NotSafe
+		} else {
+			// Confirming the instance queries the hypervisor, which can take minutes
+			// on Hyper-V, so the job does it right before the command runs.
+			spec.Recheck = func(ctx context.Context) *Escalation {
+				if g.instanceAllowed(ctx, target) {
+					return nil
+				}
+				return foreign
+			}
+		}
 	}
 	view, err := g.jobs.Submit(spec)
 	return nil, view, err

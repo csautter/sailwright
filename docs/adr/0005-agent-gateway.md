@@ -145,7 +145,10 @@ reports the hypervisor instance id (libvirt domain UUID, Hyper-V VM Id) in
 VMs. The gateway stores the id with each ownership record and grant. `vm_info`
 and tunnels compare it with the id of their fresh lookup; lifecycle jobs on a
 VM whose record has an id run `vm identity` first, and a failed lookup there
-fails closed into an approval job. A different id drops the record, so the VM
+fails closed into an approval job. The job runs that check itself, right
+before its command and cancellable with the job, not the tool call: on Hyper-V
+the query can take minutes, longer than MCP clients wait, and checking last
+narrows the gap between check and use. A different id drops the record, so the VM
 counts as the operator's. A record made without an id (the lookup after create
 failed) adopts the first id it sees. UTM and Tart expose no id that sailwright
 reads, so the listing-based gap remains on macOS hosts.

@@ -143,13 +143,13 @@ func TestRecreatedVMIsNotTakenForTheGateways(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(h.FakeStateDir, "ubuntu-server-amd64.instance"), []byte("operator-instance"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Lifecycle jobs check the instance before running unapproved.
+	// Lifecycle jobs check the instance right before running unapproved; the tool
+	// call returns before that hypervisor query.
 	mustCall(t, session, "vm_stop", ubuntu, &view)
-	if view.State != gateway.JobPendingApproval {
-		t.Fatalf("recreated VM was not gated: %+v", view)
-	}
 	h.Deny(t, view.ID)
-	waitJob(t, session, view.ID)
+	if got := waitJob(t, session, view.ID); got.State != gateway.JobDenied || got.Tier != "approval" {
+		t.Fatalf("recreated VM was not gated: %+v", got)
+	}
 	if data, err := os.ReadFile(ownership); err != nil || strings.Contains(string(data), "ubuntu") {
 		t.Fatalf("ownership of the destroyed instance kept: %s %v", data, err)
 	}
@@ -158,6 +158,38 @@ func TestRecreatedVMIsNotTakenForTheGateways(t *testing.T) {
 	}
 	if err := call(t, session, "vm_info", ubuntu, nil); err == nil || !strings.Contains(err.Error(), "not created by this gateway") {
 		t.Fatalf("vm_info on recreated VM: %v", err)
+	}
+}
+
+// A slow hypervisor query (Hyper-V takes tens of seconds) must not hold up the tool
+// call: the job confirms the instance itself and can be cancelled meanwhile.
+func TestLifecycleCallsDoNotWaitForInstanceCheck(t *testing.T) {
+	h := gatewaytest.Start(t, gatewaytest.Options{Approvals: true, GateForeignVMs: true})
+	session := h.Connect(t)
+	ubuntu := map[string]any{"os": "ubuntu", "type": "server", "arch": "amd64"}
+	var view gateway.JobView
+	mustCall(t, session, "vm_create", ubuntu, &view)
+	if got := waitJob(t, session, view.ID); got.State != gateway.JobSucceeded {
+		t.Fatalf("create: %+v", got)
+	}
+	if err := os.WriteFile(filepath.Join(h.FakeStateDir, "identity-delay"), []byte("1m"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	mustCall(t, session, "vm_stop", ubuntu, &view)
+	if elapsed := time.Since(started); elapsed > 20*time.Second {
+		t.Fatalf("vm_stop waited %s for the instance check", elapsed)
+	}
+	if view.State != gateway.JobRunning || view.Tier != "safe" {
+		t.Fatalf("owned VM stop: %+v", view)
+	}
+	var cancelled gateway.JobView
+	mustCall(t, session, "job_cancel", map[string]any{"job_id": view.ID}, &cancelled)
+	if got := waitJob(t, session, view.ID); got.State != gateway.JobCancelled {
+		t.Fatalf("cancel during the instance check: %+v", got)
+	}
+	if time.Since(started) > 30*time.Second {
+		t.Fatal("cancel did not stop the instance check")
 	}
 }
 
