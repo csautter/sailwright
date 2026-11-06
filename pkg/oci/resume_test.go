@@ -113,3 +113,47 @@ func TestResumableBlobCancellationDuringBackoff(t *testing.T) {
 		t.Fatalf("want cancellation, got %v", err)
 	}
 }
+
+func TestResumableBlobRetriesAfterCloseError(t *testing.T) {
+	payload := "blob data"
+	const offset = 4
+	closeErr := errors.New("failed response close")
+	closed := false
+	fetches := 0
+	body := &resumableBlob{
+		ctx: context.Background(),
+		body: &closeErrorReader{
+			Reader: strings.NewReader(""),
+			close: func() error {
+				closed = true
+				return closeErr
+			},
+		},
+		size:    int64(len(payload)),
+		offset:  offset,
+		readErr: io.ErrUnexpectedEOF,
+		fetch: func() (io.ReadCloser, error) {
+			if !closed {
+				t.Fatal("failed response must be closed before fetching again")
+			}
+			fetches++
+			return io.NopCloser(strings.NewReader(payload)), nil
+		},
+	}
+	defer body.Close()
+	desc := content.NewDescriptorFromBytes(MediaTypeQCOW2, []byte(payload))
+	got, err := content.ReadAll(io.MultiReader(strings.NewReader(payload[:offset]), body), desc)
+	if err != nil || string(got) != payload {
+		t.Fatalf("close error prevented verified recovery: data=%q, err=%v", got, err)
+	}
+	if fetches != 1 || body.retries != 1 {
+		t.Fatalf("want one retry, got fetches=%d, retries=%d", fetches, body.retries)
+	}
+}
+
+type closeErrorReader struct {
+	io.Reader
+	close func() error
+}
+
+func (r *closeErrorReader) Close() error { return r.close() }

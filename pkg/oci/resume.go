@@ -56,7 +56,9 @@ func (r *resumableBlob) Read(p []byte) (int, error) {
 			}
 			r.retries++
 			reportTransferStatus(r.progress, "Retrying interrupted OCI blob at byte %d (attempt %d/%d)", r.offset, r.retries, maxBlobReadRetries)
-			r.body.Close()
+			// Best-effort cleanup of the failed response; a close error must not
+			// prevent retrying the interrupted read.
+			_ = r.body.Close()
 			timer := time.NewTimer(time.Second << (r.retries - 1))
 			select {
 			case <-r.ctx.Done():
