@@ -35,6 +35,11 @@ func TestGatewayDefaultRedactionKeepsOrdinaryWords(t *testing.T) {
 func TestDerivedRedactorSeesSecretsLearnedLater(t *testing.T) {
 	base := NewRedactor("existing-secret")
 	job := base.WithRequired("pw")
+	// Use the derived redactor first, so its merged list is cached before the
+	// parent learns more.
+	if got := job.String("existing-secret pw guest-learned-later"); got != "*** *** guest-learned-later" {
+		t.Fatalf("before learning: %q", got)
+	}
 	base.AddRequired("guest-learned-later")
 	if got := job.String("existing-secret pw guest-learned-later"); got != "*** *** ***" {
 		t.Fatalf("derived redactor missed a secret its parent learned later: %q", got)

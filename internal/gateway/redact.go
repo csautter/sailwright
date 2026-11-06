@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 )
 
@@ -32,17 +33,45 @@ type Redactor struct {
 	secrets []string
 	minLen  int // shortest optional value With accepts; accepted secrets are always kept
 	parent  *Redactor
+
+	// merged caches all() for derived redactors, valid while redactorGeneration
+	// still equals mergedGen.
+	cacheMu   sync.Mutex
+	merged    []string
+	mergedGen uint64
+	hasMerged bool
 }
+
+// redactorGeneration changes whenever any redactor learns a secret (AddRequired), so
+// derived redactors know their merged list may be stale. Secrets are added rarely and
+// output is redacted per chunk, so one global counter is enough.
+var redactorGeneration atomic.Uint64
 
 // all returns the secrets of r and its ancestors, longest first.
 func (r *Redactor) all() []string {
+	if r.parent == nil {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		return r.secrets
+	}
+	// Read the generation before the secrets: a concurrent AddRequired bumps it after
+	// its update, so a list merged from older secrets is never cached as current.
+	gen := redactorGeneration.Load()
+	r.cacheMu.Lock()
+	if r.hasMerged && r.mergedGen == gen {
+		merged := r.merged
+		r.cacheMu.Unlock()
+		return merged
+	}
+	r.cacheMu.Unlock()
 	r.mu.RLock()
 	own := r.secrets
 	r.mu.RUnlock()
-	if r.parent == nil {
-		return own
-	}
-	return mergeSecrets(r.parent.all(), own)
+	merged := mergeSecrets(r.parent.all(), own)
+	r.cacheMu.Lock()
+	r.merged, r.mergedGen, r.hasMerged = merged, gen, true
+	r.cacheMu.Unlock()
+	return merged
 }
 
 // mergeSecrets combines accepted secret lists without re-escaping them.
@@ -259,8 +288,13 @@ func sanitizeForTerminal(value string) string {
 // AddRequired registers newly resolved guest secrets for subsequent audit and job output.
 func (r *Redactor) AddRequired(secrets ...string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	// Short guest passwords are still hidden, but the threshold for later optional
 	// secrets (With) stays unchanged.
+	before := len(r.secrets)
 	r.secrets = newRedactor(r.minLen, r.secrets, 1, secrets).secrets
+	learned := len(r.secrets) != before // existing secrets are kept and deduplicated
+	r.mu.Unlock()
+	if learned {
+		redactorGeneration.Add(1)
+	}
 }
