@@ -185,7 +185,9 @@ pending restart, restart Windows and run `sailwright.exe install --hyperv`
 again. Once Hyper-V is active it reports whether the Hyper-V management service
 runs and whether the Default Switch exists. `--hyperv` also installs `oscdimg`
 from the Windows ADK Deployment Tools and adds it to the machine `PATH`;
-Packer needs it to build Hyper-V images.
+Packer needs it to build Hyper-V images. The ADK installer is downloaded from
+Microsoft and only runs when it carries a valid Microsoft Authenticode
+signature.
 
 Sailwright VMs on Hyper-V expose virtualization extensions to the guest by
 default. When Windows itself runs in a VM whose hypervisor cannot pass them on,

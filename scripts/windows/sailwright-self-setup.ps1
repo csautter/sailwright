@@ -1383,17 +1383,45 @@ function Get-OscdimgPath {
     return $null
 }
 
+# Assert-MicrosoftSignedFile refuses a download that is not validly signed by
+# Microsoft before it runs elevated. The ADK comes from a redirect link that
+# cannot be pinned to a hash, so the signature is what ties it to Microsoft.
+function Assert-MicrosoftSignedFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Description
+    )
+
+    $signature = Get-AuthenticodeSignature -FilePath $Path
+    $subject = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { "" }
+    if ("$($signature.Status)" -ne "Valid" -or $subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
+        throw "The $Description at $Path is not validly signed by Microsoft (signature status: $($signature.Status); signer: '$subject'). It was not run."
+    }
+}
+
 function Ensure-OscdimgInstalled {
     $oscdimgPath = Get-OscdimgPath
     if ($oscdimgPath) {
         Write-Host "oscdimg is already installed at $oscdimgPath."
     } else {
         Write-Host "oscdimg not found. Installing the Windows ADK Deployment Tools (needed for Hyper-V builds)..."
-        $installer = Join-Path $env:TEMP "sailwright-adksetup.exe"
-        Invoke-WebRequest -Uri $windowsAdkInstallerUrl -OutFile $installer -UseBasicParsing
-        $process = Start-Process -FilePath $installer -ArgumentList @("/features", "OptionId.DeploymentTools", "/quiet", "/norestart") -Wait -PassThru
-        if ($process.ExitCode -notin @(0, 3010)) {
-            throw "The Windows ADK installer failed with exit code $($process.ExitCode)."
+        # A fresh directory per run, so no other process can swap the installer
+        # between the signature check and the elevated start.
+        $downloadDir = Join-Path $env:TEMP ("sailwright-adk-" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
+        try {
+            $installer = Join-Path $downloadDir "adksetup.exe"
+            Invoke-WebRequest -Uri $windowsAdkInstallerUrl -OutFile $installer -UseBasicParsing
+            Assert-MicrosoftSignedFile -Path $installer -Description "Windows ADK installer"
+            $process = Start-Process -FilePath $installer -ArgumentList @("/features", "OptionId.DeploymentTools", "/quiet", "/norestart") -Wait -PassThru
+            if ($process.ExitCode -notin @(0, 3010)) {
+                throw "The Windows ADK installer failed with exit code $($process.ExitCode)."
+            }
+        } finally {
+            Remove-Item -LiteralPath $downloadDir -Recurse -Force -ErrorAction SilentlyContinue
         }
 
         $oscdimgPath = Get-OscdimgPath

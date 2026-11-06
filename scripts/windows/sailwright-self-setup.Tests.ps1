@@ -572,6 +572,12 @@ Describe "sailwright self setup Hyper-V helpers" -Skip:(-not $IsWindows) {
             Mock Ensure-PathContains { $script:EnsuredOscdimgPaths += $PathEntry }
             Mock Invoke-WebRequest {}
             Mock Start-Process { return [pscustomobject]@{ ExitCode = 0 } }
+            Mock Get-AuthenticodeSignature {
+                return [pscustomobject]@{
+                    Status            = "Valid"
+                    SignerCertificate = [pscustomobject]@{ Subject = "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" }
+                }
+            }
         }
 
         It "only adds an existing oscdimg to PATH" {
@@ -597,6 +603,42 @@ Describe "sailwright self setup Hyper-V helpers" -Skip:(-not $IsWindows) {
             Should -Invoke Invoke-WebRequest -Times 1 -Exactly
             Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter { ($ArgumentList -join " ") -eq "/features OptionId.DeploymentTools /quiet /norestart" }
             $script:EnsuredOscdimgPaths | Should -Be @($script:OscdimgDir)
+        }
+
+        It "never runs an ADK installer that is not validly signed by Microsoft" {
+            Mock Get-OscdimgPath { return $null }
+            Mock Get-AuthenticodeSignature { return [pscustomobject]@{ Status = "NotSigned"; SignerCertificate = $null } }
+
+            { Ensure-OscdimgInstalled } | Should -Throw "*not validly signed by Microsoft*"
+            Should -Invoke Start-Process -Times 0 -Exactly
+        }
+
+        It "rejects a valid signature from another publisher" {
+            Mock Get-OscdimgPath { return $null }
+            Mock Get-AuthenticodeSignature {
+                return [pscustomobject]@{
+                    Status            = "Valid"
+                    SignerCertificate = [pscustomobject]@{ Subject = "CN=Microsoft Corporation Fan Club, O=Contoso Ltd, C=US" }
+                }
+            }
+
+            { Ensure-OscdimgInstalled } | Should -Throw "*not validly signed by Microsoft*"
+            Should -Invoke Start-Process -Times 0 -Exactly
+        }
+
+        It "downloads into a fresh directory and removes it" {
+            $script:OscdimgLookups = 0
+            Mock Get-OscdimgPath {
+                $script:OscdimgLookups++
+                if ($script:OscdimgLookups -gt 1) { return "$script:OscdimgDir\oscdimg.exe" }
+                return $null
+            }
+            Mock Invoke-WebRequest { $script:DownloadedTo = $OutFile }
+
+            Ensure-OscdimgInstalled
+
+            Split-Path -Leaf (Split-Path -Parent $script:DownloadedTo) | Should -BeLike "sailwright-adk-*"
+            Test-Path -LiteralPath (Split-Path -Parent $script:DownloadedTo) | Should -BeFalse
         }
 
         It "throws when the ADK installer fails" {
