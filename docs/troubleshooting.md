@@ -87,3 +87,18 @@ virsh --connect "${DEV_ALCHEMY_LIBVIRT_URI:-qemu:///system}" domtime <domain> --
 
 The domain is named `<os>-<type>-<arch>-dev-alchemy`, for example
 `ubuntu-server-amd64-dev-alchemy`.
+
+## `build list` Shows `incomplete` or `unverified`
+
+`incomplete` means a build or pull of the target is running or was interrupted, or
+the artifact no longer matches its `.sailwright-complete` marker. Run
+`sailwright build <os> ...` again: it removes the leftovers of the interrupted build
+and builds the target. `sailwright oci push` refuses `incomplete` artifacts.
+
+`unverified` means the artifact has no completion marker, usually because an older
+Sailwright version built it. It is still used. Rebuild it with `--no-cache` if it
+turns out to be broken.
+
+While a single build runs in the foreground, Packer owns the terminal and handles
+Ctrl+C first; Sailwright counts it once Packer exits. Press Ctrl+C again after that
+to skip the VNC video post-processing.

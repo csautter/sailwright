@@ -1,6 +1,7 @@
 package build
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -22,18 +23,18 @@ const (
 	macOSQemuVersionTooOld
 )
 
-func RunQemuUbuntuBuildOnMacOS(config VirtualMachineConfig) error {
+func RunQemuUbuntuBuildOnMacOS(ctx context.Context, config VirtualMachineConfig) error {
 	if err := checkMacOSArm64QemuVersion(config); err != nil {
 		return err
 	}
-	return runQemuUbuntuBuild(config, "build/packer/linux/ubuntu/linux-ubuntu-on-macos.sh")
+	return runQemuUbuntuBuild(ctx, config, "build/packer/linux/ubuntu/linux-ubuntu-on-macos.sh")
 }
 
-func RunQemuWindowsBuildOnMacOS(config VirtualMachineConfig) error {
+func RunQemuWindowsBuildOnMacOS(ctx context.Context, config VirtualMachineConfig) error {
 	if err := checkMacOSArm64QemuVersion(config); err != nil {
 		return err
 	}
-	return runQemuWindowsBuild(config, "build/packer/windows/windows11-on-macos.sh")
+	return runQemuWindowsBuild(ctx, config, "build/packer/windows/windows11-on-macos.sh")
 }
 
 // checkMacOSArm64QemuVersion logs the QEMU version and fails before any
@@ -77,8 +78,8 @@ func macOSQemuVersionCheck(versionOutput string) (string, macOSQemuVersionStatus
 	return fmt.Sprintf("Using QEMU %s for the macOS ARM64 build", version), macOSQemuVersionOK
 }
 
-func runQemuWindowsBuild(config VirtualMachineConfig, relativeScriptPath string) error {
-	config, err := withStagedBuildArtifactsForNoCache(config)
+func runQemuWindowsBuild(ctx context.Context, config VirtualMachineConfig, relativeScriptPath string) error {
+	config, err := withStagedBuildArtifacts(config)
 	if err != nil {
 		return err
 	}
@@ -102,5 +103,5 @@ func runQemuWindowsBuild(config VirtualMachineConfig, relativeScriptPath string)
 	if config.Verbose {
 		args = append(args, "--verbose")
 	}
-	return RunBuildScript(config, "bash", args, arm64QemuMachineEnv(config)...)
+	return RunBuildScript(ctx, config, "bash", args, arm64QemuMachineEnv(config)...)
 }

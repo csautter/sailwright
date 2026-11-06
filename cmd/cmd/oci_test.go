@@ -199,6 +199,29 @@ func TestLocalOCIArtifactStateDetectsMissingPartialAndExistingArtifacts(t *testi
 	if state != "exists" {
 		t.Fatalf("expected exists state, got %q", state)
 	}
+
+	// A completion marker that no longer matches the artifact (e.g. an interrupted
+	// rewrite) makes the set incomplete, which `oci push` refuses.
+	if err := alchemy_build.MarkBuildArtifactsComplete([]string{artifactA, artifactB}); err != nil {
+		t.Fatalf("failed to mark test artifacts complete: %v", err)
+	}
+	if err := os.WriteFile(artifactB, []byte("bb"), 0o600); err != nil {
+		t.Fatalf("failed to rewrite test artifact: %v", err)
+	}
+	state, err = localOCIArtifactState(vm)
+	if err != nil {
+		t.Fatalf("expected incomplete artifact state to inspect cleanly: %v", err)
+	}
+	if state != "incomplete" {
+		t.Fatalf("expected incomplete state, got %q", state)
+	}
+	row, err := pushListRow(vm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row[len(row)-1] != "build required" {
+		t.Fatalf("expected an incomplete artifact to require a build before push, got %q", row[len(row)-1])
+	}
 }
 
 func TestOCIListRowsIncludePushAndPullReadiness(t *testing.T) {

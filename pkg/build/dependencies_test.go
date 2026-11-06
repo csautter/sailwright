@@ -2,6 +2,7 @@ package build
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -442,7 +443,9 @@ func TestIntegrationDependencyReconciliation(t *testing.T) {
 	}
 
 	for _, vmconfig := range tests {
-		DependencyReconciliation(vmconfig)
+		if err := DependencyReconciliation(context.Background(), vmconfig); err != nil {
+			t.Errorf("%+v: %v", vmconfig, err)
+		}
 	}
 }
 
@@ -564,7 +567,7 @@ func TestDownloadPinnedQemuEfiAarch64(t *testing.T) {
 				Checksum:  "sha256:" + qemuEfiAarch64SHA256,
 				Source:    url,
 			}
-			if err := downloadWebFileDependency(nil, dep); err != nil {
+			if err := downloadWebFileDependency(context.Background(), nil, dep); err != nil {
 				t.Fatalf("downloadWebFileDependency failed: %v", err)
 			}
 		})
@@ -584,7 +587,7 @@ func TestDownloadWebFileDependencyWithoutProgressBar(t *testing.T) {
 		Source:    server.URL + "/qemu-efi-aarch64_all.deb",
 	}
 
-	if err := downloadWebFileDependency(nil, dep); err != nil {
+	if err := downloadWebFileDependency(context.Background(), nil, dep); err != nil {
 		t.Fatalf("downloadWebFileDependency failed without progress bar: %v", err)
 	}
 
@@ -689,12 +692,12 @@ func TestDownloadWebFileDependencySelectsFastestURL(t *testing.T) {
 	dep := WebFileDependency{
 		LocalPath: destPath,
 		Source:    slowURL,
-		BeforeHook: func() (string, error) {
+		BeforeHook: func(context.Context) (string, error) {
 			return selectFastestDownloadURL([]string{slowURL, fastURL}, 128, 2*time.Second)
 		},
 	}
 
-	if err := downloadWebFileDependency(nil, dep); err != nil {
+	if err := downloadWebFileDependency(context.Background(), nil, dep); err != nil {
 		t.Fatalf("downloadWebFileDependency returned error: %v", err)
 	}
 
@@ -732,7 +735,7 @@ func TestDownloadWebFileDependencyRetriesFallbackAfterChecksumMismatch(t *testin
 		Checksum:        fmt.Sprintf("sha256:%x", checksum),
 	}
 
-	if err := downloadWebFileDependency(nil, dep); err != nil {
+	if err := downloadWebFileDependency(context.Background(), nil, dep); err != nil {
 		t.Fatalf("downloadWebFileDependency returned error after fallback source: %v", err)
 	}
 
@@ -768,7 +771,7 @@ func TestDownloadWebFileDependencyRetriesCorruptedDownload(t *testing.T) {
 		Source:    server.URL + "/artifact.iso",
 		Checksum:  fmt.Sprintf("sha256:%x", checksum),
 	}
-	if err := downloadWebFileDependency(nil, dep); err != nil {
+	if err := downloadWebFileDependency(context.Background(), nil, dep); err != nil {
 		t.Fatalf("expected retry to recover from a corrupted download: %v", err)
 	}
 	if requests != 2 {
@@ -793,7 +796,7 @@ func TestDownloadWebFileDependencyRejectsChecksumMismatch(t *testing.T) {
 		FailureHint: "the pin is probably stale",
 	}
 
-	err := downloadWebFileDependency(nil, dep)
+	err := downloadWebFileDependency(context.Background(), nil, dep)
 	if err == nil {
 		t.Fatal("expected downloadWebFileDependency to reject checksum mismatch")
 	}

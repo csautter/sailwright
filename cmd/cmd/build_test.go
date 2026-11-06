@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -209,13 +210,16 @@ func TestBuildHelpIncludesEngineFlag(t *testing.T) {
 }
 
 func TestBuildListRowIncludesArtifactStatus(t *testing.T) {
-	previousInspector := inspectBuildArtifactExists
+	previousInspector := inspectBuildArtifactState
 	t.Cleanup(func() {
-		inspectBuildArtifactExists = previousInspector
+		inspectBuildArtifactState = previousInspector
 	})
 
-	inspectBuildArtifactExists = func(vm alchemy_build.VirtualMachineConfig) (bool, error) {
-		return vm.OS == "windows11", nil
+	inspectBuildArtifactState = func(vm alchemy_build.VirtualMachineConfig) (alchemy_build.ArtifactState, error) {
+		if vm.OS == "windows11" {
+			return alchemy_build.ArtifactStateExists, nil
+		}
+		return alchemy_build.ArtifactStateMissing, nil
 	}
 
 	var buf bytes.Buffer
@@ -270,7 +274,7 @@ func TestBuildCommandReturnsErrorWhenBuildFails(t *testing.T) {
 		runBuildFunc, arch, osType, buildEngine = previousRunner, previousArch, previousType, previousEngine
 	})
 
-	runBuildFunc = func(alchemy_build.VirtualMachineConfig) error {
+	runBuildFunc = func(context.Context, alchemy_build.VirtualMachineConfig) error {
 		return errors.New("packer exploded")
 	}
 	arch, osType, buildEngine = vm.Arch, vm.UbuntuType, string(vm.VirtualizationEngine)
@@ -303,7 +307,7 @@ func TestBuildCommandPrebuiltOfferDecidesWhetherToBuild(t *testing.T) {
 			})
 
 			built := false
-			runBuildFunc = func(alchemy_build.VirtualMachineConfig) error {
+			runBuildFunc = func(context.Context, alchemy_build.VirtualMachineConfig) error {
 				built = true
 				return nil
 			}
@@ -323,7 +327,7 @@ func TestBuildCommandPrebuiltOfferDecidesWhetherToBuild(t *testing.T) {
 func TestBuildCommandReturnsErrorForInvalidCombination(t *testing.T) {
 	previousRunner := runBuildFunc
 	t.Cleanup(func() { runBuildFunc = previousRunner })
-	runBuildFunc = func(alchemy_build.VirtualMachineConfig) error {
+	runBuildFunc = func(context.Context, alchemy_build.VirtualMachineConfig) error {
 		t.Fatal("build must not run for an invalid combination")
 		return nil
 	}

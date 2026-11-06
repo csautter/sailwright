@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
 
@@ -21,7 +19,8 @@ import (
 type buildRunner func(ctx context.Context, vm alchemy_build.VirtualMachineConfig) error
 
 var inspectBuildArtifactExists = alchemy_build.BuildArtifactsExistQuiet
-var runBuildFunc = runBuild
+var inspectBuildArtifactState = alchemy_build.BuildArtifactState
+var runBuildFunc buildRunner = runBuild
 
 func isBuildSupported(vm alchemy_build.VirtualMachineConfig) bool {
 	switch vm.HostOs {
@@ -157,6 +156,13 @@ func runParallelBuilds(ctx context.Context, vms []alchemy_build.VirtualMachineCo
 	sem := make(chan struct{}, parallelism)
 
 	for _, vm := range vms {
+		if ctx.Err() != nil {
+			// select below picks randomly when a slot is free and ctx is done as well.
+			mu.Lock()
+			errs = append(errs, fmt.Errorf("build cancelled before starting %s/%s/%s/%s: %w", vm.OS, vm.UbuntuType, vm.Arch, vm.VirtualizationEngine, context.Cause(ctx)))
+			mu.Unlock()
+			continue
+		}
 		// Acquire a semaphore slot OR bail out if the context is cancelled while waiting.
 		// Without this select the loop would deadlock when ctx is cancelled while the
 		// semaphore channel is full (i.e. all parallel slots are occupied).
@@ -165,7 +171,7 @@ func runParallelBuilds(ctx context.Context, vms []alchemy_build.VirtualMachineCo
 			// acquired a slot, proceed
 		case <-ctx.Done():
 			mu.Lock()
-			errs = append(errs, fmt.Errorf("build cancelled before starting %s/%s/%s/%s: %w", vm.OS, vm.UbuntuType, vm.Arch, vm.VirtualizationEngine, ctx.Err()))
+			errs = append(errs, fmt.Errorf("build cancelled before starting %s/%s/%s/%s: %w", vm.OS, vm.UbuntuType, vm.Arch, vm.VirtualizationEngine, context.Cause(ctx)))
 			mu.Unlock()
 			continue
 		}
@@ -191,40 +197,40 @@ func runParallelBuilds(ctx context.Context, vms []alchemy_build.VirtualMachineCo
 	return errs
 }
 
-func runBuild(vm alchemy_build.VirtualMachineConfig) error {
+func runBuild(ctx context.Context, vm alchemy_build.VirtualMachineConfig) error {
 	switch vm.HostOs {
 	case alchemy_build.HostOsDarwin:
 		switch vm.VirtualizationEngine {
 		case alchemy_build.VirtualizationEngineUtm:
 			if vm.OS == "ubuntu" {
-				return alchemy_build.RunQemuUbuntuBuildOnMacOS(vm)
+				return alchemy_build.RunQemuUbuntuBuildOnMacOS(ctx, vm)
 			}
 			if vm.OS == "windows11" {
-				return alchemy_build.RunQemuWindowsBuildOnMacOS(vm)
+				return alchemy_build.RunQemuWindowsBuildOnMacOS(ctx, vm)
 			}
 		}
 	case alchemy_build.HostOsWindows:
 		switch vm.VirtualizationEngine {
 		case alchemy_build.VirtualizationEngineHyperv:
 			if vm.OS == "windows11" {
-				return alchemy_build.RunHypervWindowsBuildOnWindows(vm)
+				return alchemy_build.RunHypervWindowsBuildOnWindows(ctx, vm)
 			}
 			if vm.OS == "ubuntu" {
-				return alchemy_build.RunHypervUbuntuBuildOnWindows(vm)
+				return alchemy_build.RunHypervUbuntuBuildOnWindows(ctx, vm)
 			}
 		case alchemy_build.VirtualizationEngineVirtualBox:
 			if vm.OS == "windows11" {
-				return alchemy_build.RunVirtualBoxWindowsBuildOnWindows(vm)
+				return alchemy_build.RunVirtualBoxWindowsBuildOnWindows(ctx, vm)
 			}
 		}
 	case alchemy_build.HostOsLinux:
 		switch vm.VirtualizationEngine {
 		case alchemy_build.VirtualizationEngineQemu:
 			if vm.OS == "ubuntu" {
-				return alchemy_build.RunQemuUbuntuBuildOnLinux(vm)
+				return alchemy_build.RunQemuUbuntuBuildOnLinux(ctx, vm)
 			}
 			if vm.OS == "windows11" {
-				return alchemy_build.RunQemuWindowsBuildOnLinux(vm)
+				return alchemy_build.RunQemuWindowsBuildOnLinux(ctx, vm)
 			}
 		}
 	}
@@ -239,15 +245,14 @@ func runBuild(vm alchemy_build.VirtualMachineConfig) error {
 	)
 }
 
+// buildArtifactState returns exists, unverified (no completion marker, e.g. built by
+// an older version), incomplete (interrupted or failed build) or missing.
 func buildArtifactState(vm alchemy_build.VirtualMachineConfig) (string, error) {
-	artifactsExist, err := inspectBuildArtifactExists(vm)
+	state, err := inspectBuildArtifactState(vm)
 	if err != nil {
 		return "", fmt.Errorf("failed to check build artifacts for OS=%s, type=%s, arch=%s: %w", vm.OS, vm.UbuntuType, vm.Arch, err)
 	}
-	if artifactsExist {
-		return "exists", nil
-	}
-	return "missing", nil
+	return string(state), nil
 }
 
 func buildListRow(vm alchemy_build.VirtualMachineConfig) ([]string, error) {
@@ -329,30 +334,19 @@ Example:
 			for i := range available_virtual_machines {
 				available_virtual_machines[i].NoCache = noCache
 				available_virtual_machines[i].Verbose = buildVerbose
+				// Only a single build at a time may own the terminal (for sudo prompts);
+				// parallel builds run without it so that Ctrl+C reaches sailwright.
+				available_virtual_machines[i].DetachedFromTerminal = parallel > 1
 			}
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
-			sigs := make(chan os.Signal, 1)
-			signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-			defer signal.Stop(sigs)
-			go func() {
-				select {
-				case <-sigs:
-					fmt.Printf("\n⚠️  Interrupted! Cancelling all remaining builds...\n")
-					cancel()
-				case <-ctx.Done():
-				}
-			}()
+			ctx, stopInterruptHandling := alchemy_build.HandleInterrupts(buildCommandContext(cmd))
+			defer stopInterruptHandling()
 
 			runner := func(ctx context.Context, vm alchemy_build.VirtualMachineConfig) error {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				default:
+				if err := ctx.Err(); err != nil {
+					return context.Cause(ctx)
 				}
-				return runBuildFunc(vm)
+				return runBuildFunc(ctx, vm)
 			}
 
 			errs := runParallelBuilds(ctx, available_virtual_machines, parallel, runner)
@@ -391,11 +385,20 @@ Example:
 		VirtualMachineConfig.VncPort = port
 		VirtualMachineConfig.Headless = headless
 
-		if err := runBuildFunc(VirtualMachineConfig); err != nil {
+		ctx, stopInterruptHandling := alchemy_build.HandleInterrupts(buildCommandContext(cmd))
+		defer stopInterruptHandling()
+		if err := runBuildFunc(ctx, VirtualMachineConfig); err != nil {
 			return fmt.Errorf("❌ Build failed for OS: %s, Type: %s, Architecture: %s — %w", osName, osType, arch, err)
 		}
 		return nil
 	},
+}
+
+func buildCommandContext(cmd *cobra.Command) context.Context {
+	if ctx := cmd.Context(); ctx != nil {
+		return ctx
+	}
+	return context.Background()
 }
 
 var buildListCmd = &cobra.Command{

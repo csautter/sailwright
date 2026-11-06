@@ -1,0 +1,20 @@
+name: build-cancel
+description: >-
+  Cancelling a running build (gateway job_cancel, or SIGTERM with the direct executor)
+  must not leave an artifact that `build list` reports as complete, so the next build
+  does not skip it.
+requires: [target]
+preflight:
+  - name: no complete artifact yet
+    op: list
+    when_listed: build
+    with: {command: build}
+    expect:
+      state: {command: build, field: build, regex: "^(missing|incomplete)$"}
+steps:
+  - name: start build and cancel it
+    op: build
+    when_listed: build
+    cancel_after: 3m
+    expect:
+      state: {command: build, field: build, regex: "^(missing|incomplete)$"}

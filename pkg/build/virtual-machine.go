@@ -43,6 +43,10 @@ type VirtualMachineConfig struct {
 	MemoryMB int
 	Headless bool
 	Verbose  bool
+	// DetachedFromTerminal runs the build without access to the terminal, e.g. while
+	// several builds run in parallel: Ctrl+C then reaches sailwright, and a prompt in
+	// the build fails instead of stopping it.
+	DetachedFromTerminal bool
 }
 
 func AvailableVirtualMachineConfigs() []VirtualMachineConfig {

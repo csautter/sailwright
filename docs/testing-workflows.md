@@ -61,6 +61,27 @@ sailwright stop list
 sailwright destroy list
 ```
 
+The `Build` column of `build list` shows `exists` for artifacts completed by a
+successful build or pull, `incomplete` while a build runs or after an interrupted
+one, `missing`, and `unverified` for artifacts without a completion marker (for
+example built by an older sailwright version). Builds skip `exists` and
+`unverified` artifacts; rebuild an `unverified` one with `--no-cache` if it is
+broken. `create list` only tells whether the artifacts are usable: it shows
+`exists` for `exists` and `unverified`, and `missing` otherwise.
+
+Ctrl+C stops all running builds and downloads. A single build on Linux or macOS
+owns the terminal, so Ctrl+C reaches Packer directly and Packer stops on its own.
+For parallel builds started from a terminal, and on Windows, Sailwright gives
+Packer up to 30 seconds to remove its VM. A second Ctrl+C cuts that wait to 3
+seconds and skips the VNC video post-processing, and a third one exits
+immediately. SIGTERM (for example a gateway `job_cancel`) and Ctrl+C without a
+terminal (for example a cancelled CI job) only allow 3 seconds. A build that
+already finished successfully when Ctrl+C arrives keeps its artifacts.
+
+Parallel builds (`--parallel`) run without the terminal, so a build script that
+asks for a password (for example `sudo`) fails instead of prompting. Run
+`sudo -v` first, or build the target on its own.
+
 Use `--help` on the root command or any subcommand to inspect supported flags and usage details:
 
 ```bash
@@ -179,6 +200,11 @@ steps:
   - name: only where the target can be built
     op: build
     when_listed: build       # skip if the target is not in `build list`
+  - name: cancel a running build
+    op: build
+    cancel_after: 3m         # cancel like job_cancel; passes if still running then
+    expect:                  # only state is checked after a cancel
+      state: {command: build, field: build, regex: "^(missing|incomplete)$"}
 always:
   - name: cleanup
     op: destroy

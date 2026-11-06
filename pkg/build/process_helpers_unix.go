@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -30,6 +31,8 @@ func commandProcessGroupID(cmd *exec.Cmd) int {
 	return cmd.Process.Pid
 }
 
+// terminateProcessGroup sends SIGTERM to the process group and SIGKILL once the grace
+// period is over and the group still has members.
 func terminateProcessGroup(processGroupID int, gracePeriod time.Duration) {
 	if processGroupID <= 0 {
 		return
@@ -37,10 +40,22 @@ func terminateProcessGroup(processGroupID int, gracePeriod time.Duration) {
 	if !signalProcessGroup(processGroupID, syscall.SIGTERM) {
 		return
 	}
-	if gracePeriod > 0 {
-		time.Sleep(gracePeriod)
+	// A stopped process (e.g. after SIGTTIN) only acts on SIGTERM once it continues.
+	_ = signalProcessGroup(processGroupID, syscall.SIGCONT)
+	deadline := time.Now().Add(gracePeriod)
+	for time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		if !signalProcessGroup(processGroupID, 0) {
+			return
+		}
 	}
 	_ = signalProcessGroup(processGroupID, syscall.SIGKILL)
+}
+
+func killProcessGroup(processGroupID int) {
+	if processGroupID > 0 {
+		_ = signalProcessGroup(processGroupID, syscall.SIGKILL)
+	}
 }
 
 func signalProcessGroup(processGroupID int, signal syscall.Signal) bool {
@@ -160,4 +175,96 @@ func fileDescriptorAsInt(file *os.File) (int, bool) {
 
 	// #nosec G115 -- os.File.Fd returns the process' native file descriptor width; the bounds check above keeps the cast explicit.
 	return int(fd), true
+}
+
+// terminalInterruptWrapper runs a build command that owns the terminal. Ctrl+C then
+// reaches only the command's process group, and Packer exits with status 1 after
+// handling SIGINT, so the wrapper remembers the SIGINT and exits with 130 instead. A
+// command that still exited 0 had finished its build, so the wrapper exits with
+// terminalInterruptAfterSuccessExitCode: the artifacts are kept, but the interrupt
+// still stops the other builds. Without a SIGINT, a command's own 130 or 199 becomes 1,
+// so neither status is mistaken for Ctrl+C. The shell runs the trap only after the
+// foreground command finished (POSIX), so the command still handles the signal itself.
+const terminalInterruptWrapper = `trap 'interrupted=1' INT
+"$@"
+status=$?
+if [ -n "$interrupted" ]; then
+	if [ "$status" -eq 0 ]; then exit 199; fi
+	exit 130
+fi
+case "$status" in 130|199) exit 1 ;; esac
+exit "$status"`
+
+// terminalInterruptAfterSuccessExitCode is the exit status of terminalInterruptWrapper
+// when the command succeeded although Ctrl+C arrived meanwhile.
+const terminalInterruptAfterSuccessExitCode = 199
+
+// commandTerminal tells how a build command uses the terminal.
+type commandTerminal struct {
+	// attached is true when the command owns the terminal and Ctrl+C reaches it
+	// instead of this process.
+	attached bool
+	restore  func()
+}
+
+// newBuildCommand creates the command of a build. A single build gets the terminal,
+// so prompts such as sudo work. With detached (parallel builds) the command runs in a
+// session of its own without a terminal: Ctrl+C reaches this process, and a prompt
+// fails instead of stopping the build with SIGTTIN.
+func newBuildCommand(executable string, args []string, detached bool) (*exec.Cmd, commandTerminal) {
+	noTerminal := commandTerminal{restore: func() {}}
+	if detached {
+		// #nosec G204 -- executable and args are constructed by internal build flows; no shell is invoked.
+		cmd := exec.Command(executable, args...)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		return cmd, noTerminal
+	}
+
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err == nil && isForegroundProcessGroup(tty) {
+		wrapperArgs := append([]string{"-c", terminalInterruptWrapper, "sailwright-build", executable}, args...)
+		// #nosec G204 -- the wrapper script is a constant; executable and args are passed as positional parameters.
+		cmd := exec.Command("/bin/sh", wrapperArgs...)
+		restore := configureCommandForInteractiveTerminal(cmd, tty, syscall.Getpgrp())
+		var once sync.Once
+		return cmd, commandTerminal{attached: true, restore: func() { once.Do(restore) }}
+	}
+	if tty != nil {
+		_ = tty.Close()
+	}
+
+	// #nosec G204 -- executable and args are constructed by internal build flows; no shell is invoked.
+	cmd := exec.Command(executable, args...)
+	configureCommandForCleanup(cmd)
+	cmd.Stdin = os.Stdin
+	return cmd, noTerminal
+}
+
+// terminalCommandExit interprets the wait error of a command that owned the terminal.
+// interrupted tells whether Ctrl+C reached the command; waitErr is nil when the
+// command finished successfully anyway.
+func terminalCommandExit(err error) (waitErr error, interrupted bool) {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return err, false
+	}
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	if ok && status.Signaled() && status.Signal() == syscall.SIGINT {
+		return err, true
+	}
+	switch exitErr.ExitCode() {
+	case interruptExitCode:
+		return err, true
+	case terminalInterruptAfterSuccessExitCode:
+		return nil, true
+	}
+	return err, false
+}
+
+// requestProcessGroupStop asks a process group to stop with SIGTERM. A stopped process
+// (e.g. after SIGTTIN) only acts on SIGTERM once it continues, hence the SIGCONT.
+func requestProcessGroupStop(processGroupID int) {
+	if processGroupID > 0 && signalProcessGroup(processGroupID, syscall.SIGTERM) {
+		_ = signalProcessGroup(processGroupID, syscall.SIGCONT)
+	}
 }

@@ -85,6 +85,11 @@ type Step struct {
 	// WhenListed runs the step only if the target appears in `<command> list`,
 	// e.g. build is skipped for targets that use a public image.
 	WhenListed string `yaml:"when_listed"`
+	// CancelAfter cancels the step's command after this duration, the way a user
+	// cancels a gateway job. The step passes when the command was still running then;
+	// expect.state is checked afterwards, the exit code is not.
+	CancelAfter string        `yaml:"cancel_after"`
+	cancelAfter time.Duration `yaml:"-"`
 }
 
 // Expect describes what a step must produce. Without exit_code, 0 is expected.
@@ -249,6 +254,9 @@ func (st *Step) validate() error {
 		}
 	}
 	var err error
+	if st.cancelAfter, err = parseOptionalDuration(st.CancelAfter); err != nil {
+		return fmt.Errorf("cancel_after: %w", err)
+	}
 	if st.Expect.maxDuration, err = parseOptionalDuration(st.Expect.MaxDuration); err != nil {
 		return fmt.Errorf("max_duration: %w", err)
 	}

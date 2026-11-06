@@ -2,6 +2,7 @@ package oci
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -59,6 +60,14 @@ func Push(ctx context.Context, vm alchemy_build.VirtualMachineConfig, reference 
 	layout, err := resolveArtifactLayout(vm)
 	if err != nil {
 		return TransferResult{}, err
+	}
+
+	state, err := alchemy_build.BuildArtifactState(vm)
+	if err != nil {
+		return TransferResult{}, err
+	}
+	if !state.Usable() {
+		return TransferResult{}, fmt.Errorf("local build artifact is %s; build it again before pushing", state)
 	}
 
 	reportTransferStatus(opts.Progress, "Parsing OCI reference %s", reference)
@@ -163,7 +172,29 @@ func Pull(ctx context.Context, vm alchemy_build.VirtualMachineConfig, reference 
 	}
 
 	reportTransferStatus(opts.Progress, "Promoting pulled artifacts into the local cache")
+	finalPaths := make([]string, 0, len(layout.files))
+	for _, artifact := range layout.files {
+		finalPaths = append(finalPaths, artifact.Path)
+	}
+	restoreMarkers, err := alchemy_build.MarkBuildArtifactsPending(finalPaths)
+	if err != nil {
+		return TransferResult{}, err
+	}
 	if err := promotePulledArtifacts(stagingRoot, layout.files); err != nil {
+		switch {
+		case errors.Is(err, errPullBackupCleanup):
+			// The pulled artifacts are in place; only stale backups are left.
+			reportTransferStatus(opts.Progress, "Warning: %v", err)
+		case errors.Is(err, errPullRollbackFailed):
+			// The set may mix pulled and previous files, so it stays incomplete.
+			return TransferResult{}, err
+		default:
+			// Rolled back: the previous artifacts keep their state.
+			return TransferResult{}, errors.Join(err, restoreMarkers())
+		}
+	}
+	// The layers were verified against their digests, so the artifacts are complete.
+	if err := alchemy_build.MarkBuildArtifactsComplete(finalPaths); err != nil {
 		return TransferResult{}, err
 	}
 

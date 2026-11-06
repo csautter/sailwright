@@ -43,7 +43,8 @@ var (
 			ConfirmForeignArtifactUse: confirmOCIForeignArtifactUse(cmd),
 		})
 	}
-	inspectOCIArtifactState = localOCIArtifactState
+	inspectOCIArtifactState      = localOCIArtifactState
+	inspectOCIBuildArtifactState = alchemy_build.BuildArtifactState
 )
 
 func isOCISupported(vm alchemy_build.VirtualMachineConfig) bool {
@@ -98,6 +99,15 @@ func localOCIArtifactState(vm alchemy_build.VirtualMachineConfig) (string, error
 
 	switch existingArtifacts {
 	case len(artifacts):
+		// All files are there; `oci push` also requires them to be complete, e.g. not
+		// left behind by an interrupted build or pull.
+		buildState, err := inspectOCIBuildArtifactState(vm)
+		if err != nil {
+			return "", err
+		}
+		if !buildState.Usable() {
+			return "incomplete", nil
+		}
 		return "exists", nil
 	case 0:
 		return "missing", nil
@@ -133,7 +143,7 @@ func pullListRow(vm alchemy_build.VirtualMachineConfig) ([]string, error) {
 	switch artifactState {
 	case "exists":
 		pullState = "will replace"
-	case "partial":
+	case "partial", "incomplete":
 		pullState = "will replace partial"
 	}
 

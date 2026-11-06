@@ -1,6 +1,7 @@
 package build
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -475,7 +476,7 @@ func DownloadWin11ISO(url, dst, expectedSHA256 string) error {
 	}
 	progress := mpb.New(mpb.WithOutput(os.Stderr))
 	defer progress.Wait()
-	return downloadWebFileDependency(progress, dep)
+	return downloadWebFileDependency(context.Background(), progress, dep)
 }
 
 // HashFile returns the sha256 hex digest and size of a file.

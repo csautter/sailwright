@@ -49,12 +49,15 @@ func RunVncSnapshotProcess(vm_config VirtualMachineConfig, ctx context.Context, 
 	snapshot_dir := VncSnapshotDir(GetDirectoriesInstance().GetDirectories().CacheDir, vm_config)
 	recording_config.OutputFolder = snapshot_dir
 
+	// VNC recording is best effort: a failure here must not end the build.
 	if err := os.RemoveAll(snapshot_dir); err != nil {
-		log.Fatalf("Failed to remove snapshot directory: %v", err)
+		log.Printf("Skipping VNC recording: failed to remove snapshot directory: %v", err)
+		return cancelledContext()
 	}
 
 	if err := os.MkdirAll(snapshot_dir, 0700); err != nil {
-		log.Fatalf("Failed to create snapshot directory: %v", err)
+		log.Printf("Skipping VNC recording: failed to create snapshot directory: %v", err)
+		return cancelledContext()
 	}
 	snapshot_file := filepath.Join(snapshot_dir, "qemu.vnc.jpg")
 	recording_config.OutputFile = snapshot_file
@@ -65,7 +68,8 @@ func RunVncSnapshotProcess(vm_config VirtualMachineConfig, ctx context.Context, 
 	vnc_passwd_file := filepath.Join(snapshot_dir, ".packer-qemu.vnc.pass")
 	if _, err := os.Stat(vnc_passwd_file); err == nil {
 		if err := os.Remove(vnc_passwd_file); err != nil {
-			log.Fatalf("Failed to remove existing VNC password file: %v", err)
+			log.Printf("Skipping VNC recording: failed to remove existing VNC password file: %v", err)
+			return cancelledContext()
 		}
 	}
 
@@ -116,7 +120,8 @@ func RunVncSnapshotProcess(vm_config VirtualMachineConfig, ctx context.Context, 
 
 	encrypted := vncpasswd.Crypt(vnc_password)
 	if err := os.WriteFile(vnc_passwd_file, encrypted, 0600); err != nil {
-		log.Fatalf("Failed to write VNC password file: %v", err)
+		log.Printf("Skipping VNC recording: failed to write VNC password file: %v", err)
+		return cancelledContext()
 	}
 
 	recordingCtx := ctx
@@ -217,6 +222,8 @@ func streamVncSnapshotsToFfmpeg(parentCtx context.Context, config RunProcessConf
 		return cancelledContext()
 	}
 	processGroupID := commandProcessGroupID(ffmpegCmd)
+	untrackFfmpeg := trackProcessGroup(processGroupID)
+	defer untrackFfmpeg()
 	go streamProcessOutput(ffmpegStdout, vncRecordingFfmpegExecutable, "stdout", config.Silent)
 	go streamProcessOutput(ffmpegStderr, vncRecordingFfmpegExecutable, "stderr", config.Silent)
 
@@ -315,11 +322,15 @@ func startVncSnapshotCapture(ctx context.Context, config RunProcessConfig, vncPa
 	go streamProcessOutput(stdout, vncRecordingSnapshotExecutable, "stdout", config.Silent)
 	go streamProcessOutput(stderr, vncRecordingSnapshotExecutable, "stderr", config.Silent)
 
+	processGroupID := commandProcessGroupID(cmd)
+	untrack := trackProcessGroup(processGroupID)
 	done := make(chan error, 1)
 	go func() {
-		done <- cmd.Wait()
+		err := cmd.Wait()
+		untrack()
+		done <- err
 	}()
-	return done, commandProcessGroupID(cmd), nil
+	return done, processGroupID, nil
 }
 
 func feedRemainingVncSnapshotFrames(snapshotFile string, writer io.Writer, silent *atomic.Bool) int {
@@ -483,7 +494,8 @@ func RunFfmpegVideoGenerationProcess(vm_config VirtualMachineConfig, ctx context
 	}
 	frames, err := filepath.Glob(framePattern)
 	if err != nil {
-		log.Fatalf("Failed to glob VNC snapshot frames: %v", err)
+		log.Printf("Skipping ffmpeg video generation: failed to glob VNC snapshot frames: %v", err)
+		return ctx
 	}
 	if len(frames) == 0 {
 		log.Printf("Skipping ffmpeg video generation because no VNC snapshot frames were captured.")
@@ -550,7 +562,8 @@ func RunFfmpegVideoGenerationProcess(vm_config VirtualMachineConfig, ctx context
 
 	matches, err := filepath.Glob(removePattern)
 	if err != nil {
-		log.Fatalf("Failed to glob snapshot images for removal: %v", err)
+		log.Printf("Failed to glob snapshot images for removal: %v", err)
+		return ctx
 	}
 	log.Printf("Removing %d vncsnapshot image(s)...", len(matches))
 	for _, path := range matches {
