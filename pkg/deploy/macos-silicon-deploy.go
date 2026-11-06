@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,6 +24,15 @@ func RunUtmDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 		return fmt.Errorf("UTM deploy is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
 
+	// Remove orphan registrations before generating a replacement bundle.
+	if _, exists, err := inspectUtmInstanceID(config); err != nil {
+		return err
+	} else if !exists {
+		if err := removeUtmRegistrations(config, ""); err != nil {
+			return err
+		}
+	}
+
 	scriptPath := path.Join(alchemy_build.GetDirectoriesInstance().ProjectDir, "deployments/utm/create-utm-vm.sh")
 	projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
 
@@ -38,6 +48,9 @@ func RunUtmDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 	); err != nil {
 		return fmt.Errorf("UTM deploy failed for %s:%s: %w", vmName, config.Arch, err)
 	}
+	if err := ensureUtmRegistration(config); err != nil {
+		return err
+	}
 	log.Printf("UTM deploy completed for %s:%s", vmName, config.Arch)
 	return nil
 }
@@ -52,12 +65,10 @@ func RunUtmDestroyOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 		return err
 	}
 
-	if _, err := os.Stat(vmPath); err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("UTM VM %q is already absent", vmPath)
-			return nil
-		}
-		return fmt.Errorf("failed to stat UTM VM bundle %q: %w", vmPath, err)
+	// UTM must delete its registration before we remove any remaining bundle.
+	// This also cleans registrations left behind by older Sailwright versions.
+	if err := removeUtmRegistrations(config, ""); err != nil {
+		return err
 	}
 
 	if err := os.RemoveAll(vmPath); err != nil {
@@ -73,6 +84,9 @@ func RunUtmStartOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 		return fmt.Errorf("UTM start is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
 
+	if err := ensureUtmRegistration(config); err != nil {
+		return err
+	}
 	state, err := inspectUtmStartTarget(config)
 	if err != nil {
 		return err
@@ -85,10 +99,10 @@ func RunUtmStartOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 		return nil
 	}
 
-	if _, err := runUtmAppleScript(
+	if _, err := runUtmBundleAppleScript(config,
 		[]string{
 			`tell application "UTM"`,
-			fmt.Sprintf(`set targetVM to virtual machine named %q`, utmVirtualMachineName(config)),
+			`set targetVM to virtual machine id "__SAILWRIGHT_UUID__"`,
 			`start targetVM`,
 			`end tell`,
 		},
@@ -118,10 +132,10 @@ func RunUtmStopOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 		return nil
 	}
 
-	if _, err := runUtmAppleScript(
+	if _, err := runUtmBundleAppleScript(config,
 		[]string{
 			`tell application "UTM"`,
-			fmt.Sprintf(`set targetVM to virtual machine named %q`, utmVirtualMachineName(config)),
+			`set targetVM to virtual machine id "__SAILWRIGHT_UUID__"`,
 			`stop targetVM by request`,
 			`end tell`,
 		},
@@ -136,10 +150,10 @@ func RunUtmStopOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 
 	log.Printf("UTM VM %q did not stop after graceful shutdown request; forcing stop", utmVirtualMachineName(config))
 
-	if _, err := runUtmAppleScript(
+	if _, err := runUtmBundleAppleScript(config,
 		[]string{
 			`tell application "UTM"`,
-			fmt.Sprintf(`set targetVM to virtual machine named %q`, utmVirtualMachineName(config)),
+			`set targetVM to virtual machine id "__SAILWRIGHT_UUID__"`,
 			`stop targetVM by force`,
 			`end tell`,
 		},
@@ -164,6 +178,17 @@ func inspectUtmStartTarget(config alchemy_build.VirtualMachineConfig) (StartTarg
 		return StartTargetState{}, fmt.Errorf("failed to stat UTM VM bundle %q: %w", vmPath, err)
 	}
 
+	id, _, err := inspectUtmInstanceID(config)
+	if err != nil {
+		return StartTargetState{}, err
+	}
+	ids, err := utmRegistrationIDs(config)
+	if err != nil {
+		return StartTargetState{}, err
+	}
+	if !slices.Contains(ids, id) {
+		return StartTargetState{Exists: true, State: "unregistered"}, nil
+	}
 	status, err := utmVirtualMachineStatus(config)
 	if err != nil {
 		return StartTargetState{}, err
@@ -226,10 +251,10 @@ func utmVirtualMachinePath(config alchemy_build.VirtualMachineConfig) (string, e
 }
 
 func utmVirtualMachineStatus(config alchemy_build.VirtualMachineConfig) (string, error) {
-	output, err := runUtmAppleScript(
+	output, err := runUtmBundleAppleScript(config,
 		[]string{
 			`tell application "UTM"`,
-			fmt.Sprintf(`set targetVM to virtual machine named %q`, utmVirtualMachineName(config)),
+			`set targetVM to virtual machine id "__SAILWRIGHT_UUID__"`,
 			`return (status of targetVM) as text`,
 			`end tell`,
 		},

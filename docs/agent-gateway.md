@@ -82,18 +82,31 @@ The agent, and everything it reads, is treated as untrusted.
   as the gateway's, so the agent can destroy what it left behind; a `create`
   refused because your VM already exists claims nothing. Ownership ends when the
   gateway destroys the VM, or when a target listing shows that you destroyed it.
-  On libvirt and Hyper-V, records and grants also name the hypervisor instance
+  On libvirt, Hyper-V, UTM and Tart, records and grants also name the instance
   id (`sailwright vm identity`). A VM you destroy and recreate under the same
   name is a new instance, so `vm_info`, tunnels and lifecycle jobs treat it as
   yours even before the next target listing. Lifecycle jobs check the instance
   right before their command runs, not when the agent calls the tool: a Hyper-V
   query can take a minute, so the call returns a running job at once, and the
-  job turns into an approval job if the instance changed. UTM and Tart report no instance
-  id: there, a VM you destroy and recreate before the gateway next lists
-  targets (after any job, and at startup) is still treated as the gateway's,
-  so the agent gets its credentials, tunnels and lifecycle jobs without
-  asking. On macOS hosts, destroy gateway VMs through the gateway, or restart
-  it before recreating one of its target names yourself.
+  job turns into an approval job if the instance changed. UTM uses the UUID in the managed bundle's
+  `Information.UUID`; start/stop address that registered UUID. Create and start
+  repair stale registrations at the managed bundle path, preserving the new
+  bundle while UTM deletes the stale entry. Destroy stops and deletes the UTM
+  registration before removing any remaining bundle, including orphan entries
+  whose bundle is already absent. A same-name entry at another path is refused.
+  On older UTM releases, path verification reads and resolves the registry's
+  bookmark through Foundation; it never edits UTM preferences. If the path cannot
+  be verified, cleanup fails without deleting the bundle.
+  Tart uses a hash of the local VM directory's filesystem device, inode and birth
+  time, respecting `TART_HOME` and `TART_MACOS_VM_NAME`. Cloned hardware identifiers
+  (including ECID) and MAC addresses can be reused and do not establish ownership.
+  Identity queries work without starting or registering a VM. For ownership
+  records created by an older CLI without an instance ID, restart the gateway
+  after clearing those old records before recreating guests outside the gateway;
+  an old record cannot prove which instance it originally referred to.
+  Native UTM/Tart lifecycle, access and approval validation remains tracked in
+  [issue #302](https://github.com/csautter/sailwright/issues/302); Linux mocked
+  regression tests do not validate the macOS automation APIs.
   Use `state_isolation: isolated` for complete separation.
 - **Transport.** Agents reach the gateway through a Unix socket in a
   dedicated agent folder (`~/.sailwright-gateway`) that you mount read-only

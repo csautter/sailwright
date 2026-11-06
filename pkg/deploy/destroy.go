@@ -57,7 +57,8 @@ func DestroyTargetExists(config alchemy_build.VirtualMachineConfig) (bool, error
 			return true, nil
 		}
 		if os.IsNotExist(err) {
-			return false, nil
+			ids, err := utmRegistrationIDs(config)
+			return len(ids) > 0, err
 		}
 
 		return false, fmt.Errorf("failed to stat UTM VM bundle %q: %w", vmPath, err)
