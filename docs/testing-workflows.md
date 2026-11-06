@@ -42,12 +42,21 @@ successful build or pull, `incomplete` while a build runs or after an interrupte
 one, `missing`, and `unverified` for artifacts without a completion marker (for
 example built by an older sailwright version). Builds skip `exists` and
 `unverified` artifacts; rebuild an `unverified` one with `--no-cache` if it is
-broken. Ctrl+C stops all running builds and downloads and gives Packer up to 30
-seconds to remove its VM; a second Ctrl+C cuts that wait to 3 seconds and skips the
-VNC video post-processing, and a third one exits immediately. SIGTERM (for example
-a gateway `job_cancel`) and Ctrl+C without a terminal (for example a cancelled CI
-job) only allow 3 seconds. A build that already finished successfully when Ctrl+C
-arrives keeps its artifacts.
+broken. `create list` only tells whether the artifacts are usable: it shows
+`exists` for `exists` and `unverified`, and `missing` otherwise.
+
+Ctrl+C stops all running builds and downloads. A single build on Linux or macOS
+owns the terminal, so Ctrl+C reaches Packer directly and Packer stops on its own.
+For parallel builds started from a terminal, and on Windows, Sailwright gives
+Packer up to 30 seconds to remove its VM. A second Ctrl+C cuts that wait to 3
+seconds and skips the VNC video post-processing, and a third one exits
+immediately. SIGTERM (for example a gateway `job_cancel`) and Ctrl+C without a
+terminal (for example a cancelled CI job) only allow 3 seconds. A build that
+already finished successfully when Ctrl+C arrives keeps its artifacts.
+
+Parallel builds (`--parallel`) run without the terminal, so a build script that
+asks for a password (for example `sudo`) fails instead of prompting. Run
+`sudo -v` first, or build the target on its own.
 
 Use `--help` on the root command or any subcommand to inspect supported flags and usage details:
 
