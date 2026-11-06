@@ -127,6 +127,8 @@ type job struct {
 	// redactor adds per-job secrets (a sudo password); nil means the manager's. Only
 	// the job's execute goroutine reads or writes it.
 	redactor *Redactor
+	// cleanupBecomePassword is also deferred as a fallback; removal is idempotent.
+	cleanupBecomePassword func()
 	// snapshotDir is the job's bundle snapshot, removed before the job is reported done.
 	// Only the job's execute goroutine reads or writes it after Submit.
 	snapshotDir string
@@ -349,6 +351,7 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 				m.finish(j, JobFailed, nil, "could not pass the sudo password: "+err.Error(), time.Time{})
 				return
 			}
+			j.cleanupBecomePassword = cleanup
 			defer cleanup()
 			argv = WithBecomePasswordFile(argv, path)
 			redactor = m.redactor.WithRequired(approval.BecomePassword)
@@ -447,11 +450,22 @@ func (m *JobManager) finish(j *job, state JobState, code *int, message string, s
 		redactor = j.redactor
 	}
 	message = redactor.String(message)
+	if j.cleanupBecomePassword != nil {
+		j.cleanupBecomePassword()
+	}
 	// A job reported as done must have released its snapshot and slot: agents poll
 	// job_status and submit the next job right away. The (possibly slow) removal runs
 	// first; the terminal state and the free slot are then published together, so no
 	// one sees a done job holding the slot or a free slot next to an unfinished job.
 	m.removeJobSnapshot(j)
+	// Record completion while the job still blocks submissions, so the next
+	// job_submitted event cannot overtake this job_finished event.
+	view := j.snapshotView()
+	var duration int64
+	if !started.IsZero() {
+		duration = finished.Sub(started).Milliseconds()
+	}
+	m.record(AuditEvent{Event: "job_finished", Tool: view.Tool, JobID: view.ID, ExitCode: code, DurationMS: duration, Error: message, Decision: string(state)})
 	m.mu.Lock()
 	j.update(func(v *JobView) {
 		v.State = state
@@ -461,12 +475,6 @@ func (m *JobManager) finish(j *job, state JobState, code *int, message string, s
 	})
 	m.releaseSlotLocked(j.snapshotView().ID)
 	m.mu.Unlock()
-	view := j.snapshotView()
-	var duration int64
-	if !started.IsZero() {
-		duration = finished.Sub(started).Milliseconds()
-	}
-	m.record(AuditEvent{Event: "job_finished", Tool: view.Tool, JobID: view.ID, ExitCode: code, DurationMS: duration, Error: message, Decision: string(state)})
 	fmt.Fprintf(m.console, "job %s %s\n", view.ID, state)
 }
 

@@ -2,12 +2,15 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -220,4 +223,108 @@ func (l lockedWriter) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.w.Write(p)
+}
+
+// Block the finish audit write to exercise the window where a new submission
+// used to overtake it. The current job must remain busy until the write completes.
+func TestJobFinishAuditPrecedesNextSubmission(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	audit, err := OpenAuditLog(path, NewRedactor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer audit.Close()
+	writingFinish := make(chan struct{})
+	resume := make(chan struct{})
+	var unblock sync.Once
+	defer unblock.Do(func() { close(resume) })
+	var records atomic.Int32
+	audit.now = func() time.Time {
+		// Submission and approval are the first two events.
+		if records.Add(1) == 3 {
+			close(writingFinish)
+			<-resume
+		}
+		return time.Now()
+	}
+	m := NewJobManager(JobManagerOptions{Approver: denyingApprover{}, Redactor: NewRedactor(), Audit: audit})
+	spec := JobSpec{Tool: "run_cli", NeedsApproval: true, Timeout: time.Minute}
+	first, err := m.Submit(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-writingFinish:
+	case <-time.After(10 * time.Second):
+		t.Fatal("job did not reach its finish audit write")
+	}
+	if got := m.Active(); got != first.ID {
+		t.Errorf("active during finish audit write = %q, want %q", got, first.ID)
+	}
+	if _, err := m.Submit(spec); !errors.Is(err, ErrBusy) {
+		t.Errorf("submit during finish audit write = %v, want ErrBusy", err)
+	}
+	unblock.Do(func() { close(resume) })
+	m.WaitAll()
+	second, err := m.Submit(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.WaitAll()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lifecycle []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var event AuditEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Event == "job_submitted" || event.Event == "job_finished" {
+			lifecycle = append(lifecycle, event.Event+":"+event.JobID)
+		}
+	}
+	want := []string{"job_submitted:" + first.ID, "job_finished:" + first.ID, "job_submitted:" + second.ID, "job_finished:" + second.ID}
+	if !reflect.DeepEqual(lifecycle, want) {
+		t.Fatalf("audit lifecycle = %v, want %v", lifecycle, want)
+	}
+}
+
+type sudoApprover struct{}
+
+func (sudoApprover) Enabled() bool { return true }
+func (sudoApprover) Request(context.Context, ApprovalRequest) Approval {
+	return Approval{Decision: DecisionApproved, BecomePassword: "test-password"}
+}
+
+// Snapshot cleanup precedes publishing completion. Check that the password is
+// already gone at this boundary, even when the runner fails before starting.
+func TestJobRemovesSudoPasswordBeforeReportingDone(t *testing.T) {
+	staging := t.TempDir()
+	m := NewJobManager(JobManagerOptions{
+		Approver: sudoApprover{}, Redactor: NewRedactor(), StagingDir: staging,
+		Runner: &Runner{}, // An unpinned binary fails verification before execution.
+	})
+	checked := false
+	m.removeSnapshot = func(dir string) error {
+		checked = true
+		entries, err := os.ReadDir(staging)
+		if err != nil || len(entries) != 0 {
+			t.Errorf("password staging directory during snapshot cleanup = %v, error %v", entries, err)
+		}
+		return RemoveSnapshot(dir)
+	}
+	view, err := m.Submit(JobSpec{
+		Tool: "provision_local", NeedsApproval: true, Become: true,
+		Snapshot: &Snapshot{Dir: t.TempDir()}, Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.WaitAll()
+	final, _ := m.Get(view.ID)
+	if !checked || !final.SudoPassword || final.State != JobFailed {
+		t.Fatalf("expected cleanup of an approved sudo job after runner failure: checked=%v, job=%+v", checked, final)
+	}
 }
