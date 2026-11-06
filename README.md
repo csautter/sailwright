@@ -267,32 +267,9 @@ When you want to share reusable build artifacts through an OCI registry instead
 of rebuilding them locally, use `sailwright push` and `sailwright pull`; see the
 [OCI build artifact registry workflow](./docs/testing-workflows.md#oci-build-artifact-registry-workflow).
 
-### Multiple instances of the same image
-
-Use `--name` to keep a disposable test VM beside a working VM of the same type:
-
-```bash
-sailwright create ubuntu --type server --arch amd64 --name agent-test
-sailwright start ubuntu --type server --arch amd64 --name agent-test
-sailwright vm info ubuntu --type server --arch amd64 --name agent-test
-sailwright start list
-sailwright start list --json
-sailwright destroy ubuntu --type server --arch amd64 --name agent-test
-```
-
-The same selector works with `stop` and `provision`. Names use 1–24 lowercase
-letters, digits, and internal hyphens; `default` and `all` are reserved. Omitting
-`--name` finds your existing VM without migration. Instances share the built
-image, with their own writable disks, provider state, and guest hostnames.
-Named startup waits for guest hostname setup: QEMU/UTM require the guest agent;
-Tart uses the existing Ansible/SSH connection; Hyper-V uses Vagrant's hostname
-setup. A Windows guest may reboot after a name change.
-
-`stop all` and `destroy all` affect only defaults. Add `--all-instances` explicitly
-to include named VMs. `create` warns about low available disk/RAM without blocking.
-Build and pull still operate on the shared image. See the
-[naming ADR](./docs/adr/0007-named-vm-instances.md) and
-[JSON listing contract](./docs/machine-readable-listings.md).
+Use `--name` to run independent VMs from the same image. See
+[Named VM instances](./docs/testing-workflows.md#named-vm-instances) for commands,
+naming rules, and cleanup behavior.
 
 ## Trust & Privilege Model
 
