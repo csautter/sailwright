@@ -73,6 +73,10 @@ class GuestRunnerTest(unittest.TestCase):
         fake = binaries / "fake-tool"
         fake.write_text(TOOLS)
         fake.chmod(0o755)
+        # Standard hosted runners need not include ripgrep. Never let a missing
+        # optional tool turn the existing-VM safety check into a false negative.
+        (binaries / "rg").write_text("#!/bin/sh\nexit 127\n")
+        (binaries / "rg").chmod(0o755)
         for tool in ("sudo", "mktemp", "virsh", "git", "go", "sailwright", "sailwright-gateway", "qemu-system-x86_64"):
             (binaries / tool).symlink_to(fake)
         # The script expects the repository-relative audit verifier.

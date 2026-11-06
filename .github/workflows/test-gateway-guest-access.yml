@@ -2,6 +2,8 @@ name: Test real gateway guest access
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * 1' # Weekly real-guest regression on main.
   push:
     branches: [main]
     paths:
@@ -16,6 +18,7 @@ on:
       - 'go.mod'
       - 'go.sum'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
     paths:
       - 'cmd/**'
       - 'internal/gateway/**'
@@ -37,7 +40,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Check guest CI safety and audit verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check runner syntax
+        run: bash -n scripts/ci/gateway-guest-access-linux.sh
+      - name: Check audit evidence and cleanup failure paths with fake tools
+        run: python3 -I -m unittest discover -s scripts/ci -p 'test_gateway*.py'
+
   linux-libvirt:
+    # Guest creation/downloads are deliberate: weekly, manual, or labeled PRs.
+    # An opted-in PR keeps this coverage on later commits while the label remains.
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'ci:guest-access'))
+    needs: [validate]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -47,13 +71,12 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Check audit evidence and cleanup failure paths with fake tools
-        run: python3 -I -m unittest discover -s scripts/ci -p 'test_gateway*.py'
       - name: Provision disposable libvirt runner and test gateway SSH/SCP
+        id: guest
         timeout-minutes: 80
         run: bash scripts/ci/gateway-guest-access-linux.sh
       - name: Upload guest access and cleanup evidence
-        if: always()
+        if: always() && steps.guest.outcome != 'skipped'
         uses: actions/upload-artifact@v7
         with:
           name: gateway-guest-access-linux-${{ github.run_id }}-${{ github.run_attempt }}

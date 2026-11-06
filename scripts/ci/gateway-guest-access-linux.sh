@@ -59,8 +59,9 @@ cleanup() {
       # A failed create may have cloned its disk before defining the domain.
       timeout 5m sailwright destroy ubuntu --type server --arch amd64 >"$artifact/fallback-cleanup.log" 2>&1 || result=1
     fi
-    virsh -c "$DEV_ALCHEMY_LIBVIRT_URI" list --all --name >"$artifact/domains-after.txt" || result=1
-    if [[ -s "$artifact/domains-after.txt" ]] && rg -q '\S' "$artifact/domains-after.txt"; then
+    if ! virsh -c "$DEV_ALCHEMY_LIBVIRT_URI" list --all --name >"$artifact/domains-after.txt"; then
+      echo 'FAIL: could not inventory remaining domains' >>"$artifact/cleanup.txt"; result=1
+    elif [[ $(<"$artifact/domains-after.txt") == *[![:space:]]* ]]; then
       echo 'FAIL: domains remain' >>"$artifact/cleanup.txt"; result=1
     elif [[ -n $(find "$DEV_ALCHEMY_LIBVIRT_IMAGE_DIR" -type f -print -quit) ]]; then
       echo 'FAIL: managed disks remain' >>"$artifact/cleanup.txt"; result=1
@@ -82,12 +83,13 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 sudo apt-get update
-sudo apt-get install -y libvirt-daemon-system libvirt-clients qemu-system-x86 qemu-utils virtinst sshpass acl ripgrep
+sudo apt-get install -y libvirt-daemon-system libvirt-clients qemu-system-x86 qemu-utils virtinst sshpass acl
 sudo systemctl start libvirtd
 # ACLs affect only this throwaway runner; no group/session refresh required.
 sudo setfacl -m "u:$(id -un):rw" /var/run/libvirt/libvirt-sock /dev/kvm
 virsh -c "$DEV_ALCHEMY_LIBVIRT_URI" list --all --name >"$artifact/domains-before.txt"
-if rg -q '\S' "$artifact/domains-before.txt"; then
+# Bash checks the inventory itself: missing optional tools cannot bypass safety.
+if [[ $(<"$artifact/domains-before.txt") == *[![:space:]]* ]]; then
   echo 'Refusing to use a runner with existing VMs' >&2; exit 1
 fi
 preflight=true
