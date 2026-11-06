@@ -1,20 +1,3 @@
-- name: Get current user
-  ansible.builtin.command: whoami
-  register: current_user
-
-- set_fact:
-    ansible_user: "{{ current_user.stdout }}"
-  when: ansible_user is not defined
-
-- name: Ensure passwordless sudo for {{ ansible_user }} user
-  become: true
-  copy:
-    dest: /etc/sudoers.d/{{ ansible_user }}
-    content: "{{ ansible_user }} ALL=(ALL) NOPASSWD:ALL\n"
-    owner: root
-    group: wheel
-    mode: "0440"
-
 - name: Check if Rosetta 2 is installed
   stat:
     path: /usr/libexec/rosetta
@@ -28,13 +11,34 @@
   command: /usr/sbin/softwareupdate --install-rosetta --agree-to-license
   when:
     - 8 in jdk_versions
+    - ansible_facts['architecture'] == 'arm64'
     - rosetta_installed is not defined or not rosetta_installed
 
-- name: Install Homebrew Temurin casks
-  community.general.homebrew_cask:
-    name: "{{ 'temurin' if item == 24 else 'temurin@' ~ item }}"
-    state: present
+# Temurin JDKs come from Adoptium .pkg installers instead of Homebrew casks:
+# casks run their own sudo, which neither --ask-become-pass nor a become
+# password file reaches. Existing cask installs use the same JDK paths.
+- name: Check installed Temurin JDKs
+  ansible.builtin.stat:
+    path: "/Library/Java/JavaVirtualMachines/temurin-{{ item }}.jdk/Contents/Home/bin/java"
   loop: "{{ jdk_versions }}"
+  register: temurin_binaries
+
+- name: Collect missing Temurin JDKs
+  ansible.builtin.set_fact:
+    temurin_missing: "{{ temurin_binaries.results | rejectattr('stat.exists') | map(attribute='item') | list }}"
+
+- name: Install missing Temurin JDKs
+  ansible.builtin.include_tasks: darwin_temurin.yml
+  loop: "{{ temurin_missing }}"
+  loop_control:
+    loop_var: temurin_version
+  when: not ansible_check_mode
+
+- name: Report pending Temurin installations in check mode
+  ansible.builtin.debug:
+    msg: "Would install Temurin {{ temurin_missing | join(', ') }}."
+  changed_when: true
+  when: ansible_check_mode and temurin_missing | length > 0
 
 - name: Install jenv with Homebrew
   community.general.homebrew:
@@ -54,17 +58,20 @@
     create: yes
 
 - name: Discover Java home paths
-  command: /usr/libexec/java_home -v {{ item }}
+  command: /usr/libexec/java_home -F -v {{ '1.8' if item == 8 else item }}
   loop: "{{ jdk_versions }}"
   register: java_home_paths
   changed_when: false
-  failed_when: false
+  failed_when: not ansible_check_mode and java_home_paths.rc != 0
+  check_mode: false
 
 - name: Add Java versions to jenv
   shell: |
     export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
     jenv add "{{ item.stdout }}"
   loop: "{{ java_home_paths.results | selectattr('rc', 'equalto', 0) | list }}"
+  register: jenv_add
+  changed_when: "' added' in jenv_add.stdout"
 
 - name: Create .zshrc if it does not exist
   file:
@@ -78,6 +85,7 @@
     path: "{{ ansible_env.HOME }}/.zshrc"
     line: "jenv global {{ jdk_default_version }}"
     insertafter: EOF
+    create: true
 
 - name: Ensure jenv plugins directory exists
   file:
@@ -92,9 +100,4 @@
     jenv enable-plugin maven
   args:
     executable: /bin/zsh
-
-- name: Remove passwordless sudo for {{ ansible_user }} user
-  become: true
-  file:
-    path: /etc/sudoers.d/{{ ansible_user }}
-    state: absent
+    creates: "{{ ansible_env.HOME }}/.jenv/plugins/maven"

@@ -4,55 +4,67 @@
     state: present
   when: ansible_facts['os_family'] == "Darwin"
 
-- name: Try install k9s from package manager on Debian/Ubuntu
-  apt:
-    name: k9s
-    state: present
-    update_cache: yes
-  register: k9s_apt
-  failed_when: false
-  when: ansible_facts['os_family'] == "Debian"
-
-- name: Try install k9s from package manager on RedHat/Fedora
-  package:
-    name: k9s
-    state: present
-  register: k9s_rpm
-  failed_when: false
-  when: ansible_facts['os_family'] in ["RedHat", "Rocky", "AlmaLinux", "Fedora"]
-
-- name: Fallback install on Linux if package manager failed
+- name: Install k9s on Linux
+  when: ansible_facts['system'] == 'Linux'
   block:
-    - name: Set k9s arch
-      set_fact:
-        k9s_arch: >-
-          {% if ansible_facts['architecture'] == 'x86_64' %}
-            x86_64
-          {% elif ansible_facts['architecture'] == 'arm64' %}
-            arm64
-          {% else %}
-            x86_64
-          {% endif %}
+    - name: Check installed k9s version
+      ansible.builtin.command: /usr/local/bin/k9s version --short
+      register: k9s_installed
+      changed_when: false
+      failed_when: false
+      check_mode: false
 
-    - name: Set OS suffix for download
-      set_fact:
-        k9s_os: >-
-          {% if ansible_facts['os_family'] == 'Debian' or ansible_facts['os_family'] in ['RedHat', 'Rocky', 'AlmaLinux', 'Fedora'] %}
-            Linux
-          {% else %}
-            Darwin
-          {% endif %}
+    - name: Ensure k9s supports the Linux architecture
+      ansible.builtin.assert:
+        that: ansible_facts['architecture'] in ['x86_64', 'aarch64', 'arm64']
+        fail_msg: "Unsupported architecture for k9s: {{ ansible_facts['architecture'] }}"
+        quiet: true
 
-    - name: Download and extract k9s binary
-      ansible.builtin.unarchive:
-        src: "https://github.com/derailed/k9s/releases/download/v{{ k9s_version }}/k9s_{{ k9s_os }}_{{ k9s_arch }}.tar.gz"
-        dest: /usr/local/bin
-        remote_src: yes
-        mode: '0755'
+    - name: Resolve k9s Linux architecture and installed version
+      ansible.builtin.set_fact:
+        k9s_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'arm64': 'arm64'}[ansible_facts['architecture']] }}"
+        k9s_installed_version: "{{ k9s_installed.stdout | default('') | regex_search('(?<![0-9.])v?([0-9]+[.][0-9]+[.][0-9]+)(?![0-9.])', '\\1') | default([''], true) | first }}"
+
+    - name: Install the pinned k9s release
       when:
-        - ansible_facts['os_family'] != "Darwin"
-        - (ansible_facts['os_family'] == "Debian" and k9s_apt is failed) or
-          (ansible_facts['os_family'] in ["RedHat", "Rocky", "AlmaLinux", "Fedora"] and k9s_rpm is failed)
+        - not ansible_check_mode
+        - k9s_installed_version != k9s_version
+      block:
+        - name: Create a private download directory for k9s
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: k9s
+          register: k9s_tmp
+
+        - name: Download and extract the verified k9s release
+          block:
+            - name: Download k9s archive with its release checksum
+              ansible.builtin.get_url:
+                url: "https://github.com/derailed/k9s/releases/download/v{{ k9s_version }}/k9s_Linux_{{ k9s_arch }}.tar.gz"
+                checksum: "sha256:https://github.com/derailed/k9s/releases/download/v{{ k9s_version }}/checksums.sha256"
+                dest: "{{ k9s_tmp.path }}/k9s_Linux_{{ k9s_arch }}.tar.gz"
+                mode: '0644'
+
+            - name: Extract the verified k9s binary
+              ansible.builtin.unarchive:
+                src: "{{ k9s_tmp.path }}/k9s_Linux_{{ k9s_arch }}.tar.gz"
+                dest: /usr/local/bin
+                remote_src: true
+                include:
+                  - k9s
+                mode: '0755'
+              become: true
+          always:
+            - name: Remove the k9s download directory
+              ansible.builtin.file:
+                path: "{{ k9s_tmp.path }}"
+                state: absent
+
+    - name: Report pending k9s installation in check mode
+      ansible.builtin.debug:
+        msg: "Would install k9s {{ k9s_version }} for {{ k9s_arch }}."
+      changed_when: k9s_installed_version != k9s_version
+      when: ansible_check_mode
 
 # WINDOWS SECTION
 

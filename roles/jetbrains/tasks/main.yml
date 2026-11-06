@@ -6,77 +6,161 @@
     install_options: cask
   when: ansible_facts['os_family'] == 'Darwin'
 
-- name: Ensure dependencies for JetBrains Toolbox (Linux)
-  apt:
-    name: unzip
-    state: present
-  become: true
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
+- name: Install JetBrains Toolbox on Linux
+  when: ansible_facts['os_family'] == 'Debian'
+  vars:
+    toolbox_directory: /opt/jetbrains-toolbox
+  block:
+    - name: Read JetBrains Toolbox release metadata
+      ansible.builtin.uri:
+        url: "https://data.services.jetbrains.com/products/releases?code=TBA&latest=true&type=release"
+        return_content: true
+      register: toolbox_release
+      check_mode: false
 
-- name: Download JetBrains Toolbox archive (Linux)
-  get_url:
-    url: "https://data.services.jetbrains.com/products/releases?code=TBA&latest=true&type=release"
-    dest: /tmp/jetbrains_toolbox_release.json
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
+    - name: Resolve the Toolbox archive
+      ansible.builtin.set_fact:
+        toolbox_build: "{{ toolbox_release.json.TBA[0].build }}"
+        toolbox_download: "{{ toolbox_release.json.TBA[0].downloads['linuxARM64' if ansible_facts['architecture'] == 'aarch64' else 'linux'] }}"
 
-- name: Load JetBrains Toolbox release JSON (Linux)
-  slurp:
-    src: /tmp/jetbrains_toolbox_release.json
-  register: toolbox_release_json_raw
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
+    # The marker records which build the fixed directory holds, so the role
+    # neither depends on the archive's top-level directory name nor keeps one
+    # directory per release.
+    - name: Check whether the Toolbox release is installed
+      ansible.builtin.stat:
+        path: "{{ toolbox_directory }}/.sailwright-build-{{ toolbox_build }}"
+      register: toolbox_marker
 
-- name: Parse JetBrains Toolbox release JSON (Linux)
-  set_fact:
-    jetbrains_toolbox_release_json: "{{ toolbox_release_json_raw.content | b64decode | from_json }}"
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
+    - name: Install the Toolbox release
+      when: not toolbox_marker.stat.exists and not ansible_check_mode
+      block:
+        # Stage on the same filesystem as the installation so promotion uses
+        # rename. Keep the old release until extraction and validation succeed.
+        - name: Create a private staging directory for Toolbox
+          ansible.builtin.tempfile:
+            path: /opt
+            state: directory
+            prefix: .sailwright-toolbox-
+          register: toolbox_tmp
+          become: true
 
-- name: Parse release JSON and get download URL (Linux) - x86_64
-  set_fact:
-    jetbrains_toolbox_url: "{{ jetbrains_toolbox_release_json.TBA[0].downloads.linux.link }}"
-  when: ansible_facts['os_family'] == 'Debian' and ansible_architecture == 'x86_64' and not ansible_check_mode
+        - name: Download and extract the Toolbox release
+          block:
+            - name: Download JetBrains Toolbox archive
+              ansible.builtin.get_url:
+                url: "{{ toolbox_download.link }}"
+                checksum: "sha256:{{ toolbox_download.checksumLink }}"
+                dest: "{{ toolbox_tmp.path }}/{{ toolbox_download.link | basename }}"
+                mode: "0644"
 
-- name: Parse release JSON and get download URL (Linux) - ARM64
-  set_fact:
-    jetbrains_toolbox_url: "{{ jetbrains_toolbox_release_json.TBA[0].downloads.linuxARM64.link }}"
-  when: ansible_facts['os_family'] == 'Debian' and ansible_architecture == 'aarch64' and not ansible_check_mode
+            - name: Create the staged Toolbox directory
+              ansible.builtin.file:
+                path: "{{ toolbox_tmp.path }}/release"
+                state: directory
+                mode: "0755"
+              become: true
 
-- name: Download JetBrains Toolbox archive from resolved URL (Linux)
-  get_url:
-    url: "{{ jetbrains_toolbox_url }}"
-    dest: "/tmp/jetbrains-toolbox.tar.gz"
-    mode: "0755"
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
+            - name: Extract JetBrains Toolbox archive
+              ansible.builtin.unarchive:
+                src: "{{ toolbox_tmp.path }}/{{ toolbox_download.link | basename }}"
+                dest: "{{ toolbox_tmp.path }}/release"
+                remote_src: true
+                extra_opts:
+                  - --strip-components=1
+              become: true
 
-- name: Extract JetBrains Toolbox archive (Linux)
-  unarchive:
-    src: "/tmp/jetbrains-toolbox.tar.gz"
-    dest: "/opt/"
-    remote_src: yes
-  become: true
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
+            - name: Check the staged Toolbox binary
+              ansible.builtin.stat:
+                path: "{{ toolbox_tmp.path }}/release/bin/jetbrains-toolbox"
+              register: toolbox_staged_binary
 
-- name: Find extracted JetBrains Toolbox directory (Linux)
-  find:
-    paths: "/opt/"
-    patterns: "jetbrains-toolbox-*"
-    file_type: directory
-    recurse: no
-  register: toolbox_dirs
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
+            - name: Ensure the staged Toolbox binary exists
+              ansible.builtin.assert:
+                that:
+                  - toolbox_staged_binary.stat.isreg | default(false)
+                  - toolbox_staged_binary.stat.executable | default(false)
+                fail_msg: "The Toolbox archive does not contain an executable bin/jetbrains-toolbox."
 
-- name: Symlink JetBrains Toolbox to /usr/local/bin (Linux)
-  file:
-    src: "{{ toolbox_dirs.files[0].path }}/jetbrains-toolbox"
-    dest: /usr/local/bin/jetbrains-toolbox
-    state: link
-    force: yes
-  become: true
-  when: ansible_facts['os_family'] == 'Debian' and not ansible_check_mode
+            - name: Record the staged Toolbox build
+              ansible.builtin.copy:
+                dest: "{{ toolbox_tmp.path }}/release/.sailwright-build-{{ toolbox_build }}"
+                content: "{{ toolbox_build }}\n"
+                mode: "0644"
 
-- name: Skip JetBrains Toolbox installation in check mode (Linux)
-  debug:
-    msg: "Skipping JetBrains Toolbox installation in check mode."
-  when: ansible_facts['os_family'] == 'Debian' and ansible_check_mode
+            - name: Check for a previous Toolbox installation
+              ansible.builtin.stat:
+                path: "{{ toolbox_directory }}"
+              register: toolbox_previous
+
+            - name: Preserve the previous Toolbox installation
+              ansible.builtin.command:
+                argv: [mv, "{{ toolbox_directory }}", "{{ toolbox_tmp.path }}/previous"]
+              when: toolbox_previous.stat.exists
+
+            - name: Promote the staged Toolbox installation
+              block:
+                - name: Move the staged Toolbox release into place
+                  ansible.builtin.command:
+                    argv: [mv, "{{ toolbox_tmp.path }}/release", "{{ toolbox_directory }}"]
+              rescue:
+                - name: Restore the previous Toolbox installation
+                  ansible.builtin.command:
+                    argv: [mv, "{{ toolbox_tmp.path }}/previous", "{{ toolbox_directory }}"]
+                  when: toolbox_previous.stat.exists
+
+                - name: Report the failed Toolbox promotion
+                  ansible.builtin.fail:
+                    msg: "Could not promote the staged Toolbox release: {{ ansible_failed_result.msg }}"
+
+            - name: Remove the previous Toolbox installation after promotion
+              ansible.builtin.file:
+                path: "{{ toolbox_tmp.path }}/previous"
+                state: absent
+          become: true
+          always:
+            # If restoring an old installation also fails, retain its backup.
+            - name: Check for a retained Toolbox backup
+              ansible.builtin.stat:
+                path: "{{ toolbox_tmp.path }}/previous"
+              register: toolbox_backup
+              become: true
+
+            - name: Remove the Toolbox staging directory
+              ansible.builtin.file:
+                path: "{{ toolbox_tmp.path }}"
+                state: absent
+              when: not toolbox_backup.stat.exists
+              become: true
+
+    - name: Report pending Toolbox installation in check mode
+      ansible.builtin.debug:
+        msg: "Would install JetBrains Toolbox {{ toolbox_build }}."
+      changed_when: not toolbox_marker.stat.exists
+      when: ansible_check_mode
+
+    - name: Find Toolbox releases installed by earlier role versions
+      ansible.builtin.find:
+        paths: /opt
+        patterns: "jetbrains-toolbox-*"
+        file_type: directory
+      register: toolbox_legacy_directories
+
+    - name: Remove Toolbox releases installed by earlier role versions
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ toolbox_legacy_directories.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      become: true
+
+    - name: Symlink JetBrains Toolbox to /usr/local/bin
+      ansible.builtin.file:
+        src: "{{ toolbox_directory }}/bin/jetbrains-toolbox"
+        dest: /usr/local/bin/jetbrains-toolbox
+        state: link
+        force: true
+      become: true
 
 - name: Install JetBrains Toolbox on Windows (via Chocolatey)
   win_chocolatey:

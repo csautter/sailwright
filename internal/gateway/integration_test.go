@@ -60,7 +60,12 @@ func waitJob(t *testing.T, session *mcp.ClientSession, id string) gateway.JobVie
 		var view gateway.JobView
 		mustCall(t, session, "job_status", map[string]any{"job_id": id}, &view)
 		if view.Done() {
-			return view
+			// The terminal state precedes snapshot cleanup and release of the job slot.
+			var info gateway.GatewayInfo
+			mustCall(t, session, "gateway_info", map[string]any{}, &info)
+			if info.ActiveJob != id {
+				return view
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("job %s did not finish: %+v", id, view)

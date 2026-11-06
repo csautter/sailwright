@@ -1,0 +1,14 @@
+---
+- name: Exercise local provisioning
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Write the fixture file
+      ansible.builtin.copy:
+        dest: "{{ fixture_file }}"
+        content: "local provisioning fixture\n"
+        mode: "0600"
+
+    - name: Emit fixture stdout
+      ansible.builtin.debug:
+        msg: local-provision-stdout-marker

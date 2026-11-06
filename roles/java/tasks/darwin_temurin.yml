@@ -1,0 +1,53 @@
+---
+# Installs one Temurin JDK from the Adoptium .pkg with Ansible's become, so a
+# --ask-become-pass password applies (Homebrew casks would run their own sudo).
+- name: Read the Temurin {{ temurin_version }} release metadata
+  ansible.builtin.uri:
+    url: >-
+      https://api.adoptium.net/v3/assets/latest/{{ temurin_version }}/hotspot?os=mac&image_type=jdk&vendor=eclipse&architecture={{
+      'aarch64' if ansible_facts['architecture'] == 'arm64' and temurin_version | int != 8 else 'x64' }}
+    return_content: true
+  register: temurin_release
+
+- name: Select the Temurin {{ temurin_version }} macOS installer
+  ansible.builtin.set_fact:
+    temurin_installer: "{{ temurin_release.json | map(attribute='binary') | selectattr('installer', 'defined') | map(attribute='installer') | first | default({}) }}"
+
+- name: Ensure a Temurin {{ temurin_version }} macOS installer exists
+  ansible.builtin.assert:
+    that:
+      - temurin_installer.link is defined
+      - temurin_installer.checksum is defined
+    fail_msg: "Adoptium publishes no macOS .pkg installer for Temurin {{ temurin_version }} on {{ ansible_facts['architecture'] }}."
+    quiet: true
+
+- name: Create a private download directory for Temurin {{ temurin_version }}
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: temurin
+  register: temurin_tmp
+
+- name: Install the Temurin {{ temurin_version }} package
+  block:
+    - name: Download the Temurin {{ temurin_version }} package
+      ansible.builtin.get_url:
+        url: "{{ temurin_installer.link }}"
+        checksum: "sha256:{{ temurin_installer.checksum }}"
+        dest: "{{ temurin_tmp.path }}/{{ temurin_installer.name | basename }}"
+        mode: '0644'
+
+    - name: Run the Temurin {{ temurin_version }} installer
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/installer
+          - -pkg
+          - "{{ temurin_tmp.path }}/{{ temurin_installer.name | basename }}"
+          - -target
+          - /
+        creates: "/Library/Java/JavaVirtualMachines/temurin-{{ temurin_version }}.jdk/Contents/Home/bin/java"
+      become: true
+  always:
+    - name: Remove the Temurin {{ temurin_version }} download directory
+      ansible.builtin.file:
+        path: "{{ temurin_tmp.path }}"
+        state: absent

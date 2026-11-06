@@ -406,7 +406,7 @@ func TestCurrentHostLocalProvisionVirtualMachineUsesLocalEngine(t *testing.T) {
 	}
 }
 
-func TestProvisionStatusMarksLocalNonWindowsHostsUnstable(t *testing.T) {
+func TestProvisionStatusMarksLocalHostsStable(t *testing.T) {
 	if got := provisionStatus(alchemy_build.VirtualMachineConfig{
 		OS:     "local",
 		HostOs: alchemy_build.HostOsWindows,
@@ -417,15 +417,15 @@ func TestProvisionStatusMarksLocalNonWindowsHostsUnstable(t *testing.T) {
 	if got := provisionStatus(alchemy_build.VirtualMachineConfig{
 		OS:     "local",
 		HostOs: alchemy_build.HostOsDarwin,
-	}); got != "unstable" {
-		t.Fatalf("expected darwin local provision to be unstable, got %q", got)
+	}); got != "stable" {
+		t.Fatalf("expected darwin local provision to be stable, got %q", got)
 	}
 
 	if got := provisionStatus(alchemy_build.VirtualMachineConfig{
 		OS:     "local",
 		HostOs: alchemy_build.HostOsLinux,
-	}); got != "unstable" {
-		t.Fatalf("expected linux local provision to be unstable, got %q", got)
+	}); got != "stable" {
+		t.Fatalf("expected linux local provision to be stable, got %q", got)
 	}
 }
 

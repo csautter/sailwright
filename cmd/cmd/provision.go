@@ -82,15 +82,8 @@ func currentHostLocalProvisionVirtualMachine() (alchemy_build.VirtualMachineConf
 	return localProvisionVirtualMachineForHostOS(alchemy_build.GetCurrentHostOs())
 }
 
-func isLocalProvisionUnstable(hostOs alchemy_build.HostOsType) bool {
-	return hostOs != alchemy_build.HostOsWindows
-}
-
 func provisionStatus(vm alchemy_build.VirtualMachineConfig) string {
 	if vm.OS == "local" {
-		if isLocalProvisionUnstable(vm.HostOs) {
-			return "unstable"
-		}
 		return "stable"
 	}
 	if isVirtualMachineTargetUnstable(vm) {
@@ -263,9 +256,6 @@ func executeProvision(cmd *cobra.Command, req provisionRequest) error {
 			return fmt.Errorf("❌ --force-ssh-uninstall is only supported with local Windows --proto ssh")
 		}
 
-		if isLocalProvisionUnstable(selectedVM.HostOs) {
-			fmt.Printf("⚠️ Local provisioning on host OS %s is currently marked unstable and has not been validated end-to-end yet.\n", selectedVM.HostOs)
-		}
 		if err := confirmProvisionIntent(cmd, selectedVM, options, req.assumeYes); err != nil {
 			return err
 		}

@@ -68,8 +68,13 @@ Use `--playbook` to point at a different playbook file. Use
 - Windows uses `inventory/localhost_windows_winrm.yml` by default.
 - Windows `--proto ssh` switches to `inventory/localhost_windows_ssh.yml`.
 
-The macOS/Linux local target is currently marked unstable until it has been
-validated end-to-end.
+Local provisioning supports macOS and Debian/Ubuntu Linux. CI validates the
+full bundled `playbooks/setup.yml` on macOS 15 (Apple Silicon and Intel) and
+Ubuntu 24.04 LTS (amd64 and arm64), including check mode and an idempotent
+second run. Other Linux distributions are not validated local targets. The
+Spotify role supports Linux amd64 only and reports that limitation on arm64.
+GitHub-hosted runners come with Homebrew and passwordless `sudo`, so CI does
+not exercise the Homebrew bootstrap or a `sudo` password prompt.
 
 ## sudo password on macOS and Linux
 
@@ -81,6 +86,10 @@ Roles that install system packages run their tasks with `become`, which uses
 sailwright provision local --ask-become-pass
 sailwright provision local -K --check
 ```
+
+On macOS, the Java role installs Temurin JDKs from Adoptium's `.pkg`
+installers through `become` rather than Homebrew casks, because casks run their
+own `sudo` that this password does not reach.
 
 The prompt needs an interactive terminal. For scripted runs, pass a password
 file to Ansible instead: `sailwright provision local -- --become-password-file
