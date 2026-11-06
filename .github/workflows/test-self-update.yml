@@ -34,7 +34,7 @@ jobs:
           cache: true
       - uses: actions/setup-python@v7
         with:
-          python-version: '3.x'
+          python-version: '3.13'
       - name: Test updater and interval logic
         run: go test -race ./internal/selfupdate
       - name: Install and update real release binaries against local fixtures

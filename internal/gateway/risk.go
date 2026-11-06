@@ -61,8 +61,9 @@ func AssessRisk(args []string, bundleRoot string) []string {
 	case "install":
 		flags[RiskHostModifying] = true
 	case "update":
-		// --check only reads the latest release tag; settings and installs modify the host.
-		if !containsString(args, "--check") {
+		// Only the exact check invocation is read-only. Repeated flags can override
+		// --check, and additional flags can modify settings or select an install.
+		if len(args) != 2 || args[1] != "--check" {
 			flags[RiskHostModifying] = true
 		}
 	case "push":
