@@ -31,7 +31,7 @@ func (g *Gateway) reserveInstance(ctx context.Context, target VMTarget) (func(),
 	}
 	existing := map[string]bool{}
 	for _, vm := range targets {
-		if vm.Fields["create"] == createdState {
+		if listedAsExisting(vm) {
 			existing[vmKey(vm.OS, vm.Type, vm.Arch, vm.Name)] = true
 		}
 	}
@@ -49,4 +49,12 @@ func (g *Gateway) reserveInstance(ctx context.Context, target VMTarget) (func(),
 	}
 	g.pendingInstances[target.Key()] = true
 	return func() { g.instanceMu.Lock(); delete(g.pendingInstances, target.Key()); g.instanceMu.Unlock() }, nil
+}
+
+// listedAsExisting prefers the typed existence flag and supports older CLIs.
+func listedAsExisting(target Target) bool {
+	if target.Exists != nil {
+		return *target.Exists
+	}
+	return target.Fields["create"] == legacyCreatedState
 }

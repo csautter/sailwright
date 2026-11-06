@@ -212,7 +212,7 @@ func TestListingCarriesEachInstanceName(t *testing.T) {
 		return []string{vm.OS, vm.UbuntuType, vm.Arch}, nil
 	}
 	var out bytes.Buffer
-	if err := writeVirtualMachineCombinationJSON(&out, vms, []string{"OS", "Type", "Arch"}, row); err != nil {
+	if err := writeVirtualMachineCombinationJSON(&out, vms, []string{"OS", "Type", "Arch"}, row, nil); err != nil {
 		t.Fatal(err)
 	}
 	var listing vmListingJSON
