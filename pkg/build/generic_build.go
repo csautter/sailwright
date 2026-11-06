@@ -632,6 +632,9 @@ func RemoveBuildArtifactsForConfig(config VirtualMachineConfig) {
 }
 
 func promoteStagedBuildArtifacts(finalArtifacts []string, stagedArtifacts []string) error {
+	if err := MarkBuildArtifactsPending(finalArtifacts); err != nil {
+		return err
+	}
 	var errs []error
 	for i, finalArtifact := range finalArtifacts {
 		stagedArtifact := stagedArtifacts[i]
@@ -644,10 +647,6 @@ func promoteStagedBuildArtifacts(finalArtifacts []string, stagedArtifacts []stri
 			continue
 		}
 
-		if err := RemoveBuildArtifactCompletionMarkers([]string{finalArtifact}); err != nil {
-			errs = append(errs, err)
-			continue
-		}
 		if err := replaceBuildArtifact(finalArtifact, stagedArtifact); err != nil {
 			errs = append(errs, err)
 		}

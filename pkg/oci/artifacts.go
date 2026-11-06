@@ -175,7 +175,7 @@ func Pull(ctx context.Context, vm alchemy_build.VirtualMachineConfig, reference 
 	for _, artifact := range layout.files {
 		finalPaths = append(finalPaths, artifact.Path)
 	}
-	if err := alchemy_build.RemoveBuildArtifactCompletionMarkers(finalPaths); err != nil {
+	if err := alchemy_build.MarkBuildArtifactsPending(finalPaths); err != nil {
 		return TransferResult{}, err
 	}
 	if err := promotePulledArtifacts(stagingRoot, layout.files); err != nil {

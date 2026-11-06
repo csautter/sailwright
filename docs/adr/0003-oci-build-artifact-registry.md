@@ -64,8 +64,9 @@ after all expected staged files are present, back up existing files before
 replacement, roll back partial replacements on failure, and clean successful
 backups after promotion.
 
-After promotion, `pull` writes a `<artifact>.sailwright-complete` completion
-marker for every promoted artifact; the layers were verified against their
+Before promotion, `pull` marks every final artifact as pending, so a promotion
+that stops partway leaves the target `incomplete`. After promotion, it writes a
+`<artifact>.sailwright-complete` completion marker for every promoted artifact; the layers were verified against their
 digests. `push` refuses local artifacts whose state is `incomplete` or `missing`
 (see `docs/machine-readable-listings.md`). Completion markers are local cache
 metadata and are never pushed as layers.

@@ -202,3 +202,29 @@ func TestInterruptedReplacementBackupIsRestoredInsteadOfDeleted(t *testing.T) {
 	}
 	assertArtifactState(t, ArtifactStateUnverified, artifact)
 }
+
+// A promotion that stops after replacing only some artifacts of a set must not leave
+// a mix of new and old artifacts that counts as usable.
+func TestPartlyPromotedArtifactSetIsIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "disk.qcow2")
+	second := filepath.Join(dir, "efivars.fd")
+	writeTestFile(t, first, "old disk")
+	writeTestFile(t, second, "old vars")
+	if err := MarkBuildArtifactsComplete([]string{first, second}); err != nil {
+		t.Fatal(err)
+	}
+
+	stagedFirst := filepath.Join(dir, "disk"+stagedBuildArtifactInfix+"1.qcow2")
+	writeTestFile(t, stagedFirst, "new disk")
+	missingStagedSecond := filepath.Join(dir, "efivars"+stagedBuildArtifactInfix+"1.fd")
+	if err := promoteStagedBuildArtifacts([]string{first, second}, []string{stagedFirst, missingStagedSecond}); err == nil {
+		t.Fatal("expected promotion with a missing staged artifact to fail")
+	}
+	assertArtifactState(t, ArtifactStateIncomplete, first, second)
+
+	if err := MarkBuildArtifactsComplete([]string{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	assertArtifactState(t, ArtifactStateExists, first, second)
+}

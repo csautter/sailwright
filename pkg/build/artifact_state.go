@@ -57,6 +57,9 @@ type artifactCompletionMarker struct {
 	SailwrightVersion string    `json:"sailwright_version,omitempty"`
 	// Size is the artifact size in bytes; -1 for directories, which are not checked.
 	Size int64 `json:"size"`
+	// Pending marks an artifact whose set is being replaced by a build or pull. It
+	// keeps a set that was only partly replaced from looking complete or unverified.
+	Pending bool `json:"pending,omitempty"`
 }
 
 func artifactCompletionMarkerPath(artifact string) string {
@@ -127,7 +130,7 @@ func artifactState(artifact string) (ArtifactState, error) {
 	if os.IsNotExist(err) {
 		return legacyArtifactState(artifact), nil
 	}
-	if err != nil {
+	if err != nil || marker.Pending {
 		return ArtifactStateIncomplete, nil
 	}
 	if marker.Size >= 0 && (info.IsDir() || marker.Size != info.Size()) {
@@ -173,12 +176,39 @@ func writeArtifactCompletionMarker(artifact string) error {
 	if info.IsDir() {
 		size = -1
 	}
-	data, err := json.MarshalIndent(artifactCompletionMarker{
+	return writeArtifactMarkerFile(artifact, artifactCompletionMarker{
 		Format:            artifactCompletionMarkerFormat,
 		CompletedAt:       time.Now().UTC(),
 		SailwrightVersion: sailwrightVersion(),
 		Size:              size,
-	}, "", "  ")
+	})
+}
+
+// MarkBuildArtifactsPending marks all artifacts of a set as incomplete before a build
+// or pull replaces any of them. If the replacement stops partway, the set stays
+// incomplete instead of mixing new and old artifacts without markers, which would
+// count as unverified and usable. MarkBuildArtifactsComplete replaces the markers once
+// the whole set is in place.
+func MarkBuildArtifactsPending(artifacts []string) error {
+	for _, artifact := range artifacts {
+		// #nosec G301 -- cache artifact directories must remain traversable for non-root CI steps after sudo-created builds.
+		if err := os.MkdirAll(filepath.Dir(artifact), 0o755); err != nil {
+			return fmt.Errorf("create artifact directory for %s: %w", artifact, err)
+		}
+		if err := writeArtifactMarkerFile(artifact, artifactCompletionMarker{
+			Format:            artifactCompletionMarkerFormat,
+			SailwrightVersion: sailwrightVersion(),
+			Size:              -1,
+			Pending:           true,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeArtifactMarkerFile(artifact string, marker artifactCompletionMarker) error {
+	data, err := json.MarshalIndent(marker, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -196,7 +226,7 @@ func writeArtifactCompletionMarker(artifact string) error {
 }
 
 // RemoveBuildArtifactCompletionMarkers removes the completion markers of artifacts,
-// e.g. before their final path is replaced.
+// e.g. together with the artifacts.
 func RemoveBuildArtifactCompletionMarkers(artifacts []string) error {
 	var errs []error
 	for _, artifact := range artifacts {

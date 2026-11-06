@@ -24,8 +24,10 @@ Under that root, Sailwright manages:
     so it is safe to delete after an interrupted build. Older versions wrote it to
     `/tmp/dev-alchemy/qemu-out-*`; those leftovers can be deleted.
   - `<artifact>.sailwright-complete` is the completion marker of a build artifact.
-    A build or `oci pull` writes it after the artifact reached its final path;
-    `build list` reports an artifact without a marker as `unverified`.
+    Before a build or `oci pull` replaces any artifact of a target, it marks all
+    of them as pending (`build list` shows `incomplete`); once every artifact
+    reached its final path, it writes the completion markers. `build list`
+    reports an artifact without a marker as `unverified`.
   - `<name>.dev-alchemy-build-<n>.<ext>` are staged artifacts of a running or
     interrupted build, and `<artifact>.dev-alchemy-*backup-<n>` are backups of a
     running or interrupted replacement. The next build of the same target restores
