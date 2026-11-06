@@ -53,6 +53,11 @@ provision -> (stop -> destroy)`), see
 
 ## Deterministic E2E Scenarios
 
+Automatic PR CI runs the CLI smoke scenario and E2E runner tests. Full
+host-modifying scenarios remain opt-in on suitable hosts or disposable runners.
+The resulting coverage gap is an explicitly
+[accepted risk (ADR 0007)](adr/0007-manual-host-e2e-accepted-risk.md).
+
 The repeated user cycles are covered by deterministic scenarios in
 [`test/e2e/scenarios`](../test/e2e/scenarios). Each scenario is a YAML file
 that runs as a subtest of `go test -tags e2e ./test/e2e`:
