@@ -86,6 +86,58 @@ func TestCLIResolverSharesConcurrentLookupsPerTarget(t *testing.T) {
 
 }
 
+// A fresh lookup must not take the answer of a slow lookup that began long before
+// it; a cached lookup may, as it accepts answers that old anyway.
+func TestCLIResolverFreshLookupSkipsOldInflightLookup(t *testing.T) {
+	fake := gatewaytest.BuildFakeCLI(t)
+	work, state := t.TempDir(), t.TempDir()
+	pinned, err := gateway.PinBinary(fake, t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "ubuntu-server-amd64"), []byte("running"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(t.TempDir(), "record.jsonl")
+	if err := os.WriteFile(record, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(), "FAKE_CLI_STATE="+state, "FAKE_CLI_RECORD="+record, "FAKE_VM_INFO_DELAY=4s")
+	resolver := &gateway.CLIManagedVMResolver{Runner: &gateway.Runner{Binary: pinned, Env: env}, Work: work}
+	t.Cleanup(func() { _ = resolver.Close() })
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := resolver.ResolveFresh(context.Background(), "ubuntu", "server", "amd64")
+		first <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for countVMInfo(t, record) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("lookup did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(2500 * time.Millisecond) // past the cache TTL, still in flight
+
+	cachedDone := make(chan error, 1)
+	go func() {
+		_, err := resolver.Resolve(context.Background(), "ubuntu", "server", "amd64")
+		cachedDone <- err
+	}()
+	if _, err := resolver.ResolveFresh(context.Background(), "ubuntu", "server", "amd64"); err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range []chan error{first, cachedDone} {
+		if err := <-ch; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := countVMInfo(t, record); got != 2 {
+		t.Fatalf("want one shared old lookup and one new fresh lookup, got %d CLI calls", got)
+	}
+}
+
 func TestCLIResolverDoesNotLearnSecretsFromInvalidResponses(t *testing.T) {
 	fake := gatewaytest.BuildFakeCLI(t)
 	state := t.TempDir()

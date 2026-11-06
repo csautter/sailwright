@@ -79,12 +79,14 @@ type CLIManagedVMResolver struct {
 type cachedVM struct {
 	vm      ManagedVM
 	expires time.Time
+	started time.Time // when the lookup that produced vm began
 }
 
 type vmLookup struct {
-	done chan struct{}
-	vm   ManagedVM
-	err  error
+	done    chan struct{}
+	started time.Time
+	vm      ManagedVM
+	err     error
 }
 
 const vmInfoCacheTTL = 2 * time.Second
@@ -123,11 +125,16 @@ func (r *CLIManagedVMResolver) resolve(ctx context.Context, osName, osType, arch
 		r.mu.Unlock()
 		return value.vm, nil
 	}
-	// A lookup already in flight started no earlier than this request would, so
-	// fresh callers may share it as well.
+	// Callers share a lookup in flight. A fresh caller only shares one that began
+	// within the cache TTL, the same staleness a cached answer may have; an older
+	// lookup (a slow Hyper-V query can run for minutes) may describe a VM that was
+	// replaced since, so a fresh caller starts its own.
 	lookup, ok := r.inflight[key]
+	if ok && !cached && time.Since(lookup.started) > vmInfoCacheTTL {
+		ok = false
+	}
 	if !ok {
-		lookup = &vmLookup{done: make(chan struct{})}
+		lookup = &vmLookup{done: make(chan struct{}), started: time.Now()}
 		if r.inflight == nil {
 			r.inflight = map[string]*vmLookup{}
 		}
@@ -178,14 +185,19 @@ func (r *CLIManagedVMResolver) query(key string, lookup *vmLookup, osName, osTyp
 		fmt.Fprintf(r.Console, "vm info %s failed: %s\n", key, sanitizeForTerminal(lookup.err.Error()))
 	}
 	r.mu.Lock()
-	delete(r.inflight, key)
-	if lookup.err == nil {
-		if r.cache == nil {
-			r.cache = map[string]cachedVM{}
+	if r.inflight[key] == lookup {
+		delete(r.inflight, key)
+	}
+	// A newer lookup may have finished first; never replace its answer.
+	if existing, ok := r.cache[key]; !ok || !existing.started.After(lookup.started) {
+		if lookup.err == nil {
+			if r.cache == nil {
+				r.cache = map[string]cachedVM{}
+			}
+			r.cache[key] = cachedVM{vm: lookup.vm, expires: time.Now().Add(vmInfoCacheTTL), started: lookup.started}
+		} else {
+			delete(r.cache, key)
 		}
-		r.cache[key] = cachedVM{lookup.vm, time.Now().Add(vmInfoCacheTTL)}
-	} else {
-		delete(r.cache, key)
 	}
 	r.mu.Unlock()
 	close(lookup.done)
