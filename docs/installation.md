@@ -192,8 +192,12 @@ signature.
 Sailwright VMs on Hyper-V expose virtualization extensions to the guest by
 default. When Windows itself runs in a VM whose hypervisor cannot pass them on,
 Hyper-V refuses to start such a VM; `sailwright create` and `sailwright start`
-then turn the extensions off for that VM and retry once. Set
-`VAGRANT_HYPERV_NESTED_VIRTUALIZATION=false` to skip the first attempt.
+then turn the extensions off for that VM and retry once. The fallback is
+remembered in the VM's Vagrant directory (file
+`sailwright-nested-virtualization-unsupported`), so later starts go without the
+extensions right away; delete the file to try again. Set
+`VAGRANT_HYPERV_NESTED_VIRTUALIZATION=false` to skip the first attempt, or
+`true` to always try with the extensions.
 
 Vagrant is installed in a pinned version through Chocolatey and added to the
 `PATH`.

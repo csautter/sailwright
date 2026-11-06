@@ -2,6 +2,8 @@ package deploy
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -118,5 +120,60 @@ func TestRunHypervVagrantUpReportsFailedRetry(t *testing.T) {
 	err := runHypervVagrantUp(config, settings)
 	if !errors.Is(err, upErr) || !strings.Contains(err.Error(), "still broken") {
 		t.Fatalf("expected both errors, got %v", err)
+	}
+}
+
+func TestRunHypervVagrantUpRemembersNestedVirtualizationFallback(t *testing.T) {
+	restore := stubHypervStopDependencies(t)
+	defer restore()
+	t.Setenv(hypervNestedVirtualizationEnvVar, "")
+	os.Unsetenv(hypervNestedVirtualizationEnvVar) // restored by t.Setenv's cleanup
+	dotfile := filepath.Join(t.TempDir(), "vagrant")
+	var envs [][]string
+	ups := 0
+	runHypervVagrantCommandWithEnv = func(_ string, _ time.Duration, _ string, _ []string, env []string, _ string) error {
+		envs = append(envs, env)
+		if ups++; ups == 1 {
+			return errors.New("platform does not support nested virtualization")
+		}
+		return nil
+	}
+	probes := 0
+	runHypervCommandWithCombinedOutput = func(_ string, _ time.Duration, _ string, args []string) (string, error) {
+		probes++
+		if script := args[len(args)-1]; !strings.Contains(script, "S-1-5-83-1-") || !strings.Contains(script, "$vmSid") {
+			t.Fatalf("probe must only accept events of this VM: %s", script)
+		}
+		return "disabled", nil
+	}
+	config, settings := hypervUpTestFixture()
+	settings.VagrantEnv = append(settings.VagrantEnv, hypervVagrantDotfileEnvVar+"="+dotfile)
+	if err := runHypervVagrantUp(config, settings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dotfile, hypervNestedUnsupportedMarker)); err != nil {
+		t.Fatalf("fallback not remembered: %v", err)
+	}
+
+	// The next start goes without the extensions at once.
+	envs = nil
+	if err := runHypervVagrantUp(config, settings); err != nil {
+		t.Fatal(err)
+	}
+	if len(envs) != 1 || probes != 1 {
+		t.Fatalf("expected one vagrant up and no new probe, got %d ups and %d probes", len(envs), probes)
+	}
+	assertEnvContainsEntry(t, envs[0], hypervNestedVirtualizationEnvVar+"=false")
+
+	// An explicit setting wins over the marker.
+	t.Setenv(hypervNestedVirtualizationEnvVar, "true")
+	envs = nil
+	if err := runHypervVagrantUp(config, settings); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range envs[0] {
+		if strings.HasPrefix(entry, hypervNestedVirtualizationEnvVar+"=") {
+			t.Fatalf("explicit setting overridden by %q", entry)
+		}
 	}
 }

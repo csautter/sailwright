@@ -733,9 +733,10 @@ made. `owned_vms.json` next to it holds the VM's Hyper-V id
 When Windows itself runs in a VM (nested virtualization):
 
 - Hyper-V cannot pass virtualization extensions on to its guests. `sailwright
-  create` and `start` detect Hyper-V's refusal (Worker-Admin event 3108),
-  turn the extensions off for that VM and retry once; set
-  `VAGRANT_HYPERV_NESTED_VIRTUALIZATION=false` to skip the first attempt.
+  create` and `start` detect Hyper-V's refusal (Worker-Admin event 3108 for
+  that VM), turn the extensions off for that VM and retry once. Later starts
+  of the VM remember this and skip the failing attempt; set
+  `VAGRANT_HYPERV_NESTED_VIRTUALIZATION=false` to skip it from the start.
 - Give the outer VM enough memory for Windows, the 8 GB guest and the tools,
   about 24 GB, and a CPU topology that matches the physical CPU (for example
   `host-passthrough` with 4 cores × 2 threads on an 8-core/16-thread CPU).
