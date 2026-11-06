@@ -50,6 +50,18 @@ variable "artifact_output_path" {
   description = "Optional Vagrant box artifact path. Used to stage no-cache rebuilds before promotion."
 }
 
+variable "winrm_timeout" {
+  type        = string
+  default     = "4h"
+  description = "How long Packer waits for WinRM from the first boot on, so it covers the whole Windows setup. Raise it on slow or nested hosts, e.g. PKR_VAR_winrm_timeout=8h."
+}
+
+variable "headless" {
+  type        = bool
+  default     = false
+  description = "Do not open a vmconnect console window during the build. Saves CPU on slow or nested hosts (PKR_VAR_headless=true)."
+}
+
 locals {
   temp_dir   = var.temp_disk_path != "" ? var.temp_disk_path : "${var.cache_dir}/windows11/hyperv-temp"
   box_output = var.artifact_output_path != "" ? var.artifact_output_path : "${var.cache_dir}/windows11/hyperv-windows11-amd64.box"
@@ -73,9 +85,8 @@ source "hyperv-iso" "win11" {
   communicator   = "winrm"
   winrm_username = "Administrator"
   winrm_password = "P@ssw0rd!"
-  # Packer waits for WinRM from the first boot on, so this covers the whole Windows
-  # setup; on nested or slow hosts that takes well over an hour (QEMU uses 4h too).
-  winrm_timeout = "4h"
+  winrm_timeout  = var.winrm_timeout
+  headless       = var.headless
 
   enable_secure_boot = true
   generation         = 2
@@ -84,11 +95,12 @@ source "hyperv-iso" "win11" {
   boot_wait = "500ms"
 
   # The "press any key to boot from CD or DVD" prompt waits about 5 seconds, but on
-  # slow or nested hosts it appears several seconds after power-on. Press space
-  # every second for 20 seconds so the prompt is caught wherever it shows up; a
-  # miss leaves the VM at "No operating system was loaded" until winrm_timeout.
-  # Later presses land while Setup loads and are ignored (autounattend.xml).
-  boot_command = [for i in range(20) : "<spacebar><wait1s>"]
+  # slow or nested hosts it appears well after power-on. Keep pressing space so the
+  # prompt is caught wherever it shows up; a miss leaves the VM at "No operating
+  # system was loaded" until winrm_timeout. Each press can take several seconds on
+  # a nested host, so ten presses cover about a minute without reaching Setup's
+  # dialogs.
+  boot_command = [for i in range(10) : "<spacebar><wait1s>"]
 
   # The "autounattend.xml" file is an unattended setup configuration for Windows installation.
   cd_files = [
