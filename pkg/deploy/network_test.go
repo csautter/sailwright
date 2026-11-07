@@ -305,3 +305,28 @@ func TestTartStoppedAndUnobservableRunningNetwork(t *testing.T) {
 		}
 	}
 }
+
+func TestLibvirtUserPortForwardExposure(t *testing.T) {
+	oldRun := runNetworkCommand
+	t.Cleanup(func() { runNetworkCommand = oldRun })
+	vm := alchemy_build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "server", Arch: "amd64", VirtualizationEngine: alchemy_build.VirtualizationEngineQemu}
+	for _, tc := range []struct{ name, forwards, want string }{
+		{"no forwarding", "", "nat"},
+		{"loopback IPv4", `<portForward proto="tcp" address="127.0.0.1"><range start="2222" to="22"/></portForward>`, "nat"},
+		{"loopback IPv6", `<portForward proto="udp" address="::1"/>`, "nat"},
+		{"wildcard", `<portForward proto="tcp" address="0.0.0.0"/>`, "unknown"},
+		{"missing address", `<portForward proto="tcp"><range start="2222" to="22"/></portForward>`, "unknown"},
+		{"LAN", `<portForward proto="tcp" address="192.168.1.10"/>`, "unknown"},
+		{"hostname", `<portForward proto="tcp" address="localhost"/>`, "unknown"},
+		{"mixed", `<portForward proto="tcp" address="127.0.0.1"/><portForward proto="udp"/>`, "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runNetworkCommand = func(string, time.Duration, string, []string) (string, error) {
+				return `<domain><devices><interface type="user"><backend type="passt"/>` + tc.forwards + `</interface></devices></domain>`, nil
+			}
+			if got := InspectNetworkMode(vm, false); got.Mode != tc.want {
+				t.Fatalf("got %+v, want %s", got, tc.want)
+			}
+		})
+	}
+}

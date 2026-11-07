@@ -65,6 +65,8 @@ func TestGuestSecurityPolicy(t *testing.T) {
 
 func TestGuestSecurityGuardsLifecycleBeforeMutation(t *testing.T) {
 	fakeGuestSecurity(t, "bridged", false, false)
+	marker := filepath.Join(t.TempDir(), "started")
+	t.Setenv(createStartedFileEnvVar, marker)
 	oldInspector := inspectCreateTargetExists
 	t.Cleanup(func() { inspectCreateTargetExists = oldInspector })
 	inspectCreateTargetExists = func(alchemy_build.VirtualMachineConfig) (bool, error) { return false, nil }
@@ -77,6 +79,9 @@ func TestGuestSecurityGuardsLifecycleBeforeMutation(t *testing.T) {
 		if err := run(); err == nil || !strings.Contains(err.Error(), "refusing bridged networking") {
 			t.Fatalf("expected security refusal before executing host tools: %v", err)
 		}
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("refused operations must not mark creation started: %v", err)
 	}
 }
 
@@ -187,6 +192,9 @@ func TestCreateListingUsesPlannedSecurityOnlyForMissingTargets(t *testing.T) {
 				t.Fatalf("unexpected targets: %+v", listing.Targets)
 			}
 			missing, existing := listing.Targets[0], listing.Targets[1]
+			if missing.Exists == nil || *missing.Exists || existing.Exists == nil || !*existing.Exists {
+				t.Fatalf("existence must remain available alongside security metadata: %+v", listing.Targets)
+			}
 			if missing.NetworkMode != "bridged" || missing.CredentialsOrigin != "legacy" || missing.Fields["create"] != "ready to create" {
 				t.Fatalf("missing VM must show the template and baked-in credentials: %+v", missing)
 			}

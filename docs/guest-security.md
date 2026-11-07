@@ -23,6 +23,10 @@ libvirt NAT with IPv6 addresses is routed over IPv6 unless the network explicitl
 enables `<nat ipv6="yes"/>`; Sailwright treats that combination as exposed.
 See the [libvirt network format](https://libvirt.org/formatnetwork.html#connectivity).
 
+libvirt user interfaces with port forwards retain `nat` only for explicit numeric
+loopback bindings. Other bindings produce `unknown`. See the
+[libvirt domain format](https://libvirt.org/formatdomain.html#userspace-connection-using-passt).
+
 UTM Emulated networking can publish guest services through port forwards. Only
 explicit numeric loopback bindings, such as `127.0.0.1` or `::1`, retain the
 `nat` classification. Wildcard, LAN, missing, empty, or unrecognized bindings

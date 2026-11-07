@@ -96,7 +96,10 @@ func InspectNetworkMode(vm alchemy_build.VirtualMachineConfig, creating bool) Ne
 		var domain struct {
 			XMLName    xml.Name `xml:"domain"`
 			Interfaces []struct {
-				Type   string `xml:"type,attr"`
+				Type         string `xml:"type,attr"`
+				PortForwards []struct {
+					Address string `xml:"address,attr"`
+				} `xml:"portForward"`
 				Source struct {
 					Network string `xml:"network,attr"`
 				} `xml:"source"`
@@ -109,7 +112,15 @@ func InspectNetworkMode(vm alchemy_build.VirtualMachineConfig, creating bool) Ne
 		for _, adapter := range domain.Interfaces {
 			switch adapter.Type {
 			case "user":
-				modes = append(modes, NetworkMode{"nat", "libvirt user networking"})
+				mode := NetworkMode{"nat", "libvirt user networking"}
+				for _, forward := range adapter.PortForwards {
+					ip := net.ParseIP(forward.Address)
+					if ip == nil || !ip.IsLoopback() {
+						mode = unknownNetwork("libvirt user networking with non-loopback or unknown port forwarding")
+						break
+					}
+				}
+				modes = append(modes, mode)
 			case "bridge", "direct":
 				modes = append(modes, NetworkMode{"bridged", "libvirt " + adapter.Type + " interface"})
 			case "network":

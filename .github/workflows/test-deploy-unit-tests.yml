@@ -7,6 +7,7 @@ on:
     paths:
       - "pkg/deploy/**"
       - "pkg/provision/**"
+      - "pkg/credentials/**"
       - "internal/winpsenv/**"
       - "cmd/main.go"
       - "go.mod"
@@ -23,6 +24,7 @@ on:
     paths:
       - "pkg/deploy/**"
       - "pkg/provision/**"
+      - "pkg/credentials/**"
       - "internal/winpsenv/**"
       - "cmd/main.go"
       - "go.mod"

@@ -1,4 +1,4 @@
-# ADR 0007: Guest Network Exposure And Credential Guards
+# ADR 0008: Guest Network Exposure And Credential Guards
 
 ## Status
 
