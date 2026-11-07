@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,70 @@ import (
 )
 
 func utmRegistrationIDs(config alchemy_build.VirtualMachineConfig) ([]string, error) {
+	ids, err := utmScriptableRegistrationIDs(config)
+	if err != nil {
+		return nil, err
+	}
+	persisted, err := utmPersistentRegistrationIDs(config)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range persisted {
+		if !slices.Contains(ids, id) {
+			return nil, fmt.Errorf("UTM registration %s for %q is not available through scripting; remove the unavailable entry in the UTM library manually, then retry (preferences may still be synchronizing)", id, utmVirtualMachineName(config))
+		}
+	}
+	return ids, nil
+}
+
+// UTM excludes entries whose bundles could not be loaded from its scripting
+// collection. Read persistent entries as well so an empty collection cannot be
+// mistaken for successful cleanup. Never modify the preferences directly.
+func utmPersistentRegistrationIDs(config alchemy_build.VirtualMachineConfig) ([]string, error) {
+	vmPath, err := utmVirtualMachinePath(config)
+	if err != nil {
+		return nil, err
+	}
+	script := fmt.Sprintf(`
+ // sailwright: inspect persistent UTM registrations
+ ObjC.import('Foundation');
+ var home = ObjC.unwrap($.NSHomeDirectory());
+ var paths = [home + '/Library/Containers/com.utmapp.UTM/Data/Library/Preferences/com.utmapp.UTM.plist', home + '/Library/Preferences/com.utmapp.UTM.plist'];
+ var matches = [];
+ paths.forEach(function(path) {
+   if (!$.NSFileManager.defaultManager.fileExistsAtPath(path)) { return; }
+   var prefs = $.NSDictionary.dictionaryWithContentsOfFile(path);
+   if (!prefs || prefs.isNil()) { throw new Error('Cannot read UTM preferences: ' + path); }
+   var registry = prefs.objectForKey('Registry');
+   if (!registry || registry.isNil()) { return; }
+   ObjC.deepUnwrap(registry.allKeys).forEach(function(id) {
+     var entry = registry.objectForKey(id);
+     var name = entry.objectForKey('Name');
+     var pkg = entry.objectForKey('Package');
+     var path = pkg && !pkg.isNil() ? pkg.objectForKey('Path') : null;
+     if ((name && !name.isNil() && ObjC.unwrap(name) === %q) || (path && !path.isNil() && ObjC.unwrap(path) === %q)) { matches.push(id); }
+   });
+ });
+ JSON.stringify(matches);
+ `, utmVirtualMachineName(config), vmPath)
+	output, err := runCommandWithCombinedOutput(alchemy_build.GetDirectoriesInstance().ProjectDir, utmAutomationCommandTimeout, "osascript", []string{"-l", "JavaScript", "-e", script})
+	if err != nil {
+		return nil, fmt.Errorf("inspect persistent UTM registrations: %w; output: %s", err, strings.TrimSpace(output))
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(output), &ids); err != nil || ids == nil {
+		return nil, fmt.Errorf("invalid persistent UTM registration list %q", truncateForError(output, 128))
+	}
+	for i, id := range ids {
+		if !instanceIDPattern.MatchString(id) {
+			return nil, fmt.Errorf("invalid persistent UTM registration UUID %q", truncateForError(id, 64))
+		}
+		ids[i] = strings.ToLower(id)
+	}
+	return ids, nil
+}
+
+func utmScriptableRegistrationIDs(config alchemy_build.VirtualMachineConfig) ([]string, error) {
 	output, err := runUtmAppleScript([]string{
 		`tell application "UTM"`,
 		fmt.Sprintf(`set matches to every virtual machine whose name is %q`, utmVirtualMachineName(config)),
@@ -48,6 +113,9 @@ func runUtmBundleAppleScript(config alchemy_build.VirtualMachineConfig, lines []
 	if !exists {
 		return "", fmt.Errorf("UTM VM %q does not exist; run sailwright create first", utmVirtualMachineName(config))
 	}
+	if err := verifyUtmRegistrationPath(config, id); err != nil {
+		return "", err
+	}
 	for i := range lines {
 		lines[i] = strings.ReplaceAll(lines[i], "__SAILWRIGHT_UUID__", id)
 	}
@@ -62,20 +130,19 @@ func removeUtmRegistrations(config alchemy_build.VirtualMachineConfig, keepID st
 	if err != nil {
 		return err
 	}
+	for _, id := range ids {
+		if err := verifyUtmRegistrationPath(config, id); err != nil {
+			return err
+		}
+	}
 	vmPath, err := utmVirtualMachinePath(config)
 	if err != nil {
 		return err
 	}
+	// Validate the entire set before changing any registration.
 	for _, id := range ids {
 		if id == keepID {
 			continue
-		}
-		output, err := utmRegistrationPath(id)
-		if err != nil {
-			return fmt.Errorf("cannot verify registered UTM VM %s bundle path; refusing deletion: %w", id, err)
-		}
-		if filepath.Clean(strings.TrimSpace(output)) != filepath.Clean(vmPath) {
-			return fmt.Errorf("UTM VM %s has the managed name but a different bundle path; refusing deletion", id)
 		}
 		if err := stopUtmRegistration(id); err != nil {
 			return err
@@ -85,6 +152,31 @@ func removeUtmRegistrations(config alchemy_build.VirtualMachineConfig, keepID st
 		}
 	}
 	return nil
+}
+
+// A copied bundle can retain its UUID. Verify location before using that UUID
+// to control the registered VM, even when it matches the managed bundle.
+func verifyUtmRegistrationPath(config alchemy_build.VirtualMachineConfig, id string) error {
+	vmPath, err := utmVirtualMachinePath(config)
+	if err != nil {
+		return err
+	}
+	registered, err := utmRegistrationPath(id)
+	if err != nil {
+		return fmt.Errorf("cannot verify registered UTM VM %s bundle path; refusing operation: %w", id, err)
+	}
+	if filepath.IsAbs(registered) {
+		if filepath.Clean(registered) == filepath.Clean(vmPath) {
+			return nil
+		}
+		// Accept aliases only when both paths resolve to the same bundle.
+		actual, actualErr := filepath.EvalSymlinks(registered)
+		managed, managedErr := filepath.EvalSymlinks(vmPath)
+		if actualErr == nil && managedErr == nil && actual == managed {
+			return nil
+		}
+	}
+	return fmt.Errorf("UTM VM %s has a different or unverifiable bundle path; refusing operation", id)
 }
 
 func stopUtmRegistration(id string) error {
@@ -167,12 +259,14 @@ func ensureUtmRegistration(config alchemy_build.VirtualMachineConfig) error {
 	if err := removeUtmRegistrations(config, id); err != nil {
 		return err
 	}
-	ids, err := utmRegistrationIDs(config)
+	// The initial cleanup checked persistent entries before any mutation. Query
+	// the live scripting collection here; preference files can lag a deletion.
+	ids, err := utmScriptableRegistrationIDs(config)
 	if err != nil {
 		return err
 	}
 	if slices.Contains(ids, id) {
-		return nil
+		return verifyUtmRegistrationPath(config, id)
 	}
 	vmPath, err := utmVirtualMachinePath(config)
 	if err != nil {
@@ -184,12 +278,12 @@ func ensureUtmRegistration(config alchemy_build.VirtualMachineConfig) error {
 		return err
 	}
 	for attempt := 0; attempt < 25; attempt++ {
-		ids, err := utmRegistrationIDs(config)
+		ids, err := utmScriptableRegistrationIDs(config)
 		if err != nil {
 			return err
 		}
 		if slices.Contains(ids, id) {
-			return nil
+			return verifyUtmRegistrationPath(config, id)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

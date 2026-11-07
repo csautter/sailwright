@@ -56,6 +56,9 @@ case "${0##*/}" in
 esac
 case "$*" in
  *'every virtual machine whose name'*) cat "$MOCK_STATE/ids" 2>/dev/null || true;;
+ *'sailwright: inspect persistent UTM registrations'*)
+  [ ! -f "$MOCK_STATE/registry-error" ] || exit 1
+  if [ -f "$MOCK_STATE/persisted" ]; then cat "$MOCK_STATE/persisted"; else printf '[]\n'; fi;;
  *'POSIX path of (file of virtual machine'*)
   [ ! -f "$MOCK_STATE/legacy" ] || exit 1
   if [ -f "$MOCK_STATE/path" ]; then cat "$MOCK_STATE/path"; else printf '%s\n' "$MOCK_BUNDLE"; fi;;
@@ -104,6 +107,9 @@ func TestUtmStartRepairsStaleRegistrationWithoutDeletingReplacement(t *testing.T
 			writeMacFixture(t, filepath.Join(bundle, "config.plist"), newUtmID)
 			writeMacFixture(t, filepath.Join(bundle, "disk"), "valuable guest disk")
 			writeMacFixture(t, filepath.Join(state, "ids"), oldUtmID)
+			// Preferences may still contain this ID after live deletion. Repair
+			// must poll the scripting collection rather than the stale snapshot.
+			writeMacFixture(t, filepath.Join(state, "persisted"), `["`+oldUtmID+`"]`)
 			writeMacFixture(t, filepath.Join(state, "status"), "started")
 			writeMacFixture(t, filepath.Join(state, "preserve"), "")
 			if legacy {
@@ -124,6 +130,7 @@ func TestUtmStartRepairsStaleRegistrationWithoutDeletingReplacement(t *testing.T
 				t.Fatal("did not select new UUID")
 			}
 			// A repeated start must not delete or reopen the already running instance.
+			writeMacFixture(t, filepath.Join(state, "persisted"), `["`+newUtmID+`"]`)
 			writeMacFixture(t, filepath.Join(state, "calls"), "")
 			if err := RunUtmStartOnMacOS(vm); err != nil {
 				t.Fatal(err)
@@ -133,6 +140,66 @@ func TestUtmStartRepairsStaleRegistrationWithoutDeletingReplacement(t *testing.T
 				t.Fatalf("non-idempotent start: %s", calls)
 			}
 		})
+	}
+}
+
+func TestUtmMatchingUUIDRequiresManagedPath(t *testing.T) {
+	for _, operation := range []string{"start", "stop", "inspect"} {
+		for _, validPath := range []bool{false, true} {
+			t.Run(operation+map[bool]string{false: "/other path", true: "/managed path"}[validPath], func(t *testing.T) {
+				vm, bundle, state := mockMacOSLifecycle(t)
+				writeMacFixture(t, filepath.Join(bundle, "config.plist"), newUtmID)
+				writeMacFixture(t, filepath.Join(bundle, "disk"), "valuable guest disk")
+				writeMacFixture(t, filepath.Join(state, "ids"), newUtmID)
+				writeMacFixture(t, filepath.Join(state, "persisted"), `["`+strings.ToUpper(newUtmID)+`"]`)
+				writeMacFixture(t, filepath.Join(state, "status"), "stopped")
+				if !validPath {
+					writeMacFixture(t, filepath.Join(state, "path"), "/unrelated/copied.utm")
+				}
+				var err error
+				switch operation {
+				case "start":
+					err = RunUtmStartOnMacOS(vm)
+				case "stop":
+					err = RunUtmStopOnMacOS(vm)
+				case "inspect":
+					_, err = inspectUtmStartTarget(vm)
+				}
+				if validPath {
+					if err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), "refusing operation") {
+					t.Fatalf("expected path refusal, got %v", err)
+				}
+				calls, _ := os.ReadFile(filepath.Join(state, "calls"))
+				for _, mutation := range []string{"start targetVM", "stop targetVM", "delete virtual machine", "open POSIX"} {
+					if strings.Contains(string(calls), mutation) {
+						t.Fatalf("mutated wrong-path VM: %s", calls)
+					}
+				}
+				if disk, err := os.ReadFile(filepath.Join(bundle, "disk")); err != nil || string(disk) != "valuable guest disk" {
+					t.Fatalf("managed bundle damaged: %q %v", disk, err)
+				}
+			})
+		}
+	}
+}
+
+func TestUtmMatchingUUIDAcceptsBundlePathAlias(t *testing.T) {
+	vm, bundle, state := mockMacOSLifecycle(t)
+	writeMacFixture(t, filepath.Join(bundle, "config.plist"), newUtmID)
+	writeMacFixture(t, filepath.Join(state, "ids"), newUtmID)
+	writeMacFixture(t, filepath.Join(state, "status"), "started")
+	alias := filepath.Join(t.TempDir(), "alias.utm")
+	if err := os.Symlink(bundle, alias); err != nil {
+		t.Fatal(err)
+	}
+	writeMacFixture(t, filepath.Join(state, "path"), alias)
+	if err := RunUtmStartOnMacOS(vm); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -324,5 +391,82 @@ func TestUtmDestroyListingIncludesOrphanRegistration(t *testing.T) {
 	exists, err = DestroyTargetExists(vm)
 	if err != nil || exists {
 		t.Fatalf("absent target: %v %v", exists, err)
+	}
+}
+
+func TestUtmUnloadedRegistrationRefusesCleanup(t *testing.T) {
+	for _, bundleExists := range []bool{false, true} {
+		for _, operation := range []string{"destroy", "listing", "start"} {
+			t.Run(operation+map[bool]string{false: "/missing bundle", true: "/replacement bundle"}[bundleExists], func(t *testing.T) {
+				vm, bundle, state := mockMacOSLifecycle(t)
+				if bundleExists {
+					writeMacFixture(t, filepath.Join(bundle, "config.plist"), newUtmID)
+					writeMacFixture(t, filepath.Join(bundle, "disk"), "valuable guest disk")
+				}
+				// After UTM restarts with a missing bundle, the entry remains in
+				// preferences but is absent from the scriptable collection.
+				writeMacFixture(t, filepath.Join(state, "ids"), "")
+				writeMacFixture(t, filepath.Join(state, "persisted"), `["`+strings.ToUpper(oldUtmID)+`"]`)
+				var err error
+				switch operation {
+				case "destroy":
+					err = RunUtmDestroyOnMacOS(vm)
+				case "listing":
+					_, err = DestroyTargetExists(vm)
+					if bundleExists {
+						// A present bundle is already a destroy target; cleanup itself
+						// must still refuse the unavailable registration.
+						if err != nil {
+							t.Fatal(err)
+						}
+						return
+					}
+				case "start":
+					err = RunUtmStartOnMacOS(vm)
+					if !bundleExists {
+						if err == nil {
+							t.Fatal("started absent VM")
+						}
+						return
+					}
+				}
+				if err == nil || !strings.Contains(err.Error(), "remove the unavailable entry in the UTM library manually") {
+					t.Fatalf("expected manual cleanup error, got %v", err)
+				}
+				calls, _ := os.ReadFile(filepath.Join(state, "calls"))
+				for _, mutation := range []string{"delete virtual machine", "stop targetVM", "start targetVM", "open POSIX"} {
+					if strings.Contains(string(calls), mutation) {
+						t.Fatalf("mutated VM after incomplete registry lookup: %s", calls)
+					}
+				}
+				if bundleExists {
+					if disk, err := os.ReadFile(filepath.Join(bundle, "disk")); err != nil || string(disk) != "valuable guest disk" {
+						t.Fatalf("replacement damaged: %q %v", disk, err)
+					}
+				} else if _, err := os.Stat(bundle); !os.IsNotExist(err) {
+					t.Fatalf("created placeholder for unscriptable entry: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestUtmPersistentRegistrationLookupFailsClosed(t *testing.T) {
+	for _, output := range []string{"command failure", "invalid json", "null", `["not-a-uuid"]`} {
+		t.Run(output, func(t *testing.T) {
+			vm, bundle, state := mockMacOSLifecycle(t)
+			writeMacFixture(t, filepath.Join(bundle, "config.plist"), newUtmID)
+			if output == "command failure" {
+				writeMacFixture(t, filepath.Join(state, "registry-error"), "")
+			} else {
+				writeMacFixture(t, filepath.Join(state, "persisted"), output)
+			}
+			if err := RunUtmDestroyOnMacOS(vm); err == nil {
+				t.Fatal("destroy accepted an unverifiable persistent registry")
+			}
+			if _, err := os.Stat(filepath.Join(bundle, "config.plist")); err != nil {
+				t.Fatalf("bundle damaged: %v", err)
+			}
+		})
 	}
 }

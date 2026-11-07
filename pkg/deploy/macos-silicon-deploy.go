@@ -174,7 +174,7 @@ func inspectUtmStartTarget(config alchemy_build.VirtualMachineConfig) (StartTarg
 	if err != nil {
 		return StartTargetState{}, err
 	}
-	ids, err := utmRegistrationIDs(config)
+	ids, err := utmScriptableRegistrationIDs(config)
 	if err != nil {
 		return StartTargetState{}, err
 	}

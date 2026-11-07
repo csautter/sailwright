@@ -92,12 +92,22 @@ The agent, and everything it reads, is treated as untrusted.
   `Information.UUID`; start/stop address that registered UUID. Create prepares
   the bundle without launching UTM or requiring macOS Automation consent. Start
   repairs stale registrations at the managed bundle path, preserving the new
-  bundle while UTM deletes the stale entry. Destroy stops and deletes the UTM
-  registration before removing any remaining bundle, including orphan entries
-  whose bundle is already absent. A same-name entry at another path is refused.
+  bundle while UTM deletes the stale entry. Destroy stops and deletes scriptable
+  UTM registrations before removing any remaining bundle. This includes entries
+  whose bundle was removed while UTM still has them loaded. After a UTM restart,
+  entries with missing or unloadable bundles can disappear from its scripting
+  API while remaining in its library. Start and destroy check persisted entries
+  before cleanup and fail with a manual-removal message for these unavailable
+  entries; `destroy list` also reports an error when the bundle is absent. Remove
+  the unavailable entry in UTM's library, then retry. Preferences can take time
+  to synchronize after a deletion, so retry if an already removed entry is still
+  reported. Sailwright never edits UTM preferences to remove these entries.
+  A same-name entry at another path is refused even when its UUID matches the
+  managed bundle. Start, stop and status verify the selected registration's
+  path; symlink aliases resolving to the same existing bundle are accepted.
   On older UTM releases, path verification reads and resolves the registry's
   bookmark through Foundation; it never edits UTM preferences. If the path cannot
-  be verified, cleanup fails without deleting the bundle.
+  be verified, the operation fails without controlling or deleting that VM.
   Tart uses a hash of the local VM directory's filesystem device, inode and birth
   time, respecting `TART_HOME` and `TART_MACOS_VM_NAME`. Identity lookups are confined
   to `TART_HOME`, including symlink resolution. Cloned hardware identifiers
