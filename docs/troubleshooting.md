@@ -2,6 +2,37 @@
 
 This page collects rare, host-specific issues that do not affect most Sailwright setups.
 
+## Managed / company machines
+
+Windows application control (AppLocker, App Control for Business / WDAC or
+Software Restriction Policies) can prevent an executable from starting,
+including an unsigned binary in Downloads or another user-writable directory.
+The default `%LOCALAPPDATA%\Programs\sailwright` directory is also user-writable.
+A successful download and checksum check does not imply permission to execute.
+
+If `install.ps1` reports that Sailwright is installed but Windows policy blocks
+running it, the files and user PATH entry remain installed; host dependency
+setup has not run. Other failed version checks include the underlying error
+because architecture, permissions or signature validation can also prevent a
+launch. A policy that blocks PowerShell or the installer itself prevents the
+script from producing this diagnostic.
+
+Give IT the executable path, release version, SHA-256, the complete error and
+the time of the failed launch. Ask them to check application-control event
+logs and approve an installation location and executable under their policy.
+[AppLocker supports publisher, path and file-hash rules](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/applocker/working-with-applocker-rules).
+Publisher rules require a suitable signed binary; checksum/cosign verification
+of release downloads is separate from Windows Authenticode signing. IT can
+assess the appropriate rule and software distribution method. An administrator
+shell or PowerShell execution-policy change does not establish approval for a
+blocked executable.
+
+Share [What gets installed](./what-gets-installed.md) before requesting approval:
+`sailwright install` needs elevated rights and installs additional software.
+WSL2 may be an alternative if your organization approves it; a complete
+Sailwright-on-WSL2 setup guide is not available yet. Coordinate with IT before
+choosing that route.
+
 ## Windows: Cygwin Ansible Shadowed by a Host Installation
 
 On Windows with Cygwin, the Ansible installation inside Cygwin can be shadowed by another Python or Ansible installation from the Windows host.
