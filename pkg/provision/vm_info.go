@@ -23,7 +23,7 @@ type VMInfo struct {
 	Port          int    `json:"port"`
 	Username      string `json:"username"`
 	Password      string `json:"password"`
-	// InstanceID is the hypervisor's VM identifier (libvirt UUID, Hyper-V VM Id).
+	// InstanceID is the hypervisor's VM identifier (libvirt/UTM UUID, Hyper-V VM Id, or Tart filesystem identity).
 	// It changes when a VM is recreated under the same name; empty when the engine
 	// has none sailwright reads.
 	InstanceID string `json:"instance_id,omitempty"`

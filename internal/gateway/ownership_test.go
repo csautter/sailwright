@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,6 +96,46 @@ func TestOwnershipPruneUsesStructuredExists(t *testing.T) {
 	for key, want := range map[string]bool{"a//amd64": true, "b//amd64": false, "c//amd64": true, "d//amd64": false, "e//amd64": true} {
 		if got := o.allowed(key); got != want {
 			t.Errorf("%s owned after prune = %v, want %v", key, got, want)
+		}
+	}
+}
+
+// macOS identifiers enter the same ownership check as libvirt/Hyper-V. A target
+// listing that still reports an existing VM must not carry ownership or grants
+// across replacement, including when no listing observed the absent interval.
+func TestMacOSOwnershipReplacement(t *testing.T) {
+	for _, engine := range []struct{ name, oldID, newID string }{
+		{"utm", "aaaaaaaa-1111-2222-3333-444444444444", "bbbbbbbb-1111-2222-3333-444444444444"},
+		{"tart", "tart:old-directory-identity", "tart:new-directory-identity"},
+	} {
+		for _, listing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/listing=%v", engine.name, listing), func(t *testing.T) {
+				o, err := loadVMOwnership(true, t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				key := "ubuntu/server/arm64"
+				if engine.name == "tart" {
+					key = "macos//arm64"
+				}
+				if err := o.created(key, "job", engine.oldID); err != nil {
+					t.Fatal(err)
+				}
+				if listing {
+					exists := true
+					parts := strings.Split(key, "/")
+					if err := o.prune([]Target{{OS: parts[0], Type: parts[1], Arch: parts[2], Exists: &exists}}, time.Now().Add(time.Second)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if ok, err := o.confirm(key, engine.newID); ok || err != nil {
+					t.Fatalf("replacement still owned: %v %v", ok, err)
+				}
+				o.endRequest(key, true, engine.oldID)
+				if ok, err := o.confirm(key, engine.newID); ok || err != nil {
+					t.Fatalf("replacement inherited approval: %v %v", ok, err)
+				}
+			})
 		}
 	}
 }

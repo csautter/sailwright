@@ -1,7 +1,10 @@
 package deploy
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -12,14 +15,20 @@ import (
 // instanceIDPattern accepts the identifiers hypervisors report (UUIDs/GUIDs).
 var instanceIDPattern = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
 
+var tartFilesystemIDPattern = regexp.MustCompile(`^[0-9]+:[0-9]+:[1-9][0-9]*$`)
+
 const instanceIDQueryTimeout = 30 * time.Second
 
 // InspectInstanceID returns the hypervisor's identifier of the VM for config, which
 // changes when the VM is destroyed and created again under the same name. It works
-// for stopped VMs. exists is false when no VM exists. The identifier is empty for
-// engines without a stable identifier sailwright reads (UTM and Tart).
+// for stopped VMs. exists is false when no VM exists. UTM uses its bundle UUID;
+// Tart uses the local VM directory identity because clones can share hardware IDs.
 func InspectInstanceID(config alchemy_build.VirtualMachineConfig) (id string, exists bool, err error) {
 	switch {
+	case isUtmDeployTarget(config):
+		return inspectUtmInstanceID(config)
+	case isTartMacOSDeployTarget(config):
+		return inspectTartInstanceID(config)
 	case isLinuxLibvirtTarget(config):
 		return inspectLibvirtInstanceID(config)
 	case isHypervVagrantTarget(config):
@@ -100,4 +109,77 @@ func truncateForError(value string, limit int) string {
 		return value
 	}
 	return value[:limit] + "..."
+}
+
+func inspectUtmInstanceID(config alchemy_build.VirtualMachineConfig) (string, bool, error) {
+	vmPath, err := utmVirtualMachinePath(config)
+	if err != nil {
+		return "", false, err
+	}
+	configPath := filepath.Join(vmPath, "config.plist")
+	if _, err := os.Stat(vmPath); err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	output, err := runCommandWithCombinedOutput(alchemy_build.GetDirectoriesInstance().ProjectDir,
+		instanceIDQueryTimeout, "plutil", []string{"-extract", "Information.UUID", "raw", "-o", "-", configPath})
+	if err != nil {
+		return "", false, fmt.Errorf("read UTM bundle UUID: %w; output: %s", err, strings.TrimSpace(output))
+	}
+	// Unlike a hypervisor query, a present bundle must always contain a UUID.
+	if !instanceIDPattern.MatchString(strings.TrimSpace(output)) {
+		return "", false, fmt.Errorf("invalid UTM bundle UUID %q", truncateForError(output, 64))
+	}
+	return strings.ToLower(strings.TrimSpace(output)), true, nil
+}
+
+func inspectTartInstanceID(config alchemy_build.VirtualMachineConfig) (string, bool, error) {
+	tartHome := os.Getenv("TART_HOME")
+	if tartHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", false, err
+		}
+		tartHome = filepath.Join(home, ".tart")
+	}
+	name := tartMacOSVMName(config)
+	if !filepath.IsLocal(name) || name == "." || filepath.Base(name) != name {
+		return "", false, fmt.Errorf("invalid local Tart VM name %q", name)
+	}
+	// Confine lookups to Tart's home, including symlink resolution. Checking the
+	// name alone does not prevent vms or the VM entry from linking outside it.
+	root, err := os.OpenRoot(tartHome)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	defer root.Close()
+	vmPath := filepath.Join(tartHome, "vms", name)
+	info, err := root.Stat(filepath.Join("vms", name))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if !info.IsDir() {
+		return "", false, fmt.Errorf("Tart VM path %q is not a directory", vmPath)
+	}
+	// macOS stat: device, inode, birth time. Config/ECID and MAC addresses can
+	// survive cloning, so they cannot identify a local Tart instance. Directory
+	// birth time also protects against inode reuse after destroy/recreate.
+	output, err := runCommandWithCombinedOutput(alchemy_build.GetDirectoriesInstance().ProjectDir,
+		instanceIDQueryTimeout, "stat", []string{"-L", "-f", "%d:%i:%B", vmPath})
+	if err != nil {
+		return "", false, fmt.Errorf("read Tart instance identity: %w", err)
+	}
+	value := strings.TrimSpace(output)
+	if !tartFilesystemIDPattern.MatchString(value) {
+		return "", false, fmt.Errorf("invalid Tart filesystem identity %q", truncateForError(value, 64))
+	}
+	return fmt.Sprintf("tart:%x", sha256.Sum256([]byte(value))), true, nil
 }

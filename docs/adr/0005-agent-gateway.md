@@ -184,3 +184,41 @@ VPN and corporate adapters with wide prefixes. A guest that forges its address
 can reach ports 22, 5985 and 5986 of hosts there while such an adapter is
 connected. This is accepted for the same reason as bridged LAN guests and is
 documented for operators.
+
+## Amendment: macOS instance identity and UTM registration safety (2026-11-07)
+
+This amendment supersedes the statement in the VM instance identity amendment
+that Sailwright reads no UTM or Tart instance identifier. The ADR remains
+accepted (experimental).
+
+UTM identity is the managed bundle's `Information.UUID`. Tart identity is a
+SHA-256 hash of the local VM directory's filesystem device, inode and birth
+time, using `TART_HOME` and `TART_MACOS_VM_NAME` when set. Directory lookups reject
+paths escaping Tart's home, including symlinks. Tart clones can share hardware
+identifiers, so those identifiers do not prove local instance ownership.
+Both identity queries work offline, without starting or registering a VM.
+The existing gateway ownership and approval checks compare these identities
+just as they compare libvirt and Hyper-V identifiers.
+
+A copied UTM bundle can retain its UUID. Lifecycle operations therefore verify
+that the selected registered UUID points to the managed bundle before checking
+status, starting, stopping or deleting it. Matching UUIDs do not exempt a
+registration from path verification. Aliases resolving to the same existing
+bundle are accepted. Start preserves replacement bundles during stale-entry
+cleanup; create remains offline and defers registration repair until start.
+
+UTM's scripting collection excludes entries with bundles it could not load.
+Before registration cleanup, Sailwright also reads persistent registry entries.
+If a matching entry is unavailable through scripting, start and destroy fail
+with instructions to remove the unavailable entry manually in UTM's library.
+Destroy listing also reports this error when the bundle is absent. Preferences
+can lag a deletion; a stale snapshot can require retrying. Sailwright does not
+edit UTM preferences to remove entries. Scriptable entries are stopped and
+deleted through UTM before remaining bundle files are removed.
+
+Legacy ownership records without an instance ID retain the existing first-ID
+adoption behavior: an upgrade cannot reconstruct which instance an old record
+originally described. Operators must clear those records and restart the
+gateway before replacing guests outside it. Native UTM/Tart lifecycle and
+approval validation remains tracked in issue #302 and opt-in under the manual
+host E2E decision in ADR 0007.
