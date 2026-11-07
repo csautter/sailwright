@@ -87,7 +87,6 @@ install_hashicorp_apt_repo() {
 
 install_linux_packages() {
 	local packages=(
-		ansible
 		asciinema
 		curl
 		ffmpeg
@@ -96,8 +95,8 @@ install_linux_packages() {
 		libvirt-clients
 		libvirt-daemon-system
 		packer
+		pipx
 		python3
-		python3-winrm
 		python3-venv
 		qemu-efi-aarch64
 		qemu-system-arm
@@ -128,9 +127,9 @@ install_linux_packages() {
 
 install_hashicorp_apt_repo
 install_linux_packages
+bash "${script_dir}/sailwright-install-ansible.sh"
 if [[ "${install_go}" == "true" ]]; then
 	bash "${script_dir}/install-go-from-go-dev.sh" "${project_root}"
 fi
 
 packer version
-ansible --version

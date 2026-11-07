@@ -58,3 +58,34 @@ func TestWarnIfAnsibleCoreHangsOnWrongBecomePasswordIgnoresErrors(t *testing.T) 
 		t.Fatal("expected the ansible-playbook version query to run")
 	}
 }
+
+func TestCheckInstalledAnsibleCore(t *testing.T) {
+	previous := ansiblePlaybookVersionOutputFunc
+	t.Cleanup(func() { ansiblePlaybookVersionOutputFunc = previous })
+	for _, tt := range []struct {
+		name, output string
+		queryErr     error
+		wantErr      bool
+	}{
+		{name: "old apt version", output: "ansible-playbook [core 2.16.3]", wantErr: true},
+		{name: "last unsupported version", output: "ansible-playbook [core 2.18.12]", wantErr: true},
+		{name: "minimum", output: "ansible-playbook [core 2.19.0]"},
+		{name: "newer", output: "ansible-playbook [core 2.21.5]"},
+		{name: "next major", output: "ansible-playbook [core 3.0.0]"},
+		{name: "prerelease", output: "ansible-playbook [core 2.19.0rc1]", wantErr: true},
+		{name: "unknown", output: "ansible-playbook 2.9.0", wantErr: true},
+		{name: "startup crash", output: "AttributeError: module 'dataclasses' has no attribute '_is_type'", queryErr: errors.New("exit status 1"), wantErr: true},
+		{name: "missing executable", queryErr: errors.New("not found"), wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ansiblePlaybookVersionOutputFunc = func() (string, error) { return tt.output, tt.queryErr }
+			err := CheckInstalledAnsibleCore()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("got %v, want error %t", err, tt.wantErr)
+			}
+			if err != nil && (!strings.Contains(err.Error(), "sailwright install") || !strings.Contains(err.Error(), "PATH")) {
+				t.Fatalf("missing recovery instructions: %v", err)
+			}
+		})
+	}
+}

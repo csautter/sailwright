@@ -29,6 +29,11 @@ ANSIBLE_VERSION="14.5.0"
 # renovate: datasource=custom.homebrew-formula depName=python@3.13 packageName=python@3.13 versioning=loose
 PYTHON_VERSION="3.13.18"
 
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+project_root="$(cd "${script_dir}/../.." && pwd -P)"
+# shellcheck source=scripts/common/ansible-core.sh
+source "${project_root}/scripts/common/ansible-core.sh"
+
 install_go="false"
 
 while [[ $# -gt 0 ]]; do
@@ -290,3 +295,5 @@ brew_install "Python 3.13" python3.13                python@3.13           "${PY
 if [[ "${install_go}" == "true" ]]; then
 	brew_install "Go" go go "${GO_VERSION}"
 fi
+
+check_ansible_core "$(brew --prefix)/opt/python@3.13/bin/python3.13"

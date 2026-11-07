@@ -13,7 +13,7 @@ import (
 // TestInstallCommandForHostScriptsAreEmbedded and
 // TestEmbeddedShellScriptRepoReferencesAreEmbedded catch common misses.
 //
-//go:embed ansible.cfg playbooks inventory roles roles_test_1 roles_test_2 build/packer deployments/vagrant deployments/utm scripts/linux scripts/macos scripts/windows go.mod
+//go:embed ansible.cfg playbooks inventory roles roles_test_1 roles_test_2 build/packer deployments/vagrant deployments/utm scripts/common scripts/linux scripts/macos scripts/windows go.mod
 var EmbeddedFiles embed.FS
 
 // FS returns the embedded runtime asset filesystem.
