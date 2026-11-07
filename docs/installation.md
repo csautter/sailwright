@@ -14,6 +14,9 @@ the ways below; all of them install the same release archives from
 After installing, set up the host dependencies with `sailwright install`; see
 [Host dependencies](#host-dependencies).
 
+Before installing, read [What gets installed](./what-gets-installed.md) for
+files, privileges, network destinations and removal instructions per OS.
+
 ## Host dependencies
 
 Run `sailwright install` after installing the CLI. On Ubuntu 24.04, Ubuntu
@@ -90,6 +93,11 @@ Sigstore services to verify the signature.
 | Default directory | `~/.local/bin` | `%LOCALAPPDATA%\Programs\sailwright` |
 | `PATH` | prints a hint if the directory is missing | adds the directory to the user `PATH` |
 
+On Windows this writes the raw registry value `HKCU\Environment\Path` as
+`REG_EXPAND_SZ`, preserving environment-variable references such as `%USERPROFILE%`.
+It also updates the current shell PATH and checks the installed CLI with
+`--version`; a blocked launch reports a diagnostic and documentation link.
+
 Use `sailwright update` to update to the latest release. Older installations
 without this command need the install command above once more.
 
@@ -122,6 +130,11 @@ sh install.sh --install-dir "$HOME/.local/bin"
 ```
 
 ### Uninstall
+
+See [What gets installed → removal instructions](./what-gets-installed.md)
+for step-by-step CLI and host-dependency removal on each OS, including
+Chocolatey/Cygwin, apt packages, the HashiCorp repository and Homebrew pins.
+
 
 Delete the two binaries from the install directory. On Windows, stop
 `sailwright-gateway.exe` first, and also remove the directory from your user `PATH` (Settings → System → About → Advanced

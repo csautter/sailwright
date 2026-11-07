@@ -51,6 +51,7 @@ Homebrew, or Homebrew on Linux if you already use it. The install scripts
 verify the download against the release checksums and need no `sudo` or admin
 rights. See [Installation](./docs/installation.md) for options and manual
 installs.
+Read [What gets installed](./docs/what-gets-installed.md) for system changes and removal instructions on each OS.
 
 Check your version with `sailwright --version`. Update script/manual installs
 with `sailwright update`, or use `brew upgrade sailwright` for Homebrew.
