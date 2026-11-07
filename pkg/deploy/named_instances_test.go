@@ -128,6 +128,9 @@ func TestDiscoveryDoesNotNeedRegistry(t *testing.T) {
 }
 
 func TestInstanceRegistry(t *testing.T) {
+	oldLookPath := lookPathLinuxLibvirtCommand
+	t.Cleanup(func() { lookPathLinuxLibvirtCommand = oldLookPath })
+	lookPathLinuxLibvirtCommand = func(command string) (string, error) { return command, nil }
 	dirs := build.GetDirectoriesInstance()
 	oldDir := dirs.AppDataDir
 	dirs.AppDataDir = t.TempDir()
