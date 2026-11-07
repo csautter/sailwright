@@ -37,11 +37,13 @@ resource "azuread_service_principal" "gh_actions_runner_broker" {
   client_id = azuread_application.gh_actions_runner_broker.client_id
 }
 
-resource "azurerm_role_assignment" "gh_actions_runner_broker_contributor" {
-  principal_id         = azuread_service_principal.gh_actions_runner_broker.object_id
-  role_definition_name = "Contributor"
-  scope                = azurerm_linux_function_app.gh_runner_func_app.id
-}
+# The broker identity deliberately has no Azure RBAC role on the Function App
+# (or anywhere else in the subscription). Workflows only need a token for the
+# api://<client-id> audience to call the broker over HTTPS; `azure/login` uses
+# `allow-no-subscriptions: true`. A Contributor assignment here would let any
+# pull request workflow redeploy the Function App and act as its managed
+# identity, which can manage VMs and networks across the subscription and read
+# the GitHub PAT from Key Vault.
 
 resource "azuread_application_federated_identity_credential" "gh_actions_github_actions" {
   application_id = azuread_application.gh_actions_runner_broker.id
