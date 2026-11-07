@@ -31,7 +31,8 @@ func ConfigureTartInstanceHostname(vm build.VirtualMachineConfig) error {
       loop: [HostName, LocalHostName, ComputerName]
 `, build.InstanceHostname(vm))
 	if _, err = file.WriteString(play); err != nil {
-		file.Close()
+		// Preserve the write error; closing cannot make the incomplete file usable.
+		_ = file.Close()
 		return err
 	}
 	if err = file.Close(); err != nil {

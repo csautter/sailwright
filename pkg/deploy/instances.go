@@ -165,7 +165,8 @@ func RecordInstance(vm build.VirtualMachineConfig) error {
 	}
 	defer os.Remove(tmp.Name())
 	if _, err = tmp.Write(data); err != nil {
-		tmp.Close()
+		// Preserve the write error; closing cannot make the incomplete file usable.
+		_ = tmp.Close()
 		return err
 	}
 	if err = tmp.Close(); err != nil {
