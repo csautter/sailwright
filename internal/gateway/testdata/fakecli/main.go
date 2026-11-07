@@ -358,7 +358,37 @@ func readState(id string) string {
 
 func writeState(id, state string) {
 	if path := stateFile(id); path != "" {
-		_ = os.WriteFile(path, []byte(state), 0o600)
+		if err := replaceState(path, state); err != nil {
+			fmt.Fprintf(os.Stderr, "write state %s: %v\n", path, err)
+			os.Exit(1)
+		}
+	}
+}
+
+// Listings run concurrently with lifecycle commands. Publish the complete state
+// with a rename so a reader never sees a truncated file as a missing VM.
+func replaceState(path, state string) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".state-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	_, writeErr := f.WriteString(state)
+	closeErr := f.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	// Windows may temporarily refuse replacement while a listing has it open.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := os.Rename(f.Name(), path)
+		if err == nil || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

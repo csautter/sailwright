@@ -124,6 +124,24 @@ that runs as a subtest of `go test -tags e2e ./test/e2e`:
 | `vm-lifecycle-macos` | macOS host | the same for every VM option of a macOS host (Tart, UTM) |
 | `vm-lifecycle-windows` | Windows host | the same for every VM option of a Windows host (Hyper-V) |
 
+### E2E CI coverage decision
+
+Routine PR CI runs the tagged E2E `smoke` scenario. Full VM lifecycle scenarios
+remain opt-in for targeted validation on suitable hosts. This is an accepted
+project decision: running those scenarios routinely would substantially increase
+CI load while duplicating much of the existing unit, VM build, deploy smoke,
+and provisioning test coverage.
+
+The absence of these lifecycle scenarios from routine CI is therefore an
+intentional coverage tradeoff. Code reviews should assess whether a change
+introduces a specific behavior that existing automated tests do not cover and
+recommend a focused test for that behavior. They should not repeatedly report
+the opt-in lifecycle suite as a missing-CI defect or recommend enabling it on
+every PR. Reconsidering that CI cost requires an explicit decision to revisit
+the tradeoff.
+
+### Running E2E scenarios
+
 The per-host scenarios run once per target, each as its own subtest, e.g.
 `TestScenarios/vm-lifecycle-linux/ubuntu-server-amd64`. On other hosts they are
 skipped. Targets that the CLI marks unstable on this host (emulated

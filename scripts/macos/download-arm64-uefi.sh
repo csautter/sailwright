@@ -25,7 +25,14 @@ QEMU_EFI_AARCH64_SHA256="a00b2411a79c8aeafd95a7c868ac3cd1aab592f1af9fff965f02d81
 QEMU_EFI_AARCH64_SNAPSHOT_TIMESTAMP="20260104T203950Z"
 QEMU_EFI_AARCH64_POOL_PATH="pool/main/e/edk2/qemu-efi-aarch64_${QEMU_EFI_AARCH64_VERSION}_all.deb"
 
-DEB_PATH="${cache_dir}/qemu-efi-aarch64_all.deb"
+deb_file_name="qemu-efi-aarch64_${QEMU_EFI_AARCH64_VERSION}_all.deb"
+if [ "${1:-}" = "--print-file-name" ]; then
+	echo "$deb_file_name"
+	exit 0
+fi
+
+DEB_PATH="${cache_dir}/${deb_file_name}"
+legacy_deb_path="${cache_dir}/qemu-efi-aarch64_all.deb"
 UEFI_DIR="${cache_dir}/qemu-uefi"
 UEFI_STAMP_PATH="${UEFI_DIR}/.qemu-efi-aarch64.sha256"
 UEFI_FIRMWARE_PATH="${UEFI_DIR}/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
@@ -42,6 +49,18 @@ sha256_of() {
 
 # Ensure cache directory exists before downloading
 mkdir -p "${cache_dir}"
+
+# Keep local cache migration and pruning in sync with prepareVersionedWebFileCache in Go.
+for cached_deb_path in "${cache_dir}"/qemu-efi-aarch64*_all.deb; do
+	[ -f "$cached_deb_path" ] || continue
+	[ "$cached_deb_path" = "$DEB_PATH" ] && continue
+	if [ "$cached_deb_path" = "$legacy_deb_path" ] && [ ! -e "$DEB_PATH" ] &&
+		[ "$(sha256_of "$cached_deb_path")" = "$QEMU_EFI_AARCH64_SHA256" ]; then
+		mv "$cached_deb_path" "$DEB_PATH" || echo "Warning: could not move $cached_deb_path, keeping it" >&2
+		continue
+	fi
+	rm -f "$cached_deb_path" || echo "Warning: could not remove outdated $cached_deb_path" >&2
+done
 
 if [ -f "${DEB_PATH}" ] && [ "$(sha256_of "${DEB_PATH}")" = "${QEMU_EFI_AARCH64_SHA256}" ]; then
 	echo "qemu-efi-aarch64 ${QEMU_EFI_AARCH64_VERSION} already exists, skipping download"

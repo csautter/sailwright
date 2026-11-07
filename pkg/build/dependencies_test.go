@@ -388,7 +388,7 @@ func TestWindows11Amd64LinuxQemuDependencyReconciliationIncludesVirtioWinISO(t *
 	}
 
 	deps := webFileDependenciesForVMConfig(vmconfig)
-	wantPath := filepath.Join(dirs.CacheDir, "windows", "virtio-win.iso")
+	wantPath := filepath.Join(dirs.CacheDir, "windows", "virtio-win-"+virtioWinVersion+".iso")
 	wantChecksum := "sha256:" + virtioWinSHA256
 	gotPaths := make([]string, 0, len(deps))
 	for _, dep := range deps {
@@ -405,6 +405,165 @@ func TestWindows11Amd64LinuxQemuDependencyReconciliationIncludesVirtioWinISO(t *
 	}
 
 	t.Fatalf("expected dependency reconciliation for Windows 11 amd64 Linux QEMU to include %s, got %v", wantPath, gotPaths)
+}
+
+func writeTestBytes(t *testing.T, path string, content []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertFileContent(t *testing.T, path string, want []byte) {
+	t.Helper()
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(want) {
+		t.Fatalf("expected %s to hold %q, got %q, %v", path, want, got, err)
+	}
+}
+
+func assertFilesMissing(t *testing.T, paths ...string) {
+	t.Helper()
+	for _, path := range paths {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected %s not to exist, got %v", path, err)
+		}
+	}
+}
+
+func TestPrepareVirtioWinISOCacheMovesMatchingLegacyISO(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("virtio-win")
+	legacyPath := filepath.Join(dir, virtioWinLegacyISOFileName)
+	writeTestBytes(t, legacyPath, content)
+	destination := filepath.Join(dir, virtioWinISOCacheFileName("0.1.302-1"))
+
+	prepareVirtioWinISOCache(destination, fmt.Sprintf("sha256:%x", sha256.Sum256(content)))
+
+	assertFileContent(t, destination, content)
+	assertFilesMissing(t, legacyPath)
+}
+
+func TestPrepareVirtioWinISOCacheRemovesOutdatedLegacyISO(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, virtioWinLegacyISOFileName)
+	writeTestBytes(t, legacyPath, []byte("old virtio-win"))
+	destination := filepath.Join(dir, virtioWinISOCacheFileName("0.1.302-1"))
+
+	prepareVirtioWinISOCache(destination, fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("new virtio-win"))))
+
+	assertFilesMissing(t, legacyPath, destination)
+}
+
+func TestPrepareVirtioWinISOCacheRemovesLegacyISOWhenDestinationExists(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("virtio-win")
+	legacyPath := filepath.Join(dir, virtioWinLegacyISOFileName)
+	writeTestBytes(t, legacyPath, content)
+	destination := filepath.Join(dir, virtioWinISOCacheFileName("0.1.302-1"))
+	writeTestBytes(t, destination, content)
+
+	prepareVirtioWinISOCache(destination, fmt.Sprintf("sha256:%x", sha256.Sum256(content)))
+
+	assertFileContent(t, destination, content)
+	assertFilesMissing(t, legacyPath)
+}
+
+func TestPrepareVirtioWinISOCacheRemovesOlderVersionsOnly(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("virtio-win")
+	destination := filepath.Join(dir, virtioWinISOCacheFileName("0.1.310-1"))
+	writeTestBytes(t, destination, content)
+	olderPath := filepath.Join(dir, virtioWinISOCacheFileName("0.1.302-1"))
+	writeTestBytes(t, olderPath, []byte("older virtio-win"))
+	tmpPath := destination + ".tmp"
+	writeTestBytes(t, tmpPath, []byte("partial"))
+	unrelatedPath := filepath.Join(dir, "win11_amd64.iso")
+	writeTestBytes(t, unrelatedPath, []byte("windows"))
+
+	prepareVirtioWinISOCache(destination, fmt.Sprintf("sha256:%x", sha256.Sum256(content)))
+
+	assertFileContent(t, destination, content)
+	assertFilesMissing(t, olderPath)
+	for _, path := range []string{tmpPath, unrelatedPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s to be kept, got %v", path, err)
+		}
+	}
+}
+
+func TestPrepareVirtioWinISOCacheTreatsCacheDirectoryLiterally(t *testing.T) {
+	root := t.TempDir()
+	// "cache[1]" as a glob pattern would match the sibling directory "cache1" instead.
+	dir := filepath.Join(root, "cache[1]")
+	sibling := filepath.Join(root, "cache1")
+	for _, d := range []string{dir, sibling} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	content := []byte("virtio-win")
+	destination := filepath.Join(dir, virtioWinISOCacheFileName("0.1.310-1"))
+	writeTestBytes(t, destination, content)
+	olderPath := filepath.Join(dir, virtioWinISOCacheFileName("0.1.302-1"))
+	writeTestBytes(t, olderPath, []byte("older virtio-win"))
+	siblingPath := filepath.Join(sibling, virtioWinISOCacheFileName("0.1.302-1"))
+	writeTestBytes(t, siblingPath, []byte("sibling virtio-win"))
+
+	prepareVirtioWinISOCache(destination, fmt.Sprintf("sha256:%x", sha256.Sum256(content)))
+
+	assertFileContent(t, destination, content)
+	assertFilesMissing(t, olderPath)
+	assertFileContent(t, siblingPath, []byte("sibling virtio-win"))
+}
+
+func TestPrepareVirtioWinISOCacheWithoutCachedISOs(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), virtioWinISOCacheFileName("0.1.302-1"))
+	prepareVirtioWinISOCache(destination, "sha256:00")
+	assertFilesMissing(t, destination)
+}
+
+func TestMigrateLegacyVirtioWinISOKeepsISOWhenMoveFails(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("virtio-win")
+	legacyPath := filepath.Join(dir, virtioWinLegacyISOFileName)
+	writeTestBytes(t, legacyPath, content)
+	// The destination directory does not exist, so the rename fails.
+	destination := filepath.Join(dir, "missing", virtioWinISOCacheFileName("0.1.302-1"))
+
+	if !migrateLegacyWebFile(legacyPath, destination, fmt.Sprintf("sha256:%x", sha256.Sum256(content))) {
+		t.Fatal("expected a verified legacy ISO to be kept when the move fails")
+	}
+	assertFileContent(t, legacyPath, content)
+}
+
+func TestVirtioWinDependencyPreparesCache(t *testing.T) {
+	for _, dep := range getWebFileDependencies() {
+		if dep.LocalPath == virtioWinISOCachePath(virtioWinVersion) {
+			if dep.PrepareHook == nil {
+				t.Fatal("expected the virtio-win dependency to prepare its cache directory")
+			}
+			return
+		}
+	}
+	t.Fatal("virtio-win dependency not found")
+}
+
+func TestRemoveStaleWebFileDependencyDeletesExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stale.iso")
+	if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dep := WebFileDependency{LocalPath: path, Checksum: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("fresh")))}
+	if checkIfWebFileDependencyExists(dep) {
+		t.Fatal("expected the stale file to fail the existence check")
+	}
+
+	removeStaleWebFileDependency(dep)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be removed, got %v", path, err)
+	}
+	// A missing file is not an error.
+	removeStaleWebFileDependency(dep)
 }
 
 func TestIntegrationDependencyReconciliation(t *testing.T) {
@@ -526,7 +685,7 @@ func TestArm64DependencyReconciliationPinsQemuEfiAarch64(t *testing.T) {
 		dirs.CacheDir = originalCacheDir
 	}()
 
-	wantPath := filepath.Join(dirs.CacheDir, "qemu-efi-aarch64_all.deb")
+	wantPath := filepath.Join(dirs.CacheDir, qemuEfiAarch64CacheFileName(qemuEfiAarch64Version))
 	for _, vmconfig := range []VirtualMachineConfig{
 		{OS: "ubuntu", UbuntuType: "server", Arch: "arm64", HostOs: HostOsDarwin, VirtualizationEngine: VirtualizationEngineUtm},
 		{OS: "ubuntu", UbuntuType: "desktop", Arch: "arm64", HostOs: HostOsDarwin, VirtualizationEngine: VirtualizationEngineUtm},
@@ -541,6 +700,9 @@ func TestArm64DependencyReconciliationPinsQemuEfiAarch64(t *testing.T) {
 			found = true
 			if dep.Checksum != "sha256:"+qemuEfiAarch64SHA256 {
 				t.Errorf("%+v: expected pinned qemu-efi-aarch64 checksum, got %q", vmconfig, dep.Checksum)
+			}
+			if dep.PrepareHook == nil {
+				t.Errorf("%+v: qemu-efi-aarch64 must prepare its versioned cache", vmconfig)
 			}
 			if dep.BeforeHook != nil {
 				t.Errorf("%+v: qemu-efi-aarch64 must not resolve its URL at download time", vmconfig)
