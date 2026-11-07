@@ -39,6 +39,7 @@ var (
 	hypervVagrantBoxInstalledChecker   = hypervVagrantBoxInstalled
 	hypervVagrantStopSettleTimeout     = 15 * time.Second
 	hypervVagrantStopPollInterval      = 500 * time.Millisecond
+	hypervBoxLockTimeout               = 45 * time.Minute
 )
 
 type hypervVagrantDeploySettings struct {
@@ -73,12 +74,11 @@ func RunHypervVagrantDeployOnWindows(config alchemy_build.VirtualMachineConfig) 
 	if err != nil {
 		return err
 	}
-
-	hostCache, err := os.UserCacheDir()
-	if err != nil {
-		return fmt.Errorf("resolve host-global Vagrant box lock directory: %w", err)
+	if config.Name != "" && config.OS == "ubuntu" && !alchemy_build.HasLinuxCloneIdentity(settings.BoxPath) {
+		return fmt.Errorf("named Hyper-V Ubuntu instances require an image prepared for unique first-boot machine IDs; rebuild with `sailwright build ubuntu --type %s --arch %s --no-cache`", config.UbuntuType, config.Arch)
 	}
-	releaseBox, err := operationlock.AcquireWithin(filepath.Join(hostCache, "sailwright", "provider-box-locks"), settings.BoxName, "register box", 45*time.Minute)
+
+	releaseBox, err := acquireHypervBoxLock(settings.BoxName, "register box", hypervBoxLockTimeout)
 	if err != nil {
 		return err
 	}
@@ -235,6 +235,11 @@ func RunHypervVagrantDestroyOnWindows(config alchemy_build.VirtualMachineConfig)
 	if config.Name != "" {
 		return nil
 	}
+	releaseBox, err := acquireHypervBoxLock(settings.BoxName, "remove box", hypervBoxLockTimeout)
+	if err != nil {
+		return err
+	}
+	defer releaseBox()
 	boxInstalled, err := hypervVagrantBoxInstalledChecker(projectDir, settings.BoxName)
 	if err != nil {
 		return err
@@ -252,6 +257,14 @@ func RunHypervVagrantDestroyOnWindows(config alchemy_build.VirtualMachineConfig)
 	}
 
 	return nil
+}
+
+func acquireHypervBoxLock(boxName, operation string, timeout time.Duration) (func(), error) {
+	hostCache, err := os.UserCacheDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve host-global Vagrant box lock directory: %w", err)
+	}
+	return operationlock.AcquireWithin(filepath.Join(hostCache, "sailwright", "provider-box-locks"), boxName, operation, timeout)
 }
 
 func RunHypervVagrantStartOnWindows(config alchemy_build.VirtualMachineConfig) error {

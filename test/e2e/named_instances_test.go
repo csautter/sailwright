@@ -121,7 +121,7 @@ func TestNamedVMInstances(t *testing.T) {
 		}
 	}()
 	directory := t.TempDir()
-	ssh := func(info gateway.VMInfoOutput, name string) string {
+	ssh := func(info gateway.VMInfoOutput, name, guestCommand string) string {
 		t.Helper()
 		config := filepath.Join(directory, name+".ssh")
 		text := "Host *\n  ControlPath none\n" + info.SSHConfig + "  StrictHostKeyChecking accept-new\n  UserKnownHostsFile " + filepath.Join(directory, name+".known_hosts") + "\n"
@@ -129,7 +129,7 @@ func TestNamedVMInstances(t *testing.T) {
 			t.Fatal(err)
 		}
 		alias := "sailwright-" + strings.ReplaceAll(target+"/"+name, "/", "-")
-		command := exec.CommandContext(ctx, "sshpass", "-e", "ssh", "-F", config, alias, "hostname")
+		command := exec.CommandContext(ctx, "sshpass", "-e", "ssh", "-F", config, alias, guestCommand)
 		command.Env = append(os.Environ(), "SSHPASS="+info.Password)
 		data, err := command.CombinedOutput()
 		if err != nil {
@@ -139,6 +139,7 @@ func TestNamedVMInstances(t *testing.T) {
 	}
 	infos := map[string]gateway.VMInfoOutput{}
 	hostnames := map[string]string{}
+	machineIDs := map[string]string{}
 	for _, name := range []string{"e2e-a", "e2e-b"} {
 		touched = append(touched, name)
 		for _, tool := range []string{"vm_create", "vm_start"} {
@@ -154,10 +155,30 @@ func TestNamedVMInstances(t *testing.T) {
 			t.Fatal("vm_info lost instance name")
 		}
 		infos[name] = info
-		hostnames[name] = ssh(info, name)
+		hostnames[name] = ssh(info, name, "hostname")
+		machineIDs[name] = ssh(info, name, "cat /etc/machine-id")
+		if len(machineIDs[name]) != 32 {
+			t.Fatal("guest has no valid machine ID")
+		}
 	}
 	if infos["e2e-a"].Address == infos["e2e-b"].Address || hostnames["e2e-a"] == hostnames["e2e-b"] {
 		t.Fatal("instances share a guest address or hostname")
+	}
+	if machineIDs["e2e-a"] == machineIDs["e2e-b"] {
+		t.Fatal("instances share a machine ID")
+	}
+	for _, tool := range []string{"vm_stop", "vm_start"} {
+		if err := job(ctx, tool, "e2e-b"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var restarted gateway.VMInfoOutput
+	if err := call(ctx, "vm_info", args("e2e-b"), &restarted); err != nil {
+		t.Fatal(err)
+	}
+	infos["e2e-b"] = restarted
+	if restarted.Address == infos["e2e-a"].Address || ssh(restarted, "e2e-b", "cat /etc/machine-id") != machineIDs["e2e-b"] || ssh(restarted, "e2e-b", "hostname") != hostnames["e2e-b"] {
+		t.Fatal("restart changed guest identity or reused its sibling's address")
 	}
 	running, err := list()
 	if err != nil {
@@ -177,7 +198,7 @@ func TestNamedVMInstances(t *testing.T) {
 	if err := job(ctx, "vm_destroy", "e2e-a"); err != nil {
 		t.Fatal(err)
 	}
-	if ssh(infos["e2e-b"], "e2e-b") != hostnames["e2e-b"] {
+	if ssh(infos["e2e-b"], "e2e-b", "hostname") != hostnames["e2e-b"] {
 		t.Fatal("destroying a changed b")
 	}
 	after, err := list()

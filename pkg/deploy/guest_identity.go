@@ -61,7 +61,41 @@ func guestHostnameCommand(vm build.VirtualMachineConfig) (string, []string) {
 		script := fmt.Sprintf("$ErrorActionPreference='Stop'; if ($env:COMPUTERNAME -ne '%s') { Rename-Computer -NewName '%s' -Force; shutdown.exe /r /t 5 }", hostname, hostname)
 		return `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, []string{"-NoProfile", "-NonInteractive", "-Command", script}
 	}
-	return "/bin/sh", []string{"-ec", "hostnamectl set-hostname " + hostname}
+	return "/bin/sh", []string{"-ec", linuxInstanceIdentityScript(vm)}
+}
+
+// The guest agent reaches the selected clone without depending on its inherited
+// DHCP lease. Persist the new ID once, and restart network clients so they discard
+// the image's cached DUID before any IP-based provisioning or tunnel lookup.
+func linuxInstanceIdentityScript(vm build.VirtualMachineConfig) string {
+	return `set -eu
+umask 077
+hostnamectl set-hostname ` + build.InstanceHostname(vm) + `
+instance=` + build.InstanceName(vm) + `
+state=/var/lib/sailwright/instance-identity
+machine_id=$(cat /etc/machine-id)
+if [ ! -f "$state" ] || [ "$(cat "$state")" != "$instance:$machine_id" ]; then
+  mkdir -p /var/lib/sailwright
+  # Retain a pending ID across retries if a network restart fails.
+  pending="$state.pending"
+  if [ ! -f "$pending" ]; then
+    tr -d '-' < /proc/sys/kernel/random/uuid > "$pending.tmp"
+    mv "$pending.tmp" "$pending"
+  fi
+  cat "$pending" > /etc/machine-id
+  mkdir -p /var/lib/dbus
+  ln -sf /etc/machine-id /var/lib/dbus/machine-id
+  # Both clients cache machine identity. Only restart the active renderer.
+  if systemctl is-active --quiet systemd-networkd.service; then
+    systemctl restart systemd-networkd.service
+  fi
+  if systemctl is-active --quiet NetworkManager.service; then
+    systemctl restart NetworkManager.service
+  fi
+  printf '%s:%s\n' "$instance" "$(cat /etc/machine-id)" > "$state"
+  rm "$pending"
+fi
+`
 }
 
 func waitGuestHostnameProcess(vm build.VirtualMachineConfig, pid int, deadline time.Time) error {

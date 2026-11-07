@@ -115,3 +115,35 @@ func TestGatewayInstanceBudgetAndNameValidation(t *testing.T) {
 		t.Fatalf("budget not released after destroy: %+v", got)
 	}
 }
+
+func TestNamedDeletionObservedByListTargetsRevokesOwnership(t *testing.T) {
+	h := gatewaytest.Start(t, gatewaytest.Options{GateForeignVMs: true})
+	session := h.Connect(t)
+	args := map[string]any{"os": "ubuntu", "type": "server", "arch": "amd64", "name": "work"}
+	var view gateway.JobView
+	mustCall(t, session, "vm_create", args, &view)
+	if got := waitJob(t, session, view.ID); got.State != gateway.JobSucceeded {
+		t.Fatal(got)
+	}
+	state := filepath.Join(h.FakeStateDir, "ubuntu-server-amd64-work")
+	if err := os.Remove(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(state + ".instance"); err != nil {
+		t.Fatal(err)
+	}
+	// This public tool must reconcile ownership, not just the startup refresh.
+	var listing gateway.ListTargetsOutput
+	mustCall(t, session, "list_targets", map[string]any{"command": "create"}, &listing)
+	data, err := os.ReadFile(filepath.Join(h.StateDir, "owned_vms.json"))
+	if err != nil || strings.Contains(string(data), "ubuntu/server/amd64/work") {
+		t.Fatalf("stale ownership: %s %v", data, err)
+	}
+	// Model macOS recreation, where no provider instance ID can disprove a grant.
+	if err := os.WriteFile(state, []byte("running"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := call(t, session, "vm_info", args, nil); err == nil || !strings.Contains(err.Error(), "not created by this gateway") {
+		t.Fatalf("replacement was authorized: %v", err)
+	}
+}

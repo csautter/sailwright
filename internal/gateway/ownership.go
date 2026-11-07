@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -179,6 +180,48 @@ func (o *vmOwnership) destroyed(key string) error {
 	}
 	delete(o.owned, key)
 	return o.saveLocked()
+}
+
+// Named VMs disappear from listings when deleted. Check known but unlisted names
+// explicitly: absence from a partial provider listing alone proves nothing.
+func (g *Gateway) identifyUnlistedNamedVMs(ctx context.Context, targets []Target, listedAt time.Time) []Target {
+	o := g.ownership
+	if o == nil || !o.enabled {
+		return targets
+	}
+	listed := map[string]bool{}
+	for _, target := range targets {
+		listed[vmKey(target.OS, target.Type, target.Arch, target.Name)] = true
+	}
+	keys := map[string]bool{}
+	o.mu.Lock()
+	for key, record := range o.owned {
+		if record.CreatedAt.Before(listedAt) {
+			keys[key] = true
+		}
+	}
+	for key, grant := range o.granted {
+		if grant.at.Before(listedAt) {
+			keys[key] = true
+		}
+	}
+	o.mu.Unlock()
+	for key := range keys {
+		parts := strings.Split(key, "/")
+		if listed[key] || len(parts) != 4 {
+			continue
+		}
+		identity, err := g.vmResolver.Identify(ctx, parts[0], parts[1], parts[2], parts[3])
+		if err != nil {
+			fmt.Fprintf(g.console, "cannot check unlisted VM %s: %s\n", key, sanitizeForTerminal(err.Error()))
+			continue
+		}
+		if !identity.Exists {
+			exists := false
+			targets = append(targets, Target{OS: parts[0], Type: parts[1], Arch: parts[2], Name: parts[3], Exists: &exists})
+		}
+	}
+	return targets
 }
 
 // prune forgets VMs that a `create list` listing, started at listedAt, reports as

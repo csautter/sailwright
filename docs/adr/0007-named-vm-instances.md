@@ -50,10 +50,19 @@ Named guest hostnames follow the provider name on Unix. Windows computer names
 use `sw-` plus twelve hexadecimal digits from the logical identity hash to meet
 the 15-character limit. Defaults retain their existing guest hostnames. Provider
 MAC addresses and display endpoints are allocated per VM; build VNC ports remain
-image-scoped. Hyper-V box registration/import is serialized separately.
+image-scoped. Hyper-V box registration/import and removal share one host-wide
+lock, including callers using different app-data directories.
+
+Named Linux clones initialize a persistent unique machine ID and DHCP identity
+before guest access; restarting an existing clone preserves that identity.
+QEMU/UTM use the guest agent and refresh network clients. Hyper-V Ubuntu builds
+clear machine identity before export, and named creation requires a matching
+completion marker recording that preparation. Older Hyper-V Ubuntu images must
+be rebuilt before named creation because Vagrant needs networking before it
+can configure the guest.
 
 ## Consequences
 
-No migration is needed. Named VMs can be discovered across app-data directories.
+Default VMs need no migration. Named VMs can be discovered across app-data directories.
 Guest hostnames and provider-assigned networking must allow concurrent instances.
 Host-provider checks are required in addition to portable identity tests.

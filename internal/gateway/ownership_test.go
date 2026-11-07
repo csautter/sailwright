@@ -1,13 +1,105 @@
 package gateway
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+type namedOwnershipResolver struct {
+	ManagedVMResolver
+	identify func(string) (VMIdentity, error)
+}
+
+func (r namedOwnershipResolver) Identify(_ context.Context, osName, typ, arch string, names ...string) (VMIdentity, error) {
+	return r.identify(vmKey(osName, typ, arch, names...))
+}
+
+func TestUnlistedNamedOwnershipRequiresConfirmedAbsence(t *testing.T) {
+	for _, engine := range []string{"tart", "utm"} {
+		for _, outcome := range []string{"missing", "present", "failed", "new-record"} {
+			t.Run(engine+"/"+outcome, func(t *testing.T) {
+				dir := t.TempDir()
+				o, err := loadVMOwnership(true, dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				const owned = "macos//arm64/work"
+				const granted = "macos//arm64/granted"
+				if err := o.created(owned, "job", ""); err != nil {
+					t.Fatal(err)
+				}
+				o.endRequest(granted, true, "")
+				listedAt := time.Now().Add(time.Second)
+				if outcome == "new-record" {
+					listedAt = time.Now().Add(-time.Second)
+				}
+				calls := 0
+				g := &Gateway{ownership: o, console: io.Discard, vmResolver: namedOwnershipResolver{identify: func(key string) (VMIdentity, error) {
+					calls++
+					if key != owned && key != granted {
+						t.Fatal(key)
+					}
+					if outcome == "failed" {
+						return VMIdentity{}, errors.New("provider unavailable")
+					}
+					return VMIdentity{Exists: outcome == "present"}, nil
+				}}}
+				// A complete-looking listing still does not itself prove absence.
+				no := false
+				rows := g.identifyUnlistedNamedVMs(context.Background(), []Target{{OS: "macos", Arch: "arm64", Engine: engine, Exists: &no}}, listedAt)
+				if err := o.prune(rows, listedAt); err != nil {
+					t.Fatal(err)
+				}
+				want := outcome != "missing"
+				for _, key := range []string{owned, granted} {
+					if allowed, err := o.confirm(key, ""); allowed != want || err != nil {
+						t.Fatalf("replacement authorization %s = %v, %v", key, allowed, err)
+					}
+				}
+				reloaded, err := loadVMOwnership(true, dir)
+				if err != nil || reloaded.allowed(owned) != want {
+					t.Fatalf("persisted ownership: %v", err)
+				}
+				if outcome == "new-record" && calls != 0 {
+					t.Fatal("queried a record newer than the listing")
+				}
+			})
+		}
+	}
+}
+
+func TestUnlistedNamedOwnershipPreservesConcurrentCreate(t *testing.T) {
+	o, err := loadVMOwnership(true, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "macos//arm64/work"
+	if err := o.created(key, "old", ""); err != nil {
+		t.Fatal(err)
+	}
+	listedAt := time.Now()
+	g := &Gateway{ownership: o, console: io.Discard, vmResolver: namedOwnershipResolver{identify: func(string) (VMIdentity, error) {
+		// A create completes while an older missing lookup is in flight.
+		if err := o.created(key, "new", ""); err != nil {
+			t.Fatal(err)
+		}
+		return VMIdentity{}, nil
+	}}}
+	rows := g.identifyUnlistedNamedVMs(context.Background(), nil, listedAt)
+	if err := o.prune(rows, listedAt); err != nil {
+		t.Fatal(err)
+	}
+	if !o.allowed(key) {
+		t.Fatal("older lookup revoked newly created VM")
+	}
+}
 
 func TestOwnershipConfirmChecksInstance(t *testing.T) {
 	dir := t.TempDir()

@@ -520,7 +520,7 @@ func prepareBuildArtifactsForBuild(config VirtualMachineConfig, extraEnv ...stri
 			if err := promoteStagedBuildArtifacts(artifacts, stagedArtifacts); err != nil {
 				return err
 			}
-			return MarkBuildArtifactsComplete(artifacts)
+			return markBuildArtifactsComplete(artifacts, config.OS == "ubuntu" && config.VirtualizationEngine == VirtualizationEngineHyperv)
 		}
 		log.Printf("Removing staged build artifact(s) after failed or interrupted build: %v", stagedArtifacts)
 		return removeBuildArtifacts(stagedArtifacts)
