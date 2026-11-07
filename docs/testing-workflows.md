@@ -124,6 +124,16 @@ Named startup waits for guest hostname setup: QEMU/UTM require the guest agent;
 Tart uses the existing Ansible/SSH connection; Hyper-V uses Vagrant's hostname
 setup. A Windows guest may reboot after a name change.
 
+On QEMU/UTM, named Linux guests also receive a fresh persistent machine ID on
+their first managed start, including clones of older cached images. The guest
+agent addresses the clone directly and refreshes its network clients before
+IP-based access. Later starts retain that ID and do not restart networking.
+Hyper-V Ubuntu images clear their machine ID before export so each clone gets
+its own identity before DHCP. Older images lack this guarantee: rebuild once
+with `sailwright build ubuntu --type server --arch amd64 --no-cache` (or
+`--type desktop`) before creating named Hyper-V guests. Recreate any named
+Hyper-V Ubuntu VMs made from an older image; existing default VMs are unchanged.
+
 `stop all` and `destroy all` affect only defaults. Add `--all-instances` explicitly
 to include named VMs. `create` warns about low available disk/RAM without blocking.
 Build and pull still operate on the shared image. See the

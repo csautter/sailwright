@@ -162,6 +162,15 @@ A create job that fails after writing the marker records ownership when the VM
 exists afterwards. A create refused for an existing VM writes no marker and
 claims nothing. A pinned CLI without these features behaves as before.
 
+## Amendment: revoking missing named VMs (2026-11-07)
+
+Named VMs disappear from provider listings when removed. After refreshing the
+create listing, the gateway explicitly queries known but unlisted named targets
+with `vm identity --name`. Confirmed absence revokes ownership and grants,
+including on UTM/Tart where instance IDs are unavailable. Failed identity
+queries preserve records; a partial listing alone never proves absence, and
+records newer than the listing are not pruned.
+
 ## Amendment: tunnel destinations and guest password redaction (2026-11-02)
 
 Tunnels only connect to guest addresses inside a subnet of one of the host's

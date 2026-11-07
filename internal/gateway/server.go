@@ -223,17 +223,11 @@ func (g *Gateway) RefreshTargets(ctx context.Context) {
 	ctx = context.WithValue(ctx, quietInfoKey{}, true)
 	var failed []string
 	for _, command := range listCommands {
-		listedAt := time.Now().UTC()
 		targets, err := g.listTargets(ctx, command)
 		if err != nil {
 			failed = append(failed, command)
 		}
 		g.catalog.Set(command, targets, err)
-		if command == string(OpCreate) && err == nil {
-			if err := g.ownership.prune(targets, listedAt); err != nil {
-				failed = append(failed, "ownership: "+err.Error())
-			}
-		}
 	}
 	g.refreshPlaybooks()
 	event := AuditEvent{Event: "targets_refreshed", BinarySHA256: g.pinned.SHA256}
@@ -262,6 +256,7 @@ func (g *Gateway) refreshTargetsAsync() {
 }
 
 func (g *Gateway) listTargets(ctx context.Context, command string) ([]Target, error) {
+	listedAt := time.Now().UTC()
 	output, code, err := g.runInfo(ctx, []string{command, "list", "--json"})
 	if err != nil {
 		return nil, err
@@ -269,7 +264,17 @@ func (g *Gateway) listTargets(ctx context.Context, command string) ([]Target, er
 	if code != 0 {
 		return nil, fmt.Errorf("`sailwright %s list --json` exited with %d: %s", command, code, errorSummary(output))
 	}
-	return ParseTargetListing([]byte(output))
+	targets, err := ParseTargetListing([]byte(output))
+	if err != nil {
+		return nil, err
+	}
+	if command == string(OpCreate) {
+		checked := g.identifyUnlistedNamedVMs(ctx, targets, listedAt)
+		if err := g.ownership.prune(checked, listedAt); err != nil {
+			return nil, fmt.Errorf("reconcile VM ownership: %w", err)
+		}
+	}
+	return targets, nil
 }
 
 // runInfo runs a short, read-only command outside the job slot.

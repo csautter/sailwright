@@ -2,14 +2,57 @@ package deploy
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/csautter/dev-alchemy/internal/operationlock"
 	build "github.com/csautter/dev-alchemy/pkg/build"
 )
+
+func TestDefaultHypervDestroySharesBoxLockAcrossAppData(t *testing.T) {
+	restore := stubHypervStopDependencies(t)
+	defer restore()
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("LOCALAPPDATA", cache)
+	oldTimeout := hypervBoxLockTimeout
+	hypervBoxLockTimeout = 0
+	t.Cleanup(func() { hypervBoxLockTimeout = oldTimeout })
+	vm := build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "server", Arch: "amd64", HostOs: build.HostOsWindows, VirtualizationEngine: build.VirtualizationEngineHyperv}
+	release, err := acquireHypervBoxLock("linux-ubuntu-server-packer", "import named clone", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { release() }()
+	// The default VM may already be gone, but removing its shared box must wait.
+	hypervVagrantMachineExistsChecker = func(string, []string) (bool, error) { return false, nil }
+	checked := false
+	hypervVagrantBoxInstalledChecker = func(string, string) (bool, error) { checked = true; return false, nil }
+	dirs := build.GetDirectoriesInstance()
+	oldApp := dirs.AppDataDir
+	dirs.AppDataDir = t.TempDir()
+	t.Cleanup(func() { dirs.AppDataDir = oldApp })
+	if err := RunHypervVagrantDestroyOnWindows(vm); !errors.Is(err, operationlock.ErrBusy) || checked {
+		t.Fatalf("destroy accessed a box being imported: err=%v checked=%v", err, checked)
+	}
+	release()
+	// Lock release functions are single-use.
+	release = func() {}
+	if err := RunHypervVagrantDestroyOnWindows(vm); err != nil || !checked {
+		t.Fatalf("destroy after release: %v checked=%v", err, checked)
+	}
+}
+
+func TestNamedHypervUbuntuRejectsLegacyImageBeforeImport(t *testing.T) {
+	vm := build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "server", Arch: "amd64", Name: "work", HostOs: build.HostOsWindows, VirtualizationEngine: build.VirtualizationEngineHyperv, ExpectedBuildArtifacts: []string{filepath.Join(t.TempDir(), "legacy.box")}}
+	if err := RunHypervVagrantDeployOnWindows(vm); err == nil || !strings.Contains(err.Error(), "--no-cache") {
+		t.Fatalf("legacy image was not rejected before Vagrant execution: %v", err)
+	}
+}
 
 func TestNamedProviderPaths(t *testing.T) {
 	t.Setenv("TART_MACOS_VM_NAME", "")

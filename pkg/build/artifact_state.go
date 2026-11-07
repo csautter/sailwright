@@ -60,6 +60,9 @@ type artifactCompletionMarker struct {
 	// Pending marks an artifact whose set is being replaced by a build or pull. It
 	// keeps a set that was only partly replaced from looking complete or unverified.
 	Pending bool `json:"pending,omitempty"`
+	// LinuxCloneIdentity is set only by local Hyper-V Ubuntu builds whose shutdown
+	// clears machine identity before export. Pulls cannot infer this from bytes.
+	LinuxCloneIdentity bool `json:"linux_clone_identity,omitempty"`
 }
 
 func artifactCompletionMarkerPath(artifact string) string {
@@ -158,16 +161,20 @@ func readArtifactCompletionMarker(artifact string) (artifactCompletionMarker, er
 // MarkBuildArtifactsComplete writes the completion markers of artifacts that reached
 // their final path, e.g. after a successful build or OCI pull.
 func MarkBuildArtifactsComplete(artifacts []string) error {
+	return markBuildArtifactsComplete(artifacts, false)
+}
+
+func markBuildArtifactsComplete(artifacts []string, linuxCloneIdentity bool) error {
 	var errs []error
 	for _, artifact := range artifacts {
-		if err := writeArtifactCompletionMarker(artifact); err != nil {
+		if err := writeArtifactCompletionMarker(artifact, linuxCloneIdentity); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func writeArtifactCompletionMarker(artifact string) error {
+func writeArtifactCompletionMarker(artifact string, linuxCloneIdentity bool) error {
 	info, err := os.Stat(artifact)
 	if err != nil {
 		return fmt.Errorf("inspect completed build artifact %s: %w", artifact, err)
@@ -177,11 +184,24 @@ func writeArtifactCompletionMarker(artifact string) error {
 		size = -1
 	}
 	return writeArtifactMarkerFile(artifact, artifactCompletionMarker{
-		Format:            artifactCompletionMarkerFormat,
-		CompletedAt:       time.Now().UTC(),
-		SailwrightVersion: sailwrightVersion(),
-		Size:              size,
+		Format:             artifactCompletionMarkerFormat,
+		CompletedAt:        time.Now().UTC(),
+		SailwrightVersion:  sailwrightVersion(),
+		Size:               size,
+		LinuxCloneIdentity: linuxCloneIdentity,
 	})
+}
+
+// HasLinuxCloneIdentity reports whether a matching completed local build was
+// prepared for independent first-boot DHCP identities. Legacy/pulled images do
+// not make this guarantee, even when they are otherwise usable.
+func HasLinuxCloneIdentity(artifact string) bool {
+	marker, err := readArtifactCompletionMarker(artifact)
+	if err != nil || !marker.LinuxCloneIdentity {
+		return false
+	}
+	state, err := artifactState(artifact)
+	return err == nil && state == ArtifactStateExists
 }
 
 // MarkBuildArtifactsPending marks all artifacts of a set as incomplete before a build

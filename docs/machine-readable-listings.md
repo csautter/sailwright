@@ -19,6 +19,9 @@ The gateway accepts both listing versions 1 and 2. Within a version only fields 
 renamed. `fields` carries the command-specific columns of the table output, and
 `address` is reserved for the VM network address and is always `null` for now.
 
+Update external listing consumers to accept schema 2 before upgrading, and
+upgrade the CLI and gateway together; older gateways reject schema 2 listings.
+
 `create list --json` also reports `"exists": true|false` per target, which says
 whether the VM exists. Tools should use it rather than the display text in
 `fields.create` (such as `already created`), which may change. Other listings
@@ -34,7 +37,7 @@ The `build` field of `build list` is one of:
 | `missing` | No artifact | no |
 
 Treat values you do not know as not usable; new values may be added within
-schema version `1`.
+schema version `2`.
 
 ## VM connection details and identity
 

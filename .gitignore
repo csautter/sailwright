@@ -82,3 +82,4 @@ test/e2e/out/
 .devcontainer/.generated/
 .devcontainer/mounts.local
 .devcontainer/local/
+REVIEW_*.md
