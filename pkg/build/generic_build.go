@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -49,7 +50,7 @@ func RunBuildScript(ctx context.Context, config VirtualMachineConfig, executable
 		return err
 	}
 
-	skipBuild, cleanupArtifacts, err := prepareBuildArtifactsForBuild(config)
+	skipBuild, cleanupArtifacts, err := prepareBuildArtifactsForBuild(config, extraEnv...)
 	if err != nil {
 		return err
 	}
@@ -459,7 +460,21 @@ func checkIfBuildArtifactsExist(config VirtualMachineConfig) (bool, error) {
 	return BuildArtifactsExist(config)
 }
 
-func prepareBuildArtifactsForBuild(config VirtualMachineConfig) (bool, func(bool) error, error) {
+func prepareBuildArtifactsForBuild(config VirtualMachineConfig, extraEnv ...string) (bool, func(bool) error, error) {
+	startOnly := os.Getenv("DEV_ALCHEMY_PACKER_START_ONLY")
+	for _, entry := range extraEnv {
+		if value, ok := strings.CutPrefix(entry, "DEV_ALCHEMY_PACKER_START_ONLY="); ok {
+			startOnly = value
+		}
+	}
+	// Match is_truthy in the Packer wrappers. Startup probes use an isolated cache
+	// and intentionally stop before producing artifacts. Always run the probe,
+	// even with cached artifacts, and never promote or mark its output complete.
+	switch startOnly {
+	case "1", "true", "TRUE", "True", "yes", "YES", "on", "ON":
+		return false, func(bool) error { return removeBuildArtifacts(config.StagedBuildArtifacts) }, nil
+	}
+
 	artifacts, err := resolveExpectedBuildArtifacts(config)
 	if err != nil {
 		return false, nil, err

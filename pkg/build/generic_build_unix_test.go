@@ -5,6 +5,7 @@ package build
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -85,6 +86,57 @@ func TestRunBuildScriptPromotesArtifactOnlyAfterSuccess(t *testing.T) {
 	config, args, _ := fakeBuildConfig(t, root, `exit 0`)
 
 	if err := RunBuildScript(context.Background(), config, "sh", args); err != nil {
+		t.Fatal(err)
+	}
+	assertArtifactState(t, ArtifactStateExists, config.ExpectedBuildArtifacts...)
+}
+
+func TestRunBuildScriptStartOnlyProbe(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		for _, exitCode := range []int{0, 3} {
+			t.Run(fmt.Sprintf("cached=%t/exit=%d", cached, exitCode), func(t *testing.T) {
+				root := useTestDirectories(t)
+				t.Setenv("DEV_ALCHEMY_PACKER_START_ONLY", "true")
+				config, _, _ := fakeBuildConfig(t, root, "")
+				artifact := config.ExpectedBuildArtifacts[0]
+				if cached {
+					if err := os.MkdirAll(filepath.Dir(artifact), 0755); err != nil {
+						t.Fatal(err)
+					}
+					writeTestFile(t, artifact, "cached image")
+					if err := MarkBuildArtifactsComplete(config.ExpectedBuildArtifacts); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// Like the real wrapper, this probe exits without producing an image.
+				ran := filepath.Join(root, "probe-ran")
+				args := []string{"-c", fmt.Sprintf(`touch "$1"; exit %d`, exitCode), "probe", ran}
+				err := RunBuildScript(context.Background(), config, "sh", args)
+				if (err != nil) != (exitCode != 0) {
+					t.Fatalf("probe exit %d: got %v", exitCode, err)
+				}
+				if _, err := os.Stat(ran); err != nil {
+					t.Fatalf("probe must run even with a cached image: %v", err)
+				}
+				if cached {
+					content, err := os.ReadFile(artifact)
+					if err != nil || string(content) != "cached image" {
+						t.Fatalf("cached image changed: %q, %v", content, err)
+					}
+					assertArtifactState(t, ArtifactStateExists, artifact)
+				} else {
+					assertArtifactState(t, ArtifactStateMissing, artifact)
+				}
+			})
+		}
+	}
+}
+
+func TestRunBuildScriptStartOnlyOverride(t *testing.T) {
+	root := useTestDirectories(t)
+	t.Setenv("DEV_ALCHEMY_PACKER_START_ONLY", "true")
+	config, args, _ := fakeBuildConfig(t, root, `exit 0`)
+	if err := RunBuildScript(context.Background(), config, "sh", args, "DEV_ALCHEMY_PACKER_START_ONLY=false"); err != nil {
 		t.Fatal(err)
 	}
 	assertArtifactState(t, ArtifactStateExists, config.ExpectedBuildArtifacts...)
