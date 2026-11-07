@@ -65,10 +65,17 @@ Registers a GitHub Actions runner token, creates a resource group, and provision
 
 | Field                  | Type   | Required | Default                             | Description |
 |------------------------|--------|----------|-------------------------------------|-------------|
-| `repo`                 | string | ✅        | —                                   | GitHub repository in `owner/repo` format |
+| `repo`                 | string | ✅        | —                                   | GitHub repository in `owner/repo` format. Must be listed in `ALLOWED_REPOS` (case-insensitive). |
 | `resource-group`       | string | ❌        | `RESOURCE_GROUP` env var            | Target resource group name. Must start with `gh-runner-tmp`, use letters, digits, `_-.()` and not end in a period (up to 90 characters). Prefer a separate group per request for independent cleanup. |
 | `runner-name`          | string | ❌        | `"gh-runner-vm"`                    | Runner display name (letters, digits, hyphens; starts with a letter or digit, up to 64 characters). Truncated to 15 chars for the Windows computer name, which cannot be all numeric. The computer name is also the GitHub runner name, so concurrent runners must differ **within the first 15 characters**. |
 | `virtualization-flavor`| string | ❌        | `"hyperv"`                          | Virtualization technology. Allowed values: `hyperv`, `virtualbox`. |
+
+**Request headers**
+
+| Header            | Required | Description |
+|-------------------|----------|-------------|
+| `Idempotency-Key` | ❌        | 1–128 letters, digits, `.`, `_`, `:` or `-`. Makes retries safe: see [Idempotent retries](#idempotent-retries). Without it, every request creates new resources. |
+| `X-Correlation-ID`| ❌        | See **Diagnostics and retries** below. |
 
 **Example**
 
@@ -85,10 +92,11 @@ Registers a GitHub Actions runner token, creates a resource group, and provision
 
 | Status | Meaning |
 |--------|---------|
-| `202` | VM creation accepted. The existing `message` and `vm` fields remain; `resource-group`, `resources`, `status: "provisioning"` and `status-url: "/api/runner_status"` identify the resources and how to monitor them. |
-| `400` | Invalid input, or GitHub returned `404` for the repository. |
+| `202` | VM creation accepted. The existing `message` and `vm` fields remain; `resource-group`, `resources`, `status: "provisioning"` and `status-url: "/api/runner_status"` identify the resources and how to monitor them. A retry with the same `Idempotency-Key` that finds the VM returns the same body plus `"replayed": true`. |
+| `400` | Invalid input or `Idempotency-Key`, or GitHub returned `404` for the repository. |
 | `401` | Authentication/authorization check failed. |
-| `409` | Azure resource conflict, or `resource-group` already exists without the broker's ownership tag or is being deleted. |
+| `403` | `repo` is not listed in `ALLOWED_REPOS`. |
+| `409` | Azure resource conflict, `resource-group` already exists without the broker's ownership tag or is being deleted, or the `Idempotency-Key` was already used with a different request body. |
 | `502` | Key Vault/Azure request rejected, GitHub authentication/authorization failed (`401`/`403`), GitHub redirected the request (renamed repository), invalid GitHub token response, or GitHub request failed after retries. |
 | `503` | Missing app settings (names in `missing`; authorization settings are only logged), Azure unavailable, or GitHub rate limited (`429`). |
 | `504` | GitHub request or network provisioning timed out, or the request budget ran out before provisioning started. |
@@ -100,7 +108,7 @@ to retry. Failures **after** the first write (resource group, network, VM)
 return `"cleanup-required": true` and the generated `resources`, and never carry
 `Retry-After`: Azure may already hold resources, including a VM that was
 accepted before a client timeout. Delete the group (or the listed resources)
-before submitting again.
+before submitting again, or retry with the same `Idempotency-Key`.
 
 **What the endpoint does**
 
@@ -146,11 +154,34 @@ the request under the ~230 s Function App front-end limit. Resource creation
 only starts with at least 60 s of budget left. Network pollers wait at most 20 s
 each, keeping 30 s for the VM submission. VM provisioning is asynchronous.
 
-A retry of `request_runner` creates new resources; it is **not idempotent**.
-After an uncertain response or network timeout, inspect the returned group/VM
-and clean up before submitting again. Accepted Azure operations may still finish
-following an HTTP timeout. Use a dedicated group per request when cleanup must
-not affect other runners.
+Without an `Idempotency-Key`, a retry of `request_runner` creates new
+resources; it is **not idempotent**. After an uncertain response or network
+timeout, inspect the returned group/VM and clean up before submitting again.
+Accepted Azure operations may still finish following an HTTP timeout. Use a
+dedicated group per request when cleanup must not affect other runners.
+
+#### Idempotent retries
+
+With an `Idempotency-Key` header, the resource-name suffix is the first 32 hex
+characters of the key's SHA-256 instead of a random UUID, and the VM is tagged
+`broker-request` with a SHA-256 fingerprint of `repo`, `runner-name`,
+`resource-group` and `virtualization-flavor`. A request with a key first looks
+for that VM in the (broker-owned) resource group:
+
+- **VM found, same fingerprint:** returns `202` with the same `resources` and
+  `"replayed": true`. Nothing is written and no new registration token is
+  fetched.
+- **VM found, different or missing fingerprint:** returns `409`; nothing is
+  written.
+- **VM not found:** provisions as usual. Because the names are the same, a
+  retry after a timeout re-PUTs the resources the first attempt may have
+  created, and ARM treats those PUTs as updates of the same resources.
+
+Use a new key for each runner you want (the Windows workflow uses
+`<run_id>-<run_attempt>-<flavor>`). A key is bound to its resource group:
+reusing it with another `resource-group` is not detected and creates a
+separate runner there. Two concurrent requests with the same key can both
+pass the lookup; the second VM PUT then fails with `409`, leaving one VM.
 
 An existing `resource-group` is reused only when it carries the broker's
 `managed-by: gh-runner-broker` tag and is not being deleted; it is never
@@ -248,8 +279,8 @@ The endpoint does not wait for the deletion to finish: deleting a runner VM take
 
 The Function App is configured with Azure App Service Authentication v2:
 
-- `auth_enabled = true`
-- `unauthenticated_action = "Return401"` — requests without a valid Bearer token are rejected at the platform before reaching function code.
+- `auth_enabled = true`, `require_authentication = true`
+- `unauthenticated_action = "Return401"` — requests without a valid Bearer token are rejected at the platform before reaching function code. The platform also drops client-supplied `X-MS-CLIENT-PRINCIPAL` headers, so they cannot be forged.
 - Identity provider: Azure Active Directory, audience `api://<client-id>`.
 
 ### Application-layer claim validation (`require_authenticated_caller`)
@@ -278,6 +309,16 @@ Terraform builds these subjects from the `github_repository` module variable.
 
 The workflow must request the OIDC token with `permissions: id-token: write` and exchange it for an Azure AD token scoped to `api://<client-id>`.
 
+The `gh-actions-runner-broker` identity has **no Azure RBAC role**. Any workflow
+that can obtain its token (every pull request from a branch of this repository)
+can only call the broker's endpoints. In particular it must never be
+Contributor on the Function App: that would allow redeploying the Function App
+code and acting as its managed identity. Workflows therefore log in with
+`allow-no-subscriptions: true` and grant `id-token: write` only to the jobs
+that call the broker, never to build jobs that run pull request code on the
+runner VM. [`test/workflowcheck`](../../test/workflowcheck/windows_build_workflow_test.go)
+enforces both rules for the Windows workflow.
+
 The golden image build ([build-azure-runner-image.yml](../../.github/workflows/build-azure-runner-image.yml)) uses a separate app, `gh-actions-image-builder`, whose only federated credential (`github-actions-main`) trusts `repo:csautter/sailwright:ref:refs/heads/main`. Pull request workflows therefore cannot replace the image. Its client ID (Terraform output `image_builder_client_id`) is stored as the repository secret `AZURE_IMAGE_BUILDER_CLIENT_ID`.
 
 ---
@@ -298,6 +339,7 @@ These must be present in the Function App's **Application Settings** (set by Ter
 | `ALLOWED_TENANT_ID`      | Entra tenant ID. Requests from other tenants are rejected. |
 | `ALLOWED_AUDIENCE`       | Expected token audience, e.g. `api://<app-client-id>`. |
 | `ALLOWED_CLIENT_IDS`     | Comma-separated list of allowed application (client) IDs. |
+| `ALLOWED_REPOS`          | Comma-separated `owner/repo` list the broker may request runner registration tokens for (case-insensitive). The GitHub PAT may reach more repositories; requests for others get `403`. Terraform sets it to `github_repository`. |
 
 ### Required — VM provisioning will fail without these
 
@@ -365,6 +407,15 @@ make deploy-apply-terraform-azure-gh-runner
 
 Or manually with Terragrunt from `deployments/terraform/env/azure_dev/azure_gh_runner/`.
 
+Apply Terraform **before** publishing Function App code that needs a new app
+setting (for example `ALLOWED_REPOS`): `func azure functionapp publish` only
+uploads code, and `request_runner` answers `503` while a required setting is
+missing. Publish the code with:
+
+```bash
+make deploy-az-func-app FUNCTION_APP_NAME=gh-runner-func-app-<suffix>
+```
+
 ### Required Terraform variables
 
 | Variable | Description |
@@ -381,11 +432,12 @@ Or manually with Terragrunt from `deployments/terraform/env/azure_dev/azure_gh_r
 |-----------|-------|------|---------|
 | Function App managed identity | Key Vault | Key Vault Secrets User | Read `github-runner-pat` and `github-runner-vm-admin-pw` |
 | Function App managed identity | Subscription | `gh-runner-broker` (custom) | Create/delete runner resource groups and their VM/network resources — no data-plane or IAM access |
-| `gh-actions-runner-broker` service principal | Function App | Contributor | Allow Entra app to manage its own Function App |
 | Deploying identity | Key Vault | Key Vault Secrets Officer | Seed secrets via Terraform/CLI |
 | `gh-actions-image-builder` service principal | Image and image-build resource groups | Contributor | Build and replace the golden image with Packer |
 
-> The Function App identity uses a least-privilege custom role (`gh-runner-broker`, defined in [`manager.tf`](../../deployments/terraform/modules/azure_gh_runner/manager.tf)) scoped to resource-group create/delete plus `Microsoft.Compute/*` and `Microsoft.Network/*`. It replaces the previous subscription-wide `Contributor` grant, so a compromised broker cannot read secrets or assign roles outside the runner domain.
+> The Function App identity uses a least-privilege custom role (`gh-runner-broker`, defined in [`manager.tf`](../../deployments/terraform/modules/azure_gh_runner/manager.tf)): resource-group create/delete, reads on `Microsoft.Compute` and `Microsoft.Network`, and write/delete/join only for the VM, managed disk, VNet, subnet, public IP, NSG and NIC types the broker creates. It has no run command, VM extension, disk export, image or gallery write access, no data-plane access and no role assignment permissions. The role still applies to the whole subscription; a runner-only subscription would contain it further.
+>
+> The `gh-actions-runner-broker` service principal (the CI identity) has no Azure role at all; see [GitHub Actions OIDC](#github-actions-oidc-ci-callers).
 
 ---
 
@@ -446,6 +498,7 @@ Copy `local.settings.json.example` to `local.settings.json` and fill in the requ
         "ALLOWED_TENANT_ID": "<tenant-id>",
         "ALLOWED_AUDIENCE": "api://<app-client-id>",
         "ALLOWED_CLIENT_IDS": "<app-client-id>",
+        "ALLOWED_REPOS": "<owner>/<repo>",
         "ALLOWED_USER_OBJECT_IDS": "<your-object-id>"
     }
 }
