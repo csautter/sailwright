@@ -101,6 +101,10 @@ It also updates the current shell PATH and checks the installed CLI with
 Use `sailwright update` to update to the latest release. Older installations
 without this command need the install command above once more.
 
+
+For older CLI releases that reject `--version`, the Windows installer checks
+`--help` instead to confirm that the installed executable can start.
+
 ### Options
 
 | Setting | `install.sh` | `install.ps1` | Environment variable |

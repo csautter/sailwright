@@ -41,7 +41,8 @@ Hyper-V test. Keep host dependency changes inside the disposable VM.
    ```
 
    It downloads the current release CLI but uses this PR's installer code.
-   Expect the installed path, version output and the next-step hint, without
+   Expect the installed path, version output (or the legacy `--help` fallback)
+   and the next-step hint, without
    UAC. Verify both binaries, the user PATH entry, unchanged machine PATH and
    no newly registered services. Repeat using a custom path containing spaces
    and with `-NoGateway` after reverting the snapshot. Test the piped entry
