@@ -103,6 +103,30 @@
         return $null
     }
 
+    function Invoke-InstalledCliVersion([string]$BinaryPath) {
+        & $BinaryPath --version
+        if ($LASTEXITCODE -ne 0) {
+            throw "sailwright --version exited with code $LASTEXITCODE."
+        }
+    }
+
+    function Assert-InstalledCliRuns([string]$BinaryPath) {
+        try {
+            Invoke-InstalledCliVersion -BinaryPath $BinaryPath
+        } catch {
+            # PowerShell wraps process-start failures; inspect the entire chain
+            # rather than matching a localized Windows error message.
+            $cause = $_.Exception
+            while ($cause) {
+                if ($cause -is [System.ComponentModel.Win32Exception] -and $cause.NativeErrorCode -eq 1260) {
+                    throw "Sailwright is installed at $BinaryPath, but Windows policy blocks running it. Ask your IT team to approve this executable and installation location. See https://github.com/csautter/sailwright/blob/main/docs/troubleshooting.md#managed--company-machines"
+                }
+                $cause = $cause.InnerException
+            }
+            throw "Sailwright is installed at $BinaryPath, but its version check failed. See https://github.com/csautter/sailwright/blob/main/docs/troubleshooting.md#managed--company-machines Details: $_"
+        }
+    }
+
     function Install-Binaries([string[]]$Names, [string]$SourceDir, [string]$DestinationDir) {
         New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
         $replacements = @()
@@ -253,5 +277,6 @@
     }
 
     Write-Host ''
+    Assert-InstalledCliRuns -BinaryPath (Join-Path $InstallDir 'sailwright.exe')
     Write-Host 'Next: sailwright install; sailwright build list'
 } @args
