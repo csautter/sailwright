@@ -358,12 +358,21 @@ The random suffix is stable after initial deployment (`ignore_changes = all`). N
 
 ### Deploy
 
+Infrastructure changes are applied locally by a maintainer; CI only validates.
+Commit the changes, then create and review a saved plan before applying it:
+
 ```bash
 # From repo root
+make deploy-plan-terraform-azure-gh-runner
+make deploy-summary-terraform-azure-gh-runner
 make deploy-apply-terraform-azure-gh-runner
 ```
 
-Or manually with Terragrunt from `deployments/terraform/env/azure_dev/azure_gh_runner/`.
+Apply requires a matching saved plan less than 15 minutes old and blocks destructive
+changes unless explicitly approved with `ALLOW_DESTRUCTIVE=1`. Before merging,
+apply the reviewed plan locally or include the value-free summary in the PR.
+See the [Terraform deployment guide](../../deployments/terraform/README.md) for
+permissions, safeguards and local checks.
 
 ### Required Terraform variables
 
