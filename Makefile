@@ -21,7 +21,7 @@ GATEWAY_RELEASE_ASSET_BASENAME = $(GATEWAY_BINARY_NAME)_$(PACKAGE_VERSION)_$(GOO
 .PHONY: test-self-update build build-cli-local build-gateway-local test-e2e-smoke test-e2e build-cli-target build-cli-release package-cli-target package-cli-release \
 	build-gateway-target package-gateway-target clean-dist \
 	test-build-runner test-build test-deploy test-provision test-deploy-windows-hyperv test-clean-testcache \
-	test-build-integration test-build-specific test-macos-tart-runner test-gh-runner-func-request test-gh-runner-func-delete \
+	test-build-integration test-build-specific test-macos-tart-runner test-gh-runner-func-request test-gh-runner-func-status test-gh-runner-func-delete \
 	deploy-plan-terraform-azure-gh-runner deploy-apply-terraform-azure-gh-runner deploy-az-func-app gosec quickstart demo demo-gif demo-build-video
 
 # Quick-start automation: run the full install->build->create->start->provision
@@ -164,6 +164,20 @@ test-gh-runner-func-request:
 	AZURE_ADMIN_CONFIG_DIR="$(AZURE_ADMIN_CONFIG_DIR)" \
 	TERRAGRUNT_OUTPUT_DIR="$(TERRAGRUNT_OUTPUT_DIR)" \
 	bash ./scripts/gh-runner-func/test-endpoints.sh --request-runner
+
+test-gh-runner-func-status:
+	# Usage:
+	# make test-gh-runner-func-status FUNCTION_APP_NAME=<function-app-name> RESOURCE_GROUP=<name> VM_NAME=<vm from request_runner>
+	# Optional: API_CLIENT_ID=<api-client-id> TENANT_ID=<tenant-id>
+	FUNCTION_APP_NAME="$(FUNCTION_APP_NAME)" \
+	API_CLIENT_ID="$(API_CLIENT_ID)" \
+	TENANT_ID="$(TENANT_ID)" \
+	RESOURCE_GROUP="$(RESOURCE_GROUP)" \
+	VM_NAME="$(VM_NAME)" \
+	AZURE_BROKER_CONFIG_DIR="$(AZURE_BROKER_CONFIG_DIR)" \
+	AZURE_ADMIN_CONFIG_DIR="$(AZURE_ADMIN_CONFIG_DIR)" \
+	TERRAGRUNT_OUTPUT_DIR="$(TERRAGRUNT_OUTPUT_DIR)" \
+	bash ./scripts/gh-runner-func/test-endpoints.sh --runner-status
 
 test-gh-runner-func-delete:
 	# Usage:

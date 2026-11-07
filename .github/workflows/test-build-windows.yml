@@ -55,19 +55,49 @@ jobs:
           echo "runner-name=${GITHUB_RUN_ID}-hv" >> $GITHUB_OUTPUT
           echo "resource-group=gh-runner-tmp-${GITHUB_RUN_ID}-hv" >> $GITHUB_OUTPUT
 
+      - name: Checkout provisioning scripts
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/gh-runner-func
+          sparse-checkout-cone-mode: false
+
       - name: Request Windows Runner VM
+        id: request
         run: |
           echo "Creating Windows VM in resource group ${{ steps.vars.outputs.resource-group }} with runner name ${{ steps.vars.outputs.runner-name }}"
-          az rest \
+          response="$(az rest \
             --method post \
             --uri "https://${{ secrets.FUNCTION_APP_NAME }}.azurewebsites.net/api/request_runner" \
             --resource "api://${{ secrets.AZURE_CLIENT_ID }}" \
+            --headers "X-Correlation-ID=${{ github.run_id }}-${{ github.run_attempt }}-hv" \
             --body '{
               "repo": "${{ github.repository }}",
               "resource-group": "${{ steps.vars.outputs.resource-group }}",
               "runner-name": "${{ steps.vars.outputs.runner-name }}",
               "virtualization-flavor": "hyperv"
-            }'
+            }')"
+          echo "${response}"
+          vm="$(python3 -c 'import json, sys; print(json.load(sys.stdin)["vm"])' <<< "${response}")"
+          echo "vm=${vm}" >> "$GITHUB_OUTPUT"
+          monitor_status="$(python3 -c 'import json, sys; print("true" if json.load(sys.stdin).get("status-url") == "/api/runner_status" else "false")' <<< "${response}")"
+          echo "monitor-status=${monitor_status}" >> "$GITHUB_OUTPUT"
+          if [[ "${monitor_status}" != "true" ]]; then
+            echo "::notice::Broker does not advertise runner_status; skipping VM status polling. Deploy the updated Function App to enable it."
+          fi
+
+      # Fail fast when Azure rejects or evicts the VM after accepting it,
+      # instead of waiting for a runner that never registers. cleanup-* still
+      # deletes the resource group.
+      - name: Wait for Runner VM provisioning
+        if: steps.request.outputs.monitor-status == 'true'
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          FUNCTION_APP_NAME: ${{ secrets.FUNCTION_APP_NAME }}
+          RESOURCE_GROUP: ${{ steps.vars.outputs.resource-group }}
+          VM_NAME: ${{ steps.request.outputs.vm }}
+          PROVISION_TIMEOUT_SECONDS: "900"
+        run: bash scripts/gh-runner-func/wait-runner-provisioned.sh
 
   provision-virtualbox-runner:
     # if: ${{ github.event_name == 'pull_request' || inputs.enable_az_virtualbox }}
@@ -92,19 +122,49 @@ jobs:
           echo "runner-name=${GITHUB_RUN_ID}-vb" >> $GITHUB_OUTPUT
           echo "resource-group=gh-runner-tmp-${GITHUB_RUN_ID}-vb" >> $GITHUB_OUTPUT
 
+      - name: Checkout provisioning scripts
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/gh-runner-func
+          sparse-checkout-cone-mode: false
+
       - name: Request Windows Runner VM
+        id: request
         run: |
           echo "Creating Windows VM in resource group ${{ steps.vars.outputs.resource-group }} with runner name ${{ steps.vars.outputs.runner-name }}"
-          az rest \
+          response="$(az rest \
             --method post \
             --uri "https://${{ secrets.FUNCTION_APP_NAME }}.azurewebsites.net/api/request_runner" \
             --resource "api://${{ secrets.AZURE_CLIENT_ID }}" \
+            --headers "X-Correlation-ID=${{ github.run_id }}-${{ github.run_attempt }}-vb" \
             --body '{
               "repo": "${{ github.repository }}",
               "resource-group": "${{ steps.vars.outputs.resource-group }}",
               "runner-name": "${{ steps.vars.outputs.runner-name }}",
               "virtualization-flavor": "virtualbox"
-            }'
+            }')"
+          echo "${response}"
+          vm="$(python3 -c 'import json, sys; print(json.load(sys.stdin)["vm"])' <<< "${response}")"
+          echo "vm=${vm}" >> "$GITHUB_OUTPUT"
+          monitor_status="$(python3 -c 'import json, sys; print("true" if json.load(sys.stdin).get("status-url") == "/api/runner_status" else "false")' <<< "${response}")"
+          echo "monitor-status=${monitor_status}" >> "$GITHUB_OUTPUT"
+          if [[ "${monitor_status}" != "true" ]]; then
+            echo "::notice::Broker does not advertise runner_status; skipping VM status polling. Deploy the updated Function App to enable it."
+          fi
+
+      # Fail fast when Azure rejects or evicts the VM after accepting it,
+      # instead of waiting for a runner that never registers. cleanup-* still
+      # deletes the resource group.
+      - name: Wait for Runner VM provisioning
+        if: steps.request.outputs.monitor-status == 'true'
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          FUNCTION_APP_NAME: ${{ secrets.FUNCTION_APP_NAME }}
+          RESOURCE_GROUP: ${{ steps.vars.outputs.resource-group }}
+          VM_NAME: ${{ steps.request.outputs.vm }}
+          PROVISION_TIMEOUT_SECONDS: "900"
+        run: bash scripts/gh-runner-func/wait-runner-provisioned.sh
 
   test-hyperv-build:
     if: ${{ github.event_name == 'pull_request' || inputs.enable_az_hyperv }}
@@ -291,6 +351,7 @@ jobs:
         if: steps.watch_queue.outputs.cleanup_required == 'true'
         uses: actions/checkout@v7
         with:
+          persist-credentials: false
           sparse-checkout: scripts/gh-runner-func
           sparse-checkout-cone-mode: false
 
@@ -412,6 +473,7 @@ jobs:
       - name: Checkout cleanup script
         uses: actions/checkout@v7
         with:
+          persist-credentials: false
           sparse-checkout: scripts/gh-runner-func
           sparse-checkout-cone-mode: false
 
