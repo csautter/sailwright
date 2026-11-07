@@ -119,6 +119,9 @@ resource "azurerm_linux_function_app" "gh_runner_func_app" {
     ALLOWED_AUDIENCE         = "api://${azuread_application.gh_actions_runner_broker.client_id}"
     ALLOWED_CLIENT_IDS       = azuread_application.gh_actions_runner_broker.client_id
     ALLOWED_USER_OBJECT_IDS  = length(var.allowed_user_object_ids) > 0 ? join(",", var.allowed_user_object_ids) : data.azurerm_client_config.current.object_id
+    # Repositories the broker may request runner registration tokens for with
+    # the GitHub PAT. The broker refuses every request while this is empty.
+    ALLOWED_REPOS = var.github_repository
   }
 
   identity {
@@ -131,6 +134,7 @@ resource "azurerm_linux_function_app" "gh_runner_func_app" {
 
   auth_settings_v2 {
     auth_enabled           = true
+    require_authentication = true
     default_provider       = "azureactivedirectory"
     unauthenticated_action = "Return401"
     active_directory_v2 {
@@ -163,11 +167,18 @@ resource "azurerm_role_assignment" "keyvault_secrets_user" {
 }
 
 # Least-privilege role for the runner broker in place of subscription-wide
-# Contributor. It can create/delete the per-job resource groups and manage the
-# compute + networking resources inside them, but has no data-plane access (e.g.
-# it cannot read Key Vault secrets outside its dedicated data-plane assignment)
-# and no IAM (role assignment) permissions, shrinking the blast radius if the
-# broker were ever compromised.
+# Contributor. It can create/delete the per-job resource groups and the VM and
+# network resources the broker creates inside them, but has no data-plane access
+# (e.g. it cannot read Key Vault secrets outside its dedicated data-plane
+# assignment) and no IAM (role assignment) permissions, shrinking the blast
+# radius if the broker were ever compromised.
+#
+# Write actions are listed explicitly instead of Microsoft.Compute/* and
+# Microsoft.Network/*: those wildcards include run commands, VM extensions,
+# disk export (SAS access), image and gallery writes, which would let a
+# compromised broker run code on, or copy data from, any VM in the subscription
+# or replace the runner images. Deleting a resource group requires delete
+# permission on every resource in it, hence the delete actions.
 resource "azurerm_role_definition" "gh_runner_broker" {
   name        = "gh-runner-broker-${random_integer.suffix.result}"
   scope       = data.azurerm_subscription.current.id
@@ -178,8 +189,32 @@ resource "azurerm_role_definition" "gh_runner_broker" {
       "Microsoft.Resources/subscriptions/resourceGroups/read",
       "Microsoft.Resources/subscriptions/resourceGroups/write",
       "Microsoft.Resources/subscriptions/resourceGroups/delete",
-      "Microsoft.Compute/*",
-      "Microsoft.Network/*",
+
+      # Reads, including the image reference and long-running operation status.
+      "Microsoft.Compute/*/read",
+      "Microsoft.Network/*/read",
+
+      # Runner VM and its implicitly created managed OS disk.
+      "Microsoft.Compute/virtualMachines/write",
+      "Microsoft.Compute/virtualMachines/delete",
+      "Microsoft.Compute/disks/write",
+      "Microsoft.Compute/disks/delete",
+
+      # Per-request VNet, subnet, public IP, NSG and NIC.
+      "Microsoft.Network/virtualNetworks/write",
+      "Microsoft.Network/virtualNetworks/delete",
+      "Microsoft.Network/virtualNetworks/subnets/write",
+      "Microsoft.Network/virtualNetworks/subnets/delete",
+      "Microsoft.Network/virtualNetworks/subnets/join/action",
+      "Microsoft.Network/publicIPAddresses/write",
+      "Microsoft.Network/publicIPAddresses/delete",
+      "Microsoft.Network/publicIPAddresses/join/action",
+      "Microsoft.Network/networkSecurityGroups/write",
+      "Microsoft.Network/networkSecurityGroups/delete",
+      "Microsoft.Network/networkSecurityGroups/join/action",
+      "Microsoft.Network/networkInterfaces/write",
+      "Microsoft.Network/networkInterfaces/delete",
+      "Microsoft.Network/networkInterfaces/join/action",
     ]
     not_actions = []
   }

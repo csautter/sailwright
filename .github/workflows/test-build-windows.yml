@@ -1,8 +1,10 @@
 name: Test Packer Build on Windows for VMs
 
+# Only the jobs that talk to the runner broker get an OIDC token. The build jobs
+# run pull request code on the self-hosted runner VM and must not be able to
+# request Azure credentials.
 permissions:
   contents: read
-  id-token: write
 
 on:
   workflow_dispatch:
@@ -37,6 +39,9 @@ jobs:
   provision-hyperv-runner:
     if: ${{ github.event_name == 'pull_request' || inputs.enable_az_hyperv }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       runner-name: ${{ steps.vars.outputs.runner-name }}
       resource-group: ${{ steps.vars.outputs.resource-group }}
@@ -47,7 +52,7 @@ jobs:
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: true
 
       - name: Generate names
         id: vars
@@ -70,7 +75,7 @@ jobs:
             --method post \
             --uri "https://${{ secrets.FUNCTION_APP_NAME }}.azurewebsites.net/api/request_runner" \
             --resource "api://${{ secrets.AZURE_CLIENT_ID }}" \
-            --headers "X-Correlation-ID=${{ github.run_id }}-${{ github.run_attempt }}-hv" \
+            --headers "X-Correlation-ID=${{ github.run_id }}-${{ github.run_attempt }}-hv" "Idempotency-Key=${{ github.run_id }}-${{ github.run_attempt }}-hv" \
             --body '{
               "repo": "${{ github.repository }}",
               "resource-group": "${{ steps.vars.outputs.resource-group }}",
@@ -104,6 +109,9 @@ jobs:
     # TODO: Re-enable after fixing VirtualBox provisioning issue
     if: false 
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       runner-name: ${{ steps.vars.outputs.runner-name }}
       resource-group: ${{ steps.vars.outputs.resource-group }}
@@ -114,7 +122,7 @@ jobs:
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: true
 
       - name: Generate names
         id: vars
@@ -137,7 +145,7 @@ jobs:
             --method post \
             --uri "https://${{ secrets.FUNCTION_APP_NAME }}.azurewebsites.net/api/request_runner" \
             --resource "api://${{ secrets.AZURE_CLIENT_ID }}" \
-            --headers "X-Correlation-ID=${{ github.run_id }}-${{ github.run_attempt }}-vb" \
+            --headers "X-Correlation-ID=${{ github.run_id }}-${{ github.run_attempt }}-vb" "Idempotency-Key=${{ github.run_id }}-${{ github.run_attempt }}-vb" \
             --body '{
               "repo": "${{ github.repository }}",
               "resource-group": "${{ steps.vars.outputs.resource-group }}",
@@ -345,7 +353,7 @@ jobs:
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: true
 
       - name: Checkout cleanup script
         if: steps.watch_queue.outputs.cleanup_required == 'true'
@@ -468,6 +476,9 @@ jobs:
     needs: [provision-hyperv-runner, test-hyperv-build, watch-hyperv-runner-queue]
     if: always() && (github.event_name == 'pull_request' || inputs.enable_az_hyperv)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Checkout cleanup script
@@ -482,7 +493,7 @@ jobs:
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: true
 
       - name: Delete HyperV resource group
         env:
@@ -502,6 +513,9 @@ jobs:
     # TODO: Re-enable after fixing VirtualBox provisioning issue
     if: false 
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Azure Login (OIDC)
@@ -509,7 +523,7 @@ jobs:
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: true
 
       - name: Delete VirtualBox resource group
         run: |
