@@ -243,6 +243,32 @@ Describe 'Installed CLI start check' {
         Invoke-InstalledCliVersion -BinaryPath $stub
     }
 
+    It 'checks help for a legacy release without the version flag' {
+        $stub = Join-Path $TestDrive 'legacy.ps1'
+        Set-Content -LiteralPath $stub -Value @'
+if ($args[0] -eq '--version') {
+    Write-Output 'Error: unknown flag: --version'
+    $global:LASTEXITCODE = 1
+} elseif ($args[0] -eq '--help') {
+    $global:LASTEXITCODE = 0
+} else { throw 'unexpected argument' }
+'@
+        Invoke-InstalledCliVersion -BinaryPath $stub
+    }
+
+    It 'rejects a failed help check for a legacy release' {
+        $stub = Join-Path $TestDrive 'legacy-broken.ps1'
+        Set-Content -LiteralPath $stub -Value @'
+if ($args[0] -eq '--version') {
+    Write-Output 'Error: unknown flag: --version'
+    $global:LASTEXITCODE = 1
+} else { $global:LASTEXITCODE = 9 }
+'@
+        try {
+            { Invoke-InstalledCliVersion -BinaryPath $stub } | Should -Throw '*--help exited with code 9*'
+        } finally { $global:LASTEXITCODE = 0 }
+    }
+
     It 'reports nonzero version exit codes' {
         $stub = Join-Path $TestDrive 'version-stub.ps1'
         Set-Content -LiteralPath $stub -Value '$global:LASTEXITCODE = 7'

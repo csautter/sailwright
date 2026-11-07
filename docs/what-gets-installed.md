@@ -32,6 +32,10 @@ start is reported after the files and PATH have been installed. See
 [Managed / company machines](./troubleshooting.md#managed--company-machines).
 The CLI may initialize its own application data when executed; see [User data](#user-data).
 
+
+For older CLI releases that reject `--version`, the Windows installer checks
+`--help` instead to confirm that the installed executable can start.
+
 ### Remove the CLI
 
 1. Stop running Sailwright commands and the gateway.

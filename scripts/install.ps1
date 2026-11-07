@@ -104,9 +104,31 @@
     }
 
     function Invoke-InstalledCliVersion([string]$BinaryPath) {
-        & $BinaryPath --version
-        if ($LASTEXITCODE -ne 0) {
-            throw "sailwright --version exited with code $LASTEXITCODE."
+        $legacyVersion = $false
+        try {
+            $output = & $BinaryPath --version 2>&1
+            $legacyVersion = $LASTEXITCODE -ne 0 -and "$output" -match 'unknown flag: --version'
+            if (-not $legacyVersion) {
+                $output | ForEach-Object { Write-Host $_ }
+                if ($LASTEXITCODE -ne 0) {
+                    throw "sailwright --version exited with code $LASTEXITCODE."
+                }
+                return
+            }
+        } catch {
+            # Windows PowerShell 5.1 can turn native stderr into an error.
+            if ($_.FullyQualifiedErrorId -notlike '*NativeCommandError*' -or
+                "$_" -notmatch 'unknown flag: --version') {
+                throw
+            }
+            $legacyVersion = $true
+        }
+        if ($legacyVersion) {
+            Write-Host 'This release does not support --version; checking --help instead.'
+            & $BinaryPath --help
+            if ($LASTEXITCODE -ne 0) {
+                throw "sailwright --help exited with code $LASTEXITCODE."
+            }
         }
     }
 
