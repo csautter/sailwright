@@ -15,14 +15,17 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -349,11 +352,31 @@ func readState(id string) string {
 	if path == "" {
 		return ""
 	}
-	data, err := os.ReadFile(path) // #nosec G304 G703 -- test fixture path from the harness.
-	if err != nil {
+	data, err := readStateFile(path, os.ReadFile)
+	if os.IsNotExist(err) {
 		return ""
 	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read state %s: %v\n", path, err)
+		os.Exit(1)
+	}
 	return string(data)
+}
+
+// Replacing a file on Windows can temporarily deny a new reader access. Such an
+// error does not mean the VM is missing. Retry it, just as replaceState retries a
+// rename blocked by an existing reader; genuine absence is returned immediately.
+func readStateFile(path string, readFile func(string) ([]byte, error)) ([]byte, error) {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		data, err := readFile(path)
+		// ERROR_SHARING_VIOLATION (32) is not classified as permission by Go.
+		transient := os.IsPermission(err) || (runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(32)))
+		if !transient || time.Now().After(deadline) {
+			return data, err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func writeState(id, state string) {
