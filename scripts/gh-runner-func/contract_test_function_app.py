@@ -107,6 +107,7 @@ ENV = {
     "VM_SIZE": "Standard_D4s_v5",
     "ADMIN_USERNAME": "runneradmin",
     "CUSTOM_IMAGE_ID": "/images/gh-runner",
+    "ALLOWED_REPOS": "owner/repo",
     "RESOURCE_GROUP": "unused",
 }
 
@@ -172,14 +173,17 @@ class RequestRunnerWireFormatTest(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def _request_runner(self):
+    def _request_runner(self, headers=None):
         body = {
             "repo": "owner/repo",
             "resource-group": "gh-runner-tmp-1-hv",
             "runner-name": "1-hv",
         }
         request = func.HttpRequest(
-            method="POST", url="/api/request_runner", body=json.dumps(body).encode()
+            method="POST",
+            url="/api/request_runner",
+            body=json.dumps(body).encode(),
+            headers=headers or {},
         )
         return function_app.handle_request_runner(request)
 
@@ -254,6 +258,18 @@ class RequestRunnerWireFormatTest(unittest.TestCase):
         self.assertEqual(
             self._vm_wire(),
             [{"location": "westeurope", "properties": REGULAR_VM_PROPERTIES}],
+        )
+
+    def test_idempotent_vm_body_carries_request_tag(self):
+        # Real HttpRequest headers are case-insensitive.
+        response = self._request_runner({"idempotency-key": "run-1-1-hv"})
+        self.assertEqual(response.status_code, 202)
+
+        (body,) = self._vm_wire()
+        fingerprint = body.pop("tags")[function_app.VM_REQUEST_TAG]
+        self.assertRegex(fingerprint, r"^[a-f0-9]{64}$")
+        self.assertEqual(
+            body, {"location": "westeurope", "properties": REGULAR_VM_PROPERTIES}
         )
 
     def test_spot_vm_and_fallback_bodies(self):

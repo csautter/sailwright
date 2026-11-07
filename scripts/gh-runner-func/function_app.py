@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -47,6 +48,14 @@ _RESOURCE_GROUP_RE = re.compile(r"gh-runner-tmp[a-zA-Z0-9_.()-]{0,77}")
 
 # Runner names and generated VM names: letters, digits and hyphens.
 _NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9-]{0,63}")
+
+# Idempotency-Key request header for request_runner. A retry with the same key
+# targets the same resource names instead of creating a second runner VM.
+_IDEMPOTENCY_KEY_RE = re.compile(r"[a-zA-Z0-9._:-]{1,128}")
+
+# VM tag holding a fingerprint of the request that created it. Only set for
+# requests with an Idempotency-Key, to detect a key reused with another body.
+VM_REQUEST_TAG = "broker-request"
 
 # Ownership marker applied to every broker-created resource group. delete_resource_group
 # and runner_status require this tag as a defense-in-depth companion to the name-prefix
@@ -222,6 +231,7 @@ _REQUIRED_SETTINGS = (
     "VM_SIZE",
     "ADMIN_USERNAME",
     "CUSTOM_IMAGE_ID",
+    "ALLOWED_REPOS",
 )
 
 
@@ -260,10 +270,42 @@ def _group_state(group):
     return ((properties and properties.provisioning_state) or "").lower()
 
 
-def _resource_names(config):
+def _allowed_repo(repo, config):
+    # GitHub owner and repository names are case-insensitive.
+    allowed = {
+        value.strip().lower()
+        for value in config["ALLOWED_REPOS"].split(",")
+        if value.strip()
+    }
+    return repo.lower() in allowed
+
+
+def _idempotency_key(req):
+    """Return the Idempotency-Key header, None when absent, or raise ValueError."""
+    key = (getattr(req, "headers", None) or {}).get("Idempotency-Key")
+    if key is None:
+        return None
+    if not isinstance(key, str) or not _IDEMPOTENCY_KEY_RE.fullmatch(key):
+        raise ValueError("Idempotency-Key")
+    return key
+
+
+def _request_fingerprint(repo, runner_name, resource_group, virtualization_flavor):
+    payload = json.dumps(
+        [repo.lower(), runner_name, resource_group, virtualization_flavor]
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _resource_names(config, idempotency_key=None):
     # A private VNet per request also avoids concurrent subnet updates. Keep
     # configured names as prefixes and use the strict common ARM character set.
-    suffix = uuid4().hex
+    # With an Idempotency-Key the suffix is derived from the key, so a retry
+    # PUTs the same names (ARM PUTs to an existing name are idempotent).
+    if idempotency_key is None:
+        suffix = uuid4().hex
+    else:
+        suffix = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:32]
     names = {}
     for key, default, limit in (
         ("vm", config["VM_NAME"], 64),
@@ -369,13 +411,14 @@ def _classify(error):
     return 500, "Internal error", None
 
 
-def _dependency_error(context, error, resources=None):
+def _dependency_error(context, error, resources=None, idempotent=False):
     """Build the error response for a failed request.
 
     ``resources`` is set once request_runner has started writing to Azure. From
     then on, resources may exist even when the request failed (an ARM write can
     succeed after a client timeout), so the response asks for cleanup and never
-    carries Retry-After: request_runner is not idempotent.
+    carries Retry-After. Without an Idempotency-Key, request_runner is not
+    idempotent; with one, a retry with the same key reuses the same resources.
     """
     status, message, retry_after = _classify(error)
     fields = _error_fields(error)
@@ -386,7 +429,13 @@ def _dependency_error(context, error, resources=None):
     if resources is not None:
         retry_after = None
         extra = {"cleanup-required": True, "resources": resources}
-        message = f"{message}; resources may exist, clean up the resource group before retrying"
+        if idempotent:
+            message = (
+                f"{message}; resources may exist, retry with the same Idempotency-Key "
+                "or clean up the resource group"
+            )
+        else:
+            message = f"{message}; resources may exist, clean up the resource group before retrying"
     return _runner_response(context, status, message, retry_after=retry_after, **extra)
 
 
@@ -591,7 +640,12 @@ def handle_request_runner(req: func.HttpRequest, context=None) -> func.HttpRespo
     try:
         return _provision_runner(req, context, config, progress)
     except Exception as error:
-        return _dependency_error(context, error, progress.get("resources"))
+        return _dependency_error(
+            context,
+            error,
+            progress.get("resources"),
+            idempotent=progress.get("idempotent", False),
+        )
 
 
 def _parse_runner_request(req, config):
@@ -614,6 +668,46 @@ def _parse_runner_request(req, config):
     if virtualization_flavor not in _ALLOWED_FLAVORS:
         raise ValueError("virtualization-flavor")
     return repo, runner_name, resource_group, virtualization_flavor
+
+
+def _existing_runner(resource_client, compute, resource_group, vm_name, fingerprint):
+    """Return True when a previous request with this Idempotency-Key created the VM.
+
+    Raises _BrokerFailure(409) when the key was used with a different request
+    body or the group is not the broker's. Nothing is written here.
+    """
+    try:
+        group = resource_client.resource_groups.get(resource_group)
+    except ResourceNotFoundError:
+        return False
+    if not _owned_by_broker(group):
+        raise _BrokerFailure(
+            409, "Resource group exists and is not owned by the runner broker"
+        )
+    try:
+        vm = compute.virtual_machines.get(resource_group, vm_name)
+    except ResourceNotFoundError:
+        return False
+    if (getattr(vm, "tags", None) or {}).get(VM_REQUEST_TAG) != fingerprint:
+        raise _BrokerFailure(
+            409, "Idempotency-Key was already used for a different request"
+        )
+    return True
+
+
+def _accepted_response(context, names, replayed=False):
+    fields = {}
+    if replayed:
+        fields["replayed"] = True
+    return _runner_response(
+        context,
+        202,
+        "Runner VM creation started",
+        resources=names,
+        status="provisioning",
+        **{"status-url": "/api/runner_status"},
+        **fields,
+    )
 
 
 def _ensure_resource_group(resource_client, resource_group):
@@ -751,6 +845,12 @@ def _provision_runner(req, context, config, progress):
     deadline = monotonic() + _REQUEST_BUDGET_SECONDS
     context["stage"] = "input"
     try:
+        idempotency_key = _idempotency_key(req)
+    except ValueError:
+        return _runner_response(
+            context, 400, "Invalid Idempotency-Key header: use 1-128 of [A-Za-z0-9._:-]"
+        )
+    try:
         repo, runner_name, resource_group, virtualization_flavor = (
             _parse_runner_request(req, config)
         )
@@ -760,12 +860,41 @@ def _provision_runner(req, context, config, progress):
             400,
             "Invalid request body, repo, resource-group, runner-name or virtualization-flavor",
         )
-    names = _resource_names(config)
+    if not _allowed_repo(repo, config):
+        # The GitHub PAT may reach more repositories than the broker serves.
+        _log_stage(context, "repo-rejected", logging.WARNING)
+        return _runner_response(context, 403, "Repository is not allowed")
+    names = _resource_names(config, idempotency_key)
     context.update({"resource-group": resource_group, "vm": names["vm"]})
-    _log_stage(context, "validated", resources=names)
+    _log_stage(
+        context, "validated", resources=names, idempotent=idempotency_key is not None
+    )
+
+    credential = _credential()
+    fingerprint = None
+    if idempotency_key is not None:
+        progress["idempotent"] = True
+        fingerprint = _request_fingerprint(
+            repo, runner_name, resource_group, virtualization_flavor
+        )
+        # A retry after an uncertain response: return the runner the first
+        # request created instead of fetching a new token and creating another.
+        context["stage"] = "idempotency"
+        if _existing_runner(
+            ResourceManagementClient(
+                credential, config["SUBSCRIPTION_ID"], **_arm_options()
+            ),
+            ComputeManagementClient(
+                credential, config["SUBSCRIPTION_ID"], **_arm_options()
+            ),
+            resource_group,
+            names["vm"],
+            fingerprint,
+        ):
+            _log_stage(context, "replayed")
+            return _accepted_response(context, names, replayed=True)
 
     context["stage"] = "pat"
-    credential = _credential()
     kv_client = SecretClient(
         vault_url=config["VAULT_URL"], credential=credential, **_KEY_VAULT_OPTIONS
     )
@@ -844,16 +973,11 @@ def _provision_runner(req, context, config, progress):
             network_interfaces=[compute_models.NetworkInterfaceReference(id=nic.id)]
         ),
     }
+    if fingerprint is not None:
+        vm_params["tags"] = {VM_REQUEST_TAG: fingerprint}
     _submit_vm(compute, resource_group, names["vm"], vm_params, context)
     _log_stage(context, "submitted")
-    return _runner_response(
-        context,
-        202,
-        "Runner VM creation started",
-        resources=names,
-        status="provisioning",
-        **{"status-url": "/api/runner_status"},
-    )
+    return _accepted_response(context, names)
 
 
 # --- runner_status --------------------------------------------------------------
