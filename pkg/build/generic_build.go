@@ -310,8 +310,8 @@ func hostSupportsVncRecording(goos string) bool {
 	return goos != "windows"
 }
 
-func hostSupportsVncViewer(goos string) bool {
-	return goos == "darwin"
+func shouldOpenVncViewer(goos string, headless bool) bool {
+	return goos == "darwin" && !headless
 }
 
 func stopVncScreenCaptureOnSupportedHost(vnc_interrupt_retry_chan chan bool) {
@@ -366,7 +366,10 @@ func startVncScreenCaptureOnSupportedHost(ctx context.Context, config VirtualMac
 // - Opening a VNC viewer (Screen Sharing) is useful for observing the VM build process in real time.
 // - VNC recording enables capturing the build process for later review or debugging.
 func openVncViewerOnMacOSHost(ctx context.Context, config VirtualMachineConfig, vnc_recording_config VncRecordingConfig, auxiliaryProcessSilent *atomic.Bool) {
-	if !hostSupportsVncViewer(runtime.GOOS) {
+	if !shouldOpenVncViewer(runtime.GOOS, config.Headless) {
+		if config.Headless {
+			log.Printf("headless: not opening VNC viewer")
+		}
 		return
 	}
 	go func() {

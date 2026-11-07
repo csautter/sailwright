@@ -25,20 +25,27 @@ func TestHostSupportsVncRecording(t *testing.T) {
 	}
 }
 
-func TestHostSupportsVncViewer(t *testing.T) {
+func TestShouldOpenVncViewer(t *testing.T) {
 	testCases := []struct {
-		goos string
-		want bool
+		name     string
+		goos     string
+		headless bool
+		want     bool
 	}{
-		{goos: "darwin", want: true},
-		{goos: "linux", want: false},
-		{goos: "windows", want: false},
+		{name: "darwin/windowed", goos: "darwin", headless: false, want: true},
+		{name: "darwin/headless", goos: "darwin", headless: true, want: false},
+		{name: "linux/windowed", goos: "linux", headless: false, want: false},
+		{name: "linux/headless", goos: "linux", headless: true, want: false},
+		{name: "windows/windowed", goos: "windows", headless: false, want: false},
+		{name: "windows/headless", goos: "windows", headless: true, want: false},
 	}
 
 	for _, tc := range testCases {
-		if got := hostSupportsVncViewer(tc.goos); got != tc.want {
-			t.Fatalf("hostSupportsVncViewer(%q) = %v, want %v", tc.goos, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldOpenVncViewer(tc.goos, tc.headless); got != tc.want {
+				t.Fatalf("shouldOpenVncViewer(%q, %v) = %v, want %v", tc.goos, tc.headless, got, tc.want)
+			}
+		})
 	}
 }
 

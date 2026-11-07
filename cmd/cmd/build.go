@@ -337,6 +337,7 @@ Example:
 				// Only a single build at a time may own the terminal (for sudo prompts);
 				// parallel builds run without it so that Ctrl+C reaches sailwright.
 				available_virtual_machines[i].DetachedFromTerminal = parallel > 1
+				available_virtual_machines[i].Headless = headless
 			}
 
 			ctx, stopInterruptHandling := alchemy_build.HandleInterrupts(buildCommandContext(cmd))
@@ -419,7 +420,7 @@ func init() {
 	buildCmd.Flags().StringVarP(&osType, "type", "t", "server", "Type of OS (e.g., server, desktop)")
 	buildCmd.Flags().StringVar(&buildEngine, "engine", "", "Virtualization engine to use when multiple build targets share the same OS/type/arch (e.g., hyperv, virtualbox)")
 	buildCmd.Flags().IntVarP(&parallel, "parallel", "p", 1, "Number of parallel builds to run when building all VMs")
-	buildCmd.Flags().BoolVar(&headless, "headless", false, "Run QEMU in headless mode (no GUI, VNC only)")
+	buildCmd.Flags().BoolVar(&headless, "headless", false, "Run QEMU without a display window and do not open a VNC viewer (VNC recording still runs on supported hosts)")
 	buildCmd.Flags().BoolVarP(&buildVerbose, "verbose", "v", false, "Enable verbose Packer logging (sets PACKER_LOG=1)")
 	buildCmd.Flags().BoolVar(&noCache, "no-cache", false, "Force a rebuild even when the build artifact already exists")
 	buildCmd.Flags().BoolVar(&noPrebuiltOffer, "no-prebuilt", false, "Build locally without offering to pull the published Ubuntu image")

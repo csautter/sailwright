@@ -50,6 +50,13 @@ sailwright destroy <osname> [--type <type>] [--arch <arch>]
 
 Depending on the backend, the initial boot may happen during `create` or require a small host-specific step. After a VM has been created, use `start` whenever you want to boot it again.
 
+Use `sailwright build <osname> --headless` or `sailwright build all --headless`
+to build without a QEMU display window or an automatically opened VNC viewer.
+On macOS, this suppresses both the QEMU window and Screen Sharing. VNC recording
+remains enabled on macOS and Linux hosts; Windows hosts do not currently record
+VNC. The flag applies to `build`, including parallel builds, and does not change
+the display behavior of `create` or `start`.
+
 Use the `list` subcommands to see what your current host supports:
 
 ```bash
