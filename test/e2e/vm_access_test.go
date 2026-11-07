@@ -145,7 +145,11 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 	if len(parts) != 3 || (!windowsGuest && parts[0] != "ubuntu") || (windowsGuest && (parts[0] != "windows11" || parts[1] != "")) {
 		t.Fatal("use ubuntu/server/<arch> for SSH or windows11//<arch> for WinRM")
 	}
-	args := map[string]any{"os": parts[0], "type": parts[1], "arch": parts[2]}
+	name := os.Getenv("SAILWRIGHT_E2E_NAME")
+	if name == "" {
+		name = "agent-access"
+	}
+	args := map[string]any{"os": parts[0], "type": parts[1], "arch": parts[2], "name": name}
 	endpoint, err := client.Discover(os.Getenv)
 	if err != nil {
 		t.Fatal(err)
@@ -202,7 +206,7 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 	for _, vm := range listing.Targets {
 		if vm.OS == parts[0] && vm.Type == parts[1] && vm.Arch == parts[2] {
 			found = true
-			if vm.Fields["state"] != "missing" {
+			if vm.Name == name && vm.Fields["state"] != "missing" {
 				t.Fatal("selected VM already exists; refusing to touch it")
 			}
 		}
@@ -223,9 +227,10 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 			t.Error("cleanup listing:", err)
 			return
 		}
-		missing := false
+		// Destroyed named instances can disappear from discovery entirely.
+		missing := true
 		for _, vm := range after.Targets {
-			if vm.OS == parts[0] && vm.Type == parts[1] && vm.Arch == parts[2] {
+			if vm.OS == parts[0] && vm.Type == parts[1] && vm.Arch == parts[2] && vm.Name == name {
 				missing = vm.Fields["state"] == "missing"
 			}
 		}
@@ -253,7 +258,7 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 	readyCtx, readyCancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer readyCancel()
 	for {
-		conn, err := endpoint.OpenTunnel(readyCtx, parts[0], parts[1], parts[2], info.Port)
+		conn, err := endpoint.OpenTunnel(readyCtx, parts[0], parts[1], parts[2], info.Port, name)
 		if err == nil {
 			conn.Close()
 			break
@@ -274,14 +279,14 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 	if windowsGuest {
 		refusedPort = 22
 	}
-	if conn, err := endpoint.OpenTunnel(ctx, parts[0], parts[1], parts[2], refusedPort); err == nil {
+	if conn, err := endpoint.OpenTunnel(ctx, parts[0], parts[1], parts[2], refusedPort, name); err == nil {
 		conn.Close()
 		t.Fatal("gateway accepted a port for the wrong guest protocol")
 	} else if !strings.Contains(err.Error(), "HTTP 403: port does not match the VM's guest protocol") {
 		t.Fatal("unexpected tunnel refusal:", err)
 	}
 	if windowsGuest {
-		testWinRMAccess(t, ctx, target, info)
+		testWinRMAccess(t, ctx, target, name, info)
 		return
 	}
 	directory := t.TempDir()
@@ -298,7 +303,7 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 	if err := os.WriteFile(config, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	alias := "sailwright-" + strings.ReplaceAll(target, "/", "-")
+	alias := "sailwright-" + strings.ReplaceAll(target+"/"+name, "/", "-")
 	// Close the shared connection before destroying the guest, so audit byte counts
 	// and tunnel_closed are flushed and no background SSH client outlives the test.
 	defer func() {
@@ -339,7 +344,7 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 
 // testWinRMAccess uses the generated inventory unchanged. The CLI listener opens
 // authenticated gateway tunnels; Ansible must never connect to the guest IP.
-func testWinRMAccess(t *testing.T, ctx context.Context, target string, info gateway.VMInfoOutput) {
+func testWinRMAccess(t *testing.T, ctx context.Context, target, name string, info gateway.VMInfoOutput) {
 	t.Helper()
 	if info.Port != 5985 && info.Port != 5986 {
 		t.Fatal("unexpected WinRM port")
@@ -358,7 +363,7 @@ func testWinRMAccess(t *testing.T, ctx context.Context, target string, info gate
 	probe.Close()
 	listenerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	command := exec.CommandContext(listenerCtx, "sailwright-gateway", "vm", "tunnel", target, fmt.Sprint(info.Port), "--listen", fmt.Sprintf("127.0.0.1:%d", port))
+	command := exec.CommandContext(listenerCtx, "sailwright-gateway", "vm", "tunnel", target, fmt.Sprint(info.Port), "--name", name, "--listen", fmt.Sprintf("127.0.0.1:%d", port))
 	// Keep listener output out of logs: inventory and guest credentials are private.
 	if err := command.Start(); err != nil {
 		t.Fatal(err)

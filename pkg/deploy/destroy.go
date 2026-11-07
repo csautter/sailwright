@@ -23,6 +23,9 @@ func SupportsDestroy(config alchemy_build.VirtualMachineConfig) bool {
 }
 
 func RunDestroy(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	switch {
 	case isUtmDeployTarget(config):
 		return RunUtmDestroyOnMacOS(config)
@@ -45,6 +48,9 @@ func RunDestroy(config alchemy_build.VirtualMachineConfig) error {
 }
 
 func DestroyTargetExists(config alchemy_build.VirtualMachineConfig) (bool, error) {
+	if err := alchemy_build.ValidateInstanceName(config.Name); err != nil {
+		return false, err
+	}
 	switch {
 	case isUtmDeployTarget(config):
 		vmPath, err := utmVirtualMachinePath(config)

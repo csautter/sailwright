@@ -298,3 +298,25 @@ func TestResolveVMTargetFillsCLIDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestSafeGrammarPreservesNamedInstance(t *testing.T) {
+	ctx := testGrammar()
+	for _, verb := range []string{"create", "start", "stop", "destroy", "provision"} {
+		op, err := ParseSafe([]string{verb, "ubuntu", "--type", "server", "--arch", "amd64", "--name", "work-long"}, ctx)
+		if err != nil {
+			t.Fatalf("%s: %v", verb, err)
+		}
+		if op.Name != "work-long" {
+			t.Fatal(op)
+		}
+		again, err := ParseSafe(op.Argv(ctx), ctx)
+		if err != nil || again.Name != op.Name {
+			t.Fatalf("round trip %s: %+v %v", verb, again, err)
+		}
+	}
+	for _, args := range [][]string{{"build", "ubuntu", "--name", "work"}, {"create", "ubuntu", "--name", "default"}, {"create", "ubuntu", "--name", "ALL"}, {"create", "ubuntu", "--name", "a-"}, {"destroy", "all", "--all-instances"}} {
+		if _, err := ParseSafe(args, ctx); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+}

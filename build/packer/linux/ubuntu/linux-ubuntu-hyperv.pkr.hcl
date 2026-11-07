@@ -112,7 +112,8 @@ source "hyperv-iso" "ubuntu" {
   boot_wait    = "2s"
   boot_command = local.boot_command
 
-  shutdown_command = "echo 'P@ssw0rd!' | sudo -S shutdown -P now"
+  # Every clone must generate its own machine ID before its first DHCP request.
+  shutdown_command = "echo 'P@ssw0rd!' | sudo -S sh -ec 'rm -f /var/lib/dbus/machine-id; truncate -s 0 /etc/machine-id; shutdown -P now'"
 }
 
 build {

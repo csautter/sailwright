@@ -24,6 +24,9 @@ const instanceIDQueryTimeout = 30 * time.Second
 // for stopped VMs. exists is false when no VM exists. UTM uses its bundle UUID;
 // Tart uses the local VM directory identity because clones can share hardware IDs.
 func InspectInstanceID(config alchemy_build.VirtualMachineConfig) (id string, exists bool, err error) {
+	if err := alchemy_build.ValidateInstanceName(config.Name); err != nil {
+		return "", false, err
+	}
 	switch {
 	case isUtmDeployTarget(config):
 		return inspectUtmInstanceID(config)

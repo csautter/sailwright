@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -70,8 +71,12 @@ type ownershipFile struct {
 	VMs           map[string]ownedVM `json:"vms"`
 }
 
-func vmKey(osName, osType, arch string) string {
-	return osName + "/" + osType + "/" + arch
+func vmKey(osName, osType, arch string, names ...string) string {
+	key := osName + "/" + osType + "/" + arch
+	if name := firstInstanceName(names); name != "" {
+		key += "/" + name
+	}
+	return key
 }
 
 func loadVMOwnership(enabled bool, stateDir string) (*vmOwnership, error) {
@@ -177,6 +182,48 @@ func (o *vmOwnership) destroyed(key string) error {
 	return o.saveLocked()
 }
 
+// Named VMs disappear from listings when deleted. Check known but unlisted names
+// explicitly: absence from a partial provider listing alone proves nothing.
+func (g *Gateway) identifyUnlistedNamedVMs(ctx context.Context, targets []Target, listedAt time.Time) []Target {
+	o := g.ownership
+	if o == nil || !o.enabled {
+		return targets
+	}
+	listed := map[string]bool{}
+	for _, target := range targets {
+		listed[vmKey(target.OS, target.Type, target.Arch, target.Name)] = true
+	}
+	keys := map[string]bool{}
+	o.mu.Lock()
+	for key, record := range o.owned {
+		if record.CreatedAt.Before(listedAt) {
+			keys[key] = true
+		}
+	}
+	for key, grant := range o.granted {
+		if grant.at.Before(listedAt) {
+			keys[key] = true
+		}
+	}
+	o.mu.Unlock()
+	for key := range keys {
+		parts := strings.Split(key, "/")
+		if listed[key] || len(parts) != 4 {
+			continue
+		}
+		identity, err := g.vmResolver.Identify(ctx, parts[0], parts[1], parts[2], parts[3])
+		if err != nil {
+			fmt.Fprintf(g.console, "cannot check unlisted VM %s: %s\n", key, sanitizeForTerminal(err.Error()))
+			continue
+		}
+		if !identity.Exists {
+			exists := false
+			targets = append(targets, Target{OS: parts[0], Type: parts[1], Arch: parts[2], Name: parts[3], Exists: &exists})
+		}
+	}
+	return targets
+}
+
 // prune forgets VMs that a `create list` listing, started at listedAt, reports as
 // not created. Targets missing from the listing are kept, since a failed or partial
 // listing proves nothing, and so are records newer than the listing, which may have
@@ -189,7 +236,7 @@ func (o *vmOwnership) prune(createTargets []Target, listedAt time.Time) error {
 	defer o.mu.Unlock()
 	changed := false
 	for _, target := range createTargets {
-		key := vmKey(target.OS, target.Type, target.Arch)
+		key := vmKey(target.OS, target.Type, target.Arch, target.Name)
 		// Only a listing that says so proves the VM is gone.
 		if !listedAsMissing(target) {
 			continue
@@ -252,8 +299,9 @@ func (o *vmOwnership) endRequest(key string, approved bool, instanceID string) {
 // not create to the agent. It returns almost at once (nil only if the request was
 // decided as approved within busyProbe): an MCP call cannot wait for a human for the
 // full approval TTL without running into client timeouts.
-func (g *Gateway) requestVMAccess(tool, osName, osType, arch, instanceID string) error {
-	key := vmKey(osName, osType, arch)
+func (g *Gateway) requestVMAccess(tool, osName, osType, arch, instanceID string, names ...string) error {
+	name := firstInstanceName(names)
+	key := vmKey(osName, osType, arch, name)
 	if !g.approver.Enabled() {
 		return fmt.Errorf("VM %s was not created by this gateway and may belong to the operator; using it needs host approval, but the gateway has no approval console (start it in a foreground terminal, or create the VM through the gateway)", key)
 	}
@@ -276,6 +324,9 @@ func (g *Gateway) requestVMAccess(tool, osName, osType, arch, instanceID string)
 	if osType != "" {
 		argv = append(argv, "--type", osType)
 	}
+	if name != "" {
+		argv = append(argv, "--name", name)
+	}
 	decided := make(chan Decision, 1)
 	go func() {
 		defer g.background.Done()
@@ -288,7 +339,7 @@ func (g *Gateway) requestVMAccess(tool, osName, osType, arch, instanceID string)
 		})
 		approved := approval.Decision == DecisionApproved
 		g.ownership.endRequest(key, approved, instanceID)
-		_ = g.audit.Record(AuditEvent{Event: "vm_access_decision", Tool: tool, JobID: id, Decision: string(approval.Decision), Params: map[string]any{"os": osName, "type": osType, "arch": arch}, Risk: []string{riskForeignVM}, AutoApproved: approval.Auto})
+		_ = g.audit.Record(AuditEvent{Event: "vm_access_decision", Tool: tool, JobID: id, Decision: string(approval.Decision), Params: map[string]any{"os": osName, "type": osType, "arch": arch, "name": name}, Risk: []string{riskForeignVM}, AutoApproved: approval.Auto})
 		decided <- approval.Decision
 	}()
 	// The console answers "busy" at once while another approval is open.
@@ -318,7 +369,7 @@ func (g *Gateway) instanceAllowed(ctx context.Context, target VMTarget) bool {
 	if !g.ownership.knowsInstance(key) {
 		return true
 	}
-	identity, err := g.vmResolver.Identify(ctx, target.OS, target.Type, target.Arch)
+	identity, err := g.vmResolver.Identify(ctx, target.OS, target.Type, target.Arch, target.Name)
 	if err != nil {
 		fmt.Fprintf(g.console, "cannot confirm that VM %s is still the gateway's: %s\n", key, sanitizeForTerminal(err.Error()))
 		return false
@@ -349,7 +400,7 @@ func (g *Gateway) watchCreate(spec *JobSpec, target VMTarget) error {
 			return
 		}
 		instanceID := ""
-		identity, err := g.vmResolver.Identify(g.backgroundCtx, target.OS, target.Type, target.Arch)
+		identity, err := g.vmResolver.Identify(g.backgroundCtx, target.OS, target.Type, target.Arch, target.Name)
 		switch {
 		case err == nil && identity.Exists:
 			instanceID = identity.InstanceID

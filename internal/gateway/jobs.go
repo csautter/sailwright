@@ -37,6 +37,8 @@ var ErrBusy = errors.New("another job is active; wait for it or cancel it")
 
 // JobSpec describes a job to run.
 type JobSpec struct {
+	// BeforeRun reserves resources after approval and releases them on every exit.
+	BeforeRun        func(context.Context) (func(), error)
 	Tool             string
 	Tier             string
 	Argv             []string
@@ -381,6 +383,14 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 		}
 	}
 
+	if spec.BeforeRun != nil {
+		release, err := spec.BeforeRun(ctx)
+		if err != nil {
+			m.finish(j, JobFailed, nil, err.Error(), time.Time{})
+			return
+		}
+		defer release()
+	}
 	started := time.Now().UTC()
 	j.update(func(v *JobView) {
 		v.State = JobRunning

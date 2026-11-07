@@ -108,7 +108,7 @@ func (g *Gateway) serveTunnel(w http.ResponseWriter, r *http.Request) {
 	defer upstream.Close()
 
 	peer := r.Header.Get(peerHeader)
-	params := map[string]any{"os": vm.OS, "type": vm.Type, "arch": vm.Arch, "engine": vm.Engine, "network_mode": vm.NetworkMode, "address": vm.Address.String(), "port": port}
+	params := map[string]any{"os": vm.OS, "type": vm.Type, "arch": vm.Arch, "name": target.Name, "engine": vm.Engine, "network_mode": vm.NetworkMode, "address": vm.Address.String(), "port": port}
 	risk := []string{}
 	if lanReachable(vm.NetworkMode) {
 		risk = append(risk, "LAN_OR_UNKNOWN_NETWORK")
@@ -153,7 +153,7 @@ func (g *Gateway) parseTunnelRequest(r *http.Request) (VMTarget, int, *tunnelRef
 	}
 	query := r.URL.Query()
 	for key, values := range query {
-		if (key != "os" && key != "type" && key != "arch" && key != "port") || len(values) != 1 {
+		if (key != "os" && key != "type" && key != "arch" && key != "port" && key != "name") || len(values) != 1 {
 			return VMTarget{}, 0, &tunnelRefusal{http.StatusBadRequest, "invalid tunnel parameters"}
 		}
 	}
@@ -161,7 +161,7 @@ func (g *Gateway) parseTunnelRequest(r *http.Request) (VMTarget, int, *tunnelRef
 	if err != nil || !tunnelPorts[port] {
 		return VMTarget{}, 0, &tunnelRefusal{http.StatusForbidden, "port is not allowed"}
 	}
-	target, err := g.grammar().ResolveVMTarget(vmAccessListing, query.Get("os"), query.Get("type"), query.Get("arch"), "")
+	target, err := g.grammar().ResolveVMTarget(vmAccessListing, query.Get("os"), query.Get("type"), query.Get("arch"), "", query.Get("name"))
 	if err != nil {
 		return VMTarget{}, 0, &tunnelRefusal{http.StatusBadRequest, err.Error()}
 	}
@@ -174,7 +174,7 @@ func (g *Gateway) authorizeTunnel(ctx context.Context, target VMTarget, port int
 	if !g.ownership.allowed(target.Key()) {
 		return ManagedVM{}, &tunnelRefusal{http.StatusForbidden, "VM was not created by this gateway; call vm_info to request operator approval"}
 	}
-	vm, err := g.vmResolver.ResolveFresh(ctx, target.OS, target.Type, target.Arch)
+	vm, err := g.vmResolver.ResolveFresh(ctx, target.OS, target.Type, target.Arch, target.Name)
 	if err != nil {
 		// The detailed reason goes to the operator console (see CLIManagedVMResolver).
 		return ManagedVM{}, &tunnelRefusal{http.StatusNotFound, "managed VM is unavailable or not running"}

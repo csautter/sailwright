@@ -261,6 +261,9 @@ func ValidateLocalWindowsProvisionProtocol(protocol LocalWindowsProvisionProtoco
 }
 
 func RunProvisionWithOptions(vm alchemy_build.VirtualMachineConfig, options ProvisionOptions) error {
+	if err := alchemy_build.ValidateInstance(vm); err != nil {
+		return err
+	}
 	options = normalizeProvisionOptions(options)
 
 	if err := ValidateProvisionVerbosity(options.Verbosity); err != nil {
@@ -1092,7 +1095,6 @@ func utmConfigPlistPath(vm alchemy_build.VirtualMachineConfig) (string, error) {
 		return "", fmt.Errorf("failed to determine user home directory: %w", err)
 	}
 
-	vmName := alchemy_build.GetVirtualMachineNameWithType(vm)
 	return filepath.Join(
 		homeDir,
 		"Library",
@@ -1100,7 +1102,7 @@ func utmConfigPlistPath(vm alchemy_build.VirtualMachineConfig) (string, error) {
 		"com.utmapp.UTM",
 		"Data",
 		"Documents",
-		fmt.Sprintf("%s-%s-dev-alchemy.utm", vmName, vm.Arch),
+		alchemy_build.InstanceName(vm)+".utm",
 		"config.plist",
 	), nil
 }

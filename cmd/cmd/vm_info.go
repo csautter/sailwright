@@ -23,9 +23,16 @@ func newVMCommand() *cobra.Command {
 	info := &cobra.Command{
 		Use: "info <os>", Short: "Show connection details for a running VM", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateInstanceSelector(cmd, args); err != nil {
+				return err
+			}
 			targetType := alchemy_build.TargetType(args[0], typ)
 			for _, target := range availableCreateVirtualMachines() {
 				if target.OS == args[0] && target.UbuntuType == targetType && target.Arch == arch {
+					target.Name = commandInstanceName(cmd)
+					if err := alchemy_build.ValidateInstance(target); err != nil {
+						return err
+					}
 					value, err := inspectVMInfo(target)
 					if err != nil {
 						return err
@@ -40,13 +47,14 @@ func newVMCommand() *cobra.Command {
 					if showPassword {
 						password = value.Password
 					}
-					_, err = fmt.Fprintf(cmd.OutOrStdout(), "VM: %s/%s/%s\nState: %s\nEngine: %s\nAddress: %s\nNetwork: %s\nProtocol: %s\nPort: %d\nUsername: %s\nPassword: %s\n", value.OS, value.Type, value.Arch, value.State, value.Engine, value.Address, value.NetworkMode, value.Protocol, value.Port, value.Username, password)
+					_, err = fmt.Fprintf(cmd.OutOrStdout(), "VM: %s\nState: %s\nEngine: %s\nAddress: %s\nNetwork: %s\nProtocol: %s\nPort: %d\nUsername: %s\nPassword: %s\n", alchemy_build.InstanceKey(target), value.State, value.Engine, value.Address, value.NetworkMode, value.Protocol, value.Port, value.Username, password)
 					return err
 				}
 			}
 			return fmt.Errorf("unknown managed VM: %s/%s/%s", args[0], targetType, arch)
 		},
 	}
+	addInstanceFlag(info)
 	info.Flags().StringVar(&typ, "type", "server", "Ubuntu VM type")
 	info.Flags().StringVar(&arch, "arch", "amd64", "VM architecture")
 	info.Flags().BoolVar(&outputJSON, "json", false, "Print versioned JSON including guest credentials")
@@ -62,9 +70,16 @@ func newVMIdentityCommand() *cobra.Command {
 	identity := &cobra.Command{
 		Use: "identity <os>", Short: "Print whether a VM exists and its hypervisor instance id as JSON", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateInstanceSelector(cmd, args); err != nil {
+				return err
+			}
 			targetType := alchemy_build.TargetType(args[0], typ)
 			for _, target := range availableCreateVirtualMachines() {
 				if target.OS == args[0] && target.UbuntuType == targetType && target.Arch == arch {
+					target.Name = commandInstanceName(cmd)
+					if err := alchemy_build.ValidateInstance(target); err != nil {
+						return err
+					}
 					value, err := inspectVMIdentity(target)
 					if err != nil {
 						return err
@@ -75,6 +90,7 @@ func newVMIdentityCommand() *cobra.Command {
 			return fmt.Errorf("unknown managed VM: %s/%s/%s", args[0], targetType, arch)
 		},
 	}
+	addInstanceFlag(identity)
 	identity.Flags().StringVar(&typ, "type", "server", "Ubuntu VM type")
 	identity.Flags().StringVar(&arch, "arch", "amd64", "VM architecture")
 	return identity

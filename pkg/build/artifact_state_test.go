@@ -28,6 +28,30 @@ func TestArtifactStateMissing(t *testing.T) {
 	assertArtifactState(t, ArtifactStateMissing, filepath.Join(t.TempDir(), "disk.qcow2"))
 }
 
+func TestLinuxCloneIdentityRequiresMatchingPreparedBuild(t *testing.T) {
+	artifact := filepath.Join(t.TempDir(), "ubuntu.box")
+	writeTestFile(t, artifact, "generalized image")
+	if HasLinuxCloneIdentity(artifact) {
+		t.Fatal("legacy image accepted")
+	}
+	if err := MarkBuildArtifactsComplete([]string{artifact}); err != nil {
+		t.Fatal(err)
+	}
+	if HasLinuxCloneIdentity(artifact) {
+		t.Fatal("pull completion claimed image generalization")
+	}
+	if err := markBuildArtifactsComplete([]string{artifact}, true); err != nil {
+		t.Fatal(err)
+	}
+	if !HasLinuxCloneIdentity(artifact) {
+		t.Fatal("prepared local image rejected")
+	}
+	writeTestFile(t, artifact, "replaced image of a different size")
+	if HasLinuxCloneIdentity(artifact) {
+		t.Fatal("mismatched completion marker accepted")
+	}
+}
+
 func TestArtifactStateWithCompletionMarkerExists(t *testing.T) {
 	artifact := filepath.Join(t.TempDir(), "disk.qcow2")
 	writeTestFile(t, artifact, "complete image")

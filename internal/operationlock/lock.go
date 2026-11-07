@@ -66,10 +66,19 @@ func (e *busyError) Unwrap() error { return ErrBusy }
 // timeout. A zero timeout tries exactly once. When it gives up, the error names the
 // processes holding the conflicting locks where they are known.
 func AcquireWithin(appData, target, operation string, timeout time.Duration) (func(), error) {
+	return acquireWithin(appData, target, operation, timeout, false)
+}
+
+// AcquireSharedWithin waits for an image read lock, honoring the CLI timeout.
+func AcquireSharedWithin(appData, target, operation string, timeout time.Duration) (func(), error) {
+	return acquireWithin(appData, target, operation, timeout, true)
+}
+
+func acquireWithin(appData, target, operation string, timeout time.Duration, shared bool) (func(), error) {
 	deadline := time.Now().Add(timeout)
 	delay := 100 * time.Millisecond
 	for {
-		release, err := Acquire(appData, target, operation)
+		release, err := acquire(appData, target, operation, shared)
 		if err == nil || !errors.Is(err, ErrBusy) {
 			return release, err
 		}
@@ -86,6 +95,15 @@ func AcquireWithin(appData, target, operation string, timeout time.Duration) (fu
 // command for the holder description. Lock files remain in place so another process
 // cannot lock a replacement inode during release.
 func Acquire(appData, target, operation string) (func(), error) {
+	return acquire(appData, target, operation, false)
+}
+
+// AcquireShared holds an image read lock while independent instances clone it.
+func AcquireShared(appData, target, operation string) (func(), error) {
+	return acquire(appData, target, operation, true)
+}
+
+func acquire(appData, target, operation string, sharedTarget bool) (func(), error) {
 	dir := filepath.Join(appData, "locks")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -132,7 +150,7 @@ func Acquire(appData, target, operation string) (func(), error) {
 		return nil, err
 	}
 	if target != "" {
-		if err := take(targetLockName(target), false); err != nil {
+		if err := take(targetLockName(target), sharedTarget); err != nil {
 			release()
 			return nil, err
 		}
