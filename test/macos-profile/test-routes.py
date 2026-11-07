@@ -14,7 +14,7 @@ class Routing(unittest.TestCase):
             self.assertEqual(self.pr([path]), (False, False, False), path)
 
     def test_macos_paths_and_goldens_run_quick(self):
-        for path in ('scripts/macos/install.sh', 'pkg/deploy/macos-silicon-deploy.go', 'test/macos-profile/golden/windows11-arm64.json'):
+        for path in ('scripts/macos/install.sh', 'pkg/deploy/macos-silicon-deploy.go', 'test/macos-profile/golden/windows11-arm64.json', 'test/macos-profile/routes.py', 'test/macos-profile/boot-utm.py', 'pkg/build/utm_paths.go'):
             self.assertEqual(self.pr([path]), (True, False, False), path)
 
     def test_labels_override_paths(self):

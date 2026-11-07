@@ -86,11 +86,8 @@ func TestUtmVirtualMachinePathUsesUtmDocumentsBundle(t *testing.T) {
 }
 
 func TestUtmOverrideDestroyPreservesDefaultVM(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	vm, _, _ := mockMacOSLifecycle(t)
 	t.Setenv("SAILWRIGHT_UTM_VM_DIR", "")
-	vm := alchemy_build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "server", Arch: "arm64"}
 	defaultVM, err := utmVirtualMachinePath(vm)
 	if err != nil {
 		t.Fatal(err)

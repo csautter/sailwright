@@ -103,6 +103,7 @@ scripts honor the same variable. Unset or empty retains the default; use an
 absolute path so different working directories select the same location.
 
 The override selects a location; it does not move existing VMs. Set it
-consistently across commands. Start and stop open the selected bundle and use
-its UUID, so a same-named VM in another directory is not selected. Destroy
+consistently across commands. Start registers the selected bundle. Lifecycle
+commands verify its UUID and registered path. Conflicting registrations at another path cause an explicit
+refusal; remove those entries from UTM before retrying. Destroy
 removes the selected bundle and leaves cached build artifacts intact.

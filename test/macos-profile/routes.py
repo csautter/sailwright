@@ -8,9 +8,9 @@ import subprocess
 
 MACOS_PATHS = (
     'scripts/macos/**', 'build/packer/linux/ubuntu/linux-ubuntu-on-macos.sh',
-    'pkg/build/macos-*.go', 'pkg/build/qemu-arm64.go', 'pkg/deploy/macos-*.go',
+    'pkg/build/macos-*.go', 'pkg/build/utm*.go', 'pkg/build/qemu-arm64.go', 'pkg/deploy/macos-*.go',
     'pkg/deploy/utm*', 'deployments/utm/**', '.github/workflows/test-build-macos.yml',
-    'test/macos-profile/golden/**',
+    'test/macos-profile/**',
 )
 
 

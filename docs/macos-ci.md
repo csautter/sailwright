@@ -36,10 +36,10 @@ starts tier B for:
 
 - `scripts/macos/**`
 - `build/packer/linux/ubuntu/linux-ubuntu-on-macos.sh`
-- `pkg/build/macos-*.go` and `pkg/build/qemu-arm64.go`
+- `pkg/build/macos-*.go`, `pkg/build/utm*.go` and `pkg/build/qemu-arm64.go`
 - `pkg/deploy/macos-*.go` and `pkg/deploy/utm*`
 - `deployments/utm/**`
-- `test/macos-profile/golden/**`
+- `test/macos-profile/**`
 - `.github/workflows/test-build-macos.yml`
 
 Changes under `.github/runners/**` request tier C. Shared, Linux and Windows

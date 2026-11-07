@@ -76,6 +76,7 @@ case "$*" in
   rm -rf "$MOCK_BUNDLE"
   : > "$MOCK_STATE/ids";;
  *'open POSIX file'*) cat "$MOCK_BUNDLE/config.plist" > "$MOCK_STATE/ids";;
+ *'stop targetVM by request'*) printf 'stopped\n' > "$MOCK_STATE/status";;
  *'start targetVM'*)
   grep -q 'bbbbbbbb-1111-2222-3333-444444444444' "$MOCK_STATE/ids"
   printf 'started\n' > "$MOCK_STATE/status";;

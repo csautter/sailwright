@@ -58,6 +58,11 @@ def boot(bundle, timeout, diagnostics, software_emulation=False):
         # Unlike the optional fixture registration check, every failure here
         # fails CI. Select by UUID to avoid touching same-named user VMs.
         applescript(['tell application "UTM" to open (POSIX file (item 1 of argv))'], str(bundle))
+        registered = applescript(['tell application "UTM"',
+                                  'return POSIX path of (file of virtual machine id (item 1 of argv))',
+                                  'end tell'], identifier)
+        if Path(registered).resolve() != bundle.resolve():
+            raise RuntimeError('Refusing to smoke-test a UUID registered at another bundle path')
         if vm_command(identifier, 'return (status of targetVM) as text') != 'stopped':
             raise RuntimeError('Refusing to smoke-test an already running VM')
         started = True  # A failing/timed-out start may still have launched QEMU.

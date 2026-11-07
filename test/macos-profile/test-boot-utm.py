@@ -29,7 +29,7 @@ class BootTest(unittest.TestCase):
         self.addresses = '192.168.64.10'
         self.start_error = None
         self.stop_error = None
-        self.open = self.enter(patch.object(boot_utm, 'applescript'))
+        self.open = self.enter(patch.object(boot_utm, 'applescript', return_value=str(self.bundle)))
         self.enter(patch.object(boot_utm, 'vm_command', side_effect=self.command))
         self.enter(patch.object(boot_utm.time, 'sleep'))
 
@@ -66,7 +66,7 @@ class BootTest(unittest.TestCase):
         self.assertEqual(self.result()['addresses'], ['192.168.64.10'])
         self.assertEqual(self.actions[-2:], ['return (status of targetVM) as text', 'delete targetVM'])
         self.assertFalse(self.running)
-        self.assertEqual(self.open.call_args.args[-1], str(self.bundle))
+        self.assertEqual(self.open.call_args_list[0].args[-1], str(self.bundle))
 
     def test_software_emulation_changes_only_disposable_configuration(self):
         self.run_boot(software_emulation=True)
@@ -82,6 +82,13 @@ class BootTest(unittest.TestCase):
             self.run_boot()
         self.assertEqual(self.result()['stderr'], 'TCC denied')
         self.assertNotIn('stop targetVM by force', self.actions)
+
+    def test_copied_uuid_at_another_path_is_not_started_or_deleted(self):
+        self.open.return_value = str(self.bundle.parent / 'unrelated.utm')
+        with self.assertRaisesRegex(RuntimeError, 'another bundle path'):
+            self.run_boot()
+        self.assertEqual(self.actions, [])
+        self.assertIn('error', self.result())
 
     def test_missing_bundle_fails_and_retains_diagnostics(self):
         (self.bundle / 'config.plist').unlink()
