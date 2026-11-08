@@ -649,10 +649,13 @@ state_isolation: shared
 agent_dir: $GW_AGENT
 listen: 127.0.0.1:$RT_GATEWAY_PORT
 EOF
+	# Without a terminal the binary cannot be confirmed interactively, so pin its hash.
+	local pin=()
+	if [ "$1" != --bypass-approvals ]; then pin=(--binary-sha256 "$(shasum -a 256 "$BIN" | awk '{print $1}')"); fi
 	if [ "$RT_APPDATA" = default ]; then
-		"$GW" --state-dir "$GW_STATE" serve --config "$GW_STATE/gateway.yaml" --binary "$BIN" "$1" >"$2" 2>&1 </dev/null &
+		"$GW" --state-dir "$GW_STATE" serve --config "$GW_STATE/gateway.yaml" --binary "$BIN" ${pin[@]+"${pin[@]}"} "$1" >"$2" 2>&1 </dev/null &
 	else
-		DEV_ALCHEMY_APP_DATA_DIR="$RT_APPDATA" "$GW" --state-dir "$GW_STATE" serve --config "$GW_STATE/gateway.yaml" --binary "$BIN" "$1" >"$2" 2>&1 </dev/null &
+		DEV_ALCHEMY_APP_DATA_DIR="$RT_APPDATA" "$GW" --state-dir "$GW_STATE" serve --config "$GW_STATE/gateway.yaml" --binary "$BIN" ${pin[@]+"${pin[@]}"} "$1" >"$2" 2>&1 </dev/null &
 	fi
 	GW_PID=$!
 	local waited=0
@@ -698,13 +701,13 @@ phase_gateway() {
 	export SAILWRIGHT_GATEWAY_DIR="$GW_AGENT"
 	local log="$RT_PHASE_DIR/logs/GW-serve-bypass.log"
 	if gateway_start --bypass-approvals "$log"; then rt_pass GW-01 "gateway serves with --bypass-approvals (isolated state dir)"; else rt_fail GW-01 "gateway starts" "see logs/GW-serve-bypass.log"; rt_summary; return; fi
-	rt_check GW-02 "banner shows bypassed approvals" --match 'approvals: BYPASSED' -- cat "$log"
+	rt_check GW-02 "banner shows bypassed approvals" --match 'approvals:[[:space:]]+BYPASSED' -- cat "$log"
 	rt_check GW-03 "connect --check finds the gateway" -- "$GW" connect --check
 	rt_check GW-04 "audit records gateway_started with the binary hash" --match '"gateway_started"' --match '[0-9a-f]{64}' -- cat "$GW_STATE/audit.jsonl"
 	rt_e2e GW-05 "E2E smoke, cli-readonly, destroy-idempotent through the gateway" 'TestScenarios/(smoke|cli-readonly|destroy-idempotent)$' \
 		SAILWRIGHT_E2E_EXECUTOR=gateway "SAILWRIGHT_E2E_TARGET=$RT_TARGET"
 	rt_check GW-06 "TestVMAccess: create, vm_info, SSH, SCP, port refusal, cleanup" --timeout 3600 --match '--- PASS: TestVMAccess' -- \
-		env SAILWRIGHT_VM_ACCESS_E2E=1 SAILWRIGHT_E2E_TARGET="$RT_TARGET" PATH="$RT_BIN_DIR:$PATH" \
+		env SAILWRIGHT_VM_ACCESS_E2E=1 SAILWRIGHT_E2E_TARGET="$RT_TARGET" SAILWRIGHT_E2E_INSECURE="${RT_ALLOW_INSECURE_CREDENTIALS:-}" PATH="$RT_BIN_DIR:$PATH" \
 		go -C "$RT_REPO_ROOT" test -tags e2e ./test/e2e -run '^TestVMAccess$' -count=1 -timeout 55m -v
 	rt_check GW-07 "audit: vm_info and paired tunnels with traffic both ways" -- python3 -I -c '
 import json, sys

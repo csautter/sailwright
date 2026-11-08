@@ -131,6 +131,23 @@ func TestVMOwnership(t *testing.T) {
 		t.Fatal("vm_info:", lastErr)
 		return info
 	}
+	// A freshly created guest has no address until DHCP completes. The gateway
+	// resolves the VM before it can compare identities, and that wait would
+	// outlast the tunnel client's deadline; wait through the CLI first.
+	waitGuestAddress := func(step string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Minute)
+		for {
+			output, err := cli(ctx, nil, append([]string{"vm", "info"}, targetArgs...)...)
+			if err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: guest did not report an address: %v\n%s", step, err, tailLines(output, 10))
+			}
+			time.Sleep(3 * time.Second)
+		}
+	}
 	expectRefused := func(step string, wants ...string) {
 		t.Helper()
 		conn, err := endpoint.OpenTunnel(ctx, osName, osType, arch, 22)
@@ -197,6 +214,7 @@ func TestVMOwnership(t *testing.T) {
 		}
 		lifecycle(ctx, "create")
 		lifecycle(ctx, "start")
+		waitGuestAddress(step)
 		expectRefused(step, "recreated outside this gateway", "not created by this gateway")
 		vmInfo()
 		expectBanner(step + ", approved again")
