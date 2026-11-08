@@ -41,13 +41,15 @@ const (
 )
 
 var (
-	knownOps          = map[string]bool{OpBuild: true, OpCreate: true, OpStart: true, OpStop: true, OpDestroy: true, OpProvision: true, OpPull: true, OpProvisionLocal: true, OpList: true, OpCLI: true}
-	targetOps         = map[string]bool{OpBuild: true, OpCreate: true, OpStart: true, OpStop: true, OpDestroy: true, OpProvision: true, OpPull: true}
-	knownRequirements = map[string]bool{RequireTarget: true, RequireHostChanges: true}
-	knownHostOS       = map[string]bool{"linux": true, "darwin": true, "windows": true}
-	knownListCommands = map[string]bool{"build": true, "create": true, "start": true, "stop": true, "destroy": true, "provision": true, "pull": true, "push": true}
-	scenarioName      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
-	envReference      = regexp.MustCompile(`\$\{([A-Z0-9_]+)\}`)
+	knownOps  = map[string]bool{OpBuild: true, OpCreate: true, OpStart: true, OpStop: true, OpDestroy: true, OpProvision: true, OpPull: true, OpProvisionLocal: true, OpList: true, OpCLI: true}
+	targetOps = map[string]bool{OpBuild: true, OpCreate: true, OpStart: true, OpStop: true, OpDestroy: true, OpProvision: true, OpPull: true}
+	// insecureCredentialOps accept --allow-insecure-credentials (docs/guest-security.md).
+	insecureCredentialOps = map[string]bool{OpCreate: true, OpStart: true, OpProvision: true}
+	knownRequirements     = map[string]bool{RequireTarget: true, RequireHostChanges: true}
+	knownHostOS           = map[string]bool{"linux": true, "darwin": true, "windows": true}
+	knownListCommands     = map[string]bool{"build": true, "create": true, "start": true, "stop": true, "destroy": true, "provision": true, "pull": true, "push": true}
+	scenarioName          = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+	envReference          = regexp.MustCompile(`\$\{([A-Z0-9_]+)\}`)
 )
 
 // Scenario is one deterministic test case.
@@ -179,19 +181,19 @@ func (s *Scenario) validate() error {
 		if err := s.Preflight[i].validate(); err != nil {
 			return fmt.Errorf("preflight step %d (%s): %w", i+1, s.Preflight[i].Name, err)
 		}
-		usesTarget = usesTarget || targetOps[s.Preflight[i].Op]
+		usesTarget = usesTarget || s.Preflight[i].usesTarget()
 	}
 	for i := range s.Steps {
 		if err := s.Steps[i].validate(); err != nil {
 			return fmt.Errorf("step %d (%s): %w", i+1, s.Steps[i].Name, err)
 		}
-		usesTarget = usesTarget || targetOps[s.Steps[i].Op]
+		usesTarget = usesTarget || s.Steps[i].usesTarget()
 	}
 	for i := range s.Always {
 		if err := s.Always[i].validate(); err != nil {
 			return fmt.Errorf("always step %d (%s): %w", i+1, s.Always[i].Name, err)
 		}
-		usesTarget = usesTarget || targetOps[s.Always[i].Op]
+		usesTarget = usesTarget || s.Always[i].usesTarget()
 	}
 	if s.HostOS != "" && !knownHostOS[s.HostOS] {
 		return fmt.Errorf("host_os must be linux, darwin or windows, not %q", s.HostOS)
@@ -220,6 +222,12 @@ func (s *Scenario) validate() error {
 	return nil
 }
 
+// usesTarget reports whether the step works on the scenario target: VM operations,
+// and cli steps with "target: true".
+func (st Step) usesTarget() bool {
+	return targetOps[st.Op] || (st.Op == OpCLI && st.Bool("target"))
+}
+
 // Needs reports whether the scenario declares a requirement.
 func (s Scenario) Needs(requirement string) bool {
 	for _, value := range s.Requires {
@@ -243,6 +251,24 @@ func (st *Step) validate() error {
 	if st.Op == OpCLI {
 		if _, err := st.stringList("args"); err != nil {
 			return err
+		}
+		if _, ok := st.With["args_after"]; ok {
+			if _, err := st.stringList("args_after"); err != nil {
+				return err
+			}
+		}
+		if value, ok := st.With["target"]; ok {
+			if _, isBool := value.(bool); !isBool {
+				return errors.New(`"target" must be true or false`)
+			}
+		}
+	}
+	if value, ok := st.With["allow_insecure_credentials"]; ok {
+		if _, isBool := value.(bool); !isBool {
+			return errors.New(`"allow_insecure_credentials" must be true or false`)
+		}
+		if !insecureCredentialOps[st.Op] {
+			return fmt.Errorf("allow_insecure_credentials only applies to create, start and provision, not %q", st.Op)
 		}
 	}
 	if st.WhenListed != "" && !knownListCommands[st.WhenListed] {

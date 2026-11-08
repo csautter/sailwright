@@ -202,6 +202,16 @@ func gatewayCall(req StepRequest) (string, map[string]any, error) {
 		return out
 	}
 
+	// The typed tools do not take the guest-credential override; through the gateway
+	// it is a run_cli call outside the safe set and needs host approval.
+	if step.Bool("allow_insecure_credentials") {
+		argv, err := DirectArgv(req)
+		if err != nil {
+			return "", nil, err
+		}
+		return "run_cli", map[string]any{"args": argv, "reason": "E2E scenario step: " + step.Name}, nil
+	}
+
 	switch step.Op {
 	case OpBuild:
 		return "vm_build", with(map[string]any{"engine": stepEngine(req), "headless": step.Bool("headless")}), nil
@@ -231,7 +241,7 @@ func gatewayCall(req StepRequest) (string, map[string]any, error) {
 	case OpList:
 		return "run_cli", map[string]any{"args": []string{step.String("command", getenv), "list", "--json"}}, nil
 	case OpCLI:
-		return "run_cli", map[string]any{"args": step.Args(getenv), "reason": "E2E scenario step: " + step.Name}, nil
+		return "run_cli", map[string]any{"args": cliArgv(req), "reason": "E2E scenario step: " + step.Name}, nil
 	}
 	return "", nil, fmt.Errorf("%w: %s", ErrStepNotSupported, step.Op)
 }

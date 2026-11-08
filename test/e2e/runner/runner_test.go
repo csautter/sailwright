@@ -24,7 +24,7 @@ func TestRepositoryScenariosAreValid(t *testing.T) {
 	for _, scenario := range scenarios {
 		names[scenario.Name] = true
 	}
-	for _, want := range []string{"smoke", "vm-lifecycle", "destroy-idempotent", "local-check", "vm-lifecycle-linux", "vm-lifecycle-macos", "vm-lifecycle-windows"} {
+	for _, want := range []string{"smoke", "vm-lifecycle", "destroy-idempotent", "local-check", "vm-lifecycle-linux", "vm-lifecycle-macos", "vm-lifecycle-windows", "cli-readonly", "vm-access-cli", "guest-security-guard", "build-cancel"} {
 		if !names[want] {
 			t.Fatalf("scenario %s missing", want)
 		}
@@ -430,5 +430,52 @@ func TestHostMatrixScenarioAgainstGatewayWithFakeCLI(t *testing.T) {
 	}
 	if ran != 3 {
 		t.Fatalf("expected ubuntu server/desktop amd64 and windows11 amd64 to run, ran %d", ran)
+	}
+}
+
+func TestDirectArgvTargetCLIAndInsecureCredentials(t *testing.T) {
+	scenario, err := runner.LoadScenario(writeScenario(t, "target-cli", `name: target-cli
+requires: [target]
+steps:
+  - {name: info, op: cli, with: {args: [vm, info], target: true}}
+  - {name: build with flag, op: cli, with: {args: [build], target: true, args_after: ["--headless"]}}
+  - {name: plain, op: cli, with: {args: [version]}}
+  - {name: create, op: create, with: {allow_insecure_credentials: true}}
+  - {name: provision, op: provision, with: {check: true, allow_insecure_credentials: true}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	getenv := func(string) string { return "" }
+	target := runner.Target{OS: "ubuntu", Type: "server", Arch: "arm64"}
+	want := []string{
+		"vm info ubuntu --arch arm64 --type server",
+		"build ubuntu --arch arm64 --type server --headless",
+		"version",
+		"create ubuntu --arch arm64 --type server --allow-insecure-credentials",
+		"provision ubuntu --arch arm64 --type server --check --allow-insecure-credentials",
+	}
+	for i, step := range scenario.Steps {
+		argv, err := runner.DirectArgv(runner.StepRequest{Step: step, Target: target, Getenv: getenv})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(argv, " "); got != want[i] {
+			t.Fatalf("step %d: got %q, want %q", i, got, want[i])
+		}
+	}
+}
+
+func TestLoadScenarioRejectsInvalidTargetOptions(t *testing.T) {
+	cases := map[string]string{
+		"cli-target-needs-requires": "name: cli-target-needs-requires\nsteps: [{name: a, op: cli, with: {args: [vm, info], target: true}}]\n",
+		"cli-target-not-bool":       "name: cli-target-not-bool\nrequires: [target]\nsteps: [{name: a, op: cli, with: {args: [vm, info], target: 'yes'}}]\n",
+		"insecure-on-stop":          "name: insecure-on-stop\nrequires: [target]\nsteps: [{name: a, op: stop, with: {allow_insecure_credentials: true}}]\n",
+		"args-after-not-list":       "name: args-after-not-list\nrequires: [target]\nsteps: [{name: a, op: cli, with: {args: [vm], target: true, args_after: x}}]\n",
+	}
+	for name, body := range cases {
+		if _, err := runner.LoadScenario(writeScenario(t, name, body)); err == nil {
+			t.Fatalf("%s: expected an error", name)
+		}
 	}
 }

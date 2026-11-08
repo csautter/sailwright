@@ -131,6 +131,16 @@ that runs as a subtest of `go test -tags e2e ./test/e2e`:
 | `vm-lifecycle-linux` | Linux host | the `vm-lifecycle` steps for every VM option of a Linux host |
 | `vm-lifecycle-macos` | macOS host | the same for every VM option of a macOS host (Tart, UTM) |
 | `vm-lifecycle-windows` | Windows host | the same for every VM option of a Windows host (Hyper-V) |
+| `cli-readonly` | nothing | `version`, gateway metadata, listings with network and credential metadata, stable local provisioning, role catalog, config path |
+| `vm-access-cli` | `SAILWRIGHT_E2E_TARGET` | `vm identity` absent/stopped/running, `vm info` with a masked password, no implicit start, a second create/destroy cycle |
+| `guest-security-guard` | a target with bridged or unknown planned network | `create`, `start` and `provision` refuse non-private credentials and work with `--allow-insecure-credentials`; `stop` and `destroy` are not blocked |
+| `build-cancel` | `SAILWRIGHT_E2E_TARGET` | a cancelled build is not reported as complete |
+
+The opt-in Go tests `TestVMAccess`, `TestWindowsVMAccess` and `TestVMOwnership`
+(gateway ownership, approval after recreation, lock contention; needs a
+`--bypass-approvals` gateway and `SAILWRIGHT_VM_OWNERSHIP_E2E=1`) cover guest
+access through a real gateway. The [release test kit](../test/release/README.md)
+runs these together with host checks that scenarios cannot express.
 
 ### E2E CI coverage decision
 
@@ -230,6 +240,12 @@ steps:
     only: direct             # or gateway
     when_env: SAILWRIGHT_E2E_SOMETHING
     with: {args: ["build", "list", "--json"]}
+  - name: cli call for the scenario target
+    op: cli                  # runs `vm identity <os> --arch <arch> --type <type>`; args_after follow the target
+    with: {args: ["vm", "identity"], target: true}
+  - name: accept the guest credential risk
+    op: create               # create, start and provision only; needs approval through the gateway
+    with: {allow_insecure_credentials: true}
   - name: only where the target can be built
     op: build
     when_listed: build       # skip if the target is not in `build list`

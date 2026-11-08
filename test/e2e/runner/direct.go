@@ -126,11 +126,18 @@ func DirectArgv(req StepRequest) ([]string, error) {
 		}
 		return argv, nil
 	case OpCreate, OpStart, OpStop, OpDestroy:
-		return targetArgs(step.Op), nil
+		argv := targetArgs(step.Op)
+		if step.Bool("allow_insecure_credentials") {
+			argv = append(argv, "--allow-insecure-credentials")
+		}
+		return argv, nil
 	case OpProvision:
 		argv := targetArgs("provision")
 		if step.Bool("check") {
 			argv = append(argv, "--check")
+		}
+		if step.Bool("allow_insecure_credentials") {
+			argv = append(argv, "--allow-insecure-credentials")
 		}
 		if verbosity, ok := step.Int("verbosity"); ok {
 			argv = append(argv, "--verbosity", strconv.Itoa(verbosity))
@@ -161,9 +168,33 @@ func DirectArgv(req StepRequest) ([]string, error) {
 	case OpList:
 		return []string{step.String("command", getenv), "list", "--json"}, nil
 	case OpCLI:
-		return step.Args(getenv), nil
+		return cliArgv(req), nil
 	}
 	return nil, fmt.Errorf("%w: %s", ErrStepNotSupported, step.Op)
+}
+
+// cliArgv builds the argv of a cli step. With "target: true" the scenario target
+// follows args as `<os> --arch <arch> --type <type>`, then args_after, e.g.
+// args [vm, info] → `vm info ubuntu --arch amd64 --type server`.
+func cliArgv(req StepRequest) []string {
+	step := req.Step
+	argv := step.Args(req.Getenv)
+	if !step.Bool("target") {
+		return argv
+	}
+	argv = append(argv, req.Target.OS)
+	if req.Target.Arch != "" {
+		argv = append(argv, "--arch", req.Target.Arch)
+	}
+	if req.Target.Type != "" {
+		argv = append(argv, "--type", req.Target.Type)
+	}
+	if after, err := step.stringList("args_after"); err == nil {
+		for _, value := range after {
+			argv = append(argv, expandEnv(value, req.Getenv))
+		}
+	}
+	return argv
 }
 
 func hashFile(path string) (string, error) {

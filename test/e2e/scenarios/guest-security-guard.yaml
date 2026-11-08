@@ -1,0 +1,73 @@
+name: guest-security-guard
+description: >-
+  For a target whose planned network is bridged or unknown (for example the
+  shipped UTM templates on macOS), create must refuse non-private guest
+  credentials before it changes anything, and must succeed once the risk is
+  accepted with --allow-insecure-credentials. Run it only for such targets and
+  without security.allow_insecure_credentials in config.yaml.
+requires: [target]
+preflight:
+  - name: target VM does not exist yet
+    op: list
+    with: {command: destroy}
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}
+  - name: planned network is exposed
+    op: cli
+    only: direct
+    with: {args: ["create", "list", "--json"]}
+    expect: {output_regex: '"network_mode":"(bridged|unknown)"'}
+steps:
+  - name: pull prebuilt image
+    op: pull
+    when_env: SAILWRIGHT_E2E_PULL_REF
+    with: {ref: "${SAILWRIGHT_E2E_PULL_REF}"}
+  - name: build image
+    op: build
+    unless_env: SAILWRIGHT_E2E_PULL_REF
+    when_listed: build
+    with: {headless: true}
+  - name: create is refused without risk acceptance
+    op: create
+    expect:
+      exit_code: 1
+      output_regex: "allow-insecure-credentials"
+      state: {command: destroy, field: state, regex: "^missing$"}
+  - name: create with accepted risk keeps the warning
+    op: create
+    with: {allow_insecure_credentials: true}
+    expect:
+      output_regex: "(?i)warning"
+  - name: start is refused without risk acceptance
+    op: start
+    expect:
+      exit_code: 1
+      output_regex: "allow-insecure-credentials"
+      state: {command: start, field: start, regex: "^ready to start$"}
+  - name: start with accepted risk
+    op: start
+    with: {allow_insecure_credentials: true}
+    expect:
+      state: {command: start, field: start, regex: "^already running$"}
+  - name: provision check is refused without risk acceptance
+    op: provision
+    when_listed: provision
+    with: {check: true}
+    expect:
+      exit_code: 1
+      output_regex: "allow-insecure-credentials"
+  - name: provision check with accepted risk
+    op: provision
+    when_listed: provision
+    with: {check: true, allow_insecure_credentials: true}
+    expect:
+      recap: {failed: 0, unreachable: 0}
+  - name: stop is not blocked by the guest credential policy
+    op: stop
+    expect:
+      state: {command: start, field: start, regex: "^ready to start$"}
+always:
+  - name: destroy is not blocked by the guest credential policy
+    op: destroy
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}
