@@ -27,7 +27,7 @@ rt__host() {
 rt_processes_matching() {
 	ps ax -o pid=,pgid=,stat=,command= | awk -v pattern="$1" '
 		index($0, pattern) && $0 !~ /grep|ptyctl|unix\.sh/ &&
-		$0 !~ /(^|[ \/])limactl([[:space:]]|$)/ { print }
+		$4 !~ /(^|\/)(awk|gawk|mawk|limactl)$/ { print }
 	'
 }
 

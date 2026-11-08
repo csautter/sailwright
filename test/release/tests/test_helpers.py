@@ -51,6 +51,9 @@ class HelperTests(unittest.TestCase):
                 "106 106 S python3 /repo/test/release/lib/ptyctl.py --log /release/run/log",
                 "107 107 S packer build -var cache_dir=/unrelated/run",
                 "108 108 S sailwright-gateway --state-dir /release/run/gateway",
+                # macOS ps prints only the first line of awk's multiline program.
+                "109 109 S awk -v pattern /release/run",
+                "110 109 S /usr/bin/awk -v pattern /release/run",
             ]
             result = subprocess.run(
                 ["bash", "-c", '. "$1"; rt_processes_matching "$2"',
