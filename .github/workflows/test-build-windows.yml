@@ -7,35 +7,56 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
-      enable_az_hyperv:
-        description: 'Enable AzureHyperV jobs (provision + test + cleanup)'
-        required: false
-        default: true
-        type: boolean
       enable_az_virtualbox:
         description: 'Enable Azure VirtualBox jobs (provision + test + cleanup)'
         required: false
         default: true
         type: boolean
   pull_request:
-    paths:
-      - "cmd/main.go"
-      - "cmd/cmd/**"
-      - "build/packer/windows/*"
-      - "build/packer/windows/**/*"
-      - "pkg/build/**"
-      - "pkg/deploy/**"
-      - "scripts/linux/*"
-      - "scripts/linux/**/*"
-      - "scripts/windows/*"
-      - "scripts/windows/**/*"
-      - ".github/workflows/test-build-windows.yml"
-      - ".github/actions/download-build-cache/**"
-      - ".github/actions/upload-build-cache/**"
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    - cron: '0 4 * * 1'
+
+concurrency:
+  # Unrelated labels must never cancel a running PR build.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && (github.event.action != 'labeled' || github.event.label.name == 'ci:hyperv') && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  select:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      hyperv: ${{ steps.route.outputs.hyperv }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: route
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 test/hyperv-profile/routes.py
+
+  preflight:
+    needs: [select]
+    if: needs.select.outputs.hyperv == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: hashicorp/setup-packer@v3
+      - run: go test ./pkg/build
+      - run: packer validate -syntax-only build/packer/windows/windows11-on-windows-hyperv.pkr.hcl
+
   provision-hyperv-runner:
-    if: ${{ github.event_name == 'pull_request' || inputs.enable_az_hyperv }}
+    needs: [select, preflight]
+    if: needs.select.outputs.hyperv == 'true'
     runs-on: ubuntu-latest
     outputs:
       runner-name: ${{ steps.vars.outputs.runner-name }}
@@ -167,7 +188,6 @@ jobs:
         run: bash scripts/gh-runner-func/wait-runner-provisioned.sh
 
   test-hyperv-build:
-    if: ${{ github.event_name == 'pull_request' || inputs.enable_az_hyperv }}
     name: build TestBuildHypervWindows11Amd64OnWindows
     needs: [provision-hyperv-runner]
     timeout-minutes: 60
@@ -185,7 +205,7 @@ jobs:
       - Windows
       - azure
       - nested
-      - "${{ needs.provision-hyperv-runner.outputs.runner-name }}"
+      - "${{ github.run_id }}-hv"
 
     steps:
       - name: Checkout code
@@ -276,7 +296,6 @@ jobs:
           exit 1
 
   watch-hyperv-runner-queue:
-    if: ${{ github.event_name == 'pull_request' || inputs.enable_az_hyperv }}
     name: watch HyperV runner queue
     needs: [provision-hyperv-runner]
     runs-on: ubuntu-latest
@@ -294,7 +313,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           POLL_INTERVAL_SECONDS: "30"
           REPO: ${{ github.repository }}
-          RESOURCE_GROUP: ${{ needs.provision-hyperv-runner.outputs.resource-group }}
+          RESOURCE_GROUP: gh-runner-tmp-${{ github.run_id }}-hv
           RUN_ID: ${{ github.run_id }}
           TARGET_JOB_NAME: "build TestBuildHypervWindows11Amd64OnWindows"
           WAIT_TIMEOUT_SECONDS: "900"
@@ -362,9 +381,9 @@ jobs:
           FUNCTION_APP_NAME: ${{ secrets.FUNCTION_APP_NAME }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          RESOURCE_GROUP: ${{ needs.provision-hyperv-runner.outputs.resource-group }}
+          RESOURCE_GROUP: gh-runner-tmp-${{ github.run_id }}-hv
           RUN_ID: ${{ github.run_id }}
-          RUNNER_NAME: ${{ needs.provision-hyperv-runner.outputs.runner-name }}
+          RUNNER_NAME: ${{ github.run_id }}-hv
         run: |
           github_api_version="2022-11-28"
 
@@ -466,7 +485,7 @@ jobs:
 
   cleanup-hyperv:
     needs: [provision-hyperv-runner, test-hyperv-build, watch-hyperv-runner-queue]
-    if: always() && (github.event_name == 'pull_request' || inputs.enable_az_hyperv)
+    if: always() && needs.provision-hyperv-runner.result != 'skipped'
     runs-on: ubuntu-latest
 
     steps:
@@ -488,13 +507,11 @@ jobs:
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           FUNCTION_APP_NAME: ${{ secrets.FUNCTION_APP_NAME }}
-          RESOURCE_GROUP: ${{ needs.provision-hyperv-runner.outputs.resource-group }}
-          RUNNER_NAME: ${{ needs.provision-hyperv-runner.outputs.runner-name }}
+          RESOURCE_GROUP: gh-runner-tmp-${{ github.run_id }}-hv
+          RUNNER_NAME: ${{ github.run_id }}-hv
         run: |
           echo "Deleting resource group ${RESOURCE_GROUP}"
-          if ! bash scripts/gh-runner-func/delete-resource-group.sh; then
-            echo "::warning::Failed to confirm deletion of ${RESOURCE_GROUP}, continuing..."
-          fi
+          bash scripts/gh-runner-func/delete-resource-group.sh
 
   cleanup-virtualbox:
     needs: [provision-virtualbox-runner, test-virtualbox-build]
