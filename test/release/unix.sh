@@ -639,13 +639,16 @@ phase_vm() {
 
 # ---------------------------------------------------------------- gateway (physical host)
 GW_STATE=""
+GW_AGENT=""
 GW_PID=""
 gateway_start() { # MODE(--bypass-approvals|--no-approvals) LOG
 	GW_STATE="$RT_PHASE_DIR/gateway-state"
-	mkdir -p "$GW_STATE/agent"
+	# The agent directory must not overlap the gateway state directory.
+	GW_AGENT="$RT_PHASE_DIR/gateway-agent"
+	mkdir -p "$GW_STATE" "$GW_AGENT"
 	cat >"$GW_STATE/gateway.yaml" <<EOF
 state_isolation: shared
-agent_dir: $GW_STATE/agent
+agent_dir: $GW_AGENT
 listen: 127.0.0.1:$RT_GATEWAY_PORT
 EOF
 	if [ "$RT_APPDATA" = default ]; then
@@ -655,7 +658,7 @@ EOF
 	fi
 	GW_PID=$!
 	local waited=0
-	until SAILWRIGHT_GATEWAY_DIR="$GW_STATE/agent" "$GW" connect --check >/dev/null 2>&1; do
+	until SAILWRIGHT_GATEWAY_DIR="$GW_AGENT" "$GW" connect --check >/dev/null 2>&1; do
 		sleep 1
 		waited=$((waited + 1))
 		if [ "$waited" -gt 60 ] || ! kill -0 "$GW_PID" 2>/dev/null; then return 1; fi
@@ -674,8 +677,8 @@ phase_gateway() {
 	need_bin
 	rt_init gateway
 	trap gateway_stop EXIT
-	export SAILWRIGHT_GATEWAY_DIR="$RT_PHASE_DIR/gateway-state/agent"
-	rm -rf "$RT_PHASE_DIR/gateway-state"
+	export SAILWRIGHT_GATEWAY_DIR="$RT_PHASE_DIR/gateway-agent"
+	rm -rf "$RT_PHASE_DIR/gateway-state" "$RT_PHASE_DIR/gateway-agent"
 	local log="$RT_PHASE_DIR/logs/GW-serve-bypass.log"
 	if gateway_start --bypass-approvals "$log"; then rt_pass GW-01 "gateway serves with --bypass-approvals (isolated state dir)"; else rt_fail GW-01 "gateway starts" "see logs/GW-serve-bypass.log"; rt_summary; return; fi
 	rt_check GW-02 "banner shows bypassed approvals" --match 'approvals: BYPASSED' -- cat "$log"
