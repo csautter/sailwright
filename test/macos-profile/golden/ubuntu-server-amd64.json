@@ -37,7 +37,7 @@
     "linux-ubuntu-server-packer-amd64"
   ],
   "-netdev": [
-    "user,id=user.0,hostfwd=tcp::<SSH_PORT>-:22"
+    "user,id=user.0,hostfwd=tcp:127.0.0.1:<SSH_PORT>-:22"
   ],
   "-qmp": [
     "unix:<WORK>/qmp.sock,server,nowait"

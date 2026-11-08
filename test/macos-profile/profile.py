@@ -46,7 +46,11 @@ def run_variant(work, arch, variant, update):
     variables = dict(host_os='darwin', host_arch='arm64', arch=arch, cache_dir=str(cache),
                      build_output_dir=str(out), qmp_socket_path=str(work / 'qmp.sock'),
                      iso_url=str(iso), headless='false', cpus='4', memory='4096')
-    if not windows:
+    if windows:
+        # The template requires explicit filenames; use the disposable fixtures.
+        variables['utm_guest_tools_iso_name'] = 'utm-guest-tools-latest.iso'
+        variables['virtio_win_iso_name'] = 'virtio-win.iso'
+    else:
         variables['ubuntu_type'] = variant
     flags = [item for key, value in variables.items() for item in ('-var', f'{key}={value}')]
     subprocess.run(['packer', 'init', str(template)], env=env, check=True, stdout=subprocess.DEVNULL)
@@ -75,7 +79,7 @@ def run_variant(work, arch, variant, update):
     normalized = []
     for arg in args:
         arg = arg.replace(str(fixture), '<FIXTURE>').replace(str(work), '<WORK>')
-        arg = re.sub(r'hostfwd=tcp::\d+-', 'hostfwd=tcp::<SSH_PORT>-', arg)
+        arg = re.sub(r'(hostfwd=tcp:[^:]*:)\d+-', r'\1<SSH_PORT>-', arg)
         arg = re.sub(r'(127\.0\.0\.1:)(\d+)(,password)', r'\1<VNC_PORT>\3', arg)
         arg = re.sub(r'<WORK>/packer[0-9]+', '<PACKER_TEMP>', arg)
         normalized.append(arg)

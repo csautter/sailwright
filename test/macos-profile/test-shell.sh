@@ -65,6 +65,8 @@ export PATH="$test_dir/bin:$original_path"
 # Model Homebrew outside PATH without creating files at system locations.
 (
     eval "$(declare -f python_is_supported | sed '1s/python_is_supported/production_python_is_supported/')"
+    # Called by the dynamically sourced resolve_python_for_venv function.
+    # shellcheck disable=SC2329
     command() {
         if [[ "$1" == -v ]]; then
             [[ "$2" == /opt/homebrew/bin/python3 ]]
@@ -72,6 +74,7 @@ export PATH="$test_dir/bin:$original_path"
             builtin command "$@"
         fi
     }
+    # shellcheck disable=SC2329
     python_is_supported() {
         [[ "$1" == /opt/homebrew/bin/python3 ]] || return 1
         production_python_is_supported "$test_dir/bin/python3.13"

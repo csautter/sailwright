@@ -38,7 +38,7 @@
     "windows11-packer-amd64"
   ],
   "-netdev": [
-    "user,id=user.0,hostfwd=tcp::<SSH_PORT>-:5985"
+    "user,id=user.0,hostfwd=tcp:127.0.0.1:<SSH_PORT>-:5985"
   ],
   "-qmp": [
     "unix:<WORK>/qmp.sock,server,nowait"
