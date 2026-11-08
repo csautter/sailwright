@@ -22,6 +22,7 @@ var (
 	recapKeys    = map[string]bool{"ok": true, "changed": true, "unreachable": true, "failed": true, "skipped": true, "rescued": true, "ignored": true}
 	recapLine    = regexp.MustCompile(`(?m)^\S.*?\s:\s+((?:\w+=\d+\s*)+)$`)
 	recapCounter = regexp.MustCompile(`(\w+)=(\d+)`)
+	ansiEscape   = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 )
 
 // RunOptions configure a scenario run.
@@ -264,6 +265,8 @@ func checkExpectations(ctx context.Context, step Step, result Result, duration t
 
 // ParseRecap sums the counters of every host line in the last Ansible PLAY RECAP.
 func ParseRecap(output string) (map[string]int, bool) {
+	// Ansible colors counters; the CLI forwards that output unchanged.
+	output = ansiEscape.ReplaceAllString(output, "")
 	index := strings.LastIndex(output, "PLAY RECAP")
 	if index < 0 {
 		return nil, false

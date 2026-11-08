@@ -602,7 +602,7 @@ phase_vm() {
 	sw start "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"} >"$RT_PHASE_DIR/logs/VM-22.start.log" 2>&1 </dev/null &
 	spid=$!
 	sleep 2
-	rt_check VM-22 "a second operation waits for the lock and then succeeds" --timeout 1800 -- "${SELF[@]}" stop "${TARGET_ARGS[@]}"
+	rt_check VM-22 "a second operation waits for the lock and then succeeds" --timeout 1800 -- env SAILWRIGHT_LOCK_TIMEOUT=300s "${SELF[@]}" stop "${TARGET_ARGS[@]}"
 	wait "$spid"
 	rt_check VM-23 "destroy" --timeout 1800 -- "${SELF[@]}" destroy "${TARGET_ARGS[@]}"
 	rt_check VM-24 "recreate" --timeout 3600 -- "${SELF[@]}" create "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"}
