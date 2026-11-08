@@ -201,3 +201,22 @@ func TestTartDiscoverySupportsLegacyListing(t *testing.T) {
 		t.Fatal(found, err, calls)
 	}
 }
+
+func TestUtmDiscoveryHonorsBundleDirectoryOverride(t *testing.T) {
+	override := t.TempDir()
+	t.Setenv("SAILWRIGHT_UTM_VM_DIR", override)
+	t.Setenv("HOME", t.TempDir())
+	for _, bundle := range []string{"ubuntu-server-arm64-dev-alchemy.utm", "ubuntu-server-arm64-work-dev-alchemy.utm"} {
+		if err := os.MkdirAll(filepath.Join(override, bundle), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "server", Arch: "arm64", HostOs: build.HostOsDarwin, VirtualizationEngine: build.VirtualizationEngineUtm}
+	found, err := DiscoverInstances([]build.VirtualMachineConfig{base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].Name != "work" {
+		t.Fatalf("discovered %+v", found)
+	}
+}

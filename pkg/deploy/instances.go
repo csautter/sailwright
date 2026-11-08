@@ -85,11 +85,11 @@ func providerInstanceNames(engine build.VirtualizationEngine) ([]string, error) 
 		return names, nil
 
 	case build.VirtualizationEngineUtm:
-		home, err := os.UserHomeDir()
+		directory, err := build.UtmVMDirectory()
 		if err != nil {
 			return nil, err
 		}
-		entries, err := os.ReadDir(filepath.Join(home, "Library", "Containers", "com.utmapp.UTM", "Data", "Documents"))
+		entries, err := os.ReadDir(directory)
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
