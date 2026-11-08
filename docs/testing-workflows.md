@@ -158,6 +158,20 @@ the opt-in lifecycle suite as a missing-CI defect or recommend enabling it on
 every PR. Reconsidering that CI cost requires an explicit decision to revisit
 the tradeoff.
 
+### Hyper-V build CI
+
+The Windows build workflow selects Azure Hyper-V builds for PR changes to the
+Hyper-V template, `pkg/build` or `pkg/deploy` code not owned by another platform
+(`linux*`, `macos*`, `qemu*`, `utm*`, `tart-*`, Unix-only files), the Windows
+`install` command, Windows scripts, cache actions, or runner broker
+(`test/hyperv-profile/routes.py`). Add the `ci:hyperv` label (it must exist in
+the repository) to force a build; unrelated label events do not restart or
+cancel builds. Release PRs (`release-please--*`), manual dispatches,
+and the weekly Monday 04:00 UTC schedule always select Hyper-V.
+Linux Go tests and Packer syntax validation must pass before provisioning.
+New commits cancel older runs for the same PR; cleanup uses stable run-ID names
+and fails visibly if resource-group deletion cannot be confirmed.
+
 ### Running E2E scenarios
 
 The per-host scenarios run once per target, each as its own subtest, e.g.
