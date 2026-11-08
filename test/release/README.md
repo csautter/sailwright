@@ -71,5 +71,10 @@ python3 test/release/lib/ptyctl.py --log build.log \
   sailwright build ubuntu --arch arm64 --headless
 ```
 
+The PTY helper keeps its JSON summary on stdout and writes the terminal transcript
+to stderr as well as `--log`, so output assertions and JSON checks can be combined.
+Run the offline Unix helper regressions with
+`python3 -I -m unittest discover -s test/release/tests -v` (also run by `kit` and CI).
+
 Prefer a YAML scenario under `test/e2e/scenarios` when a check fits its step
 model; add a phase check only for what scenarios cannot express.

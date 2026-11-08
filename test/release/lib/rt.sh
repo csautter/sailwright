@@ -22,6 +22,15 @@ rt__host() {
 	printf '%s\n' "${name%%.*}"
 }
 
+# Match run-owned processes by path. Colima's filesystem probes mention these paths
+# too, but are unrelated to builds and must never be selected for cleanup signals.
+rt_processes_matching() {
+	ps ax -o pid=,pgid=,stat=,command= | awk -v pattern="$1" '
+		index($0, pattern) && $0 !~ /grep|ptyctl|unix\.sh/ &&
+		$0 !~ /(^|[ \/])limactl([[:space:]]|$)/ { print }
+	'
+}
+
 # rt_init PHASE: create the phase directory and reset its results.
 rt_init() {
 	RT_PHASE="$1"

@@ -12,6 +12,7 @@ on:
       - "pkg/provision/**"
       - "scripts/gh-runner-func/**"
       - "test/e2e/**"
+      - "test/release/**"
       - ".github/workflows/test-cmd-unit-tests.yml"
       # Static checks in pkg/build and test/workflowcheck read these files.
       - ".github/workflows/test-build-linux.yml"
@@ -48,6 +49,7 @@ on:
       - "pkg/provision/**"
       - "scripts/gh-runner-func/**"
       - "test/e2e/**"
+      - "test/release/**"
       - ".github/workflows/test-cmd-unit-tests.yml"
       # Static checks in pkg/build and test/workflowcheck read these files.
       - ".github/workflows/test-build-linux.yml"
@@ -107,6 +109,10 @@ jobs:
 
       - name: Run build package tests
         run: go test ${{ runner.os == 'Linux' && '-race' || '' }} ./pkg/build/...
+
+      - name: Run Unix release kit helper tests
+        if: runner.os != 'Windows'
+        run: python3 -I -m unittest discover -s test/release/tests -v
 
       - name: Run OCI package tests
         run: go test ${{ runner.os == 'Linux' && '-race' || '' }} ./pkg/oci/...

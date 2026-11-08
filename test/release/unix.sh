@@ -99,7 +99,7 @@ appdata_root() {
 }
 
 processes_matching() { # PATTERN -> matching processes, excluding this shell's tools
-	ps ax -o pid=,pgid=,stat=,command= | grep -F -- "$1" | grep -v -E 'grep|ptyctl|unix\.sh' || true
+	rt_processes_matching "$1"
 }
 
 e2e_env() { # common environment for direct E2E runs
@@ -179,8 +179,8 @@ phase_kit() {
 	rt_check KIT-02 "build gateway $RT_VERSION" --timeout 1800 -- make -C "$RT_REPO_ROOT" build-gateway-local VERSION="$RT_VERSION"
 	rt_check KIT-03 "binaries report the version" --match "$RT_VERSION" -- sh -c "'$BIN' --version; '$GW' --version"
 	rt_check KIT-04 "unit tests" --timeout 3600 -- go -C "$RT_REPO_ROOT" test ./cmd/... ./internal/... ./pkg/... -count=1
-	rt_check KIT-05 "race tests: gateway, operation locks, OCI, self-update" --timeout 3600 -- \
-		go -C "$RT_REPO_ROOT" test -race ./internal/gateway/... ./internal/operationlock/... ./internal/selfupdate/... ./pkg/oci/... -count=1
+	rt_check KIT-05 "race tests: builds, gateway, operation locks, OCI, self-update" --timeout 3600 -- \
+		go -C "$RT_REPO_ROOT" test -race ./pkg/build/... ./internal/gateway/... ./internal/operationlock/... ./internal/selfupdate/... ./pkg/oci/... -count=1
 	rt_check KIT-06 "E2E runner self-tests (fake CLI)" --timeout 1800 -- go -C "$RT_REPO_ROOT" test ./test/e2e/... -count=1
 	rt_check KIT-07 "self-update fixture tests (real install scripts, local release server)" --timeout 1800 -- \
 		sh -c "cd '$RT_REPO_ROOT' && python3 -I -m unittest discover -s test/selfupdate -v"
@@ -189,6 +189,8 @@ phase_kit() {
 	rt_check KIT-09 "local provisioning helper tests" --timeout 1800 -- \
 		sh -c "cd '$RT_REPO_ROOT' && python3 -I -m unittest discover -s test/localprovision/scripts -v"
 	rt_check KIT-10 "binary checksums" -- sh -c "shasum -a 256 '$BIN' '$GW' 2>/dev/null || sha256sum '$BIN' '$GW'"
+	rt_check KIT-11 "release kit helper regressions" --timeout 120 -- \
+		python3 -I -m unittest discover -s "$RT_KIT_DIR/tests" -v
 	rt_summary
 }
 
@@ -438,7 +440,7 @@ for t in json.load(sys.stdin)["targets"]:
 	left="$(processes_matching "$data")"
 	if [ -z "$left" ]; then rt_pass BI-03 "no build processes left after Ctrl+C"; else rt_fail BI-03 "no build processes left after Ctrl+C" "$left"; fi
 
-	rt_check BI-04 "build all --parallel 2: one Ctrl+C during downloads stops everything" --exit-nonzero \
+	rt_check BI-04 "build all --parallel 2: one Ctrl+C during downloads stops everything" --timeout 1000 --exit-nonzero \
 		--json 'd["seconds_after_last_intr"] < 45' --nomatch '==> .*: Starting|Build .* finished' -- \
 		python3 -I "$pty" --log "$RT_PHASE_DIR/logs/BI-04.pty.log" --step 'wait:(?i)downloading:900' --step sleep:5 --step intr --step exit:60 -- \
 		env DEV_ALCHEMY_APP_DATA_DIR="$data" "$BIN" build all --parallel 2 --headless --no-prebuilt
@@ -449,14 +451,14 @@ for t in json.load(sys.stdin)["targets"]:
 		rt_skip BI-06 "Ctrl+C while Packer runs" "RT_SKIP_PACKER_INTERRUPT=1"
 	else
 		# Let downloads finish (they are cached for the later steps), then interrupt Packer.
-		rt_check BI-06 "Ctrl+C while Packer runs: stop, optional video, exit" --exit-nonzero \
+		rt_check BI-06 "Ctrl+C while Packer runs: stop, optional video, exit" --timeout 5700 --exit-nonzero \
 			--json 'd["seconds_after_last_intr"] < 120' --match 'stopping all builds' -- \
 			python3 -I "$pty" --log "$RT_PHASE_DIR/logs/BI-06.pty.log" --step 'wait:==> :5400' --step sleep:90 --step intr --step exit:180 -- "${build[@]}"
 		rt_check BI-07 "interrupted build is not reported complete" --match '^(missing|incomplete)$' -- echo "$(state)"
 		left="$(processes_matching "$data")"
 		if [ -z "$left" ]; then rt_pass BI-08 "no build processes left after interrupting Packer"; else rt_fail BI-08 "no build processes left" "$left"; fi
 
-		rt_check BI-09 "second Ctrl+C skips VNC post-processing, third exits" --exit-any \
+		rt_check BI-09 "second Ctrl+C skips VNC post-processing, third exits" --timeout 2100 --exit-any \
 			--json 'd["seconds_after_last_intr"] < 20' -- \
 			python3 -I "$pty" --log "$RT_PHASE_DIR/logs/BI-09.pty.log" --step 'wait:==> :1800' --step sleep:90 --step intr \
 			--step 'wait:Press Ctrl\+C again:60' --step intr --step 'wait:(?i)skipping (VNC video )?post-processing:60' --step intr --step exit:20 -- "${build[@]}"
@@ -722,7 +724,7 @@ phase_cleanup() {
 			sh -c "if [ $mode = isolated ] && [ '$RT_APPDATA' != default ]; then export DEV_ALCHEMY_APP_DATA_DIR='$RT_APPDATA'; fi; '$BIN' destroy list --json 2>/dev/null"
 	done
 	local left
-	left="$(ps ax -o pid=,command= | grep -F "$RT_RUN_DIR" | grep -v grep || true)"
+	left="$(processes_matching "$RT_RUN_DIR")"
 	if [ -z "$left" ]; then rt_pass CL-02 "no kit processes left"; else rt_fail CL-02 "no kit processes left" "$left"; fi
 	rt_check CL-03 "run directory size (delete appdata after reporting)" --exit-any -- du -sh "$RT_RUN_DIR"
 	rt_summary

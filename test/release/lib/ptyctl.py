@@ -10,7 +10,8 @@ real keypress does. Steps run in order:
   intr                   press Ctrl+C
   exit[:SECONDS]         wait for the command to exit (default 120 s)
 
-The transcript (ANSI sequences removed) goes to --log. A JSON summary is printed
+The transcript (ANSI sequences removed) goes to --log and stderr, so callers can
+assert on command output while parsing the JSON summary printed
 on stdout: the exit status, seconds from the last Ctrl+C to exit, and per-step
 timings. Exit status: the command's own status, 124 if a step timed out (the
 command is then killed), 125 for usage errors.
@@ -67,6 +68,8 @@ class Session:
         text = ANSI.sub("", data.decode("utf-8", errors="replace"))
         self.log.write(text)
         self.log.flush()
+        sys.stderr.write(text)
+        sys.stderr.flush()
         self.buffer = (self.buffer + text)[-1_000_000:]
 
     def reap(self, block=False):
