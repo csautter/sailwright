@@ -84,6 +84,11 @@
             url: "{{ kubelogin_url }}"
             dest: "{{ kubelogin_tmp.path }}/kubelogin.zip"
             mode: '0644'
+            timeout: 60
+          register: kubelogin_download
+          until: kubelogin_download is succeeded
+          retries: 3
+          delay: 5
 
         - name: Unarchive kubelogin
           unarchive:
