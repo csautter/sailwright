@@ -161,9 +161,12 @@ the tradeoff.
 ### Hyper-V build CI
 
 The Windows build workflow selects Azure Hyper-V builds for PR changes to the
-Hyper-V template, shared build/ISO helpers, Windows scripts, cache actions, or
-runner broker. Add `ci:hyperv` to force a build; unrelated label events do not
-restart or cancel builds. Release PRs (`release-please--*`), manual dispatches,
+Hyper-V template, `pkg/build` or `pkg/deploy` code not owned by another platform
+(`linux*`, `macos*`, `qemu*`, `utm*`, `tart-*`, Unix-only files), the Windows
+`install` command, Windows scripts, cache actions, or runner broker
+(`test/hyperv-profile/routes.py`). Add the `ci:hyperv` label (it must exist in
+the repository) to force a build; unrelated label events do not restart or
+cancel builds. Release PRs (`release-please--*`), manual dispatches,
 and the weekly Monday 04:00 UTC schedule always select Hyper-V.
 Linux Go tests and Packer syntax validation must pass before provisioning.
 New commits cancel older runs for the same PR; cleanup uses stable run-ID names
