@@ -236,8 +236,8 @@ jobs:
             packer_start_timeout: "180"
             cache_files: >-
               [{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_amd64.iso","manifest":"windows11/iso/win11-amd64.json","blob-name":"win11_25h2_english_amd64.iso"},
-               {"local-path":"./.dev-alchemy/cache/utm/utm-guest-tools-latest.iso"},
-               {"local-path":"./.dev-alchemy/cache/windows/virtio-win.iso"}]
+               {"local-path":"./.dev-alchemy/cache/utm/utm-guest-tools-0.1.271.iso"},
+               {"local-path":"./.dev-alchemy/cache/windows/virtio-win-0.1.302-1.iso"}]
           - vm_os: ubuntu
             ubuntu_type: server
             arch: arm64
@@ -248,7 +248,7 @@ jobs:
             packer_start_timeout: "180"
             cache_files: >-
               [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-arm64.iso"},
-               {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_all.deb"}]
+               {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_2025.02-8+deb13u1_all.deb"}]
           - vm_os: ubuntu
             ubuntu_type: desktop
             arch: arm64
@@ -259,7 +259,7 @@ jobs:
             packer_start_timeout: "180"
             cache_files: >-
               [{"local-path":"./.dev-alchemy/cache/linux/ubuntu-24.04.5-live-server-arm64.iso"},
-               {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_all.deb"}]
+               {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_2025.02-8+deb13u1_all.deb"}]
           - vm_os: windows11
             ubuntu_type: ""
             arch: arm64
@@ -270,9 +270,9 @@ jobs:
             packer_start_timeout: "180"
             cache_files: >-
               [{"local-path":"./.dev-alchemy/cache/windows11/iso/win11_english_arm64.iso","manifest":"windows11/iso/win11-arm64.json","blob-name":"win11_25h2_english_arm64.iso"},
-               {"local-path":"./.dev-alchemy/cache/utm/utm-guest-tools-latest.iso"},
-               {"local-path":"./.dev-alchemy/cache/windows/virtio-win.iso"},
-               {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_all.deb"}]
+               {"local-path":"./.dev-alchemy/cache/utm/utm-guest-tools-0.1.271.iso"},
+               {"local-path":"./.dev-alchemy/cache/windows/virtio-win-0.1.302-1.iso"},
+               {"local-path":"./.dev-alchemy/cache/qemu-efi-aarch64_2025.02-8+deb13u1_all.deb"}]
 
     steps:
       - name: Checkout code

@@ -239,6 +239,55 @@ object through `blob-name` while no manifest exists. Merging is therefore safe b
 Until step 4, rolling back only requires reverting the build-workflow descriptors: the legacy
 objects are still in place.
 
+## virtio-win ISO
+
+The virtio-win driver ISO is not part of the manifest scheme. Build jobs cache it as a flat object
+named after the pinned version, `virtio-win-<version>.iso` (the `cache_files` of the build
+workflows; Renovate updates the name together with the pins). A version bump therefore uploads a
+new object instead of restoring a stale one. Nothing prunes old objects: after a bump, delete the
+previous `virtio-win-*.iso` (and the pre-versioning `virtio-win.iso`) from the build cache by hand.
+Local caches prune themselves: the Go dependency reconciliation and
+`scripts/macos/download-virtio-win-iso.sh` remove every other `virtio-win*.iso` and move a valid
+unversioned `virtio-win.iso` into place.
+
+## ARM64 firmware and UTM Guest Tools
+
+The ARM64 firmware package uses `qemu-efi-aarch64_<version>_all.deb` in both local caches and
+the flat remote build cache. Renovate updates the workflow names together with the Go and shell
+version pins. `scripts/update-qemu-efi-aarch64-pin.sh` also updates the workflow names when
+refreshing the checksum and snapshot timestamp manually.
+
+UTM Guest Tools uses `utm/utm-guest-tools-<version>.iso`, a pinned GitHub release URL and a
+SHA-256 published with the release asset. Builds verify cached and downloaded copies instead of
+reusing `utm-guest-tools-latest.iso` indefinitely. To refresh the pin, run:
+
+```bash
+scripts/update-utm-guest-tools-pin.sh
+```
+
+This command requires curl, jq and GNU sed (as provided by the devcontainer). It follows UTM's
+advertised `https://getutm.app/downloads/utm-guest-tools-latest.iso` redirect and reads the
+published digest from the matching GitHub release. It updates the version, release tag, checksum
+and both build workflows together. The advertised ISO can lag behind assets in the newest QEMU
+release; this command deliberately follows the ISO UTM advertises. Refreshes are manual;
+builds use the reviewed pin and do not resolve `latest` themselves.
+
+For both downloads, Go and shell migrate a legacy local file only if its checksum matches the
+pin, and prune older local versions. The UTM downloader installs a new ISO only after the download
+and checksum verification succeed. Remote objects are not pruned automatically: after upgrading,
+delete obsolete `qemu-efi-aarch64_*.deb` and `utm-guest-tools-*.iso` objects manually, including
+the legacy `qemu-efi-aarch64_all.deb` and `utm-guest-tools-latest.iso` objects.
+
+### Local-cache migration tradeoff
+
+Automatic local pruning remains enabled during the versioned dependency-cache migration.
+Concurrent builds using different pinned versions in the same cache can prune each other's
+dependency files. This limitation is accepted for this migration; cross-version cache locking,
+leases, and a separate garbage-collection design are outside its scope.
+
+Failure to remove an obsolete local file is logged as a warning. Builds still verify the pinned
+file and fail if a required download or checksum verification fails.
+
 ## Tests
 
 - `go test ./pkg/build/... ./tools/...`: naming, due rule, manifest validation, deduplication,

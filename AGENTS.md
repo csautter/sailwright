@@ -17,3 +17,14 @@
   ```bash
   GOTOOLCHAIN=<go.mod version> make gosec
   ```
+
+## Code Review: Intentional CI Coverage
+
+- Read the [E2E CI coverage decision](docs/testing-workflows.md#e2e-ci-coverage-decision) before assessing test execution completeness.
+- Full VM lifecycle E2E scenarios remain opt-in. Adding them to routine PR CI would substantially increase CI load and duplicate much of the existing unit, build, deploy, and provisioning coverage. This is an accepted project decision.
+- Do not raise a finding, assign High severity, or recommend enabling these scenarios in routine CI solely because CI runs only the tagged E2E smoke scenario. Apply this decision when using review skills and their generic CI-completeness checklists.
+- Report a coverage gap only when the reviewed change introduces a concrete risk that existing automated tests do not cover. Identify the missing behavior and propose the smallest targeted check. Revisit broad lifecycle CI execution only when the user explicitly requests reconsidering this tradeoff.
+
+## Accepted Cache Migration Tradeoff
+
+- During the versioned dependency-cache migration, cross-version builds sharing a cache may prune each other's dependency files. This limitation is accepted; do not require cache locks, leases, or a separate garbage-collection design to complete this migration. See the [local-cache migration tradeoff](docs/windows-iso-cache.md#local-cache-migration-tradeoff).

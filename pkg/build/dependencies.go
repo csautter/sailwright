@@ -144,6 +144,9 @@ type WebFileDependency struct {
 	RelatedVmConfigs []VirtualMachineConfig
 	// BeforeHook is a function that is called before downloading the dependency. It can be used to modify the Source URL dynamically.
 	BeforeHook func(ctx context.Context) (string, error)
+	// PrepareHook runs during dependency reconciliation before the existence check, whether or not a
+	// download follows. It can migrate or clean up related files in the cache.
+	PrepareHook func()
 	// FailureHint is appended to the error when every source fails.
 	FailureHint string
 }
@@ -163,6 +166,11 @@ const (
 	// virtioWinSHA256 is not managed by Renovate: no datasource publishes ISO digests.
 	// The "Sync virtio-win checksum" workflow updates it via scripts/update-virtio-win-checksum.sh.
 	virtioWinSHA256 = "303f7ae40dad495d6ae474fdc571df58958a4dbc5c37a522d80f9a203867949d"
+
+	// Update with scripts/update-utm-guest-tools-pin.sh, which follows UTM's advertised ISO.
+	utmGuestToolsVersion = "0.1.271"
+	utmGuestToolsRelease = "v10.0.2-utm"
+	utmGuestToolsSHA256  = "65b6a69b392ee01dd314c10f3dad9ebbf9c4160be43f5f0dd6bb715944d9095b"
 
 	// renovate: datasource=deb depName=qemu-efi-aarch64 versioning=deb registryUrl=https://deb.debian.org/debian?suite=trixie&components=main&binaryArch=all
 	qemuEfiAarch64Version = "2025.02-8+deb13u1"
@@ -214,6 +222,90 @@ func virtioWinISOFileVersion(version string) string {
 
 func virtioWinISOFileName(version string) string {
 	return fmt.Sprintf("virtio-win-%s.iso", virtioWinISOFileVersion(version))
+}
+
+// virtioWinISOCacheFileName is the local cache file name of the virtio-win ISO. It carries the
+// full release version, so a version bump changes the path and the CI build-cache key instead of
+// restoring a stale ISO that fails the checksum. Renovate updates the same name in the build
+// workflows' cache_files.
+func virtioWinISOCacheFileName(version string) string {
+	return fmt.Sprintf("virtio-win-%s.iso", version)
+}
+
+func virtioWinISOCachePath(version string) string {
+	return GetDirectoriesInstance().CachePath("windows", virtioWinISOCacheFileName(version))
+}
+
+// virtioWinLegacyISOFileName is the unversioned cache file name used before the version was part
+// of the name.
+const virtioWinLegacyISOFileName = "virtio-win.iso"
+
+// prepareVirtioWinISOCache removes every virtio-win ISO in the directory of destination except
+// destination itself, so outdated versions do not pile up after a version bump. An ISO cached under
+// the unversioned legacy name is moved to destination instead when destination is missing and the
+// ISO matches checksum. scripts/macos/download-virtio-win-iso.sh does the same for the shell build
+// scripts.
+func prepareVirtioWinISOCache(destination, checksum string) {
+	prepareVersionedWebFileCache(destination, checksum, "virtio-win*.iso", virtioWinLegacyISOFileName)
+}
+
+// prepareVersionedWebFileCache prunes older versions and migrates a verified legacy file.
+// Temporary downloads and unrelated cache files are left alone. pattern is matched against base
+// names only, so glob metacharacters in the cache directory path are taken literally.
+func prepareVersionedWebFileCache(destination, checksum, pattern, legacyName string) {
+	dir := filepath.Dir(destination)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("Warning: could not list cached downloads in %s: %v", dir, err)
+		}
+		return
+	}
+	legacyPath := filepath.Join(dir, legacyName)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		matched, err := filepath.Match(pattern, entry.Name())
+		if err != nil {
+			log.Printf("Warning: invalid cache file pattern %q: %v", pattern, err)
+			return
+		}
+		if !matched {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if path == destination {
+			continue
+		}
+		if path == legacyPath && migrateLegacyWebFile(legacyPath, destination, checksum) {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			log.Printf("Warning: could not remove outdated download %s: %v", path, err)
+			continue
+		}
+		log.Printf("Removed outdated download %s", path)
+	}
+}
+
+// migrateLegacyWebFile moves legacyPath to destination when destination is missing
+// and the file matches checksum. It reports whether legacyPath must be kept: true when it was moved
+// or when the move failed, so verified bytes are not thrown away; false when it is outdated or
+// destination already exists.
+func migrateLegacyWebFile(legacyPath, destination, checksum string) bool {
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		return false
+	}
+	if !checkIfWebFileDependencyExists(WebFileDependency{LocalPath: legacyPath, Checksum: checksum}) {
+		return false
+	}
+	if err := os.Rename(legacyPath, destination); err != nil {
+		log.Printf("Warning: could not move cached download %s to %s: %v", legacyPath, destination, err)
+		return true
+	}
+	log.Printf("Moved cached download %s to %s", legacyPath, destination)
+	return true
 }
 
 func virtioWinISOURLFromArchive(archiveURL, version string) string {
@@ -362,22 +454,42 @@ func probeDownloadURL(ctx context.Context, client *http.Client, candidate string
 // qemuEfiAarch64URLs returns the pinned Debian qemu-efi-aarch64 package on the
 // Debian mirror first and on snapshot.debian.org as a fallback.
 func qemuEfiAarch64URLs() []string {
-	poolPath := "pool/main/e/edk2/qemu-efi-aarch64_" + qemuEfiAarch64Version + "_all.deb"
+	poolPath := "pool/main/e/edk2/" + qemuEfiAarch64CacheFileName(qemuEfiAarch64Version)
 	return []string{
 		"https://deb.debian.org/debian/" + poolPath,
 		"https://snapshot.debian.org/archive/debian/" + qemuEfiAarch64SnapshotTimestamp + "/" + poolPath,
 	}
 }
 
+func qemuEfiAarch64CacheFileName(version string) string {
+	return "qemu-efi-aarch64_" + version + "_all.deb"
+}
+
+func utmGuestToolsISOFileName(version string) string {
+	return "utm-guest-tools-" + version + ".iso"
+}
+
+func utmGuestToolsISOPath() string {
+	return GetDirectoriesInstance().CachePath("utm", utmGuestToolsISOFileName(utmGuestToolsVersion))
+}
+
+func utmGuestToolsISOURL() string {
+	return "https://github.com/utmapp/qemu/releases/download/" + utmGuestToolsRelease + "/" + utmGuestToolsISOFileName(utmGuestToolsVersion)
+}
+
 // qemuEfiAarch64Dependency returns the pinned ARM64 UEFI firmware package for the given VM configs.
 func qemuEfiAarch64Dependency(related ...VirtualMachineConfig) WebFileDependency {
 	urls := qemuEfiAarch64URLs()
+	path := GetDirectoriesInstance().CachePath(qemuEfiAarch64CacheFileName(qemuEfiAarch64Version))
 	return WebFileDependency{
-		LocalPath:        GetDirectoriesInstance().CachePath("qemu-efi-aarch64_all.deb"),
+		LocalPath:        path,
 		Checksum:         "sha256:" + qemuEfiAarch64SHA256,
 		Source:           urls[0],
 		FallbackSources:  urls[1:],
 		RelatedVmConfigs: related,
+		PrepareHook: func() {
+			prepareVersionedWebFileCache(path, "sha256:"+qemuEfiAarch64SHA256, "qemu-efi-aarch64*_all.deb", "qemu-efi-aarch64_all.deb")
+		},
 		FailureHint: fmt.Sprintf("if every source failed the checksum, the qemu-efi-aarch64 %s pin is probably stale (see build/packer/linux/ubuntu/README.md)",
 			qemuEfiAarch64Version),
 	}
@@ -413,9 +525,13 @@ func reconcileWebFileDependency(ctx context.Context, p *mpb.Progress, dep WebFil
 		return fmt.Errorf("download of %s stopped: %w", dep.LocalPath, err)
 	}
 	defer unlock()
+	if dep.PrepareHook != nil {
+		dep.PrepareHook()
+	}
 	if checkIfWebFileDependencyExists(dep) {
 		return nil
 	}
+	removeStaleWebFileDependency(dep)
 	if err := downloadWebFileDependency(ctx, p, dep); err != nil {
 		if ctxErr := buildContextError(ctx); ctxErr != nil {
 			return fmt.Errorf("download of %s stopped: %w", dep.LocalPath, ctxErr)
@@ -447,6 +563,22 @@ func lockWebFileDependency(ctx context.Context, localPath string) (func(), error
 	case <-ctx.Done():
 		return nil, context.Cause(ctx)
 	}
+}
+
+// removeStaleWebFileDependency deletes a local file that failed the existence check, typically
+// an outdated file restored from a cache. go-getter's HTTP getter resumes onto an existing file
+// with a Range request: a stale file at least as large as the remote one skips the transfer, a
+// smaller one gets the remote tail appended. Either way the attempt fails the checksum instead of
+// downloading a fresh copy.
+func removeStaleWebFileDependency(dep WebFileDependency) {
+	if _, err := os.Stat(dep.LocalPath); err != nil {
+		return
+	}
+	if err := os.Remove(dep.LocalPath); err != nil {
+		log.Printf("Warning: could not remove %s, which does not match its checksum: %v", dep.LocalPath, err)
+		return
+	}
+	log.Printf("Removed %s because it does not match its checksum", dep.LocalPath)
 }
 
 func webFileDependenciesForVMConfig(vmconfig VirtualMachineConfig) []WebFileDependency {
@@ -801,9 +933,12 @@ func getWindows11DownloadContext(ctx context.Context, arch string, savePath stri
 func getWebFileDependencies() []WebFileDependency {
 	return []WebFileDependency{
 		{
-			LocalPath: GetDirectoriesInstance().CachePath("utm", "utm-guest-tools-latest.iso"),
-			Checksum:  "",
-			Source:    "https://getutm.app/downloads/utm-guest-tools-latest.iso",
+			LocalPath: utmGuestToolsISOPath(),
+			Checksum:  "sha256:" + utmGuestToolsSHA256,
+			Source:    utmGuestToolsISOURL(),
+			PrepareHook: func() {
+				prepareVersionedWebFileCache(utmGuestToolsISOPath(), "sha256:"+utmGuestToolsSHA256, "utm-guest-tools-*.iso", "utm-guest-tools-latest.iso")
+			},
 			RelatedVmConfigs: []VirtualMachineConfig{
 				{
 					OS:                   "windows11",
@@ -912,12 +1047,15 @@ func getWebFileDependencies() []WebFileDependency {
 			},
 		),
 		{
-			LocalPath:       GetDirectoriesInstance().CachePath("windows", "virtio-win.iso"),
+			LocalPath:       virtioWinISOCachePath(virtioWinVersion),
 			Checksum:        "sha256:" + virtioWinSHA256,
 			Source:          virtioWinISOURLFromArchive(virtioWinFedoraArchiveURL, virtioWinVersion),
 			FallbackSources: virtioWinISOURLs(virtioWinVersion),
 			BeforeHook: func(ctx context.Context) (string, error) {
 				return selectFastestVirtioWinISOURL(ctx, virtioWinVersion)
+			},
+			PrepareHook: func() {
+				prepareVirtioWinISOCache(virtioWinISOCachePath(virtioWinVersion), "sha256:"+virtioWinSHA256)
 			},
 			RelatedVmConfigs: []VirtualMachineConfig{
 				{

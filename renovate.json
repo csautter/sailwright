@@ -159,6 +159,33 @@
     },
     {
       "customType": "regex",
+      "description": "Update versioned virtio-win ISO cache file names in the build workflows",
+      "managerFilePatterns": [
+        "/(^|/)\\.github/workflows/test-build-(linux|macos)\\.yml$/"
+      ],
+      "matchStrings": [
+        "virtio-win-(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+-[0-9]+)\\.iso"
+      ],
+      "depNameTemplate": "virtio-win",
+      "datasourceTemplate": "custom.virtio-win",
+      "versioningTemplate": "loose"
+    },
+    {
+      "customType": "regex",
+      "description": "Update versioned qemu-efi-aarch64 cache file names in the build workflows",
+      "managerFilePatterns": [
+        "/(^|/)\\.github/workflows/test-build-(linux|macos)\\.yml$/"
+      ],
+      "matchStrings": [
+        "qemu-efi-aarch64_(?<currentValue>[0-9A-Za-z.+~-]+)_all\\.deb"
+      ],
+      "depNameTemplate": "qemu-efi-aarch64",
+      "datasourceTemplate": "deb",
+      "versioningTemplate": "deb",
+      "registryUrlTemplate": "https://deb.debian.org/debian?suite=trixie&components=main&binaryArch=all"
+    },
+    {
+      "customType": "regex",
       "description": "Update k9s role version pin",
       "managerFilePatterns": [
         "/(^|/)roles/k9s/defaults/main\\.yml$/"

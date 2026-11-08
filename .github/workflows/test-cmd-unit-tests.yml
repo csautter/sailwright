@@ -28,6 +28,7 @@ on:
       - "go.sum"
       - "test/workflowcheck/**"
       - "pkg/build/**"
+      - "renovate.json"
       - "pkg/oci/**"
       - "tools/**"
       - "roles_test_1/**"
@@ -63,6 +64,7 @@ on:
       - "go.sum"
       - "test/workflowcheck/**"
       - "pkg/build/**"
+      - "renovate.json"
       - "pkg/oci/**"
       - "tools/**"
       - "roles_test_1/**"
@@ -113,7 +115,7 @@ jobs:
         run: go test ./tools/...
 
       - name: Run gateway, self-update, operation lock and E2E runner tests
-        run: go test ${{ runner.os == 'Linux' && '-race' || '' }} ./internal/... ./cmd/sailwright-gateway/... ./test/e2e/...
+        run: go test ${{ runner.os == 'Linux' && '-race' || '' }} ./internal/... ./internal/gateway/testdata/fakecli ./cmd/sailwright-gateway/... ./test/e2e/...
 
       - name: Run E2E smoke scenario against the CLI
         shell: bash
