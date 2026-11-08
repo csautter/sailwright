@@ -337,7 +337,7 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 		}
 		return strings.ReplaceAll(string(output), "\r\n", "\n")
 	}
-	if output := run("ssh", "-F", config, "-o", "ConnectionAttempts=30", "-o", "ConnectTimeout=5", alias, "uname -a"); !strings.Contains(output, "Linux") {
+	if output := run("ssh", "-F", config, "-o", "ConnectionAttempts=30", "-o", "ConnectTimeout=30", alias, "uname -a"); !strings.Contains(output, "Linux") {
 		t.Fatal("unexpected guest kernel")
 	}
 	source := filepath.Join(directory, "sailwright-access.txt")

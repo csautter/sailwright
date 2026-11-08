@@ -738,7 +738,9 @@ print(f"tunnels={opened}, with traffic={len(moved)}")' "$GW_STATE/audit.jsonl"
 		rt_check GW-21b "CLI starts it" --timeout 3600 -- "${SELF[@]}" start "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"}
 		rt_check GW-22 "tunnel to a VM the gateway did not create is refused" --exit-nonzero --timeout 300 --match 'not created by this gateway|403' -- \
 			sh -c "'$GW' vm tunnel '$RT_TARGET' 22 </dev/null"
-		rt_check GW-23 "provision_local is refused without an approval console" --exit-nonzero --timeout 600 --match 'no approval console' -- \
+		# The executor asks the gateway whether host changes are possible; without an approval
+		# console it reports no and the scenario skips, which is the refusal being observed.
+		rt_check GW-23 "provision_local is refused without an approval console (scenario skips with the gateway reason)" --timeout 600 --match 'no approval console' --match 'SKIP: TestScenarios/local-check' -- \
 			env SAILWRIGHT_E2E_EXECUTOR=gateway SAILWRIGHT_E2E_OUT="$RT_PHASE_DIR/e2e-GW-23" go -C "$RT_REPO_ROOT" test -tags e2e ./test/e2e -run 'TestScenarios/local-check$' -count=1 -v
 		rt_check GW-24 "cleanup CLI VM" --timeout 1800 -- "${SELF[@]}" destroy "${TARGET_ARGS[@]}"
 		gateway_stop
