@@ -25,6 +25,7 @@ if [ -f "$KIT_DIR/release.env" ]; then
 	. "$KIT_DIR/release.env"
 fi
 for rt_setting in "${rt_setting_overrides[@]}"; do
+	# shellcheck disable=SC2163 # entries are NAME=value assignments
 	export "$rt_setting"
 done
 unset rt_setting rt_setting_overrides
