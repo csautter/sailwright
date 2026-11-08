@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
+	alchemy_deploy "github.com/csautter/dev-alchemy/pkg/deploy"
 	"github.com/spf13/cobra"
 )
 
@@ -211,8 +212,11 @@ func TestListingCarriesEachInstanceName(t *testing.T) {
 	row := func(vm alchemy_build.VirtualMachineConfig) ([]string, error) {
 		return []string{vm.OS, vm.UbuntuType, vm.Arch}, nil
 	}
+	inspect := func(alchemy_build.VirtualMachineConfig) (alchemy_deploy.NetworkMode, string, bool, error) {
+		return alchemy_deploy.NetworkMode{Mode: "nat"}, "user", true, nil
+	}
 	var out bytes.Buffer
-	if err := writeVirtualMachineCombinationJSON(&out, vms, []string{"OS", "Type", "Arch"}, row, nil); err != nil {
+	if err := writeVirtualMachineCombinationJSON(&out, vms, []string{"OS", "Type", "Arch"}, row, inspect); err != nil {
 		t.Fatal(err)
 	}
 	var listing vmListingJSON
@@ -223,10 +227,10 @@ func TestListingCarriesEachInstanceName(t *testing.T) {
 		t.Fatalf("%+v", listing)
 	}
 	out.Reset()
-	if err := writeVirtualMachineTable(&out, []string{"OS", "Type", "Arch"}, vms, row); err != nil {
+	if err := writeVirtualMachineTable(&out, []string{"OS", "Type", "Arch"}, vms, row, inspect); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Name", "default", "work"} {
+	for _, want := range []string{"Name", "NET", "CREDS", "default", "work"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatal(out.String())
 		}
