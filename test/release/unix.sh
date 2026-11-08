@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Phases run through the dispatcher at the end; ps output is filtered by path, not name.
+# shellcheck disable=SC2317,SC2329,SC2009
 # Release test phases for macOS and Linux hosts. See test/release/README.md.
 #
 #   bash test/release/unix.sh <phase> [<phase>...]
@@ -8,7 +10,6 @@
 # test/release/release.env (copy release.env.example). Phases never print
 # guest passwords and never touch VMs that existed before the run.
 set -u
-# shellcheck disable=SC2317,SC2009 # phases run through dispatch; ps output is filtered by path
 
 KIT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=test/release/lib/rt.sh
@@ -63,11 +64,10 @@ appdata_env() {
 APPDATA_ENV=()
 if [ "$RT_APPDATA" != default ]; then APPDATA_ENV=("DEV_ALCHEMY_APP_DATA_DIR=$RT_APPDATA"); fi
 
-insecure_flag() {
-	# The shipped UTM templates use bridged networking; their lifecycle needs an
-	# explicit risk acceptance (docs/guest-security.md).
-	if [ "${RT_ALLOW_INSECURE_CREDENTIALS:-}" = 1 ]; then printf -- '--allow-insecure-credentials\n'; fi
-}
+# The shipped UTM templates use bridged networking; their lifecycle needs an explicit
+# risk acceptance (docs/guest-security.md). INSECURE is empty or holds that flag.
+INSECURE=()
+if [ "${RT_ALLOW_INSECURE_CREDENTIALS:-}" = 1 ]; then INSECURE=(--allow-insecure-credentials); fi
 
 need_bin() {
 	if [ ! -x "$BIN" ] || [ ! -x "$GW" ]; then
@@ -289,11 +289,14 @@ phase_install() {
 		rt_note "no RT_RELEASE_TAG: the checkout's install.sh installs the latest existing release $tag"
 	fi
 	rt_check INS-01 "checkout install.sh installs $tag into ~/.local/bin" --timeout 600 -- sh "$RT_REPO_ROOT/scripts/install.sh" --version "$tag"
+	# shellcheck disable=SC2016 # expanded by the inner shell, not here
 	rt_check INS-02 "installed binaries run" -- sh -c '"$HOME/.local/bin/sailwright" --version && "$HOME/.local/bin/sailwright-gateway" --version'
 	rt_check INS-03 "sailwright install (host dependencies)" --timeout 5400 -- "$BIN" install
+	# shellcheck disable=SC2016 # expanded by the inner shell, not here
 	rt_check INS-04 "ansible-core >= 2.19 after install" --match 'core 2\.(19|[2-9][0-9])' -- sh -c 'PATH="$HOME/.local/bin:$PATH" ansible --version'
 	rt_check INS-05 "second install is idempotent" --timeout 5400 -- "$BIN" install
 	if [ "$HOST_OS" = darwin ]; then
+		# shellcheck disable=SC2016 # expanded by the inner shell, not here
 		rt_check INS-06 "Homebrew tap installs sailwright and the gateway" --timeout 1800 -- \
 			sh -c 'brew install csautter/sailwright/sailwright csautter/sailwright/sailwright-gateway && "$(brew --prefix)/bin/sailwright" --version'
 	fi
@@ -305,9 +308,11 @@ recap_check() { # ID DESC PHASE(check|apply|idempotency) ARGS...
 	local id="$1" desc="$2" kind="$3"
 	shift 3
 	local log="$RT_PHASE_DIR/logs/$id.run.log"
+	# shellcheck disable=SC2016 # expanded by the inner shell, not here
 	rt_check "$id" "$desc" --timeout 10800 -- sh -c '
 		log="$1"; kind="$2"; shift 2
 		"$@" >"$log" 2>&1; rc=$?
+		# shellcheck disable=SC2016 # expanded by the inner shell, not here
 		python3 -I "'"$RT_REPO_ROOT"'/test/localprovision/scripts/check_recap.py" "$log" "$kind" || exit 1
 		exit "$rc"' sh "$log" "$kind" "$@"
 }
@@ -552,12 +557,9 @@ phase_vm() {
 	fi
 
 	# Instance identity across recreation and against the hypervisor.
-	local insecure id1 id2
-	insecure="$(insecure_flag)"
-	# shellcheck disable=SC2086 # $insecure is empty or one flag
-	rt_check VM-10 "create for identity checks" --timeout 3600 -- "${SELF[@]}" create "${TARGET_ARGS[@]}" $insecure
-	# shellcheck disable=SC2086
-	rt_check VM-10b "start for identity checks" --timeout 3600 -- "${SELF[@]}" start "${TARGET_ARGS[@]}" $insecure
+	local id1 id2
+	rt_check VM-10 "create for identity checks" --timeout 3600 -- "${SELF[@]}" create "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"}
+	rt_check VM-10b "start for identity checks" --timeout 3600 -- "${SELF[@]}" start "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"}
 	id1="$(sw vm identity "${TARGET_ARGS[@]}" 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("instance_id",""))')"
 	if [ -n "$id1" ]; then rt_pass VM-11 "instance id reported" "$id1"; else rt_fail VM-11 "instance id reported" "empty instance_id"; fi
 	case "$HOST_OS" in
@@ -578,17 +580,16 @@ phase_vm() {
 	spid=$!
 	sleep 2
 	rt_check VM-20 "concurrent start is refused while stop holds the lock" --exit-nonzero --match 'resource busy' --match 'held by pid [0-9]+' -- \
-		env SAILWRIGHT_LOCK_TIMEOUT=2s "${SELF[@]}" start "${TARGET_ARGS[@]}" $insecure
+		env SAILWRIGHT_LOCK_TIMEOUT=2s "${SELF[@]}" start "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"}
 	wait "$spid"
 	rt_check VM-21 "stop finished normally" --match "." -- cat "$stoplog"
-	sw start "${TARGET_ARGS[@]}" $insecure >"$RT_PHASE_DIR/logs/VM-22.start.log" 2>&1 </dev/null &
+	sw start "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"} >"$RT_PHASE_DIR/logs/VM-22.start.log" 2>&1 </dev/null &
 	spid=$!
 	sleep 2
 	rt_check VM-22 "a second operation waits for the lock and then succeeds" --timeout 1800 -- "${SELF[@]}" stop "${TARGET_ARGS[@]}"
 	wait "$spid"
 	rt_check VM-23 "destroy" --timeout 1800 -- "${SELF[@]}" destroy "${TARGET_ARGS[@]}"
-	# shellcheck disable=SC2086
-	rt_check VM-24 "recreate" --timeout 3600 -- "${SELF[@]}" create "${TARGET_ARGS[@]}" $insecure
+	rt_check VM-24 "recreate" --timeout 3600 -- "${SELF[@]}" create "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"}
 	id2="$(sw vm identity "${TARGET_ARGS[@]}" 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("instance_id",""))')"
 	if [ -n "$id2" ] && [ "$id2" != "$id1" ]; then rt_pass VM-25 "instance id changed after recreate" "$id1 -> $id2"; else rt_fail VM-25 "instance id changed after recreate" "'$id1' -> '$id2'"; fi
 	if [ "$HOST_OS" = darwin ] && command -v utmctl >/dev/null 2>&1; then
@@ -693,12 +694,8 @@ print(f"tunnels={opened}, with traffic={len(moved)}")' "$GW_STATE/audit.jsonl"
 	log="$RT_PHASE_DIR/logs/GW-serve-noapprovals.log"
 	if gateway_start --no-approvals "$log"; then
 		rt_check GW-20 "banner shows the safe set only" --match 'disabled \(safe set only\)' -- cat "$log"
-		local insecure
-		insecure="$(insecure_flag)"
-		# shellcheck disable=SC2086
-		rt_check GW-21 "CLI creates a VM outside the gateway" --timeout 3600 -- "${SELF[@]}" create "${TARGET_ARGS[@]}" $insecure
-		# shellcheck disable=SC2086
-		rt_check GW-21b "CLI starts it" --timeout 3600 -- "${SELF[@]}" start "${TARGET_ARGS[@]}" $insecure
+		rt_check GW-21 "CLI creates a VM outside the gateway" --timeout 3600 -- "${SELF[@]}" create "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"}
+		rt_check GW-21b "CLI starts it" --timeout 3600 -- "${SELF[@]}" start "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"}
 		rt_check GW-22 "tunnel to a VM the gateway did not create is refused" --exit-nonzero --timeout 300 --match 'not created by this gateway|403' -- \
 			sh -c "'$GW' vm tunnel '$RT_TARGET' 22 </dev/null"
 		rt_check GW-23 "provision_local is refused without an approval console" --exit-nonzero --timeout 600 --match 'no approval console' -- \
