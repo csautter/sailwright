@@ -1,0 +1,124 @@
+name: vm-access-cli
+description: >-
+  CLI VM inspection for the target in SAILWRIGHT_E2E_TARGET, over two
+  create/destroy cycles: `vm identity` while absent, stopped and running,
+  `vm info` with a masked password, no implicit start by either query, and a
+  working second cycle after destroy (stale registrations, new instance ids).
+  Set SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS=1 for targets on bridged or
+  unknown networks (UTM templates) to pass --allow-insecure-credentials.
+requires: [target]
+preflight:
+  - name: target VM does not exist yet
+    op: list
+    with: {command: destroy}
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}
+steps:
+  - name: identity while absent
+    op: cli
+    with: {args: ["vm", "identity"], target: true}
+    expect: {output_regex: '"exists":false'}
+  - name: info while absent fails without creating anything
+    op: cli
+    with: {args: ["vm", "info"], target: true}
+    expect:
+      exit_code: 1
+      state: {command: destroy, field: state, regex: "^missing$"}
+  - name: pull prebuilt image
+    op: pull
+    when_env: SAILWRIGHT_E2E_PULL_REF
+    with: {ref: "${SAILWRIGHT_E2E_PULL_REF}"}
+  - name: build image
+    op: build
+    unless_env: SAILWRIGHT_E2E_PULL_REF
+    when_listed: build
+    with: {headless: true}
+  - name: create VM (cycle 1)
+    op: create
+    unless_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+  - name: create VM with accepted credential risk (cycle 1)
+    op: create
+    when_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    with: {allow_insecure_credentials: true}
+  - name: identity after create
+    op: cli
+    with: {args: ["vm", "identity"], target: true}
+    expect: {output_regex: '"exists":true'}
+  - name: start VM (cycle 1)
+    op: start
+    unless_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    expect:
+      state: {command: start, field: start, regex: "^already running$"}
+  - name: start VM with accepted credential risk (cycle 1)
+    op: start
+    when_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    with: {allow_insecure_credentials: true}
+    expect:
+      state: {command: start, field: start, regex: "^already running$"}
+  - name: info while running masks the password
+    op: cli
+    with: {args: ["vm", "info"], target: true}
+    expect:
+      output_regex: '(?s)State: running.*Address: \S+.*Protocol: (ssh|winrm)\s+Port: [1-9][0-9]*.*Password: \*{8} \(use --show-password or --json\)'
+  - name: identity while running
+    op: cli
+    with: {args: ["vm", "identity"], target: true}
+    expect: {output_regex: '"exists":true'}
+  - name: stop VM (cycle 1)
+    op: stop
+    expect:
+      state: {command: start, field: start, regex: "^ready to start$"}
+  - name: identity while stopped does not start the VM
+    op: cli
+    with: {args: ["vm", "identity"], target: true}
+    expect:
+      output_regex: '"exists":true'
+      state: {command: start, field: start, regex: "^ready to start$"}
+  - name: info while stopped fails and does not start the VM
+    op: cli
+    with: {args: ["vm", "info"], target: true}
+    expect:
+      exit_code: 1
+      state: {command: start, field: start, regex: "^ready to start$"}
+  - name: destroy VM (cycle 1)
+    op: destroy
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}
+  - name: identity after destroy
+    op: cli
+    with: {args: ["vm", "identity"], target: true}
+    expect: {output_regex: '"exists":false'}
+  - name: create VM (cycle 2)
+    op: create
+    unless_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+  - name: create VM with accepted credential risk (cycle 2)
+    op: create
+    when_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    with: {allow_insecure_credentials: true}
+  - name: start VM (cycle 2)
+    op: start
+    unless_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    expect:
+      state: {command: start, field: start, regex: "^already running$"}
+  - name: start VM with accepted credential risk (cycle 2)
+    op: start
+    when_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    with: {allow_insecure_credentials: true}
+    expect:
+      state: {command: start, field: start, regex: "^already running$"}
+  - name: info works for the recreated VM
+    op: cli
+    with: {args: ["vm", "info"], target: true}
+    expect:
+      output_regex: '(?s)State: running.*Address: \S+.*Password: \*{8}'
+  - name: destroy VM (cycle 2)
+    op: destroy
+  - name: destroy again is idempotent
+    op: destroy
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}
+always:
+  - name: destroy VM
+    op: destroy
+    expect:
+      state: {command: destroy, field: state, regex: "^missing$"}

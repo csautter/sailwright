@@ -1,0 +1,36 @@
+name: cli-readonly
+description: >-
+  Read-only CLI surface a user meets first: version, gateway compatibility
+  metadata, listings with network and credential metadata, the local provision
+  target status, the role catalog and the effective config path. Needs no
+  hypervisor and changes nothing on the host.
+steps:
+  - name: version reports platform and update settings
+    op: cli
+    with: {args: ["version"]}
+    expect: {output_regex: "(?s)Platform: (linux|darwin|windows)/(amd64|arm64).*Automatic update checks:"}
+  - name: gateway metadata reports lock protocol 2
+    op: cli
+    # Hidden flag; through the gateway it is outside the safe set.
+    only: direct
+    with: {args: ["--gateway-metadata"]}
+    expect: {output_regex: '"lock_version":2'}
+  - name: build listing carries network and credential metadata
+    op: list
+    with: {command: build}
+    expect: {output_regex: '"network_mode":"(nat|bridged|user|unknown)".*"credentials_origin":"(legacy|user|none|unknown)"'}
+  - name: local provisioning is listed as stable
+    op: list
+    with: {command: provision}
+    expect: {output_regex: '"os":"local"[^}]*"fields":\{[^}]*"status":"stable"'}
+  - name: role catalog lists tools
+    op: cli
+    with: {args: ["provision", "catalog"]}
+  - name: config path names its origin
+    op: cli
+    with: {args: ["config", "path"]}
+  - name: vm info for an unknown target fails with a clear message
+    op: cli
+    only: direct
+    with: {args: ["vm", "info", "not-an-os"]}
+    expect: {exit_code: 1, output_regex: "unknown managed VM"}

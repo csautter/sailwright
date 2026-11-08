@@ -24,7 +24,7 @@ func TestRepositoryScenariosAreValid(t *testing.T) {
 	for _, scenario := range scenarios {
 		names[scenario.Name] = true
 	}
-	for _, want := range []string{"smoke", "vm-lifecycle", "destroy-idempotent", "local-check", "vm-lifecycle-linux", "vm-lifecycle-macos", "vm-lifecycle-windows"} {
+	for _, want := range []string{"smoke", "vm-lifecycle", "destroy-idempotent", "local-check", "vm-lifecycle-linux", "vm-lifecycle-macos", "vm-lifecycle-windows", "cli-readonly", "vm-access-cli", "guest-security-guard", "build-cancel"} {
 		if !names[want] {
 			t.Fatalf("scenario %s missing", want)
 		}
