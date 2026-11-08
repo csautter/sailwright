@@ -8,7 +8,7 @@ sailwright build list --json
 ```
 
 ```json
-{"schema_version":1,"targets":[{"os":"ubuntu","type":"server","arch":"amd64","engine":"qemu","fields":{"build":"missing"},"address":null}]}
+{"schema_version":1,"targets":[{"os":"ubuntu","type":"server","arch":"amd64","engine":"qemu","fields":{"build":"missing"},"address":null,"network_mode":"unknown","network_detail":"libvirt domain inspection failed","credentials_origin":"legacy"}]}
 ```
 
 `schema_version` is `1`. Within a version only fields are added, never removed or
@@ -61,3 +61,20 @@ operations on the same target, or any operation during an `all` or registry
 transfer, do not run at the same time. A busy operation fails immediately and
 names the process holding the lock. Set `SAILWRIGHT_LOCK_TIMEOUT` to a Go
 duration such as `30s` to wait instead.
+
+Security metadata is additive within schema version 1:
+
+| Field | Values and contract |
+| --- | --- |
+| `network_mode` | `nat`, `bridged`, or `unknown`. These are exposure categories: `nat` includes isolated/host-only networking, and `bridged` includes routing. Public or unclassified port forwards and unsupported backends can produce `unknown`. |
+| `network_detail` | Human-readable inspection details. Do not parse this diagnostic text as a stable identifier. |
+| `credentials_origin` | `legacy`, `user`, `none` (local host), or `unknown` (credential configuration unavailable). `user` is a source label, not proof of password strength or a password change inside the guest. |
+
+For missing `create` targets these fields describe the planned deployment and
+image credentials. Existing Create targets and other listings describe the
+current target. An unavailable credential configuration does not remove targets
+or fail the listing: its origin becomes `unknown`. Lifecycle guards still reject
+invalid configuration before making changes.
+
+Warnings go to stderr, separate from the JSON document on stdout. See
+[Guest network security](./guest-security.md) for the policy and overrides.

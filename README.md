@@ -307,6 +307,8 @@ next level of detail:
   recordings and website terminal demo are produced
 - [Managed Application Data](./docs/managed-application-data.md) for cache,
   runtime, and app-data locations
+- [Guest Network Security](./docs/guest-security.md) for VM network exposure,
+  credential warnings, and explicit risk acceptance
 - [Ansible Role Sources](./docs/ansible-role-sources.md) for layering local
   and Git-backed role roots during provisioning
 - [Windows Ansible Access](./docs/windows-ansible-access.md) for manual WinRM

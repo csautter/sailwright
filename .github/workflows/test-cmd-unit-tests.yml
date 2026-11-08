@@ -22,6 +22,8 @@ on:
       - "scripts/macos/**"
       - "scripts/windows/**"
       - "pkg/deploy/**"
+      - "pkg/credentials/**"
+      - "pkg/security/**"
       - "go.mod"
       - "go.sum"
       - "test/workflowcheck/**"
@@ -55,6 +57,8 @@ on:
       - "scripts/macos/**"
       - "scripts/windows/**"
       - "pkg/deploy/**"
+      - "pkg/credentials/**"
+      - "pkg/security/**"
       - "go.mod"
       - "go.sum"
       - "test/workflowcheck/**"
@@ -95,6 +99,9 @@ jobs:
 
       - name: Run cmd tests
         run: go test ${{ runner.os == 'Linux' && '-race' || '' }} ./cmd/cmd/...
+
+      - name: Run guest security package tests
+        run: go test ./pkg/credentials/... ./pkg/security/...
 
       - name: Run build package tests
         run: go test ${{ runner.os == 'Linux' && '-race' || '' }} ./pkg/build/...

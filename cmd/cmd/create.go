@@ -36,16 +36,21 @@ func defaultCreateVirtualMachinesForHostOS(hostOs alchemy_build.HostOsType) []al
 }
 
 func printAvailableCreateCombinations() error {
-	return writeCreateCombinations(os.Stdout, availableCreateVirtualMachines())
+	return printCreateCombinations(os.Stdout, availableCreateVirtualMachines())
 }
 
 func writeCreateCombinations(writer io.Writer, vms []alchemy_build.VirtualMachineConfig) error {
-	// The row builder already inspected each VM; report that, not a second query.
-	exists := map[string]bool{}
-	existsKey := func(vm alchemy_build.VirtualMachineConfig) string {
-		return vm.OS + "/" + vm.UbuntuType + "/" + vm.Arch + "/" + string(vm.VirtualizationEngine)
+	return printCreateCombinations(writer, vms)
+}
+
+func printCreateCombinations(writer io.Writer, vms []alchemy_build.VirtualMachineConfig) error {
+	key := func(vm alchemy_build.VirtualMachineConfig) [5]string {
+		return [5]string{vm.OS, vm.UbuntuType, vm.Arch, string(vm.HostOs), string(vm.VirtualizationEngine)}
 	}
-	return printVirtualMachineCombinationTableWithExists(
+	// Reuse the existence check from each row for its immediately following
+	// security inspection, rather than querying the hypervisor twice.
+	planned := make(map[[5]string]bool, len(vms))
+	return printVirtualMachineCombinationsWithSecurity(
 		writer,
 		fmt.Sprintf("Available create combinations for host OS: %s", alchemy_build.GetCurrentHostOs()),
 		"No create combinations are available for the current host OS.",
@@ -56,7 +61,7 @@ func writeCreateCombinations(writer io.Writer, vms []alchemy_build.VirtualMachin
 			if err != nil {
 				return nil, fmt.Errorf("failed to inspect create target for OS=%s, type=%s, arch=%s: %w", vm.OS, vm.UbuntuType, vm.Arch, err)
 			}
-			exists[existsKey(vm)] = targetExists
+			planned[key(vm)] = !targetExists
 
 			if vm.VirtualizationEngine == alchemy_build.VirtualizationEngineTart {
 				createState := "ready to create"
@@ -85,12 +90,16 @@ func writeCreateCombinations(writer io.Writer, vms []alchemy_build.VirtualMachin
 
 			return []string{vm.OS, displayVirtualMachineType(vm), vm.Arch, virtualMachineTargetStatus(vm), artifactState, createState}, nil
 		},
+		func(vm alchemy_build.VirtualMachineConfig) (alchemy_deploy.NetworkMode, string, bool, error) {
+			return guestSecurityInfo(vm, planned[key(vm)])
+		},
 		func(vm alchemy_build.VirtualMachineConfig) *bool {
-			value, ok := exists[existsKey(vm)]
+			isPlanned, ok := planned[key(vm)]
 			if !ok {
 				return nil
 			}
-			return &value
+			exists := !isPlanned
+			return &exists
 		},
 	)
 }
@@ -176,6 +185,13 @@ func runDeploy(vm alchemy_build.VirtualMachineConfig) error {
 			createCommandArguments(vm),
 		)
 	}
+
+	if isCreateSupported(vm) {
+		if err := guardGuestSecurity(vm, true, createAllowInsecureCredentials); err != nil {
+			return err
+		}
+	}
+
 	if err := markCreateStarted(os.Getenv(createStartedFileEnvVar), vm); err != nil {
 		return err
 	}
@@ -224,6 +240,7 @@ func createCommandArguments(vm alchemy_build.VirtualMachineConfig) string {
 
 func init() {
 	rootCmd.AddCommand(createCmd)
+	addGuestSecurityFlag(createCmd, &createAllowInsecureCredentials)
 	createCmd.AddCommand(createListCmd)
 	addListJSONFlag(createListCmd)
 

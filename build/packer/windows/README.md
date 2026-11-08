@@ -59,7 +59,13 @@ The windows VM build process is fully automated and includes installation of:
 
 After running following commands, the Windows 11 VM will be available in UTM on macOS or libvirt on Linux.
 Every command may take a while to finish. If something goes wrong, please check the logs and retry.
-The process is idempotent, so you can re-run commands without issues.
+Existing targets are reused through `start`; creating an existing VM returns an error.
+
+The UTM templates use bridged networking. New guests retain the image's default
+credentials, so the CLI refuses their creation unless you change the planned
+network or explicitly accept the risk. Read
+[Guest network security](../../../docs/guest-security.md) before running the
+following lifecycle commands.
 
 ```bash
 arch=arm64 # or amd64

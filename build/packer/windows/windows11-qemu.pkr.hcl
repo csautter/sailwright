@@ -147,6 +147,7 @@ locals {
 
   qemu_args = {
     "amd64" = [
+      ["-netdev", "user,id=user.0,hostfwd=tcp:127.0.0.1:{{ .SSHHostPort }}-:5985"],
       ["-device", "qemu-xhci,id=usb"],
       ["-device", "usb-storage,drive=install,removable=true,bootindex=0"],
       ["-drive", "if=none,id=install,format=raw,media=cdrom,file=${local.win11_iso},readonly=true"],
@@ -161,6 +162,7 @@ locals {
     ],
     "arm64" = [
       ["-accel", local.arm64_accelerator],
+      ["-netdev", "user,id=user.0,hostfwd=tcp:127.0.0.1:{{ .SSHHostPort }}-:5985"],
       ["-machine", local.arm64_machine],
       ["-cpu", local.arm64_cpu_model],
       ["-drive", "file=${local.win11_uefi_code},if=pflash,unit=0,format=raw,readonly=on"],
