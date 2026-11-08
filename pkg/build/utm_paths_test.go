@@ -33,3 +33,15 @@ func TestUtmVirtualMachinePath(t *testing.T) {
 		})
 	}
 }
+
+func TestUtmVirtualMachinePathForNamedInstance(t *testing.T) {
+	override := t.TempDir()
+	t.Setenv("SAILWRIGHT_UTM_VM_DIR", override)
+	got, err := UtmVirtualMachinePath(VirtualMachineConfig{OS: "ubuntu", UbuntuType: "server", Arch: "arm64", Name: "work", VirtualizationEngine: VirtualizationEngineUtm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(override, "ubuntu-server-arm64-work-dev-alchemy.utm"); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

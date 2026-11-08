@@ -89,6 +89,7 @@ type GatewayInfo struct {
 
 // GatewayLimits are the operator-configured limits an agent can run into.
 type GatewayLimits struct {
+	MaxInstances       int   `json:"max_instances"`
 	JobTimeoutSeconds  int64 `json:"job_timeout_seconds"`
 	ApprovalTTLSeconds int64 `json:"approval_ttl_seconds"`
 	OutputLimitBytes   int   `json:"output_limit_bytes"`
@@ -120,6 +121,7 @@ type HelpOutput struct {
 }
 
 type vmTargetInput struct {
+	Name string `json:"name,omitempty" jsonschema:"optional VM instance name; omit for the default instance"`
 	OS   string `json:"os" jsonschema:"target OS as listed by list_targets, e.g. ubuntu or windows11"`
 	Type string `json:"type,omitempty" jsonschema:"OS type, e.g. server or desktop (only for OSes that list a type)"`
 	Arch string `json:"arch,omitempty" jsonschema:"architecture, defaults to amd64"`
@@ -136,6 +138,7 @@ type buildInput struct {
 }
 
 type provisionInput struct {
+	Name      string `json:"name,omitempty" jsonschema:"optional VM instance name; omit for the default instance"`
 	OS        string `json:"os" jsonschema:"target VM OS as listed by list_targets"`
 	Type      string `json:"type,omitempty"`
 	Arch      string `json:"arch,omitempty"`
@@ -241,6 +244,7 @@ func (g *Gateway) toolGatewayInfo(_ context.Context, _ *mcp.CallToolRequest, _ e
 		TargetErrors:    g.catalog.Errors(),
 		VMAccess:        "SSH and WinRM through vm_info and vm tunnel",
 		Limits: GatewayLimits{
+			MaxInstances:       g.cfg.MaxInstances,
 			JobTimeoutSeconds:  int64(g.cfg.JobTimeoutValue.Seconds()),
 			ApprovalTTLSeconds: int64(g.cfg.ApprovalTTLValue.Seconds()),
 			OutputLimitBytes:   g.cfg.OutputLimitBytes,
@@ -292,7 +296,7 @@ func (g *Gateway) toolBuild(_ context.Context, req *mcp.CallToolRequest, in buil
 
 func (g *Gateway) vmTool(kind OpKind) func(context.Context, *mcp.CallToolRequest, vmTargetInput) (*mcp.CallToolResult, JobView, error) {
 	return func(_ context.Context, req *mcp.CallToolRequest, in vmTargetInput) (*mcp.CallToolResult, JobView, error) {
-		op := Operation{Kind: kind, OS: in.OS, Type: in.Type, Arch: in.Arch, Verbosity: -1}
+		op := Operation{Kind: kind, Name: in.Name, OS: in.OS, Type: in.Type, Arch: in.Arch, Verbosity: -1}
 		return g.submitSafe("vm_"+string(kind), op, req, structParams(in))
 	}
 }
@@ -305,7 +309,7 @@ func (g *Gateway) toolProvision(_ context.Context, req *mcp.CallToolRequest, in 
 			return nil, JobView{}, errors.New("verbosity must be between 0 and 4")
 		}
 	}
-	op := Operation{Kind: OpProvision, OS: in.OS, Type: in.Type, Arch: in.Arch, Check: in.Check, Verbosity: verbosity, Playbook: in.Playbook}
+	op := Operation{Kind: OpProvision, Name: in.Name, OS: in.OS, Type: in.Type, Arch: in.Arch, Check: in.Check, Verbosity: verbosity, Playbook: in.Playbook}
 	return g.submitSafe("vm_provision", op, req, structParams(in))
 }
 
@@ -479,6 +483,12 @@ func (g *Gateway) submitSafe(tool string, op Operation, req *mcp.CallToolRequest
 	if err := op.Validate(grammar); err != nil {
 		return nil, JobView{}, err
 	}
+	if params == nil {
+		params = map[string]any{}
+	}
+	if vmInstanceOps[op.Kind] || op.Kind == OpCreate {
+		params["name"] = op.Name
+	}
 	spec := JobSpec{
 		Tool:             tool,
 		Tier:             tierSafe,
@@ -488,12 +498,13 @@ func (g *Gateway) submitSafe(tool string, op Operation, req *mcp.CallToolRequest
 		Params:           params,
 		Peer:             peerOf(req),
 		RequiresFreeDisk: op.Kind == OpBuild || op.Kind == OpCreate || op.Kind == OpPull,
-		Target:           &JobTarget{Kind: op.Kind, OS: op.OS, Type: op.Type, Arch: op.Arch},
+		Target:           &JobTarget{Name: op.Name, Kind: op.Kind, OS: op.OS, Type: op.Type, Arch: op.Arch},
 	}
-	target := VMTarget{OS: op.OS, Type: op.Type, Arch: op.Arch}
+	target := VMTarget{OS: op.OS, Type: op.Type, Arch: op.Arch, Name: op.Name}
 	key := target.Key()
 	switch op.Kind {
 	case OpCreate:
+		spec.BeforeRun = func(ctx context.Context) (func(), error) { return g.reserveInstance(ctx, target) }
 		if err := g.watchCreate(&spec, target); err != nil {
 			return nil, JobView{}, err
 		}

@@ -19,6 +19,9 @@ const (
 )
 
 func RunUtmDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isUtmDeployTarget(config) {
 		return fmt.Errorf("UTM deploy is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -36,6 +39,9 @@ func RunUtmDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 	if err != nil {
 		return err
 	}
+	if config.Name != "" {
+		args = append(args, "--name", config.Name)
+	}
 
 	if err := runCommandWithStreamingLogsWithEnv(
 		projectDir,
@@ -52,6 +58,9 @@ func RunUtmDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 }
 
 func RunUtmDestroyOnMacOS(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isUtmDeployTarget(config) {
 		return fmt.Errorf("UTM destroy is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -76,6 +85,9 @@ func RunUtmDestroyOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 }
 
 func RunUtmStartOnMacOS(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isUtmDeployTarget(config) {
 		return fmt.Errorf("UTM start is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -111,6 +123,9 @@ func RunUtmStartOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 }
 
 func RunUtmStopOnMacOS(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isUtmDeployTarget(config) {
 		return fmt.Errorf("UTM stop is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -219,6 +234,7 @@ func resolveUtmDeployTarget(vm alchemy_build.VirtualMachineConfig) (alchemy_buil
 		if vm.VirtualizationEngine != "" && vm.VirtualizationEngine != candidate.VirtualizationEngine {
 			continue
 		}
+		candidate.Name = vm.Name
 		return candidate, true
 	}
 
@@ -226,7 +242,7 @@ func resolveUtmDeployTarget(vm alchemy_build.VirtualMachineConfig) (alchemy_buil
 }
 
 func utmVirtualMachineName(config alchemy_build.VirtualMachineConfig) string {
-	return fmt.Sprintf("%s-%s-dev-alchemy", alchemy_build.GetVirtualMachineNameWithType(config), config.Arch)
+	return alchemy_build.InstanceName(config)
 }
 
 func utmVirtualMachinePath(config alchemy_build.VirtualMachineConfig) (string, error) {

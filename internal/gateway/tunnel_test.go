@@ -24,7 +24,7 @@ type fixedVMResolver struct {
 	unavailable bool
 }
 
-func (r *fixedVMResolver) Resolve(context.Context, string, string, string) (ManagedVM, error) {
+func (r *fixedVMResolver) Resolve(context.Context, string, string, string, ...string) (ManagedVM, error) {
 	if r.unavailable {
 		return ManagedVM{}, ErrVMAccessUnavailable
 	}
@@ -35,11 +35,11 @@ func (r *fixedVMResolver) Resolve(context.Context, string, string, string) (Mana
 	return ManagedVM{OS: "ubuntu", Type: "server", Arch: "amd64", Address: r.address, NetworkMode: "bridged", Protocol: protocol}, nil
 }
 
-func (r *fixedVMResolver) ResolveFresh(ctx context.Context, osName, osType, arch string) (ManagedVM, error) {
+func (r *fixedVMResolver) ResolveFresh(ctx context.Context, osName, osType, arch string, names ...string) (ManagedVM, error) {
 	return r.Resolve(ctx, osName, osType, arch)
 }
 
-func (r *fixedVMResolver) Identify(context.Context, string, string, string) (VMIdentity, error) {
+func (r *fixedVMResolver) Identify(context.Context, string, string, string, ...string) (VMIdentity, error) {
 	return VMIdentity{Exists: !r.unavailable}, nil
 }
 
@@ -248,5 +248,40 @@ func TestTunnelAllowedCIDRsExtendOnLinkSubnets(t *testing.T) {
 	}
 	if err := allowedTunnelAddress(address, []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNamedTunnelOwnershipIsSeparate(t *testing.T) {
+	g, endpoint, _, auditPath := tunnelFixture(t)
+	ownership, err := loadVMOwnership(true, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.ownership = ownership
+	if err := ownership.created("ubuntu/server/amd64/a", "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	if conn, err := endpoint.OpenTunnel(context.Background(), "ubuntu", "server", "amd64", 22, "b"); err == nil {
+		conn.Close()
+		t.Fatal("instance a authorized b")
+	}
+	conn, err := endpoint.OpenTunnel(context.Background(), "ubuntu", "server", "amd64", 22, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := client.CopyTunnel(context.Background(), conn, strings.NewReader("named payload"), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "named payload" {
+		t.Fatal(output.String())
+	}
+	g.background.Wait()
+	data, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"name":"a"`) {
+		t.Fatal("tunnel audit lost name")
 	}
 }

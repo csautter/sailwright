@@ -267,6 +267,10 @@ When you want to share reusable build artifacts through an OCI registry instead
 of rebuilding them locally, use `sailwright push` and `sailwright pull`; see the
 [OCI build artifact registry workflow](./docs/testing-workflows.md#oci-build-artifact-registry-workflow).
 
+Use `--name` to run independent VMs from the same image. See
+[Named VM instances](./docs/testing-workflows.md#named-vm-instances) for commands,
+naming rules, and cleanup behavior.
+
 ## Trust & Privilege Model
 
 Sailwright collects no telemetry and phones home to nothing: it makes no

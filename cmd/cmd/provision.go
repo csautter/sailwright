@@ -105,7 +105,7 @@ func availableProvisionVirtualMachines() []alchemy_build.VirtualMachineConfig {
 }
 
 func printAvailableProvisionCombinations() error {
-	vms := availableProvisionVirtualMachines()
+	vms := listingInstances(availableProvisionVirtualMachines())
 	return printVirtualMachineCombinationTable(
 		os.Stdout,
 		fmt.Sprintf("Available provision combinations for host OS: %s", alchemy_build.GetCurrentHostOs()),
@@ -157,12 +157,16 @@ Examples:
 	Args: validateProvisionCommandArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cmd.SilenceUsage = true
+		if err := validateInstanceSelector(cmd, args); err != nil {
+			return err
+		}
 		if len(args) == 0 {
 			return provisionWizard(cmd)
 		}
 		osName, extraAnsibleArgs := splitProvisionArgs(cmd, args)
 		return executeProvision(cmd, provisionRequest{
 			target:           osName,
+			name:             commandInstanceName(cmd),
 			extraArgs:        extraAnsibleArgs,
 			roles:            selectedRoles,
 			playbook:         playbookPath,
@@ -179,6 +183,7 @@ Examples:
 // provisionRequest describes one provisioning run. The command builds it from
 // flags and the wizard from answers, so neither mutates package-level flags.
 type provisionRequest struct {
+	name             string
 	target           string
 	extraArgs        []string
 	roles            []string
@@ -192,6 +197,12 @@ type provisionRequest struct {
 }
 
 func executeProvision(cmd *cobra.Command, req provisionRequest) error {
+	if err := alchemy_build.ValidateInstanceName(req.name); err != nil {
+		return err
+	}
+	if req.name != "" && (req.target == "local" || req.target == "all") {
+		return fmt.Errorf("--name cannot be combined with %s", req.target)
+	}
 	osName := req.target
 	options := alchemy_provision.ProvisionOptions{
 		Check:                           req.check,
@@ -293,6 +304,7 @@ func executeProvision(cmd *cobra.Command, req provisionRequest) error {
 	for _, vm := range availableVirtualMachines {
 		if vm.OS == osName && vm.UbuntuType == osType && vm.Arch == arch {
 			selectedVM = vm
+			selectedVM.Name = req.name
 			valid = true
 			break
 		}
@@ -301,6 +313,9 @@ func executeProvision(cmd *cobra.Command, req provisionRequest) error {
 		return fmt.Errorf("❌ invalid combination: OS=%s, Type=%s, Arch=%s", osName, osType, arch)
 	}
 
+	if err := alchemy_build.ValidateInstance(selectedVM); err != nil {
+		return err
+	}
 	fmt.Printf("🔧 Provisioning VM for OS: %s, Type: %s, Architecture: %s (check=%t)\n", osName, osType, arch, req.check)
 	printUnstableTargetWarning(selectedVM)
 	if err := runProvision(selectedVM, req.roles, options); err != nil {
@@ -340,6 +355,7 @@ func runProvision(vm alchemy_build.VirtualMachineConfig, roles []string, options
 func init() {
 	rootCmd.AddCommand(provisionCmd)
 	addGuestSecurityFlag(provisionCmd, &provisionAllowInsecureCredentials)
+	addInstanceFlag(provisionCmd)
 	provisionCmd.AddCommand(provisionListCmd)
 	addListJSONFlag(provisionListCmd)
 

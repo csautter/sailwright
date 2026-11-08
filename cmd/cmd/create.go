@@ -36,7 +36,7 @@ func defaultCreateVirtualMachinesForHostOS(hostOs alchemy_build.HostOsType) []al
 }
 
 func printAvailableCreateCombinations() error {
-	return printCreateCombinations(os.Stdout, availableCreateVirtualMachines())
+	return printCreateCombinations(os.Stdout, listingInstances(availableCreateVirtualMachines()))
 }
 
 func writeCreateCombinations(writer io.Writer, vms []alchemy_build.VirtualMachineConfig) error {
@@ -44,12 +44,12 @@ func writeCreateCombinations(writer io.Writer, vms []alchemy_build.VirtualMachin
 }
 
 func printCreateCombinations(writer io.Writer, vms []alchemy_build.VirtualMachineConfig) error {
-	key := func(vm alchemy_build.VirtualMachineConfig) [5]string {
-		return [5]string{vm.OS, vm.UbuntuType, vm.Arch, string(vm.HostOs), string(vm.VirtualizationEngine)}
+	key := func(vm alchemy_build.VirtualMachineConfig) [6]string {
+		return [6]string{vm.OS, vm.UbuntuType, vm.Arch, string(vm.HostOs), string(vm.VirtualizationEngine), vm.Name}
 	}
 	// Reuse the existence check from each row for its immediately following
 	// security inspection, rather than querying the hypervisor twice.
-	planned := make(map[[5]string]bool, len(vms))
+	planned := make(map[[6]string]bool, len(vms))
 	return printVirtualMachineCombinationsWithSecurity(
 		writer,
 		fmt.Sprintf("Available create combinations for host OS: %s", alchemy_build.GetCurrentHostOs()),
@@ -123,12 +123,16 @@ Use "all" to create all stable VM configurations.
 
 Example:
   sailwright create ubuntu --type server --arch amd64
+  sailwright create ubuntu --type server --arch amd64 --name work
   sailwright create macos --arch arm64
   sailwright create windows11 --arch arm64
   sailwright create all
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateInstanceSelector(cmd, args); err != nil {
+			return err
+		}
 		osName := args[0]
 
 		osType = alchemy_build.TargetType(osName, osType)
@@ -147,11 +151,16 @@ Example:
 			if vm.OS == osName && vm.UbuntuType == osType && vm.Arch == arch {
 				valid = true
 				VirtualMachineConfig = vm
+				VirtualMachineConfig.Name = commandInstanceName(cmd)
 				break
 			}
 		}
 		if !valid {
 			return fmt.Errorf("❌ Invalid combination: OS=%s, Type=%s, Arch=%s", osName, osType, arch)
+		}
+
+		if err := alchemy_build.ValidateInstance(VirtualMachineConfig); err != nil {
+			return err
 		}
 
 		fmt.Printf("🔧 Creating VM for OS: %s, Architecture: %s, Type: %s\n", osName, arch, osType)
@@ -172,14 +181,27 @@ var createListCmd = &cobra.Command{
 	},
 }
 
-func runDeploy(vm alchemy_build.VirtualMachineConfig) error {
+func runDeploy(vm alchemy_build.VirtualMachineConfig) (result error) {
+	if err := alchemy_build.ValidateInstance(vm); err != nil {
+		return err
+	}
+	defer func() {
+		if result == nil {
+			if vm.VirtualizationEngine == alchemy_build.VirtualizationEngineTart || vm.VirtualizationEngine == alchemy_build.VirtualizationEngineHyperv {
+				result = configureNamedGuest(vm)
+			}
+			if err := alchemy_deploy.RecordInstance(vm); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not record VM metadata: %v\n", err)
+			}
+		}
+	}()
 	targetExists, err := inspectCreateTargetExists(vm)
 	if err != nil {
 		return fmt.Errorf("failed to inspect create target for OS=%s, type=%s, arch=%s: %w", vm.OS, vm.UbuntuType, vm.Arch, err)
 	}
 	if targetExists {
 		return fmt.Errorf(
-			"VM for %s already exists. Use `sailwright start %s` to reuse it or `sailwright destroy %s` first",
+			"VM for %s already exists. Use `sailwright start %s` to reuse it or `sailwright destroy %s` first; use --name <instance> to create another VM",
 			createCommandArguments(vm),
 			createCommandArguments(vm),
 			createCommandArguments(vm),
@@ -192,6 +214,11 @@ func runDeploy(vm alchemy_build.VirtualMachineConfig) error {
 		}
 	}
 
+	if vm.Name != "" {
+		for _, warning := range alchemy_build.CreationResourceWarnings(vm, alchemy_deploy.InstanceStorageDirectory(vm)) {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+		}
+	}
 	if err := markCreateStarted(os.Getenv(createStartedFileEnvVar), vm); err != nil {
 		return err
 	}
@@ -219,7 +246,7 @@ func markCreateStarted(path string, vm alchemy_build.VirtualMachineConfig) error
 	if path == "" {
 		return nil
 	}
-	target := vm.OS + "/" + vm.UbuntuType + "/" + vm.Arch + "\n"
+	target := alchemy_build.InstanceKey(vm) + "\n"
 	// #nosec G306 G703 -- the path is chosen by the gateway that started this process.
 	if err := os.WriteFile(path, []byte(target), 0o600); err != nil {
 		return fmt.Errorf("record create start for %s: %w", createStartedFileEnvVar, err)
@@ -235,12 +262,16 @@ func createCommandArguments(vm alchemy_build.VirtualMachineConfig) string {
 	if vm.Arch != "" {
 		args = append(args, "--arch", vm.Arch)
 	}
+	if vm.Name != "" {
+		args = append(args, "--name", vm.Name)
+	}
 	return strings.Join(args, " ")
 }
 
 func init() {
 	rootCmd.AddCommand(createCmd)
 	addGuestSecurityFlag(createCmd, &createAllowInsecureCredentials)
+	addInstanceFlag(createCmd)
 	createCmd.AddCommand(createListCmd)
 	addListJSONFlag(createListCmd)
 

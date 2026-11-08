@@ -35,7 +35,7 @@ func listingGuestSecurityInfo(vm alchemy_build.VirtualMachineConfig, inspect vmL
 }
 
 // vmListingSchemaVersion is the version of the JSON document printed by `<command> list --json`.
-const vmListingSchemaVersion = 1
+const vmListingSchemaVersion = 2
 
 // listOutputJSON is bound to the --json flag of every list subcommand.
 var listOutputJSON bool
@@ -46,6 +46,7 @@ type vmListingJSON struct {
 }
 
 type vmListingTargetJSON struct {
+	Name   string            `json:"name"`
 	OS     string            `json:"os"`
 	Type   string            `json:"type"`
 	Arch   string            `json:"arch"`
@@ -136,6 +137,7 @@ func writeVirtualMachineCombinationJSON(
 		}
 		network, origin := listingGuestSecurityInfo(vm, inspectSecurity)
 		listing.Targets = append(listing.Targets, vmListingTargetJSON{
+			Name:        vm.Name,
 			NetworkMode: network.Mode, NetworkDetail: network.Detail, CredentialsOrigin: origin,
 			OS:     vm.OS,
 			Type:   vm.UbuntuType,
@@ -173,14 +175,18 @@ func writeVirtualMachineTable(
 	inspectSecurity vmListingSecurityInspector,
 ) error {
 	tw := tabwriter.NewWriter(writer, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, strings.Join(append(append([]string{}, headers...), "NET", "CREDS"), "\t"))
+	fmt.Fprintln(tw, strings.Join(append(append([]string{}, headers...), "Name", "NET", "CREDS"), "\t"))
 	for _, vm := range vms {
 		row, err := rowBuilder(vm)
 		if err != nil {
 			return err
 		}
+		name := vm.Name
+		if name == "" {
+			name = "default"
+		}
 		network, origin := listingGuestSecurityInfo(vm, inspectSecurity)
-		fmt.Fprintln(tw, strings.Join(append(row, network.Mode, origin), "\t"))
+		fmt.Fprintln(tw, strings.Join(append(row, name, network.Mode, origin), "\t"))
 	}
 	return tw.Flush()
 }

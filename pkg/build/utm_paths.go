@@ -25,5 +25,5 @@ func UtmVirtualMachinePath(config VirtualMachineConfig) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(directory, fmt.Sprintf("%s-%s-dev-alchemy.utm", GetVirtualMachineNameWithType(config), config.Arch)), nil
+	return filepath.Join(directory, InstanceName(config)+".utm"), nil
 }

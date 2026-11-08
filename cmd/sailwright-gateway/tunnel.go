@@ -16,11 +16,18 @@ import (
 func newVMCommand() *cobra.Command {
 	var listen string
 	vm := &cobra.Command{Use: "vm", Short: "Access a managed guest"}
-	tunnel := &cobra.Command{Use: "tunnel <os>/<type>/<arch> <port>", Short: "Tunnel guest SSH or WinRM over stdio or a loopback listener", Args: cobra.ExactArgs(2),
+	tunnel := &cobra.Command{Use: "tunnel <os>/<type>/<arch>[/<name>] <port>", Short: "Tunnel guest SSH or WinRM over stdio or a loopback listener", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			parts := strings.Split(args[0], "/")
-			if len(parts) != 3 || parts[0] == "" || parts[2] == "" {
-				return fmt.Errorf("target must be os/type/arch (use an empty type for Windows or macOS)")
+			if (len(parts) != 3 && len(parts) != 4) || parts[0] == "" || parts[2] == "" {
+				return fmt.Errorf("target must be os/type/arch[/name] (use an empty type for Windows or macOS)")
+			}
+			name := ""
+			if len(parts) == 4 {
+				name = parts[3]
+				if name == "" {
+					return fmt.Errorf("instance name must not be empty")
+				}
 			}
 			port, err := strconv.Atoi(args[1])
 			if err != nil || (port != 22 && port != 5985 && port != 5986) {
@@ -32,7 +39,7 @@ func newVMCommand() *cobra.Command {
 			}
 			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
-			open := func() (net.Conn, error) { return endpoint.OpenTunnel(ctx, parts[0], parts[1], parts[2], port) }
+			open := func() (net.Conn, error) { return endpoint.OpenTunnel(ctx, parts[0], parts[1], parts[2], port, name) }
 			if listen == "" {
 				conn, err := open()
 				if err != nil {

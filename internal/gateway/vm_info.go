@@ -19,6 +19,7 @@ const sshControlPersist = "60s"
 
 // VMInfoOutput contains guest-only credentials and controller configuration.
 type VMInfoOutput struct {
+	Name             string `json:"name"`
 	OS               string `json:"os"`
 	Type             string `json:"type"`
 	Arch             string `json:"arch"`
@@ -35,13 +36,13 @@ type VMInfoOutput struct {
 }
 
 func (g *Gateway) toolVMInfo(ctx context.Context, _ *mcp.CallToolRequest, in vmTargetInput) (*mcp.CallToolResult, VMInfoOutput, error) {
-	target, err := g.grammar().ResolveVMTarget(vmAccessListing, in.OS, in.Type, in.Arch, "")
+	target, err := g.grammar().ResolveVMTarget(vmAccessListing, in.OS, in.Type, in.Arch, "", in.Name)
 	if err != nil {
 		return nil, VMInfoOutput{}, err
 	}
 	key := target.Key()
 	// Resolve first, so the operator is only asked about a VM that is running.
-	vm, err := g.vmResolver.Resolve(ctx, target.OS, target.Type, target.Arch)
+	vm, err := g.vmResolver.Resolve(ctx, target.OS, target.Type, target.Arch, target.Name)
 	if err != nil {
 		if !g.ownership.allowed(key) {
 			// The VM may be the operator's: its details stay on the operator console.
@@ -52,7 +53,7 @@ func (g *Gateway) toolVMInfo(ctx context.Context, _ *mcp.CallToolRequest, in vmT
 	allowed, err := g.ownership.confirm(key, vm.InstanceID)
 	g.recordOwnership(err)
 	if !allowed {
-		if err := g.requestVMAccess("vm_info", vm.OS, vm.Type, vm.Arch, vm.InstanceID); err != nil {
+		if err := g.requestVMAccess("vm_info", vm.OS, vm.Type, vm.Arch, vm.InstanceID, target.Name); err != nil {
 			return nil, VMInfoOutput{}, err
 		}
 	}
@@ -62,7 +63,7 @@ func (g *Gateway) toolVMInfo(ctx context.Context, _ *mcp.CallToolRequest, in vmT
 	if !protocolPorts[vm.Protocol][vm.Port] {
 		return nil, VMInfoOutput{}, fmt.Errorf("guest service port is outside the tunnel allowlist")
 	}
-	out := VMInfoOutput{OS: vm.OS, Type: vm.Type, Arch: vm.Arch, Engine: vm.Engine, Address: vm.Address.String(), NetworkMode: vm.NetworkMode, Protocol: vm.Protocol, Port: vm.Port, Username: vm.Username, Password: vm.Password}
+	out := VMInfoOutput{Name: target.Name, OS: vm.OS, Type: vm.Type, Arch: vm.Arch, Engine: vm.Engine, Address: vm.Address.String(), NetworkMode: vm.NetworkMode, Protocol: vm.Protocol, Port: vm.Port, Username: vm.Username, Password: vm.Password}
 	alias := "sailwright-" + strings.ReplaceAll(key, "/", "-")
 	proxy := "sailwright-gateway vm tunnel " + key + " " + strconv.Itoa(vm.Port)
 	host := map[string]any{"ansible_user": vm.Username, "ansible_password": vm.Password, "ansible_port": vm.Port}
@@ -93,7 +94,7 @@ func (g *Gateway) toolVMInfo(ctx context.Context, _ *mcp.CallToolRequest, in vmT
 		return nil, VMInfoOutput{}, err
 	}
 	out.AnsibleInventory = string(data) + "\n"
-	if err := g.audit.Record(AuditEvent{Event: "vm_info", Params: map[string]any{"os": vm.OS, "type": vm.Type, "arch": vm.Arch}}); err != nil {
+	if err := g.audit.Record(AuditEvent{Event: "vm_info", Params: map[string]any{"os": vm.OS, "type": vm.Type, "arch": vm.Arch, "name": target.Name}}); err != nil {
 		return nil, VMInfoOutput{}, err
 	}
 	return nil, out, nil

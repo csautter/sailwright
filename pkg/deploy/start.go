@@ -31,6 +31,9 @@ func SupportsStart(config alchemy_build.VirtualMachineConfig) bool {
 }
 
 func InspectStartTarget(config alchemy_build.VirtualMachineConfig) (VirtualMachineState, error) {
+	if err := alchemy_build.ValidateInstanceName(config.Name); err != nil {
+		return VirtualMachineState{}, err
+	}
 	switch {
 	case isUtmDeployTarget(config):
 		return inspectUtmStartTarget(config)
@@ -53,6 +56,9 @@ func InspectStartTarget(config alchemy_build.VirtualMachineConfig) (VirtualMachi
 }
 
 func RunStart(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	switch {
 	case isUtmDeployTarget(config):
 		return RunUtmStartOnMacOS(config)
@@ -81,6 +87,9 @@ func startCommandArguments(config alchemy_build.VirtualMachineConfig) string {
 	}
 	if config.Arch != "" {
 		args = append(args, "--arch", config.Arch)
+	}
+	if config.Name != "" {
+		args = append(args, "--name", config.Name)
 	}
 	return strings.Join(args, " ")
 }

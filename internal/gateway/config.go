@@ -78,6 +78,7 @@ type Config struct {
 	SnapshotMaxBytes       int64              `yaml:"snapshot_max_bytes"`
 	SnapshotMaxFiles       int                `yaml:"snapshot_max_files"`
 	AgentDir               string             `yaml:"agent_dir"`
+	MaxInstances           int                `yaml:"max_instances"`
 	MaxTunnels             int                `yaml:"max_tunnels"`
 	TunnelIdleTimeout      string             `yaml:"tunnel_idle_timeout"`
 	TunnelIdleTimeoutValue time.Duration      `yaml:"-"`
@@ -296,6 +297,12 @@ func (c *Config) Resolve() error {
 		}
 	}
 
+	if c.MaxInstances == 0 {
+		c.MaxInstances = 4
+	}
+	if c.MaxInstances < -1 {
+		return errors.New("max_instances must be positive, or -1 to disable")
+	}
 	if c.MaxTunnels == 0 {
 		c.MaxTunnels = 16
 	}

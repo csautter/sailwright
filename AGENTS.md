@@ -5,6 +5,10 @@
 - Write implementation plans as Markdown files to `/workspaces/sailwright-plans`, not into this repository.
 - When asked to implement a plan, read it from `/workspaces/sailwright-plans` as well.
 
+## Documentation
+
+- Keep the root `README.md` concise. Put detailed workflows, configuration, and examples in a matching existing subdirectory README or documentation guide, and link to it from the root README.
+
 ## Quality Checks & Tooling
 
 - Full host-modifying E2E scenarios are intentionally opt-in. Their absence

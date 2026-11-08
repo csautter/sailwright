@@ -261,6 +261,9 @@ func ValidateLocalWindowsProvisionProtocol(protocol LocalWindowsProvisionProtoco
 }
 
 func RunProvisionWithOptions(vm alchemy_build.VirtualMachineConfig, options ProvisionOptions) error {
+	if err := alchemy_build.ValidateInstance(vm); err != nil {
+		return err
+	}
 	options = normalizeProvisionOptions(options)
 
 	if err := ValidateProvisionVerbosity(options.Verbosity); err != nil {

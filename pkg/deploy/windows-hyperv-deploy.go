@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/csautter/dev-alchemy/internal/operationlock"
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
 )
 
@@ -38,6 +39,7 @@ var (
 	hypervVagrantBoxInstalledChecker   = hypervVagrantBoxInstalled
 	hypervVagrantStopSettleTimeout     = 15 * time.Second
 	hypervVagrantStopPollInterval      = 500 * time.Millisecond
+	hypervBoxLockTimeout               = 45 * time.Minute
 )
 
 type hypervVagrantDeploySettings struct {
@@ -60,6 +62,9 @@ func isHypervVagrantTarget(config alchemy_build.VirtualMachineConfig) bool {
 }
 
 func RunHypervVagrantDeployOnWindows(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isHypervVagrantTarget(config) {
 		return fmt.Errorf("hyper-v vagrant deploy is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -69,7 +74,15 @@ func RunHypervVagrantDeployOnWindows(config alchemy_build.VirtualMachineConfig) 
 	if err != nil {
 		return err
 	}
+	if config.Name != "" && config.OS == "ubuntu" && !alchemy_build.HasLinuxCloneIdentity(settings.BoxPath) {
+		return fmt.Errorf("named Hyper-V Ubuntu instances require an image prepared for unique first-boot machine IDs; rebuild with `sailwright build ubuntu --type %s --arch %s --no-cache`", config.UbuntuType, config.Arch)
+	}
 
+	releaseBox, err := acquireHypervBoxLock(settings.BoxName, "register box", hypervBoxLockTimeout)
+	if err != nil {
+		return err
+	}
+	defer releaseBox()
 	if err := runCommandWithStreamingLogs(
 		projectDir,
 		45*time.Minute,
@@ -186,6 +199,9 @@ func hypervDisableUnsupportedNestedVirtualization(workingDir string, env []strin
 }
 
 func RunHypervVagrantDestroyOnWindows(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isHypervVagrantTarget(config) {
 		return fmt.Errorf("hyper-v vagrant destroy is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -200,6 +216,9 @@ func RunHypervVagrantDestroyOnWindows(config alchemy_build.VirtualMachineConfig)
 	if err != nil {
 		return err
 	}
+	if exists && config.Name != "" && !hasHypervVagrantInstanceState(config) {
+		return runNamedHypervAction(config, "destroy")
+	}
 	if exists {
 		if err := runHypervVagrantCommandWithEnv(
 			settings.VagrantDir,
@@ -213,6 +232,14 @@ func RunHypervVagrantDestroyOnWindows(config alchemy_build.VirtualMachineConfig)
 		}
 	}
 
+	if config.Name != "" {
+		return nil
+	}
+	releaseBox, err := acquireHypervBoxLock(settings.BoxName, "remove box", hypervBoxLockTimeout)
+	if err != nil {
+		return err
+	}
+	defer releaseBox()
 	boxInstalled, err := hypervVagrantBoxInstalledChecker(projectDir, settings.BoxName)
 	if err != nil {
 		return err
@@ -232,7 +259,18 @@ func RunHypervVagrantDestroyOnWindows(config alchemy_build.VirtualMachineConfig)
 	return nil
 }
 
+func acquireHypervBoxLock(boxName, operation string, timeout time.Duration) (func(), error) {
+	hostCache, err := os.UserCacheDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve host-global Vagrant box lock directory: %w", err)
+	}
+	return operationlock.AcquireWithin(filepath.Join(hostCache, "sailwright", "provider-box-locks"), boxName, operation, timeout)
+}
+
 func RunHypervVagrantStartOnWindows(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isHypervVagrantTarget(config) {
 		return fmt.Errorf("hyper-v vagrant start is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -248,6 +286,9 @@ func RunHypervVagrantStartOnWindows(config alchemy_build.VirtualMachineConfig) e
 		return nil
 	}
 
+	if config.Name != "" && !hasHypervVagrantInstanceState(config) {
+		return runNamedHypervAction(config, "start")
+	}
 	projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
 	settings, err := resolveHypervVagrantDeploySettings(config, projectDir)
 	if err != nil {
@@ -262,6 +303,9 @@ func RunHypervVagrantStartOnWindows(config alchemy_build.VirtualMachineConfig) e
 }
 
 func RunHypervVagrantStopOnWindows(config alchemy_build.VirtualMachineConfig) error {
+	if err := alchemy_build.ValidateInstance(config); err != nil {
+		return err
+	}
 	if !isHypervVagrantTarget(config) {
 		return fmt.Errorf("hyper-v vagrant stop is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
@@ -293,6 +337,9 @@ func RunHypervVagrantStopOnWindows(config alchemy_build.VirtualMachineConfig) er
 		gracefulErr = fmt.Errorf("graceful stop completed but VM is still running after %s", hypervVagrantStopSettleTimeout)
 	}
 
+	if config.Name != "" && !hasHypervVagrantInstanceState(config) {
+		return runNamedHypervAction(config, "stop")
+	}
 	forceErr := runHypervVagrantCommandWithEnv(
 		settings.VagrantDir,
 		20*time.Minute,
@@ -398,10 +445,11 @@ func waitForHypervVagrantStop(config alchemy_build.VirtualMachineConfig, timeout
 }
 
 func resolveHypervVagrantDeploySettings(config alchemy_build.VirtualMachineConfig, projectDir string) (hypervVagrantDeploySettings, error) {
+	config.VirtualizationEngine = alchemy_build.VirtualizationEngineHyperv
 	switch config.OS {
 	case "windows11":
 		boxName := windowsHypervVagrantBoxName
-		vmName := boxName
+		vmName := alchemy_build.InstanceName(config)
 		return hypervVagrantDeploySettings{
 			BoxName:    boxName,
 			BoxPath:    getHypervWindowsBoxPath(config),
@@ -418,7 +466,7 @@ func resolveHypervVagrantDeploySettings(config alchemy_build.VirtualMachineConfi
 			ubuntuType = "server"
 		}
 		boxName := fmt.Sprintf("linux-ubuntu-%s-packer", ubuntuType)
-		vmName := boxName
+		vmName := alchemy_build.InstanceName(config)
 		return hypervVagrantDeploySettings{
 			BoxName:    boxName,
 			BoxPath:    getHypervUbuntuBoxPath(config),
@@ -457,10 +505,14 @@ func hypervVagrantDotfilePath(vmName string) string {
 }
 
 func buildHypervVagrantResourceEnv(config alchemy_build.VirtualMachineConfig) []string {
-	return []string{
+	env := []string{
 		hypervVagrantCpuEnvVar + "=" + strconv.Itoa(alchemy_build.GetVmCpuCount(config)),
 		hypervVagrantMemoryEnvVar + "=" + strconv.Itoa(alchemy_build.GetVmMemoryMB(config)),
 	}
+	if config.Name != "" {
+		env = append(env, "VAGRANT_INSTANCE_HOSTNAME="+alchemy_build.InstanceHostname(config))
+	}
+	return env
 }
 
 func hypervVagrantMachineExists(vagrantDir string, env []string) (bool, error) {

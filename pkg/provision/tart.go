@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -23,8 +22,8 @@ type tartListJSONEntry struct {
 	State   string `json:"State"`
 }
 
-func tartMacOSVMName(_ alchemy_build.VirtualMachineConfig) string {
-	return defaultIfEmpty(strings.TrimSpace(os.Getenv(tartMacOSVMNameEnvVar)), tartMacOSDefaultVMName)
+func tartMacOSVMName(vm alchemy_build.VirtualMachineConfig) string {
+	return alchemy_build.InstanceName(vm)
 }
 
 func localTartVMExists(projectDir string, vmName string) (bool, error) {

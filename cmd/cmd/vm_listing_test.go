@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
+	alchemy_deploy "github.com/csautter/dev-alchemy/pkg/deploy"
 	"github.com/spf13/cobra"
 )
 
@@ -191,7 +192,7 @@ func TestPrintVirtualMachineCombinationTableWritesEmptyJSONTargets(t *testing.T)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if strings.TrimSpace(buf.String()) != `{"schema_version":1,"targets":[]}` {
+	if strings.TrimSpace(buf.String()) != `{"schema_version":2,"targets":[]}` {
 		t.Fatalf("unexpected output %q", buf.String())
 	}
 }
@@ -202,6 +203,36 @@ func TestListSubcommandsExposeJSONFlag(t *testing.T) {
 	} {
 		if command.Flags().Lookup("json") == nil {
 			t.Fatalf("expected --json flag on %q", command.CommandPath())
+		}
+	}
+}
+
+func TestListingCarriesEachInstanceName(t *testing.T) {
+	vms := []alchemy_build.VirtualMachineConfig{{OS: "ubuntu", UbuntuType: "server", Arch: "amd64"}, {OS: "ubuntu", UbuntuType: "server", Arch: "amd64", Name: "work"}}
+	row := func(vm alchemy_build.VirtualMachineConfig) ([]string, error) {
+		return []string{vm.OS, vm.UbuntuType, vm.Arch}, nil
+	}
+	inspect := func(alchemy_build.VirtualMachineConfig) (alchemy_deploy.NetworkMode, string, bool, error) {
+		return alchemy_deploy.NetworkMode{Mode: "nat"}, "user", true, nil
+	}
+	var out bytes.Buffer
+	if err := writeVirtualMachineCombinationJSON(&out, vms, []string{"OS", "Type", "Arch"}, row, inspect); err != nil {
+		t.Fatal(err)
+	}
+	var listing vmListingJSON
+	if err := json.Unmarshal(out.Bytes(), &listing); err != nil {
+		t.Fatal(err)
+	}
+	if listing.SchemaVersion != 2 || len(listing.Targets) != 2 || listing.Targets[0].Name != "" || listing.Targets[1].Name != "work" {
+		t.Fatalf("%+v", listing)
+	}
+	out.Reset()
+	if err := writeVirtualMachineTable(&out, []string{"OS", "Type", "Arch"}, vms, row, inspect); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Name", "NET", "CREDS", "default", "work"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatal(out.String())
 		}
 	}
 }
