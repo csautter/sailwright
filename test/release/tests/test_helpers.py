@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,65 @@ KIT = Path(__file__).resolve().parents[1]
 
 
 class HelperTests(unittest.TestCase):
+    def test_pty_has_renderable_terminal_dimensions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            transcript = Path(directory) / "terminal.log"
+            result = subprocess.run(
+                [sys.executable, "-I", str(KIT / "lib/ptyctl.py"),
+                 "--log", str(transcript), "--", sys.executable, "-c",
+                 "import json,os; print(json.dumps(list(os.get_terminal_size())))"],
+                capture_output=True, text=True, timeout=10, check=True,
+            )
+            self.assertEqual(json.loads(transcript.read_text()), [120, 24])
+            self.assertEqual(json.loads(result.stdout)["exit"], 0)
+
+    def test_sampler_shutdown_does_not_contaminate_following_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["bash", "-c", '''
+. "$1"
+rt_init fixture
+( while :; do : "Screen Sharing"; done ) &
+sampler=$!
+trap 'kill "$sampler" 2>/dev/null || true; wait "$sampler" 2>/dev/null || true' EXIT
+sleep 0.05
+rt_stop_sampler "$sampler" || exit $?
+rt_check NEXT "clean output" --nomatch 'Screen Sharing' -- printf '%s\\n' qemu-system-aarch64
+''', "test", str(KIT / "lib/rt.sh")],
+                env={**os.environ, "RT_RUN_DIR": directory},
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("Screen Sharing", result.stderr)
+            self.assertNotIn("Screen Sharing", (Path(directory) / "fixture/logs/NEXT.log").read_text())
+
+    def test_invocation_settings_override_file_including_empty_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            kit = root / "test/release"
+            (kit / "lib").mkdir(parents=True)
+            shutil.copyfile(KIT / "unix.sh", kit / "unix.sh")
+            shutil.copyfile(KIT / "lib/rt.sh", kit / "lib/rt.sh")
+            (kit / "release.env").write_text(
+                "RT_TARGET=ubuntu/server/arm64\nRT_RUN_DIR=/wrong\n"
+                "RT_ALLOW_INSECURE_CREDENTIALS=1\nRT_PULL_REF=utm-image\n"
+            )
+            binary = root / "sailwright"
+            binary.write_text(
+                '#!/bin/sh\nprintf "%s\\n" "$RT_TARGET" "$RT_RUN_DIR" '
+                '"risk=$RT_ALLOW_INSECURE_CREDENTIALS" "pull=$RT_PULL_REF"\n'
+            )
+            binary.chmod(0o755)
+            result = subprocess.run(
+                ["bash", str(kit / "unix.sh"), "__sw"],
+                env={**os.environ, "RT_BIN_DIR": directory,
+                     "RT_TARGET": "macos//arm64", "RT_RUN_DIR": str(root / "out"),
+                     "RT_ALLOW_INSECURE_CREDENTIALS": "", "RT_PULL_REF": ""},
+                capture_output=True, text=True, timeout=10, check=True,
+            )
+            self.assertEqual(result.stdout.splitlines(),
+                             ["macos//arm64", str(root / "out"), "risk=", "pull="])
+
     def test_ctrl_c_transcript_is_assertable_separately_from_json(self):
         with tempfile.TemporaryDirectory() as directory:
             transcript = Path(directory) / "session.log"

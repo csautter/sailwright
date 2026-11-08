@@ -277,15 +277,24 @@ func ensureUtmRegistration(config alchemy_build.VirtualMachineConfig) error {
 	if _, err := runUtmAppleScript([]string{`tell application "UTM"`, fmt.Sprintf(`open POSIX file %q`, vmPath), `end tell`}); err != nil {
 		return err
 	}
+	var pathErr error
 	for attempt := 0; attempt < 25; attempt++ {
 		ids, err := utmScriptableRegistrationIDs(config)
 		if err != nil {
 			return err
 		}
 		if slices.Contains(ids, id) {
-			return verifyUtmRegistrationPath(config, id)
+			// UTM can publish the scripting entry before its bookmark reaches
+			// preferences. Keep the path guard closed while that write catches up.
+			pathErr = verifyUtmRegistrationPath(config, id)
+			if pathErr == nil {
+				return nil
+			}
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+	if pathErr != nil {
+		return pathErr
 	}
 	return fmt.Errorf("UTM did not register bundle %q with UUID %s", vmPath, id)
 }
@@ -298,19 +307,14 @@ func utmRegistrationPath(id string) (string, error) {
 	if err == nil {
 		return strings.TrimSpace(output), nil
 	}
-	script := fmt.Sprintf(`
- ObjC.import('Foundation');
- var home = ObjC.unwrap($.NSHomeDirectory());
- var prefs = $.NSDictionary.dictionaryWithContentsOfFile(home + '/Library/Containers/com.utmapp.UTM/Data/Library/Preferences/com.utmapp.UTM.plist');
- if (!prefs || prefs.isNil()) { prefs = $.NSDictionary.dictionaryWithContentsOfFile(home + '/Library/Preferences/com.utmapp.UTM.plist'); }
- var registry = prefs.objectForKey('Registry');
- var entry = registry.objectForKey(%q);
- var pkg = entry.objectForKey('Package');
- var bookmark = pkg.objectForKey('Bookmark');
- var url = $.NSURL.URLByResolvingBookmarkDataOptionsRelativeToURLBookmarkDataIsStaleError(bookmark, 768, null, Ref(), Ref());
- if (!url || url.isNil()) { throw new Error('Cannot resolve registered UTM bundle bookmark'); }
- ObjC.unwrap(url.path);
- `, strings.ToUpper(id))
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home for UTM registry: %w", err)
+	}
+	script := utmRegistryBookmarkScript(id, []string{
+		filepath.Join(home, "Library", "Containers", "com.utmapp.UTM", "Data", "Library", "Preferences", "com.utmapp.UTM.plist"),
+		filepath.Join(home, "Library", "Preferences", "com.utmapp.UTM.plist"),
+	})
 	output, err = runCommandWithCombinedOutput(alchemy_build.GetDirectoriesInstance().ProjectDir, utmAutomationCommandTimeout, "osascript", []string{"-l", "JavaScript", "-e", script})
 	if err != nil {
 		return "", fmt.Errorf("resolve UTM registry bookmark: %w; output: %s", err, strings.TrimSpace(output))
@@ -320,4 +324,31 @@ func utmRegistrationPath(id string) (string, error) {
 		return "", fmt.Errorf("invalid UTM registry bundle path %q", result)
 	}
 	return result, nil
+}
+
+func utmRegistryBookmarkScript(id string, paths []string) string {
+	encodedPaths, _ := json.Marshal(paths) // A slice of strings cannot fail JSON encoding.
+	return fmt.Sprintf(`
+ ObjC.import('Foundation');
+ (function() {
+   var paths = %s;
+   for (var i = 0; i < paths.length; i++) {
+     var prefs = $.NSDictionary.dictionaryWithContentsOfFile(paths[i]);
+     if (!prefs || prefs.isNil()) { continue; }
+     var registry = prefs.objectForKey('Registry');
+     if (!registry || registry.isNil()) { continue; }
+     var entry = registry.objectForKey(%q);
+     if (!entry || entry.isNil()) { continue; }
+     var pkg = entry.objectForKey('Package');
+     if (!pkg || pkg.isNil()) { throw new Error('Missing UTM registry package'); }
+     var bookmark = pkg.objectForKey('Bookmark');
+     if (!bookmark || bookmark.isNil()) { throw new Error('Missing UTM registry bookmark'); }
+     // JavaScript null bridges to NSNull here; NSURL requires Objective-C nil.
+     var url = $.NSURL.URLByResolvingBookmarkDataOptionsRelativeToURLBookmarkDataIsStaleError(bookmark, 768, $(), Ref(), Ref());
+     if (!url || url.isNil()) { throw new Error('Cannot resolve registered UTM bundle bookmark'); }
+     return ObjC.unwrap(url.path);
+   }
+   throw new Error('UTM registry entry is not persisted yet');
+ })();
+ `, encodedPaths, strings.ToUpper(id))
 }

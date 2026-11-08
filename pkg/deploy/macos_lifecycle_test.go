@@ -64,6 +64,13 @@ case "$*" in
   if [ -f "$MOCK_STATE/path" ]; then cat "$MOCK_STATE/path"; else printf '%s\n' "$MOCK_BUNDLE"; fi;;
  *'JavaScript'*)
   [ ! -f "$MOCK_STATE/bookmark-error" ] || exit 1
+  if [ -f "$MOCK_STATE/bookmark-delays" ]; then
+   delays=$(cat "$MOCK_STATE/bookmark-delays")
+   if [ "$delays" -gt 0 ]; then
+    printf '%s' "$((delays - 1))" > "$MOCK_STATE/bookmark-delays"
+    exit 1
+   fi
+  fi
   printf '%s\n' "$MOCK_BUNDLE";;
  *'is not stopped then stop'*)
   [ ! -f "$MOCK_STATE/stop-error" ] || exit 1
@@ -141,6 +148,22 @@ func TestUtmStartRepairsStaleRegistrationWithoutDeletingReplacement(t *testing.T
 				t.Fatalf("non-idempotent start: %s", calls)
 			}
 		})
+	}
+}
+
+func TestUtmStartWaitsForNewRegistrationBookmark(t *testing.T) {
+	vm, bundle, state := mockMacOSLifecycle(t)
+	writeMacFixture(t, filepath.Join(bundle, "config.plist"), newUtmID)
+	writeMacFixture(t, filepath.Join(state, "ids"), "")
+	writeMacFixture(t, filepath.Join(state, "status"), "stopped")
+	writeMacFixture(t, filepath.Join(state, "legacy"), "")
+	writeMacFixture(t, filepath.Join(state, "bookmark-delays"), "2")
+	if err := RunUtmStartOnMacOS(vm); err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := os.ReadFile(filepath.Join(state, "bookmark-delays"))
+	if err != nil || string(remaining) != "0" {
+		t.Fatalf("bookmark retries remaining: %q: %v", remaining, err)
 	}
 }
 

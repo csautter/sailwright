@@ -14,10 +14,20 @@ set -u
 KIT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=test/release/lib/rt.sh
 . "$KIT_DIR/lib/rt.sh"
+# Invocation settings take precedence over release.env, including explicit empty
+# values (the Tart pass clears the UTM pull reference and credential override).
+rt_setting_overrides=()
+for rt_setting in "${!RT_@}"; do
+	rt_setting_overrides+=("$rt_setting=${!rt_setting}")
+done
 if [ -f "$KIT_DIR/release.env" ]; then
 	# shellcheck disable=SC1091
 	. "$KIT_DIR/release.env"
 fi
+for rt_setting in "${rt_setting_overrides[@]}"; do
+	export "$rt_setting"
+done
+unset rt_setting rt_setting_overrides
 
 HOST_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$(uname -m)" in
@@ -508,7 +518,7 @@ phase_build() {
 	) &
 	spid=$!
 	rt_check BLD-01 "full headless build of $RT_TARGET" --timeout 21600 -- sw build "${TARGET_ARGS[@]}" --headless --no-prebuilt
-	kill "$spid" 2>/dev/null
+	rt_stop_sampler "$spid"
 	rt_check BLD-02 "headless: no display window or VNC viewer" --nomatch 'Screen Sharing|vncviewer|remote-viewer|-display (gtk|sdl|cocoa)' --match 'qemu-system' -- cat "$sampler"
 	if grep -qE 'vncsnapshot|ffmpeg' "$sampler"; then rt_pass BLD-03 "VNC recording still ran in headless mode"; else rt_skip BLD-03 "VNC recording ran" "no recorder process sampled (Windows hosts or recording disabled)"; fi
 	rt_check BLD-04 "artifact is complete" --match '^exists$' -- echo "$(target_state build build)"
@@ -520,7 +530,7 @@ phase_build() {
 		local data="$RT_PHASE_DIR/pull-appdata"
 		rm -rf "$data"
 		rt_check BLD-07 "interrupted OCI pull" --exit-nonzero -- \
-			python3 -I "$RT_KIT_DIR/lib/ptyctl.py" --log "$RT_PHASE_DIR/logs/BLD-07.pty.log" --step 'wait:(?i)(MiB|GiB|%):600' --step sleep:20 --step intr --step exit:60 -- \
+			python3 -I "$RT_KIT_DIR/lib/ptyctl.py" --log "$RT_PHASE_DIR/logs/BLD-07.pty.log" --step 'wait:Downloading OCI artifact:600' --step sleep:20 --step intr --step exit:60 -- \
 			env DEV_ALCHEMY_APP_DATA_DIR="$data" "$BIN" pull "$RT_PULL_REF" --os "$T_OS" --type "${T_TYPE:-server}" --arch "$T_ARCH" --yes
 		rt_check BLD-08 "repeated pull completes and verifies the digest" --timeout 7200 -- \
 			env DEV_ALCHEMY_APP_DATA_DIR="$data" "$BIN" pull "$RT_PULL_REF" --os "$T_OS" --type "${T_TYPE:-server}" --arch "$T_ARCH" --yes
@@ -571,8 +581,11 @@ phase_vm() {
 		rt_check VM-13 "running guest uses NAT networking" --match 'Network: nat' -- sw vm info "${TARGET_ARGS[@]}"
 		;;
 	darwin)
-		if command -v utmctl >/dev/null 2>&1; then
-			rt_check VM-12 "identity is the registered UTM UUID" --match "${id1:-none}" -- utmctl list
+		if [ "$T_OS" = macos ]; then
+			rt_check VM-12 "Tart identity is a filesystem fingerprint" --match '^tart:[0-9a-f]{64}$' -- echo "$id1"
+		elif command -v utmctl >/dev/null 2>&1; then
+			rt_check VM-12 "identity is the registered UTM UUID" --match "${id1:-none}" -- \
+				bash -o pipefail -c 'utmctl list | tr "[:upper:]" "[:lower:]"'
 		fi
 		;;
 	esac
@@ -594,8 +607,9 @@ phase_vm() {
 	rt_check VM-24 "recreate" --timeout 3600 -- "${SELF[@]}" create "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"}
 	id2="$(sw vm identity "${TARGET_ARGS[@]}" 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("instance_id",""))')"
 	if [ -n "$id2" ] && [ "$id2" != "$id1" ]; then rt_pass VM-25 "instance id changed after recreate" "$id1 -> $id2"; else rt_fail VM-25 "instance id changed after recreate" "'$id1' -> '$id2'"; fi
-	if [ "$HOST_OS" = darwin ] && command -v utmctl >/dev/null 2>&1; then
-		rt_check VM-26 "UTM holds no stale registration of the old bundle" --nomatch "${id1:-none}" -- utmctl list
+	if [ "$HOST_OS" = darwin ] && [ "$T_OS" != macos ] && command -v utmctl >/dev/null 2>&1; then
+		rt_check VM-26 "UTM holds no stale registration of the old bundle" --nomatch "${id1:-none}" -- \
+			bash -o pipefail -c 'utmctl list | tr "[:upper:]" "[:lower:]"'
 	fi
 	rt_check VM-27 "cleanup destroy" --timeout 1800 -- "${SELF[@]}" destroy "${TARGET_ARGS[@]}"
 	rt_check VM-28 "target is missing at the end" --match '^missing$' -- echo "$(target_state destroy state)"

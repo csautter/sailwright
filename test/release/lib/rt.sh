@@ -31,6 +31,13 @@ rt_processes_matching() {
 	'
 }
 
+# Reap a sampler before the next check redirects stderr. Otherwise Bash may write
+# a job-termination diagnostic (including the sampler's source) into that log.
+rt_stop_sampler() {
+	kill "$1" 2>/dev/null || true
+	wait "$1" 2>/dev/null || true
+}
+
 # rt_init PHASE: create the phase directory and reset its results.
 rt_init() {
 	RT_PHASE="$1"
@@ -137,7 +144,7 @@ rt_check() {
 	} >"$log"
 	cat "$tmp/stdout" "$tmp/stderr" >"$tmp/all"
 	if [ "$rc" = 124 ]; then
-		problems="timed out after ${timeout}s"
+		problems="timeout (exit 124; outer limit ${timeout}s)"
 	elif [ "$any_exit" = 0 ]; then
 		if [ "$nonzero" = 1 ]; then
 			[ "$rc" != 0 ] || problems="expected a non-zero exit"

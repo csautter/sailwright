@@ -22,13 +22,16 @@ Example:
 """
 
 import argparse
+import fcntl
 import json
 import os
 import pty
 import re
 import select
 import signal
+import struct
 import sys
+import termios
 import time
 
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\r")
@@ -42,6 +45,9 @@ class Session:
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             try:
+                # forkpty starts at 0x0; progress renderers cannot display bars
+                # until the terminal has a usable window size.
+                fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 120, 0, 0))
                 os.execvp(argv[0], argv)
             except OSError as error:
                 print(f"ptyctl: cannot run {argv[0]}: {error}", file=sys.stderr)
