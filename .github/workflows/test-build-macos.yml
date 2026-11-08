@@ -14,7 +14,8 @@ on:
     - cron: 0 2 * * 1
     - cron: 0 3 1-7 * *
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.schedule }}
+  # Unrelated labels get a run-local group so they never cancel running Mac jobs.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.schedule }}${{ github.event.action == 'labeled' && !startsWith(github.event.label.name, 'ci:macos') && format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 jobs:
   select:

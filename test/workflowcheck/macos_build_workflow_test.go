@@ -1,6 +1,8 @@
 package workflowcheck
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -113,5 +115,18 @@ func TestMacOSFullBuildsRequireGuestReadinessAfterBundleCreation(t *testing.T) {
 		return usesAction(s, "actions/upload-artifact") && s.If == "always()" && s.With["path"] == "artifact/utm-boot"
 	}) == -1 {
 		t.Error("UTM failures must retain diagnostics")
+	}
+}
+
+func TestMacOSUnrelatedLabelsDoNotCancelRunningMacJobs(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(repoPath(t, filepath.Join(".github", "workflows", macOSBuildWorkflow)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Selector skips unrelated labels; the group must keep them from cancelling.
+	want := "${{ github.event.action == 'labeled' && !startsWith(github.event.label.name, 'ci:macos') && format('-label-{0}', github.run_id) || '' }}"
+	if !strings.Contains(string(data), want) {
+		t.Errorf("concurrency group must isolate unrelated label events with %s", want)
 	}
 }

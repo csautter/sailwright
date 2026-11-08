@@ -5,8 +5,10 @@ from routes import select
 
 
 class Routing(unittest.TestCase):
-    def pr(self, files=(), labels=(), branch='fix/example'):
+    def pr(self, files=(), labels=(), branch='fix/example', added=None):
         event = {'pull_request': {'labels': [{'name': label} for label in labels], 'head': {'ref': branch}}}
+        if added:
+            event.update(action='labeled', label={'name': added})
         return select('pull_request', event, files, date(2026, 11, 4))
 
     def test_shared_and_other_platform_changes_only_use_linux_profile(self):
@@ -14,12 +16,21 @@ class Routing(unittest.TestCase):
             self.assertEqual(self.pr([path]), (False, False, False), path)
 
     def test_macos_paths_and_goldens_run_quick(self):
-        for path in ('scripts/macos/install.sh', 'pkg/deploy/macos-silicon-deploy.go', 'test/macos-profile/golden/windows11-arm64.json', 'test/macos-profile/routes.py', 'test/macos-profile/boot-utm.py', 'pkg/build/utm_paths.go'):
+        for path in ('scripts/macos/install.sh', 'pkg/deploy/macos-silicon-deploy.go', 'test/macos-profile/golden/windows11-arm64.json', 'test/macos-profile/routes.py', 'test/macos-profile/boot-utm.py', 'pkg/build/utm_paths.go', 'pkg/deploy/macos_lifecycle_test.go'):
             self.assertEqual(self.pr([path]), (True, False, False), path)
 
     def test_labels_override_paths(self):
         self.assertEqual(self.pr(['README.md'], ['ci:macos']), (True, False, False))
         self.assertEqual(self.pr(['README.md'], ['ci:macos-full']), (False, True, False))
+
+    def test_unrelated_label_events_start_nothing(self):
+        # Even on a macOS PR or with ci labels already present.
+        self.assertEqual(self.pr(['scripts/macos/install.sh'], ['ci:macos-full', 'documentation'], added='documentation'), (False, False, False))
+        self.assertEqual(self.pr(branch='release-please--branches--main', added='autorelease: pending'), (False, False, False))
+
+    def test_ci_label_events_reselect_from_all_labels_and_paths(self):
+        self.assertEqual(self.pr(['scripts/macos/install.sh'], ['ci:macos-full'], added='ci:macos-full'), (True, True, False))
+        self.assertEqual(self.pr(['README.md'], ['ci:macos'], added='ci:macos'), (True, False, False))
 
     def test_release_and_runner_changes(self):
         self.assertEqual(self.pr(branch='release-please--branches--main'), (False, True, True))

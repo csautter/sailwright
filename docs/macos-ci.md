@@ -6,7 +6,7 @@ checks cannot reproduce.
 
 | Tier | Runner | Coverage | Trigger |
 | --- | --- | --- | --- |
-| A: Darwin profile | `ubuntu-24.04` for amd64, `ubuntu-24.04-arm` for arm64 | Packer validation and QEMU argument snapshots for Windows 11, Ubuntu Server and Ubuntu Desktop; Darwin Go compilation; shell portability and dependency selection; UTM bundle snapshots | Build/deploy/installer PR paths and manual dispatch |
+| A: Darwin profile | `ubuntu-24.04` for amd64, `ubuntu-24.04-arm` for arm64 | Packer validation and QEMU argument snapshots for Windows 11, Ubuntu Server and Ubuntu Desktop; Darwin Go compilation; shell portability and dependency selection; UTM bundle snapshots | Build/deploy/provision/installer PR paths and manual dispatch |
 | B: quick check | GitHub-hosted `macos-26` | Homebrew installation, Darwin unit tests, BSD shell behavior, all six real QEMU startup probes, UTM bundle creation and an attempt to register bundles | macOS paths or `ci:macos` |
 | C: full build | `macos-26-tart` when enabled, otherwise `macos-26` | Full arm64 installations and UTM boot checks with guest-agent readiness; amd64 startup probes | Weekly, release PRs, runner changes, `ci:macos-full`, or manual dispatch |
 
@@ -29,6 +29,8 @@ Apply `ci:macos` when a change deserves a real Mac startup check even if it does
 not touch a macOS path. Apply `ci:macos-full` when installation or UTM boot
 behavior needs validation. Labels can be applied to any PR; subsequent pushes
 keep requesting the labeled tier.
+Adding any other label neither starts nor cancels Mac jobs: such events use a
+run-local concurrency group and the selector skips them.
 
 The real-Mac workflow starts with a small Linux selector on PR events. It
 paginates the PR file list, including previous names for renamed files. It
@@ -37,7 +39,7 @@ starts tier B for:
 - `scripts/macos/**`
 - `build/packer/linux/ubuntu/linux-ubuntu-on-macos.sh`
 - `pkg/build/macos-*.go`, `pkg/build/utm*.go` and `pkg/build/qemu-arm64.go`
-- `pkg/deploy/macos-*.go` and `pkg/deploy/utm*`
+- `pkg/deploy/macos-*.go`, `pkg/deploy/macos_*.go` and `pkg/deploy/utm*`
 - `deployments/utm/**`
 - `test/macos-profile/**`
 - `.github/workflows/test-build-macos.yml`

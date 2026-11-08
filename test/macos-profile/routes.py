@@ -8,7 +8,7 @@ import subprocess
 
 MACOS_PATHS = (
     'scripts/macos/**', 'build/packer/linux/ubuntu/linux-ubuntu-on-macos.sh',
-    'pkg/build/macos-*.go', 'pkg/build/utm*.go', 'pkg/build/qemu-arm64.go', 'pkg/deploy/macos-*.go',
+    'pkg/build/macos-*.go', 'pkg/build/utm*.go', 'pkg/build/qemu-arm64.go', 'pkg/deploy/macos[-_]*.go',
     'pkg/deploy/utm*', 'deployments/utm/**', '.github/workflows/test-build-macos.yml',
     'test/macos-profile/**',
 )
@@ -21,6 +21,9 @@ def select(event_name, event, files, today):
         monthly = event['schedule'] == '0 3 1-7 * *'
         run = today.weekday() == 0 and (monthly == (today.day <= 7))
         return False, run, run and monthly
+    if event.get('action') == 'labeled' and not event['label']['name'].startswith('ci:macos'):
+        # Unrelated labels must not restart Mac jobs; see the concurrency group.
+        return False, False, False
     pr = event['pull_request']
     labels = {label['name'] for label in pr['labels']}
     release = pr['head']['ref'].startswith('release-please--')

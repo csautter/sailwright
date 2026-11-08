@@ -9,6 +9,8 @@ import re
 import subprocess
 import time
 
+START_GRACE_SECONDS = 60
+
 
 def applescript(lines, *args):
     command = ['osascript']
@@ -67,13 +69,21 @@ def boot(bundle, timeout, diagnostics, software_emulation=False):
             raise RuntimeError('Refusing to smoke-test an already running VM')
         started = True  # A failing/timed-out start may still have launched QEMU.
         vm_command(identifier, 'start targetVM')
-        deadline = time.monotonic() + timeout
+        started_at = time.monotonic()
+        deadline = started_at + timeout
         last_error = ''
+        left_stopped = False
         while time.monotonic() < deadline:
             status = vm_command(identifier, 'return (status of targetVM) as text')
             result['status'] = status
             if status == 'stopped':
-                raise RuntimeError('UTM stopped before the guest became ready')
+                # UTM may report the old state briefly after accepting start.
+                # Fail once the VM ran and stopped, or never left stopped.
+                if left_stopped or time.monotonic() - started_at >= START_GRACE_SECONDS:
+                    raise RuntimeError('UTM stopped before the guest became ready')
+                time.sleep(1)
+                continue
+            left_stopped = True
             if status == 'started':
                 try:
                     addresses = guest_addresses(vm_command(identifier, 'return (query ip targetVM)'))

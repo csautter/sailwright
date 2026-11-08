@@ -112,6 +112,37 @@ class BootTest(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertIn('addresses', self.result())
 
+    def status_sequence(self, statuses):
+        normal = self.command
+
+        def command(identifier, action):
+            if action == 'return (status of targetVM) as text' and self.running and statuses:
+                return statuses.pop(0)
+            return normal(identifier, action)
+
+        return patch.object(boot_utm, 'vm_command', side_effect=command)
+
+    def test_stale_stopped_status_after_start_is_tolerated(self):
+        statuses = ['stopped', 'stopped', 'starting']
+        with self.status_sequence(statuses):
+            self.run_boot()
+        self.assertEqual(statuses, [])
+        self.assertIn('addresses', self.result())
+        self.assertIn('delete targetVM', self.actions)
+
+    def test_vm_that_never_leaves_stopped_fails_after_grace(self):
+        clock = iter([0, 0, 0, 10, boot_utm.START_GRACE_SECONDS, boot_utm.START_GRACE_SECONDS])
+        self.enter(patch.object(boot_utm.time, 'monotonic', side_effect=lambda: next(clock, 10**6)))
+        with self.status_sequence(['stopped'] * 4):
+            with self.assertRaisesRegex(RuntimeError, 'stopped before the guest became ready'):
+                boot_utm.boot(self.bundle, 1000, self.diagnostics)
+        self.assertIn('delete targetVM', self.actions)
+
+    def test_vm_that_stops_after_running_fails_immediately(self):
+        with self.status_sequence(['starting', 'stopped']):
+            with self.assertRaisesRegex(RuntimeError, 'stopped before the guest became ready'):
+                boot_utm.boot(self.bundle, 1000, self.diagnostics)
+
     def test_already_running_guest_is_not_touched(self):
         self.running = True
         with self.assertRaisesRegex(RuntimeError, 'already running'):
