@@ -254,3 +254,25 @@ gosec:
 		exit 1; \
 	fi; \
 	rm -f gosec-stderr.log
+
+# Darwin profile checks use fixture ISOs and never start a guest.
+MACOS_PROFILE_ARCH ?= all
+.PHONY: test-macos-profile test-macos-profile-golden test-macos-profile-shell test-macos-profile-go
+
+test-macos-profile:
+	python3 test/macos-profile/profile.py --arch $(MACOS_PROFILE_ARCH)
+
+test-macos-profile-golden:
+	python3 test/macos-profile/profile.py --arch $(MACOS_PROFILE_ARCH) --update
+	python3 test/macos-profile/test-utm.py --update
+
+test-macos-profile-shell:
+	python3 test/macos-profile/test-routes.py
+	python3 test/macos-profile/test-boot-utm.py
+	python3 test/macos-profile/lint.py
+	bash test/macos-profile/test-shell.sh
+	python3 test/macos-profile/test-utm.py
+	go test ./pkg/build -run 'Test(MacOSQemuVersionCheck|CheckMacOSArm64QemuVersion|ResolvePythonVenvCommand|EnsurePythonVenvRecreatesTooOldVenv)' -count=1
+
+test-macos-profile-go:
+	bash test/macos-profile/check-go.sh

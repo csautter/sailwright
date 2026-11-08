@@ -36,11 +36,11 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-utm_vm_dir="/Users/$(whoami)/Library/Containers/com.utmapp.UTM/Data/Documents"
+utm_vm_dir="${SAILWRIGHT_UTM_VM_DIR:-$HOME/Library/Containers/com.utmapp.UTM/Data/Documents}"
 plist="$utm_vm_dir/$os-$arch-dev-alchemy.utm/config.plist"
 
 # Read the MAC address from the plist file
-mac=$(cat "$plist" | grep -A1 'MacAddress' | grep string | awk -F'[<>]' '{print $3}')
+mac=$(grep -A1 'MacAddress' "$plist" | grep string | awk -F'[<>]' '{print $3}')
 
 echo "Looking for IP address associated with MAC address: $mac"
 

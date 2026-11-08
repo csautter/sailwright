@@ -25,6 +25,11 @@ Destroy implementations must be:
 - Host-local: remove only the resources created by `alchemy create`; do not delete build artifacts from the managed app-data cache.
 - Routed through the shared dispatcher in [pkg/deploy/destroy.go](/workspaces/dev-alchemy/pkg/deploy/destroy.go).
 
+All UTM lifecycle operations must resolve `SAILWRIGHT_UTM_VM_DIR` consistently.
+Create, state inspection, start/stop, provisioning and destroy share the bundle
+path resolver. An unset or empty override retains the existing UTM directory;
+changing the override selects another location and does not migrate VMs.
+
 ## Required Changes When Adding A VM Config
 
 When adding or changing a VM definition in [pkg/build/virtual-machine.go](/workspaces/dev-alchemy/pkg/build/virtual-machine.go), an agent must complete all of the following in the same change:

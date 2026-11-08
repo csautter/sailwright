@@ -1,0 +1,51 @@
+{
+  "-accel": [
+    "tcg,thread=multi,tb-size=1024"
+  ],
+  "-boot": [
+    "once=d"
+  ],
+  "-cpu": [
+    "Skylake-Client"
+  ],
+  "-device": [
+    "qemu-xhci",
+    "usb-kbd",
+    "usb-tablet",
+    "usb-mouse",
+    "e1000,netdev=user.0"
+  ],
+  "-display": [
+    "cocoa"
+  ],
+  "-drive": [
+    "file=<FIXTURE>/out/linux-ubuntu-server-packer-amd64,if=ide,cache=writeback,discard=ignore,format=qcow2",
+    "file=<FIXTURE>/installer.iso,media=cdrom",
+    "file=<PACKER_TEMP>.iso,media=cdrom"
+  ],
+  "-global": [
+    "PIIX4_PM.disable_s3=1",
+    "ICH-LPC.disable_s3=1"
+  ],
+  "-m": [
+    "4096M"
+  ],
+  "-machine": [
+    "q35,vmport=off,i8042=off,hpet=off"
+  ],
+  "-name": [
+    "linux-ubuntu-server-packer-amd64"
+  ],
+  "-netdev": [
+    "user,id=user.0,hostfwd=tcp:127.0.0.1:<SSH_PORT>-:22"
+  ],
+  "-qmp": [
+    "unix:<WORK>/qmp.sock,server,nowait"
+  ],
+  "-smp": [
+    "cpus=4,cores=4,sockets=1,threads=1"
+  ],
+  "-vnc": [
+    "127.0.0.1:<VNC_PORT>,password"
+  ]
+}

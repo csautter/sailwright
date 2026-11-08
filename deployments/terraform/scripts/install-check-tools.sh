@@ -20,8 +20,8 @@ work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
 cd "$work_dir"
 terraform_version=$(pin TERRAFORM_VERSION)
-curl -fsSLO "https://releases.hashicorp.com/terraform/$terraform_version/terraform_${terraform_version}_linux_${arch}.zip"
-curl -fsSLo SHA256SUMS "https://releases.hashicorp.com/terraform/$terraform_version/terraform_${terraform_version}_SHA256SUMS"
+curl --retry 3 --connect-timeout 30 --max-time 300 -fsSLO "https://releases.hashicorp.com/terraform/$terraform_version/terraform_${terraform_version}_linux_${arch}.zip"
+curl --retry 3 --connect-timeout 30 --max-time 300 -fsSLo SHA256SUMS "https://releases.hashicorp.com/terraform/$terraform_version/terraform_${terraform_version}_SHA256SUMS"
 awk -v name="terraform_${terraform_version}_linux_${arch}.zip" '$2 == name {print}' SHA256SUMS > terraform.sha256
 [[ -s terraform.sha256 ]]
 sha256sum -c terraform.sha256
@@ -34,7 +34,7 @@ for tool in TERRAGRUNT TFLINT TRIVY; do
         TFLINT) url="https://github.com/terraform-linters/tflint/releases/download/v$version/tflint_linux_$arch.zip" ;;
         TRIVY) url="https://github.com/aquasecurity/trivy/releases/download/v$version/trivy_${version}_Linux-$trivy_arch.tar.gz" ;;
     esac
-    curl -fsSL "$url" -o download
+    curl --retry 3 --connect-timeout 30 --max-time 300 -fsSL "$url" -o download
     printf '%s  download\n' "$checksum" | sha256sum -c -
     case $tool in
         TERRAGRUNT) install -m 755 download "$install_dir/terragrunt" ;;

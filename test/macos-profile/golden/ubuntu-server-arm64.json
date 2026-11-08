@@ -1,0 +1,50 @@
+{
+  "-accel": [
+    "tcg,thread=multi,tb-size=512"
+  ],
+  "-cpu": [
+    "max,sve=off,sme=off,pauth-impdef=on"
+  ],
+  "-device": [
+    "ramfb",
+    "qemu-xhci",
+    "usb-kbd",
+    "usb-tablet",
+    "usb-mouse",
+    "virtio-blk-pci,drive=cdrom,bootindex=1",
+    "virtio-blk-pci,drive=disk,serial=deadbeef,bootindex=0",
+    "virtio-blk-pci,drive=cidata",
+    "virtio-net-pci,netdev=user.0"
+  ],
+  "-display": [
+    "cocoa"
+  ],
+  "-drive": [
+    "file=<FIXTURE>/cache with spaces/qemu-uefi/usr/share/AAVMF/AAVMF_CODE.no-secboot.fd,if=pflash,unit=0,format=raw,readonly=on",
+    "file=<FIXTURE>/out/efivars.fd,if=pflash,unit=1,format=raw",
+    "if=none,id=cdrom,media=cdrom,file=<FIXTURE>/installer.iso,readonly=true",
+    "if=none,media=disk,id=disk,format=qcow2,file.filename=<FIXTURE>/cache with spaces/ubuntu/qemu-ubuntu-server-packer-arm64.qcow2,discard=unmap,detect-zeroes=unmap",
+    "if=none,id=cidata,format=raw,file=<FIXTURE>/cloud-init/qemu-server/cidata.iso,readonly=true"
+  ],
+  "-m": [
+    "4096M"
+  ],
+  "-machine": [
+    "virt-10.0,highmem=on"
+  ],
+  "-name": [
+    "linux-ubuntu-server-packer-arm64"
+  ],
+  "-netdev": [
+    "user,id=user.0,hostfwd=tcp:127.0.0.1:<SSH_PORT>-:22"
+  ],
+  "-qmp": [
+    "unix:<WORK>/qmp.sock,server,nowait"
+  ],
+  "-smp": [
+    "cpus=4,cores=4,sockets=1,threads=1"
+  ],
+  "-vnc": [
+    "127.0.0.1:<VNC_PORT>,password"
+  ]
+}

@@ -1087,22 +1087,11 @@ func withDefaultUtmIPv4DiscoveryOptions(options utmIPv4DiscoveryOptions) utmIPv4
 }
 
 func utmConfigPlistPath(vm alchemy_build.VirtualMachineConfig) (string, error) {
-	homeDir, err := os.UserHomeDir()
+	bundle, err := alchemy_build.UtmVirtualMachinePath(vm)
 	if err != nil {
-		return "", fmt.Errorf("failed to determine user home directory: %w", err)
+		return "", err
 	}
-
-	vmName := alchemy_build.GetVirtualMachineNameWithType(vm)
-	return filepath.Join(
-		homeDir,
-		"Library",
-		"Containers",
-		"com.utmapp.UTM",
-		"Data",
-		"Documents",
-		fmt.Sprintf("%s-%s-dev-alchemy.utm", vmName, vm.Arch),
-		"config.plist",
-	), nil
+	return filepath.Join(bundle, "config.plist"), nil
 }
 
 func extractUtmMacAddressFromConfig(content string) (string, error) {
