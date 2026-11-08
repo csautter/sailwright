@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,24 @@ KIT = Path(__file__).resolve().parents[1]
 
 
 class HelperTests(unittest.TestCase):
+    def test_ctrl_c_works_when_launcher_inherited_ignored_signals(self):
+        def ignore_terminal_signals():
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGQUIT, signal.SIG_IGN)
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                [sys.executable, "-I", str(KIT / "lib/ptyctl.py"),
+                 "--log", str(Path(directory) / "session.log"),
+                 "--step", "wait:Ready:5", "--step", "intr", "--step", "exit:2",
+                 "--", sys.executable, "-u", "-c",
+                 "import time; print('Ready', flush=True); time.sleep(60)"],
+                preexec_fn=ignore_terminal_signals,
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 130, result.stdout + result.stderr)
+            self.assertLess(json.loads(result.stdout)["seconds_after_last_intr"], 2)
+
     def test_pty_has_renderable_terminal_dimensions(self):
         with tempfile.TemporaryDirectory() as directory:
             transcript = Path(directory) / "terminal.log"

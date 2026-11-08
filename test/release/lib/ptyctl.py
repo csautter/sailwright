@@ -45,6 +45,10 @@ class Session:
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             try:
+                # Bash background jobs inherit ignored terminal signals. A new
+                # foreground terminal command must receive normal Ctrl+C/Ctrl+\.
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
+                signal.signal(signal.SIGQUIT, signal.SIG_DFL)
                 # forkpty starts at 0x0; progress renderers cannot display bars
                 # until the terminal has a usable window size.
                 fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 120, 0, 0))
