@@ -640,11 +640,9 @@ phase_vm() {
 # ---------------------------------------------------------------- gateway (physical host)
 GW_STATE=""
 GW_AGENT=""
+GW_ROOT=""
 GW_PID=""
 gateway_start() { # MODE(--bypass-approvals|--no-approvals) LOG
-	GW_STATE="$RT_PHASE_DIR/gateway-state"
-	# The agent directory must not overlap the gateway state directory.
-	GW_AGENT="$RT_PHASE_DIR/gateway-agent"
 	mkdir -p "$GW_STATE" "$GW_AGENT"
 	cat >"$GW_STATE/gateway.yaml" <<EOF
 state_isolation: shared
@@ -665,6 +663,25 @@ EOF
 	done
 }
 
+# The gateway refuses a state dir inside any git checkout, and the agent dir must
+# not overlap it. Use a short private directory under $HOME (Unix socket paths
+# are length-limited) and copy the evidence into the results folder afterwards.
+gateway_dirs() {
+	GW_ROOT="$(mktemp -d "$HOME/.sailwright-rt-gw.XXXXXX")"
+	GW_STATE="$GW_ROOT/state"
+	GW_AGENT="$GW_ROOT/agent"
+}
+
+gateway_finish() {
+	gateway_stop
+	if [ -n "$GW_ROOT" ] && [ -d "$GW_ROOT" ]; then
+		mkdir -p "$RT_PHASE_DIR/gateway-evidence"
+		cp -R "$GW_STATE/." "$RT_PHASE_DIR/gateway-evidence/" 2>/dev/null || true
+		case "$GW_ROOT" in "$HOME"/.sailwright-rt-gw.*) rm -rf "$GW_ROOT" ;; esac
+		GW_ROOT=""
+	fi
+}
+
 gateway_stop() {
 	if [ -n "$GW_PID" ] && kill -0 "$GW_PID" 2>/dev/null; then
 		kill -INT "$GW_PID"
@@ -676,9 +693,9 @@ gateway_stop() {
 phase_gateway() {
 	need_bin
 	rt_init gateway
-	trap gateway_stop EXIT
-	export SAILWRIGHT_GATEWAY_DIR="$RT_PHASE_DIR/gateway-agent"
-	rm -rf "$RT_PHASE_DIR/gateway-state" "$RT_PHASE_DIR/gateway-agent"
+	gateway_dirs
+	trap gateway_finish EXIT
+	export SAILWRIGHT_GATEWAY_DIR="$GW_AGENT"
 	local log="$RT_PHASE_DIR/logs/GW-serve-bypass.log"
 	if gateway_start --bypass-approvals "$log"; then rt_pass GW-01 "gateway serves with --bypass-approvals (isolated state dir)"; else rt_fail GW-01 "gateway starts" "see logs/GW-serve-bypass.log"; rt_summary; return; fi
 	rt_check GW-02 "banner shows bypassed approvals" --match 'approvals: BYPASSED' -- cat "$log"
@@ -727,6 +744,7 @@ print(f"tunnels={opened}, with traffic={len(moved)}")' "$GW_STATE/audit.jsonl"
 	fi
 	rt_manual GW-30 "approval console: CLI-created VM via MCP vm_info" \
 		"Start '$GW serve --binary $BIN' in a terminal (no bypass). Create the VM with the CLI. Ask the agent to call vm_info for $RT_TARGET: the console shows vm_access_decision with VM_NOT_CREATED_BY_GATEWAY; type approve <id>; tunnels then work. Destroy/recreate with the CLI (once with a list_targets call in between, once without): the tunnel answers 'VM was recreated outside this gateway' until vm_info is approved again."
+	gateway_finish
 	trap - EXIT
 	rt_summary
 }
