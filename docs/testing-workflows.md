@@ -145,7 +145,7 @@ Hyper-V Ubuntu VMs made from an older image; existing default VMs are unchanged.
 `stop all` and `destroy all` affect only defaults. Add `--all-instances` explicitly
 to include named VMs. `create` warns about low available disk/RAM without blocking.
 Build and pull still operate on the shared image. See the
-[naming ADR](./adr/0007-named-vm-instances.md) and
+[naming ADR](./adr/0009-named-vm-instances.md) and
 [JSON listing contract](./machine-readable-listings.md).
 
 ## Deterministic E2E Scenarios

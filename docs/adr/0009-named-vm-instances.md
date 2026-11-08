@@ -1,4 +1,4 @@
-# ADR 0007: Named VM Instances
+# ADR 0009: Named VM Instances
 
 ## Status
 
