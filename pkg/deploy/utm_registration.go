@@ -13,21 +13,53 @@ import (
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
 )
 
+// utmRegistrationSettleAttempts and utmRegistrationSettleInterval bound how long
+// a persisted registration may outlive its scripting entry. UTM writes its
+// preferences asynchronously, so right after a delete the old entry can still
+// be listed there even though the scripting collection no longer has it.
+var (
+	utmRegistrationSettleAttempts = 40
+	utmRegistrationSettleInterval = 250 * time.Millisecond
+)
+
 func utmRegistrationIDs(config alchemy_build.VirtualMachineConfig) ([]string, error) {
-	ids, err := utmScriptableRegistrationIDs(config)
+	var lastErr error
+	for attempt := 0; attempt < utmRegistrationSettleAttempts; attempt++ {
+		ids, unavailable, err := utmRegistrationSnapshotFunc(config)
+		if err != nil {
+			return nil, err
+		}
+		if unavailable == "" {
+			return ids, nil
+		}
+		lastErr = fmt.Errorf("UTM registration %s for %q is not available through scripting; remove the unavailable entry in the UTM library manually, then retry (preferences may still be synchronizing)", unavailable, utmVirtualMachineName(config))
+		time.Sleep(utmRegistrationSettleInterval)
+	}
+	if lastErr == nil {
+		return utmScriptableRegistrationIDs(config)
+	}
+	return nil, lastErr
+}
+
+var utmRegistrationSnapshotFunc = utmRegistrationSnapshot
+
+// utmRegistrationSnapshot returns the scriptable IDs and the first persisted ID
+// that scripting does not know about, or "" when the two views agree.
+func utmRegistrationSnapshot(config alchemy_build.VirtualMachineConfig) (ids []string, unavailable string, err error) {
+	ids, err = utmScriptableRegistrationIDs(config)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	persisted, err := utmPersistentRegistrationIDs(config)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	for _, id := range persisted {
 		if !slices.Contains(ids, id) {
-			return nil, fmt.Errorf("UTM registration %s for %q is not available through scripting; remove the unavailable entry in the UTM library manually, then retry (preferences may still be synchronizing)", id, utmVirtualMachineName(config))
+			return nil, id, nil
 		}
 	}
-	return ids, nil
+	return ids, "", nil
 }
 
 // UTM excludes entries whose bundles could not be loaded from its scripting
