@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"path"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/csautter/dev-alchemy/internal/gateway"
@@ -81,15 +83,16 @@ changes up without a restart.`,
 			if err != nil {
 				return err
 			}
+			agentPath := path.Clean(strings.TrimSpace(args[0]))
 			if !removed {
 				for _, mapping := range cfg.AgentWorkspaces {
-					if mapping.Agent == args[0] {
-						return fmt.Errorf("%s is configured in gateway.yaml; remove it there", args[0])
+					if mapping.Agent == agentPath {
+						return fmt.Errorf("%s is configured in gateway.yaml; remove it there", agentPath)
 					}
 				}
-				return fmt.Errorf("no registered workspace %s", args[0])
+				return fmt.Errorf("no registered workspace %s", agentPath)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "removed %s\n", args[0])
+			fmt.Fprintf(cmd.OutOrStdout(), "removed %s\n", agentPath)
 			return nil
 		},
 	}

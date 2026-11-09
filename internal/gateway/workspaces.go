@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -154,6 +156,14 @@ func lockRegisteredWorkspaces(stateDir string) (func(), error) {
 	}
 }
 
+func cleanAgentPath(agentPath string) string {
+	agentPath = strings.TrimSpace(agentPath)
+	if agentPath == "" {
+		return ""
+	}
+	return path.Clean(agentPath)
+}
+
 // AddRegisteredWorkspace validates mapping as a new agent-writable workspace and
 // appends it to the registered workspaces. The host path is stored resolved.
 func AddRegisteredWorkspace(cfg Config, mapping WorkspaceMapping, approvalID string) (RegisteredWorkspace, error) {
@@ -205,7 +215,7 @@ func RemoveRegisteredWorkspace(cfg Config, agentPath string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	agentPath = strings.TrimSpace(agentPath)
+	agentPath = cleanAgentPath(agentPath)
 	kept := registered[:0]
 	removed := false
 	for _, workspace := range registered {
@@ -470,7 +480,7 @@ func (g *Gateway) toolWorkspaceRegister(_ context.Context, _ *mcp.CallToolReques
 		return nil, WorkspaceRegisterOutput{}, err
 	}
 	if !g.approver.Enabled() {
-		return nil, WorkspaceRegisterOutput{}, fmt.Errorf("registering workspace %s needs host approval, but the gateway has no approval console; ask the operator to run `sailwright-gateway workspace add %s %s` or to add it to agent_workspaces in gateway.yaml", resolved.Agent, resolved.Agent, resolved.Host)
+		return nil, WorkspaceRegisterOutput{}, fmt.Errorf("registering workspace %s needs host approval, but the gateway has no approval console; ask the operator to run `%s` or to add it to agent_workspaces in gateway.yaml", resolved.Agent, operatorCommand("workspace", "add", resolved.Agent, resolved.Host))
 	}
 	id, err := newJobID()
 	if err != nil {
@@ -482,11 +492,11 @@ func (g *Gateway) toolWorkspaceRegister(_ context.Context, _ *mcp.CallToolReques
 	req := ApprovalRequest{
 		ID:        id,
 		Tool:      "workspace_register",
-		Command:   fmt.Sprintf("sailwright-gateway workspace add %s %s", resolved.Agent, resolved.Host),
+		Command:   operatorCommand("workspace", "add", resolved.Agent, resolved.Host),
 		Risk:      []string{riskAgentWorkspace},
 		AgentNote: truncate(in.Reason, maxAgentNoteLength),
 		NotSafe: fmt.Sprintf("maps the agent's %s to host directory %s. The gateway treats that directory as agent-writable and copies files from it for run_cli calls you approve. "+
-			"The mapping is saved in %s; remove it with `sailwright-gateway workspace remove %s`", resolved.Agent, resolved.Host, workspacesFileName, resolved.Agent),
+			"The mapping is saved in %s; remove it with `%s`", resolved.Agent, resolved.Host, workspacesFileName, operatorCommand("workspace", "remove", resolved.Agent)),
 	}
 	var addErr error
 	decision, decided, err := g.askOperatorAsync(req, func(approval Approval) {
@@ -520,4 +530,30 @@ func (g *Gateway) toolWorkspaceRegister(_ context.Context, _ *mcp.CallToolReques
 		}
 	}
 	return nil, WorkspaceRegisterOutput{}, fmt.Errorf("%w: the operator must approve request %s for workspace %s on the host terminal; call workspace_register again after approval", ErrApprovalPending, id, resolved.Agent)
+}
+
+// operatorCommand renders a sailwright-gateway command line the operator can paste
+// into a shell. Arguments with spaces or shell metacharacters are quoted: double
+// quotes on Windows (cmd and PowerShell; Windows paths cannot contain them), single
+// quotes elsewhere.
+func operatorCommand(args ...string) string {
+	parts := []string{"sailwright-gateway"}
+	for _, arg := range args {
+		parts = append(parts, quoteShellArg(arg, runtime.GOOS == "windows"))
+	}
+	return strings.Join(parts, " ")
+}
+
+func quoteShellArg(arg string, windows bool) string {
+	special := " \t\"'$`;&|<>()*?[]{}!#~"
+	if !windows {
+		special += "\\"
+	}
+	if arg != "" && !strings.ContainsAny(arg, special) {
+		return arg
+	}
+	if windows {
+		return `"` + strings.ReplaceAll(arg, `"`, `\"`) + `"`
+	}
+	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
 }

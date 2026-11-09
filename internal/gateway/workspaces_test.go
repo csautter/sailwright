@@ -376,3 +376,33 @@ func TestWorkspaceRegistryReloadsSameSizeRewrite(t *testing.T) {
 		t.Fatal("removed workspace still active")
 	}
 }
+
+func TestRemoveRegisteredWorkspaceNormalizesAgentPath(t *testing.T) {
+	cfg := workspaceTestConfig(t)
+	if _, err := AddRegisteredWorkspace(cfg, WorkspaceMapping{Agent: "/workspaces/roles", Host: resolvedTempDir(t)}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := RemoveRegisteredWorkspace(cfg, " /workspaces/roles/ "); err != nil || !removed {
+		t.Fatalf("remove with trailing slash: %v %v", removed, err)
+	}
+}
+
+func TestQuoteShellArg(t *testing.T) {
+	cases := []struct {
+		arg     string
+		windows bool
+		want    string
+	}{
+		{"/workspaces/roles", false, "/workspaces/roles"},
+		{"/home/me/My Roles", false, "'/home/me/My Roles'"},
+		{"/home/me/it's", false, `'/home/me/it'\''s'`},
+		{"", false, "''"},
+		{`C:\Users\me\roles`, true, `C:\Users\me\roles`},
+		{`C:\Users\John Doe\roles`, true, `"C:\Users\John Doe\roles"`},
+	}
+	for _, c := range cases {
+		if got := quoteShellArg(c.arg, c.windows); got != c.want {
+			t.Errorf("quoteShellArg(%q, %v) = %s, want %s", c.arg, c.windows, got, c.want)
+		}
+	}
+}
