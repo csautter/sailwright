@@ -100,3 +100,17 @@ func TestRunDestroyReturnsHelpfulUnsupportedError(t *testing.T) {
 		t.Fatalf("expected not implemented error, got %v", err)
 	}
 }
+
+func TestDestroyTargetExistsTartWithoutTartExecutable(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	vm := alchemy_build.VirtualMachineConfig{
+		OS:                   "macos",
+		Arch:                 "arm64",
+		HostOs:               alchemy_build.HostOsDarwin,
+		VirtualizationEngine: alchemy_build.VirtualizationEngineTart,
+	}
+	exists, err := DestroyTargetExists(vm)
+	if err != nil || exists {
+		t.Fatalf("host without tart must report the target as absent, got exists=%v err=%v", exists, err)
+	}
+}

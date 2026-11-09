@@ -781,10 +781,9 @@ sailwright install
 Build and create the Windows 11 VM:
 
 ```bash
-# arm64 requires sudo to create a custom .iso file for automated installation.
-# sudo rights are evaluated at runtime, so you can run the build command without sudo and it will ask for sudo rights only if needed.
+# arm64 creates a custom .iso file for automated installation with hdiutil and xorriso on macOS;
+# this step does not need sudo, so run the build as your normal user.
 arch=arm64 # or amd64
-# sudo sailwright build windows11 --arch $arch --headless
 sailwright build windows11 --arch $arch --headless
 # `--headless` applies to `build`, not `create`.
 sailwright create windows11 --arch $arch
