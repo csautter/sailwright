@@ -27,10 +27,10 @@ ENV TFLINT_SHA256_ARM64="560da89aacf59389d4eb029730dd5b109b7288096c32f2726a0d9e7
 # renovate: datasource=github-releases depName=hashicorp/terraform versioning=hashicorp
 ENV TERRAFORM_VERSION="1.17.1"
 # renovate: datasource=custom.trivy-linux-amd64 depName=aquasecurity/trivy versioning=semver
-ENV TRIVY_VERSION="0.76.1"
-ENV TRIVY_SHA256_AMD64="c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0"
-# renovate: datasource=custom.trivy-linux-arm64 depName=aquasecurity/trivy version=0.76.1 versioning=semver
-ENV TRIVY_SHA256_ARM64="e174dff2a6dba5e3ae41f8d0537a6324405bd08132497340304c6b20e0f16a1f"
+ENV TRIVY_VERSION="0.76.2"
+ENV TRIVY_SHA256_AMD64="bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf"
+# renovate: datasource=custom.trivy-linux-arm64 depName=aquasecurity/trivy version=0.76.2 versioning=semver
+ENV TRIVY_SHA256_ARM64="ab9d51f86e6a5fb936f605faff6b593ac51bc378fff4d3e8b9d58358b9c367c3"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
