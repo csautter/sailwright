@@ -205,8 +205,20 @@ func (c *LiveConsole) redraw(force bool) {
 		return
 	}
 	var b strings.Builder
-	c.clearLocked(&b)
-	c.drawLocked(&b, f)
+	if rows := c.renderLocked(f); c.drawn > 0 && len(rows) == c.drawn {
+		// Rewrite the rows in place and put the cursor back. Clearing to the end
+		// of the screen would also erase what the operator is typing on the
+		// cursor row below the region.
+		fmt.Fprintf(&b, "\x1b7\x1b[%dA\r", c.drawn)
+		for _, row := range rows {
+			fmt.Fprintf(&b, "\x1b[2K\x1b[2m%s\x1b[0m\r\n", row)
+		}
+		b.WriteString("\x1b8")
+		c.lastElapsed = f.elapsed
+	} else {
+		c.clearLocked(&b)
+		c.writeRowsLocked(&b, rows, f.elapsed)
+	}
 	_, _ = io.WriteString(c.out, b.String())
 }
 
@@ -230,25 +242,45 @@ func (c *LiveConsole) clearLocked(b *strings.Builder) {
 	}
 }
 
+// drawLocked draws the region below the cursor unless it is already shown.
 func (c *LiveConsole) drawLocked(b *strings.Builder, f liveFrame) {
-	if !f.active || c.holds > 0 || !c.atLineStart || c.drawn > 0 {
+	if c.drawn > 0 {
 		return
+	}
+	c.writeRowsLocked(b, c.renderLocked(f), f.elapsed)
+}
+
+func (c *LiveConsole) writeRowsLocked(b *strings.Builder, rows []string, elapsed time.Duration) {
+	for _, row := range rows {
+		fmt.Fprintf(b, "\x1b[2m%s\x1b[0m\n", row)
+	}
+	c.drawn = len(rows)
+	if len(rows) > 0 {
+		c.lastElapsed = elapsed
+	}
+}
+
+// renderLocked returns the rows of the region, cut to the terminal size, or nil
+// when the region must stay hidden.
+func (c *LiveConsole) renderLocked(f liveFrame) []string {
+	if !f.active || c.holds > 0 || !c.atLineStart {
+		return nil
 	}
 	width, height := c.size()
 	if width <= 0 {
 		width = liveDefaultWidth
 	}
 	maxWidth := width - 1 // a full-width row wraps on some terminals
-	rows := f.rows
+	lines := f.rows
 	if height > 0 {
 		// The header and the cursor row need one row each. Rows above the top of
 		// the screen cannot be cleared again.
 		fit := height - 2
 		if fit < 0 {
-			return
+			return nil
 		}
-		if len(rows) > fit {
-			rows = rows[len(rows)-fit:]
+		if len(lines) > fit {
+			lines = lines[len(lines)-fit:]
 		}
 	}
 	header := fmt.Sprintf("── job %s · %s", f.id, f.elapsed)
@@ -256,12 +288,12 @@ func (c *LiveConsole) drawLocked(b *strings.Builder, f liveFrame) {
 		header += " · full log: " + sanitizeForTerminal(f.logPath)
 	}
 	header += " ──"
-	fmt.Fprintf(b, "\x1b[2m%s\x1b[0m\n", runewidth.Truncate(header, maxWidth, "…"))
-	for _, row := range rows {
-		fmt.Fprintf(b, "\x1b[2m%s\x1b[0m\n", runewidth.Truncate(row, maxWidth, "…"))
+	rows := make([]string, 0, 1+len(lines))
+	rows = append(rows, runewidth.Truncate(header, maxWidth, "…"))
+	for _, line := range lines {
+		rows = append(rows, runewidth.Truncate(line, maxWidth, "…"))
 	}
-	c.drawn = 1 + len(rows)
-	c.lastElapsed = f.elapsed
+	return rows
 }
 
 // rowsLocked returns the newest lines, including an unfinished last line.

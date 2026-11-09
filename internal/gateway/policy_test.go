@@ -490,3 +490,29 @@ func TestConsoleApproverReportsPrompts(t *testing.T) {
 		t.Fatalf("events after Confirm = %s", got)
 	}
 }
+
+// An expired request is not ended by the operator's Enter, so its note starts on a
+// fresh line and is printed before the prompt is reported as closed.
+func TestConsoleApproverPrintsTheExpiryBeforeClosingThePrompt(t *testing.T) {
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = writer.Close() })
+	out := &syncBuffer{}
+	var mu sync.Mutex
+	var atClose string
+	approver := NewConsoleApprover(bufio.NewReader(reader), out, 50*time.Millisecond).
+		WithPromptHook(func(waiting bool) {
+			if !waiting {
+				mu.Lock()
+				defer mu.Unlock()
+				atClose = out.String()
+			}
+		})
+	if got := approver.Request(context.Background(), ApprovalRequest{ID: "job1"}).Decision; got != DecisionExpired {
+		t.Fatalf("decision = %s, want expired", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.HasSuffix(atClose, "\napproval job1: expired\n") {
+		t.Fatalf("console when the prompt closed:\n%q", atClose)
+	}
+}

@@ -149,7 +149,8 @@ func (a *ConsoleApprover) HideInputWith(hide InputHider) *ConsoleApprover {
 }
 
 // WithPromptHook sets a function told when the console starts and stops waiting for
-// the operator's input, e.g. to hide the live job output while they type.
+// the operator's input, e.g. to hide the live job output while they type. The hook
+// runs while the console's lock is held, so it must not call back into the console.
 func (a *ConsoleApprover) WithPromptHook(hook func(waiting bool)) *ConsoleApprover {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -209,6 +210,18 @@ func (a *ConsoleApprover) Request(ctx context.Context, req ApprovalRequest) Appr
 	}
 
 	a.mu.Lock()
+	note := ""
+	if approval.BecomePassword != "" {
+		note = " (with sudo password)"
+	}
+	start := ""
+	if approval.Decision == DecisionExpired || approval.Decision == DecisionCancelled {
+		// Nobody pressed Enter, so the cursor may follow text the operator started typing.
+		start = "\n"
+	}
+	// Printed before the prompt is reported as closed, so the live job tail is drawn
+	// below the note on a fresh line.
+	fmt.Fprintf(a.out, "%sapproval %s: %s%s\n", start, req.ID, approval.Decision, note)
 	if a.pending == pending {
 		a.pending = nil
 	}
@@ -216,11 +229,6 @@ func (a *ConsoleApprover) Request(ctx context.Context, req ApprovalRequest) Appr
 		a.stopAwaitingLocked()
 	}
 	a.syncPromptLocked()
-	note := ""
-	if approval.BecomePassword != "" {
-		note = " (with sudo password)"
-	}
-	fmt.Fprintf(a.out, "approval %s: %s%s\n", req.ID, approval.Decision, note)
 	a.mu.Unlock()
 	return approval
 }

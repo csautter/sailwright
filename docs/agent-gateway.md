@@ -430,7 +430,9 @@ While a job runs, the gateway terminal shows its last 8 lines in a small
 region at the bottom. The region is redrawn in place and has a header with the
 job id, the elapsed time and the path of the full log. Other gateway messages
 are still printed above it. The region is hidden while the approval console
-waits for your input. When the job ends, the region is removed. If the job
+waits for your input. Commands you type between prompts stay visible, but
+while the region is still growing a redraw can hide them; they still run when
+you press Enter. When the job ends, the region is removed. If the job
 failed, its last lines stay in the scrollback. Use `--live-lines N` to change
 the height (at most 100), or `--live-lines 0` to turn the region off. The
 region never takes more rows than the terminal has; in a short terminal it

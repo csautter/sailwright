@@ -261,3 +261,26 @@ func TestLiveConsoleFitsTheRegionIntoTheTerminalHeight(t *testing.T) {
 		t.Fatalf("End must clear exactly the drawn rows:\n%q", out.String())
 	}
 }
+
+// Once the region has its full height, redraws rewrite it in place and restore the
+// cursor, so text the operator types on the row below stays visible.
+func TestLiveConsoleRedrawsInPlaceAndKeepsTheCursorRow(t *testing.T) {
+	c, out, _ := newTestLiveConsole(2, 80)
+	defer c.Close()
+	w := c.Begin("job1", "")
+	_, _ = w.Write([]byte("one\ntwo\n"))
+	c.redraw(true)
+	_, _ = w.Write([]byte("three\n"))
+	out.Reset()
+	c.redraw(false)
+	got := out.String()
+	if !strings.HasPrefix(got, "\x1b7\x1b[3A\r") || !strings.HasSuffix(got, "\x1b8") {
+		t.Fatalf("want an in-place redraw with saved cursor, got %q", got)
+	}
+	if strings.Contains(got, "\x1b[J") {
+		t.Fatalf("in-place redraw must not clear the cursor row: %q", got)
+	}
+	if !strings.Contains(got, "two") || !strings.Contains(got, "three") || strings.Contains(got, "one") {
+		t.Fatalf("redraw does not show the newest lines: %q", got)
+	}
+}
