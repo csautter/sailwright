@@ -114,3 +114,45 @@ func TestCleanRefusesWhileStateDirIsLocked(t *testing.T) {
 		t.Fatalf("unexpected output %q", out)
 	}
 }
+
+func TestLiveTailState(t *testing.T) {
+	tests := []struct {
+		name       string
+		flags      serveFlags
+		terminal   bool
+		vt         bool
+		wantShow   bool
+		wantReason string
+		wantVT     bool
+	}{
+		{name: "shown on a VT terminal", flags: serveFlags{liveLines: 8}, terminal: true, vt: true, wantShow: true, wantVT: true},
+		{name: "off with zero lines", flags: serveFlags{liveLines: 0}, terminal: true, vt: true},
+		{name: "follow wins", flags: serveFlags{liveLines: 8, follow: true}, terminal: true, vt: true, wantReason: "--follow"},
+		{name: "not a terminal", flags: serveFlags{liveLines: 8}, terminal: false, vt: true, wantReason: "not a terminal"},
+		{name: "no VT support", flags: serveFlags{liveLines: 8}, terminal: true, vt: false, wantReason: "VT sequences", wantVT: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vtCalled, restored := false, false
+			show, restore, reason := liveTailState(tt.flags,
+				func() bool { return tt.terminal },
+				func() (func(), bool) {
+					vtCalled = true
+					return func() { restored = true }, tt.vt
+				})
+			if show != tt.wantShow {
+				t.Fatalf("show = %v, want %v", show, tt.wantShow)
+			}
+			if tt.wantReason == "" && reason != "" || !strings.Contains(reason, tt.wantReason) {
+				t.Fatalf("reason = %q, want it to mention %q", reason, tt.wantReason)
+			}
+			if vtCalled != tt.wantVT {
+				t.Fatalf("VT probed = %v, want %v", vtCalled, tt.wantVT)
+			}
+			restore()
+			if restored != tt.wantVT {
+				t.Fatalf("restore ran = %v, want %v", restored, tt.wantVT)
+			}
+		})
+	}
+}

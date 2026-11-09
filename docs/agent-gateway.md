@@ -438,8 +438,9 @@ the height (at most 100), or `--live-lines 0` to turn the region off. The
 region never takes more rows than the terminal has; in a short terminal it
 shows fewer lines.
 
-If stdout is not a terminal, or the terminal cannot process VT sequences, the
-gateway prints a command that follows the job log instead: `tail -f
+If stdout is not a terminal, the terminal cannot process VT sequences, or
+`TERM=dumb` is set, the gateway prints a command that follows the job log
+instead (and a note saying why, if you passed `--live-lines`): `tail -f
 <state-dir>/logs/<job>.log`, or `Get-Content -Wait` on Windows. To mirror all
 job output to the terminal, start the gateway with `--follow`; this replaces
 the region. Approval prompts still appear there.

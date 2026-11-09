@@ -45,6 +45,8 @@ type serveFlags struct {
 	bypass       bool
 	follow       bool
 	liveLines    int
+	// liveLinesSet is true when --live-lines was given on the command line.
+	liveLinesSet bool
 }
 
 func newRootCommand() *cobra.Command {
@@ -84,6 +86,7 @@ need "approve <id>" from you. Agents cannot approve their own requests.`,
 				return fmt.Errorf("--live-lines must be at most %d, got %d", maxLiveLines, flags.liveLines)
 			}
 			flags.stateDir = *stateDir
+			flags.liveLinesSet = cmd.Flags().Changed("live-lines")
 			return runServe(cmd.Context(), flags)
 		},
 	}
@@ -110,18 +113,36 @@ const (
 // stdout cannot redraw in place (not a terminal, or no VT support). Close the
 // console, then call restore before the process exits.
 func newLiveConsole(flags serveFlags) (live *gateway.LiveConsole, restore func()) {
-	if flags.follow || flags.liveLines <= 0 {
-		return nil, func() {}
-	}
 	fd := int(os.Stdout.Fd()) // #nosec G115 -- file descriptors fit in int.
-	if !term.IsTerminal(fd) {
-		return nil, func() {}
-	}
-	restore, ok := gateway.EnableVirtualTerminal(os.Stdout)
-	if !ok {
+	show, restore, reason := liveTailState(flags,
+		func() bool { return term.IsTerminal(fd) },
+		func() (func(), bool) { return gateway.EnableVirtualTerminal(os.Stdout) })
+	if !show {
+		if reason != "" && flags.liveLinesSet {
+			fmt.Printf("note: --live-lines is ignored: %s\n", reason)
+		}
 		return nil, restore
 	}
 	return gateway.NewLiveConsole(os.Stdout, flags.liveLines, gateway.TerminalSize(fd)), restore
+}
+
+// liveTailState decides whether the live job tail is shown. reason says why not,
+// unless the tail is turned off with --live-lines 0.
+func liveTailState(flags serveFlags, isTerminal func() bool, enableVT func() (restore func(), ok bool)) (show bool, restore func(), reason string) {
+	restore = func() {}
+	switch {
+	case flags.liveLines <= 0:
+		return false, restore, ""
+	case flags.follow:
+		return false, restore, "--follow mirrors all job output instead"
+	case !isTerminal():
+		return false, restore, "stdout is not a terminal"
+	}
+	restore, ok := enableVT()
+	if !ok {
+		return false, restore, "the terminal cannot process VT sequences"
+	}
+	return true, restore, ""
 }
 
 func newTokenCommand(stateDir *string) *cobra.Command {
