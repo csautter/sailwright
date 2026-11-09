@@ -2,16 +2,23 @@ package gateway
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-func newTestLiveConsole(lines, width int) (*LiveConsole, *strings.Builder, *time.Time) {
-	var out strings.Builder
+func newTestLiveConsole(lines, width int) (*LiveConsole, *syncBuffer, *time.Time) {
+	out := &syncBuffer{}
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	c := NewLiveConsole(&out, lines, func() int { return width })
+	c := NewLiveConsole(out, lines, func() int { return width })
 	c.now = func() time.Time { return now }
-	return c, &out, &now
+	return c, out, &now
+}
+
+func (b *syncBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf.Reset()
 }
 
 // region returns the rows of the last drawn region without styling.
@@ -28,9 +35,7 @@ func TestLiveConsoleKeepsTheNewestLines(t *testing.T) {
 	w := c.Begin("job1", "/logs/job1.log")
 	_, _ = w.Write([]byte("one\ntwo\nthree\nfour\nfi"))
 	_, _ = w.Write([]byte("ve\n"))
-	c.mu.Lock()
-	c.flushLocked()
-	c.mu.Unlock()
+	c.redraw(true)
 	c.End(false)
 
 	before := out.String()[:strings.LastIndex(out.String(), "\r")]
@@ -60,9 +65,7 @@ func TestLiveConsoleCutsRowsToTheTerminalWidth(t *testing.T) {
 	c, out, _ := newTestLiveConsole(2, 10)
 	w := c.Begin("job1", "/a/very/long/log/path.log")
 	_, _ = w.Write([]byte("0123456789abcdef\n"))
-	c.mu.Lock()
-	c.flushLocked()
-	c.mu.Unlock()
+	c.redraw(true)
 	rows := region(out.String())
 	c.Close()
 	for _, row := range rows {
@@ -80,9 +83,7 @@ func TestLiveConsolePrintsConsoleOutputAboveTheRegion(t *testing.T) {
 	defer c.Close()
 	w := c.Begin("job1", "")
 	_, _ = w.Write([]byte("working\n"))
-	c.mu.Lock()
-	c.flushLocked()
-	c.mu.Unlock()
+	c.redraw(true)
 	out.Reset()
 
 	_, _ = c.Write([]byte("approval needed\n"))
@@ -103,9 +104,7 @@ func TestLiveConsoleHoldHidesTheRegion(t *testing.T) {
 	out.Reset()
 	_, _ = w.Write([]byte("hidden\n"))
 	_, _ = c.Write([]byte("Type approve: "))
-	c.mu.Lock()
-	c.flushLocked()
-	c.mu.Unlock()
+	c.redraw(true)
 	if strings.Contains(out.String(), "hidden") {
 		t.Fatalf("held region was drawn: %q", out.String())
 	}
@@ -152,9 +151,7 @@ func TestLiveConsoleRedrawsWhenTheElapsedTimeChanges(t *testing.T) {
 	c.mu.Unlock()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		c.mu.Lock()
 		got := out.String()
-		c.mu.Unlock()
 		if strings.Contains(got, "job job1 · 3s") {
 			return
 		}
@@ -198,10 +195,49 @@ func TestLiveConsoleBeginReplacesAnActiveTail(t *testing.T) {
 	_, _ = first.Write([]byte("one\n"))
 	second := c.Begin("job2", "")
 	_, _ = second.Write([]byte("two\n"))
-	c.mu.Lock()
-	c.flushLocked()
-	c.mu.Unlock()
+	c.redraw(true)
 	if !strings.Contains(out.String(), "job job2") {
 		t.Fatalf("second job not shown: %q", out.String())
+	}
+}
+
+// blockingWriter stands in for a terminal that does not accept writes, e.g. a
+// Windows console in QuickEdit selection or a terminal stopped with Ctrl-S.
+type blockingWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+	return len(p), nil
+}
+
+func TestLiveConsoleJobOutputDoesNotWaitForABlockedTerminal(t *testing.T) {
+	c, _, _ := newTestLiveConsole(2, 80)
+	tail := c.Begin("job1", "")
+	blocked := &blockingWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	c.termMu.Lock()
+	c.out = blocked
+	c.termMu.Unlock()
+	defer func() {
+		close(blocked.release)
+		c.Close()
+	}()
+
+	go func() { _, _ = c.Write([]byte("console message\n")) }()
+	<-blocked.entered
+
+	written := make(chan struct{})
+	go func() {
+		_, _ = tail.Write([]byte("job output\n"))
+		close(written)
+	}()
+	select {
+	case <-written:
+	case <-time.After(2 * time.Second):
+		t.Fatal("job output waited for the blocked terminal")
 	}
 }
