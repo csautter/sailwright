@@ -228,3 +228,98 @@ func bumpModTime(t *testing.T, path string, hours int) {
 		t.Fatal(err)
 	}
 }
+
+// swapForSymlink replaces dir with a symlink to target, as an agent can do for any
+// directory inside its mount.
+func swapForSymlink(t *testing.T, dir, target string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("directory symlinks need extra privileges on Windows")
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A registered workspace below the agent's mount must not follow a symlink the agent
+// swaps in after registration; gateway.yaml entries keep following it.
+func TestRegisteredWorkspaceIsPinnedAgainstSymlinkSwap(t *testing.T) {
+	mount := resolvedTempDir(t)
+	secret := resolvedTempDir(t)
+	if err := os.WriteFile(filepath.Join(secret, "id_ed25519"), []byte("SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(mount, "sub")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	registered := WorkspaceMapping{Agent: "/workspaces/sub", Host: sub, Registered: true}
+	if _, _, err := TranslateAgentPath("/workspaces/sub", []WorkspaceMapping{registered}); err != nil {
+		t.Fatalf("real directory: %v", err)
+	}
+	if _, err := CreateConfinedSnapshot("/workspaces/sub", registered, ".", sub, filepath.Join(t.TempDir(), "stage"), defaultLimits()); err != nil {
+		t.Fatalf("snapshot of real directory: %v", err)
+	}
+
+	swapForSymlink(t, sub, secret)
+	if _, _, err := TranslateAgentPath("/workspaces/sub", []WorkspaceMapping{registered}); err == nil || !strings.Contains(err.Error(), "must stay a real directory") {
+		t.Fatalf("translate after swap: %v", err)
+	}
+	if _, err := CreateConfinedSnapshot("/workspaces/sub", registered, ".", sub, filepath.Join(t.TempDir(), "stage"), defaultLimits()); err == nil || !strings.Contains(err.Error(), "must stay a real directory") {
+		t.Fatalf("snapshot after swap: %v", err)
+	}
+	static := registered
+	static.Registered = false
+	if _, err := CreateConfinedSnapshot("/workspaces/sub", static, ".", sub, filepath.Join(t.TempDir(), "stage"), defaultLimits()); err != nil {
+		t.Fatalf("gateway.yaml entries keep following symlinks: %v", err)
+	}
+}
+
+// The directory opened for the snapshot must be the one at the pinned path after the
+// open, so swapping the path between open and check is caught.
+func TestCheckPinnedWorkspaceRejectsReplacedDirectory(t *testing.T) {
+	mount := resolvedTempDir(t)
+	sub := filepath.Join(mount, "sub")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workspace := WorkspaceMapping{Agent: "/workspaces/sub", Host: sub, Registered: true}
+	root, err := os.OpenRoot(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err := checkPinnedWorkspace(root, workspace); err != nil {
+		t.Fatalf("unchanged: %v", err)
+	}
+	if err := os.Rename(sub, filepath.Join(mount, "moved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPinnedWorkspace(root, workspace); err == nil || !strings.Contains(err.Error(), "replaced") {
+		t.Fatalf("replaced directory: %v", err)
+	}
+}
+
+// Approval binds the stored host path to the one the operator saw.
+func TestAddRegisteredWorkspaceRefusesPathChangedSinceApproval(t *testing.T) {
+	cfg := workspaceTestConfig(t)
+	mount := resolvedTempDir(t)
+	elsewhere := resolvedTempDir(t)
+	sub := filepath.Join(mount, "sub")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	swapForSymlink(t, sub, elsewhere)
+	if _, err := addRegisteredWorkspace(cfg, WorkspaceMapping{Agent: "/workspaces/sub", Host: sub}, "id", sub); err == nil || !strings.Contains(err.Error(), "not the approved") {
+		t.Fatalf("changed path accepted: %v", err)
+	}
+	if registered, err := LoadRegisteredWorkspaces(cfg); err != nil || len(registered) != 0 {
+		t.Fatalf("nothing may be saved: %+v %v", registered, err)
+	}
+}

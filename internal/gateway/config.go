@@ -54,6 +54,10 @@ const (
 type WorkspaceMapping struct {
 	Agent string `yaml:"agent"`
 	Host  string `yaml:"host"`
+	// Registered marks a mapping from agent_workspaces.json. The agent chose its host
+	// path, which may lie below its mount, so the path is pinned: it must still be
+	// the same real directory (no symlink anywhere) whenever it is used.
+	Registered bool `yaml:"-"`
 }
 
 // Config is the operator-owned gateway configuration. It is never writable through MCP.

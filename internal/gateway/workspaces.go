@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -117,6 +116,13 @@ func saveRegisteredWorkspaces(stateDir string, workspaces []RegisteredWorkspace)
 // AddRegisteredWorkspace validates mapping as a new agent-writable workspace and
 // appends it to the registered workspaces. The host path is stored resolved.
 func AddRegisteredWorkspace(cfg Config, mapping WorkspaceMapping, approvalID string) (RegisteredWorkspace, error) {
+	return addRegisteredWorkspace(cfg, mapping, approvalID, "")
+}
+
+// addRegisteredWorkspace adds mapping. A non-empty approvedHost is the resolved host
+// path the operator approved; the mapping is refused if the host path resolves
+// elsewhere now, e.g. because the agent swapped a directory for a symlink since.
+func addRegisteredWorkspace(cfg Config, mapping WorkspaceMapping, approvalID string, approvedHost string) (RegisteredWorkspace, error) {
 	registered, _, err := loadRegisteredWorkspaces(cfg)
 	if err != nil {
 		return RegisteredWorkspace{}, err
@@ -124,6 +130,9 @@ func AddRegisteredWorkspace(cfg Config, mapping WorkspaceMapping, approvalID str
 	mapping, err = ValidateNewWorkspace(cfg, mapping)
 	if err != nil {
 		return RegisteredWorkspace{}, err
+	}
+	if approvedHost != "" && !samePathString(mapping.Host, approvedHost) {
+		return RegisteredWorkspace{}, fmt.Errorf("host path %s now resolves to %s, not the approved %s; register it again", approvedHost, mapping.Host, approvedHost)
 	}
 	if existing, _, ok := findWorkspace(mapping.Agent, cfg.AgentWorkspaces, registered); ok {
 		if sameHostPath(existing.Host, mapping.Host) {
@@ -244,7 +253,7 @@ func findWorkspace(agentPath string, static []WorkspaceMapping, registered []Reg
 	}
 	for _, workspace := range registered {
 		if workspace.Agent == agentPath {
-			return WorkspaceMapping{Agent: workspace.Agent, Host: workspace.Host}, workspaceSourceFile, true
+			return WorkspaceMapping{Agent: workspace.Agent, Host: workspace.Host, Registered: true}, workspaceSourceFile, true
 		}
 	}
 	return WorkspaceMapping{}, "", false
@@ -257,11 +266,7 @@ func sameHostPath(a, b string) bool {
 	if resolved, err := filepath.EvalSymlinks(b); err == nil {
 		b = resolved
 	}
-	a, b = filepath.Clean(a), filepath.Clean(b)
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		return strings.EqualFold(a, b)
-	}
-	return a == b
+	return samePathString(a, b)
 }
 
 // workspaceRegistry holds the gateway.yaml workspaces plus the registered ones. It
@@ -297,7 +302,7 @@ func (r *workspaceRegistry) All() []WorkspaceMapping {
 		if _, _, ok := findWorkspace(workspace.Agent, r.cfg.AgentWorkspaces, nil); ok {
 			continue
 		}
-		all = append(all, WorkspaceMapping{Agent: workspace.Agent, Host: workspace.Host})
+		all = append(all, WorkspaceMapping{Agent: workspace.Agent, Host: workspace.Host, Registered: true})
 	}
 	return all
 }
@@ -334,10 +339,11 @@ func (r *workspaceRegistry) reloadLocked() {
 	r.registered = registered
 }
 
-func (r *workspaceRegistry) add(mapping WorkspaceMapping, approvalID string) error {
+// add registers mapping after the operator approved approvedHost.
+func (r *workspaceRegistry) add(mapping WorkspaceMapping, approvalID string, approvedHost string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, err := AddRegisteredWorkspace(r.cfg, mapping, approvalID); err != nil {
+	if _, err := addRegisteredWorkspace(r.cfg, mapping, approvalID, approvedHost); err != nil {
 		return err
 	}
 	r.stamp = fileStamp{} // force a reload
@@ -423,7 +429,7 @@ func (g *Gateway) toolWorkspaceRegister(_ context.Context, _ *mcp.CallToolReques
 	var addErr error
 	decision, decided, err := g.askOperatorAsync(req, func(approval Approval) {
 		if approval.Decision == DecisionApproved {
-			if addErr = g.workspaces.add(resolved, id); addErr != nil {
+			if addErr = g.workspaces.add(resolved, id, resolved.Host); addErr != nil {
 				fmt.Fprintf(g.console, "workspace %s was approved but not registered: %s\n", sanitizeForTerminal(resolved.Agent), sanitizeForTerminal(addErr.Error()))
 			}
 		}

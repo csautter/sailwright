@@ -387,7 +387,7 @@ func (g *Gateway) toolRunCLI(_ context.Context, req *mcp.CallToolRequest, in run
 		if rel == "" {
 			rel = "."
 		}
-		created, err := CreateConfinedSnapshot(bundleRoot, mapping.Host, rel, hostRoot, g.dirs.Staging, SnapshotLimits{MaxBytes: g.cfg.SnapshotMaxBytes, MaxFiles: g.cfg.SnapshotMaxFiles})
+		created, err := CreateConfinedSnapshot(bundleRoot, mapping, rel, hostRoot, g.dirs.Staging, SnapshotLimits{MaxBytes: g.cfg.SnapshotMaxBytes, MaxFiles: g.cfg.SnapshotMaxFiles})
 		if err != nil {
 			return nil, JobView{}, fmt.Errorf("snapshot bundle_root: %w", err)
 		}

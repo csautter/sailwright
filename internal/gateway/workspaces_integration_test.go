@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -162,5 +163,49 @@ func TestWorkspaceRegisterBypassApprovals(t *testing.T) {
 	}
 	if !strings.Contains(h.Console.String(), "auto-approved (--bypass-approvals) workspace_register: sailwright-gateway workspace add") {
 		t.Fatalf("console:\n%s", h.Console.String())
+	}
+}
+
+// The agent registers a directory inside its mount and swaps it for a symlink to
+// another host directory while the request waits for the operator. The approval must
+// not register the swapped path, and run_cli must not use it.
+func TestWorkspaceRegisterRefusesPathSwappedBeforeApproval(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory symlinks need extra privileges on Windows")
+	}
+	h := gatewaytest.Start(t, gatewaytest.Options{Approvals: true, NoWorkspace: true})
+	session := h.Connect(t)
+	sub := filepath.Join(h.WorkspaceHost, "sub")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeProbe(t, sub)
+	args := map[string]any{"agent_path": gatewaytest.AgentWorkspace + "/sub", "host_path": sub, "probe_token": probeToken}
+	match := accessRequestID.FindStringSubmatch(errString(call(t, session, "workspace_register", args, nil)))
+	if match == nil {
+		t.Fatal("register must wait for approval")
+	}
+	h.WaitForPrompt(t, match[1])
+
+	secret := t.TempDir()
+	if err := os.RemoveAll(sub); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, sub); err != nil {
+		t.Fatal(err)
+	}
+	h.Approve(t, match[1])
+
+	deadline := time.Now().Add(10 * time.Second)
+	for console := h.Console.String(); !strings.Contains(console, "approved but not registered") || !strings.Contains(console, "not the approved"); console = h.Console.String() {
+		if time.Now().After(deadline) {
+			t.Fatalf("swapped path was not refused:\n%s", h.Console.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	var info gateway.GatewayInfo
+	mustCall(t, session, "gateway_info", map[string]any{}, &info)
+	if len(info.AgentWorkspaces) != 0 {
+		t.Fatalf("swapped workspace registered: %v", info.AgentWorkspaces)
 	}
 }

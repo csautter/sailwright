@@ -79,6 +79,9 @@ func TranslateAgentPath(agentPath string, workspaces []WorkspaceMapping) (string
 	if err != nil {
 		return "", WorkspaceMapping{}, fmt.Errorf("resolve agent workspace %q: %w", best.Agent, err)
 	}
+	if best.Registered && !samePathString(base, best.Host) {
+		return "", WorkspaceMapping{}, pinnedWorkspaceError(best, base)
+	}
 	resolved, err := filepath.EvalSymlinks(hostRoot)
 	if err != nil {
 		return "", WorkspaceMapping{}, fmt.Errorf("resolve bundle_root %q: %w", agentPath, err)
@@ -103,14 +106,14 @@ func CreateSnapshot(agentRoot string, hostRoot string, stagingRoot string, limit
 	return createSnapshotFrom(root, agentRoot, hostRoot, stagingRoot, limits)
 }
 
-// CreateConfinedSnapshot snapshots the directory rel below the operator-configured
-// workspace. The bundle root is opened through the workspace os.Root in one step, so
-// a symlink the agent swaps in after TranslateAgentPath cannot redirect it outside
-// the workspace. displayRoot is only recorded for the approval prompt.
-func CreateConfinedSnapshot(agentRoot string, workspaceHost string, rel string, displayRoot string, stagingRoot string, limits SnapshotLimits) (Snapshot, error) {
-	base, err := os.OpenRoot(workspaceHost)
+// CreateConfinedSnapshot snapshots the directory rel below the workspace. The bundle
+// root is opened through the workspace os.Root in one step, so a symlink the agent
+// swaps in after TranslateAgentPath cannot redirect it outside the workspace.
+// displayRoot is only recorded for the approval prompt.
+func CreateConfinedSnapshot(agentRoot string, workspace WorkspaceMapping, rel string, displayRoot string, stagingRoot string, limits SnapshotLimits) (Snapshot, error) {
+	base, err := openWorkspaceRoot(workspace)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("open agent workspace: %w", err)
+		return Snapshot{}, err
 	}
 	defer base.Close()
 	root, err := base.OpenRoot(filepath.FromSlash(rel))
@@ -119,6 +122,67 @@ func CreateConfinedSnapshot(agentRoot string, workspaceHost string, rel string, 
 	}
 	defer root.Close()
 	return createSnapshotFrom(root, agentRoot, displayRoot, stagingRoot, limits)
+}
+
+// openWorkspaceRoot opens the workspace host directory. os.Root confines paths below
+// its root but follows symlinks in the root path itself. A registered workspace may be
+// a directory inside the agent's mount, which the agent can replace with a symlink to
+// any host directory, so for those the opened directory must be the one that is at
+// the stored path right now, with no symlink on the way. Checking after opening
+// closes the race: a swap back after the open leaves a different directory there.
+func openWorkspaceRoot(workspace WorkspaceMapping) (*os.Root, error) {
+	root, err := os.OpenRoot(workspace.Host)
+	if err != nil {
+		return nil, fmt.Errorf("open agent workspace: %w", err)
+	}
+	if !workspace.Registered {
+		return root, nil
+	}
+	if err := checkPinnedWorkspace(root, workspace); err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	return root, nil
+}
+
+func checkPinnedWorkspace(root *os.Root, workspace WorkspaceMapping) error {
+	resolved, err := filepath.EvalSymlinks(workspace.Host)
+	if err != nil {
+		return fmt.Errorf("resolve agent workspace %q: %w", workspace.Agent, err)
+	}
+	if !samePathString(resolved, workspace.Host) {
+		return pinnedWorkspaceError(workspace, resolved)
+	}
+	opened, err := root.Stat(".")
+	if err != nil {
+		return fmt.Errorf("inspect agent workspace %q: %w", workspace.Agent, err)
+	}
+	current, err := os.Lstat(workspace.Host)
+	if err != nil {
+		return fmt.Errorf("inspect agent workspace %q: %w", workspace.Agent, err)
+	}
+	if !current.IsDir() || !os.SameFile(opened, current) {
+		return pinnedWorkspaceError(workspace, "")
+	}
+	return nil
+}
+
+func pinnedWorkspaceError(workspace WorkspaceMapping, resolved string) error {
+	detail := "was replaced while it was opened"
+	if resolved != "" {
+		detail = "now resolves to " + resolved
+	}
+	return fmt.Errorf("registered agent workspace %s: host path %s %s; a registered host path must stay a real directory. Remove the workspace and register it again", workspace.Agent, workspace.Host, detail)
+}
+
+// samePathString compares two cleaned paths without touching the filesystem, ignoring
+// case where the default filesystem does.
+func samePathString(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 func createSnapshotFrom(root *os.Root, agentRoot string, hostRoot string, stagingRoot string, limits SnapshotLimits) (Snapshot, error) {
