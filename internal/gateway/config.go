@@ -375,27 +375,20 @@ func (c *Config) Resolve() error {
 	}
 
 	for i, mapping := range c.AgentWorkspaces {
-		agent := strings.TrimSpace(mapping.Agent)
-		host := strings.TrimSpace(mapping.Host)
-		if !strings.HasPrefix(agent, "/") || path.Clean(agent) != agent || agent == "/" {
-			return fmt.Errorf("agent_workspaces[%d].agent %q must be a clean absolute path other than /", i, mapping.Agent)
+		normalized, err := normalizeWorkspaceMapping(mapping)
+		if err != nil {
+			return fmt.Errorf("agent_workspaces[%d]: %w", i, err)
 		}
-		if !filepath.IsAbs(host) {
-			return fmt.Errorf("agent_workspaces[%d].host %q must be an absolute host path", i, mapping.Host)
-		}
-		c.AgentWorkspaces[i] = WorkspaceMapping{Agent: agent, Host: filepath.Clean(host)}
+		c.AgentWorkspaces[i] = normalized
 	}
 
 	if c.BinarySHA256 != "" && !sha256HexPattern.MatchString(c.BinarySHA256) {
 		return errors.New("binary_sha256 must be 64 lowercase hex characters")
 	}
 
-	for _, dir := range []string{c.StateDir, c.DataDir, c.AgentDir, c.SharedCacheDir, c.SharedAppData, c.SharedCache, c.SharedVagrant, c.SharedPackerCache} {
-		if dir == "" {
-			continue
-		}
-		if mapping, ok := c.hostPathInAgentWorkspace(dir); ok {
-			return fmt.Errorf("%s is inside the agent-writable workspace %s; move the gateway directories outside of it", dir, mapping.Host)
+	for _, mapping := range c.AgentWorkspaces {
+		if err := c.checkWorkspaceAgainstGatewayDirs(mapping); err != nil {
+			return err
 		}
 	}
 	// The agent dir is mounted into containers, so it must not expose gateway state.
@@ -410,15 +403,32 @@ func (c *Config) Resolve() error {
 	return nil
 }
 
-// hostPathInAgentWorkspace reports whether a host path is inside (or contains) an
-// agent-writable workspace.
-func (c *Config) hostPathInAgentWorkspace(hostPath string) (WorkspaceMapping, bool) {
-	for _, mapping := range c.AgentWorkspaces {
-		if isWithin(mapping.Host, hostPath) || isWithin(hostPath, mapping.Host) {
-			return mapping, true
+// normalizeWorkspaceMapping trims and cleans a mapping and checks that both sides are
+// absolute: the agent side as a container (slash) path, the host side for this OS.
+func normalizeWorkspaceMapping(mapping WorkspaceMapping) (WorkspaceMapping, error) {
+	agent := strings.TrimSpace(mapping.Agent)
+	host := strings.TrimSpace(mapping.Host)
+	if !strings.HasPrefix(agent, "/") || path.Clean(agent) != agent || agent == "/" {
+		return WorkspaceMapping{}, fmt.Errorf("agent path %q must be a clean absolute path other than /", mapping.Agent)
+	}
+	if !filepath.IsAbs(host) {
+		return WorkspaceMapping{}, fmt.Errorf("host path %q must be an absolute host path", mapping.Host)
+	}
+	return WorkspaceMapping{Agent: agent, Host: filepath.Clean(host)}, nil
+}
+
+// checkWorkspaceAgainstGatewayDirs rejects an agent-writable workspace that is inside
+// or contains one of the gateway's own directories.
+func (c *Config) checkWorkspaceAgainstGatewayDirs(mapping WorkspaceMapping) error {
+	for _, dir := range []string{c.StateDir, c.DataDir, c.AgentDir, c.SharedCacheDir, c.SharedAppData, c.SharedCache, c.SharedVagrant, c.SharedPackerCache} {
+		if dir == "" {
+			continue
+		}
+		if isWithin(mapping.Host, dir) || isWithin(dir, mapping.Host) {
+			return fmt.Errorf("%s is inside the agent-writable workspace %s; move the gateway directories outside of it", dir, mapping.Host)
 		}
 	}
-	return WorkspaceMapping{}, false
+	return nil
 }
 
 func parseDurationDefault(value string, fallback time.Duration) (time.Duration, error) {
