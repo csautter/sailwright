@@ -38,6 +38,13 @@ policy on the host.
 - **Snapshots.** Agent-provided files are used only through `bundle_root`, which
   must resolve inside a configured agent workspace. The gateway copies it into
   a read-only snapshot and runs the snapshot.
+- **Workspace registration (amendment).** `gateway.yaml` stays read-only
+  through MCP. Additional workspaces live in `agent_workspaces.json` in the
+  state directory. The agent can add one with `workspace_register` only after
+  the gateway finds an agent-written probe token in the host directory, which
+  proves the directory is the agent's mount. The operator must then approve it
+  on the host terminal. This removes the YAML edit and restart for each new
+  devcontainer without letting the agent name arbitrary host directories.
 - **Trust model.** The agent is untrusted. The bearer token is readable by
   everything in the container, so it is not a boundary against the agent; the
   boundaries are the safe set, the approval channel (host TTY only) and file
