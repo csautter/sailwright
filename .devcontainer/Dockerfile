@@ -19,10 +19,10 @@ ENV TERRAGRUNT_SHA256_AMD64="d75a80bb264758ba00dabcb17f4b507fcdab4ca90d9e41f9675
 # renovate: datasource=custom.terragrunt-linux-arm64 depName=gruntwork-io/terragrunt version=1.1.6 versioning=semver
 ENV TERRAGRUNT_SHA256_ARM64="44b43df99bae7a309fdb831180bd9efb84fb145cf38a80c139e490395581649d"
 # renovate: datasource=custom.tflint-linux-amd64 depName=terraform-linters/tflint versioning=semver
-ENV TFLINT_VERSION="0.64.0"
-ENV TFLINT_SHA256_AMD64="cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d2ef954537"
-# renovate: datasource=custom.tflint-linux-arm64 depName=terraform-linters/tflint version=0.64.0 versioning=semver
-ENV TFLINT_SHA256_ARM64="560da89aacf59389d4eb029730dd5b109b7288096c32f2726a0d9e783a5ea8eb"
+ENV TFLINT_VERSION="0.66.0"
+ENV TFLINT_SHA256_AMD64="22be11cadc25cd02401e94c0ccc91aa63467debb8485c2a755d98f4c0a9d1e2e"
+# renovate: datasource=custom.tflint-linux-arm64 depName=terraform-linters/tflint version=0.66.0 versioning=semver
+ENV TFLINT_SHA256_ARM64="1105a0a5ddee7cdac7957a3475571a946b839192ea1bc0c722c6c4686001067e"
 
 # renovate: datasource=github-releases depName=hashicorp/terraform versioning=hashicorp
 ENV TERRAFORM_VERSION="1.17.1"
