@@ -176,6 +176,7 @@ type JobManager struct {
 	removeSnapshot func(dir string) error
 	console        io.Writer
 	follow         io.Writer
+	live           LiveTail
 	cacheDir       string
 	screensDir     string
 	stuckAfter     time.Duration
@@ -205,6 +206,9 @@ type JobManagerOptions struct {
 	Console     io.Writer
 	// Follow mirrors job output (redacted) to this writer, e.g. the gateway terminal.
 	Follow io.Writer
+	// Live shows the newest lines of the running job on the gateway terminal. Follow
+	// takes precedence.
+	Live LiveTail
 	// CacheDir is the sailwright cache dir, where builds record console frames.
 	CacheDir string
 	// ScreensDir keeps the sampled frames per job; empty disables screenshots.
@@ -225,7 +229,7 @@ func NewJobManager(opts JobManagerOptions) *JobManager {
 	return &JobManager{
 		runner: opts.Runner, approver: opts.Approver, audit: opts.Audit, redactor: opts.Redactor,
 		logsDir: opts.LogsDir, stagingDir: opts.StagingDir, dataDir: opts.DataDir, minFreeGB: opts.MinFreeGB, outputLimit: opts.OutputLimit,
-		binarySHA: opts.BinarySHA, onFinish: opts.OnFinish, console: console, follow: opts.Follow,
+		binarySHA: opts.BinarySHA, onFinish: opts.OnFinish, console: console, follow: opts.Follow, live: opts.Live,
 		cacheDir: opts.CacheDir, screensDir: opts.ScreensDir, stuckAfter: opts.StuckAfter,
 		removeSnapshot: RemoveSnapshot,
 		jobs:           map[string]*job{},
@@ -409,20 +413,27 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 
 	var sinks []io.Writer
 	sinks = append(sinks, j.output)
+	logPath := ""
 	if m.logsDir != "" {
-		logPath := filepath.Join(m.logsDir, id+".log")
+		path := filepath.Join(m.logsDir, id+".log")
 		// #nosec G304 -- fixed file name inside the gateway log directory.
-		if logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, privateFilePermission); err == nil {
+		if logFile, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, privateFilePermission); err == nil {
 			defer logFile.Close()
 			sinks = append(sinks, &cappedWriter{w: logFile, limit: maxJobLogBytes})
-			if m.follow == nil {
+			logPath = path
+			if m.follow == nil && m.live == nil {
 				fmt.Fprintf(m.console, "  live output: %s\n", liveOutputCommand(logPath))
 			}
 		}
 	}
-	if m.follow != nil {
+	var live LiveTail
+	switch {
+	case m.follow != nil:
 		// Output is already redacted and stripped of escape sequences at this point.
 		sinks = append(sinks, &prefixWriter{prefix: "[" + id + "] ", next: m.follow})
+	case m.live != nil:
+		live = m.live
+		sinks = append(sinks, live.Begin(id, logPath))
 	}
 	writer := newLineRedactingWriter(redactor, io.MultiWriter(sinks...))
 
@@ -434,6 +445,10 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 	}
 	code, err := runner.Run(runCtx, argv, spec.Dir, writer)
 	_ = writer.Flush()
+	if live != nil {
+		// Remove the tail before the job is reported as finished.
+		live.End(err != nil || code != 0)
+	}
 	// Keep the final frame before the job is reported as finished.
 	stopScreens()
 	if spec.OnFinished != nil {

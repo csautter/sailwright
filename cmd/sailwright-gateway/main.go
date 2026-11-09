@@ -44,6 +44,7 @@ type serveFlags struct {
 	noApprovals  bool
 	bypass       bool
 	follow       bool
+	liveLines    int
 }
 
 func newRootCommand() *cobra.Command {
@@ -91,7 +92,23 @@ need "approve <id>" from you. Agents cannot approve their own requests.`,
 	command.Flags().BoolVar(&flags.bypass, "bypass-approvals", false, "DANGEROUS, disposable test hosts only: approve every request and VM access automatically and pin the binary without asking")
 	command.MarkFlagsMutuallyExclusive("no-approvals", "bypass-approvals")
 	command.Flags().BoolVar(&flags.follow, "follow", false, "Mirror job output to this terminal (approval prompts still appear)")
+	command.Flags().IntVar(&flags.liveLines, "live-lines", defaultLiveLines, "Show the last N lines of the running job at the bottom of this terminal; 0 turns it off")
 	return command
+}
+
+const defaultLiveLines = 8
+
+// newLiveConsole returns the terminal with a live job tail, or nil when it is off or
+// stdout cannot redraw in place (not a terminal, or no VT support).
+func newLiveConsole(flags serveFlags) *gateway.LiveConsole {
+	if flags.follow || flags.liveLines <= 0 {
+		return nil
+	}
+	fd := int(os.Stdout.Fd()) // #nosec G115 -- file descriptors fit in int.
+	if !term.IsTerminal(fd) || !gateway.EnableVirtualTerminal(os.Stdout) {
+		return nil
+	}
+	return gateway.NewLiveConsole(os.Stdout, flags.liveLines, gateway.TerminalWidth(fd))
 }
 
 func newTokenCommand(stateDir *string) *cobra.Command {
@@ -245,16 +262,28 @@ func runServe(parent context.Context, flags serveFlags) error {
 			}
 		}
 	}
+	// From here on, every terminal write goes through out, so the live job tail at the
+	// bottom of the terminal can be redrawn in place.
+	var out io.Writer = os.Stdout
+	var liveTail gateway.LiveTail
+	var hold func(bool)
+	if live := newLiveConsole(flags); live != nil {
+		defer live.Close()
+		out, liveTail, hold = live, live, live.Hold
+	}
 	var approver gateway.Approver = gateway.DisabledApprover{}
 	switch {
 	case flags.noApprovals:
 	case flags.bypass:
-		approver = gateway.AutoApprover{Out: os.Stdout}
+		approver = gateway.AutoApprover{Out: out}
 	case !interactive:
 		fmt.Println("stdin is not a terminal: the approval console is disabled, only the safe set is available")
 	default:
-		approver = gateway.NewConsoleApprover(stdin, os.Stdout, cfg.ApprovalTTLValue).
+		approver = gateway.NewConsoleApprover(stdin, out, cfg.ApprovalTTLValue).
 			HideInputWith(gateway.TerminalInputHider(int(os.Stdin.Fd()))) // #nosec G115 -- file descriptors fit in int.
+		if hold != nil {
+			approver.(*gateway.ConsoleApprover).WithPromptHook(hold)
+		}
 	}
 
 	// The shutdown question is read by the approval console when it runs, so the two
@@ -263,7 +292,7 @@ func runServe(parent context.Context, flags serveFlags) error {
 	if console, ok := approver.(*gateway.ConsoleApprover); ok {
 		confirmer = console
 	} else if interactive {
-		confirmer = gateway.LineConfirmer{In: stdin, Out: os.Stdout}
+		confirmer = gateway.LineConfirmer{In: stdin, Out: out}
 	}
 
 	g, err := gateway.New(gateway.Options{
@@ -271,9 +300,10 @@ func runServe(parent context.Context, flags serveFlags) error {
 		Pinned:       pinned,
 		Token:        token,
 		Approver:     approver,
-		Console:      os.Stdout,
+		Console:      out,
 		Version:      version,
 		FollowOutput: flags.follow,
+		LiveTail:     liveTail,
 	})
 	if err != nil {
 		return err
@@ -314,7 +344,7 @@ func runServe(parent context.Context, flags serveFlags) error {
 	defer listeners.Close()
 	printBanner(cfg, pinned, listeners.SocketPath, listeners.ViewURL, approver)
 	if flags.bypass {
-		fmt.Println("WARNING: --bypass-approvals is set: every request and VM access is approved automatically. Use it only on disposable test hosts.")
+		fmt.Fprintln(out, "WARNING: --bypass-approvals is set: every request and VM access is approved automatically. Use it only on disposable test hosts.")
 	}
 	serveErr := g.ServeListeners(ctx, listeners)
 	listeners.Close()

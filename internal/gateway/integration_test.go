@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -452,6 +454,70 @@ func TestGatewayShowsLiveOutputOnTheConsole(t *testing.T) {
 	waitJob(t, session, view.ID)
 	if !strings.Contains(h.Console.String(), "["+view.ID+"] created") {
 		t.Fatalf("expected mirrored job output on the console:\n%s", h.Console.String())
+	}
+}
+
+// recordingLiveTail stands in for the terminal tail of the gateway console.
+type recordingLiveTail struct {
+	mu      sync.Mutex
+	begun   []string
+	output  strings.Builder
+	ended   []bool
+	console *gatewaytest.SyncBuffer
+	// consoleAtEnd is the console when the tail was removed.
+	consoleAtEnd string
+}
+
+func (r *recordingLiveTail) Begin(id, logPath string) io.Writer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.begun = append(r.begun, id+" "+logPath)
+	return writerFunc(func(p []byte) (int, error) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.output.Write(p)
+	})
+}
+
+func (r *recordingLiveTail) End(failed bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ended = append(r.ended, failed)
+	r.consoleAtEnd = r.console.String()
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+func TestGatewayShowsTheLiveTailOfTheRunningJob(t *testing.T) {
+	tail := &recordingLiveTail{}
+	h := gatewaytest.Start(t, gatewaytest.Options{LiveTail: tail})
+	tail.mu.Lock()
+	tail.console = h.Console
+	tail.mu.Unlock()
+	session := h.Connect(t)
+	var view gateway.JobView
+	mustCall(t, session, "vm_create", map[string]any{"os": "ubuntu"}, &view)
+	waitJob(t, session, view.ID)
+
+	tail.mu.Lock()
+	defer tail.mu.Unlock()
+	wantBegin := view.ID + " " + filepath.Join(h.StateDir, "logs", view.ID+".log")
+	if len(tail.begun) != 1 || tail.begun[0] != wantBegin {
+		t.Fatalf("Begin calls = %q, want %q", tail.begun, wantBegin)
+	}
+	if !strings.Contains(tail.output.String(), "created") {
+		t.Fatalf("job output did not reach the tail:\n%s", tail.output.String())
+	}
+	if len(tail.ended) != 1 || tail.ended[0] {
+		t.Fatalf("End calls = %v, want one for a succeeded job", tail.ended)
+	}
+	if strings.Contains(tail.consoleAtEnd, "job "+view.ID+" succeeded") {
+		t.Fatal("the tail must be removed before the job is reported as finished")
+	}
+	if strings.Contains(h.Console.String(), "live output:") {
+		t.Fatalf("the log hint is not needed with a live tail:\n%s", h.Console.String())
 	}
 }
 

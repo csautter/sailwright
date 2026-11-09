@@ -112,10 +112,13 @@ type ConsoleApprover struct {
 	now func() time.Time
 
 	hideInput InputHider
+	onPrompt  func(waiting bool)
 
-	mu      sync.Mutex
-	pending *pendingApproval
-	closed  bool
+	mu sync.Mutex
+	// prompting is the last state reported to onPrompt.
+	prompting bool
+	pending   *pendingApproval
+	closed    bool
 	// awaiting is the pending request whose sudo password is typed next.
 	awaiting    *pendingApproval
 	restoreEcho func()
@@ -145,6 +148,27 @@ func (a *ConsoleApprover) HideInputWith(hide InputHider) *ConsoleApprover {
 	return a
 }
 
+// WithPromptHook sets a function told when the console starts and stops waiting for
+// the operator's input, e.g. to hide the live job output while they type.
+func (a *ConsoleApprover) WithPromptHook(hook func(waiting bool)) *ConsoleApprover {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.onPrompt = hook
+	return a
+}
+
+// syncPromptLocked reports a change of the waiting state to onPrompt.
+func (a *ConsoleApprover) syncPromptLocked() {
+	waiting := a.pending != nil || a.awaiting != nil || a.answer != nil
+	if waiting == a.prompting {
+		return
+	}
+	a.prompting = waiting
+	if a.onPrompt != nil {
+		a.onPrompt(waiting)
+	}
+}
+
 // Enabled reports whether the console is still readable.
 func (a *ConsoleApprover) Enabled() bool {
 	a.mu.Lock()
@@ -167,6 +191,7 @@ func (a *ConsoleApprover) Request(ctx context.Context, req ApprovalRequest) Appr
 	}
 	pending := &pendingApproval{id: req.ID, become: req.Become, decision: make(chan Approval, 1)}
 	a.pending = pending
+	a.syncPromptLocked()
 	expires := a.now().Add(a.ttl)
 	a.printRequest(req, expires)
 	a.mu.Unlock()
@@ -190,6 +215,7 @@ func (a *ConsoleApprover) Request(ctx context.Context, req ApprovalRequest) Appr
 	if a.awaiting == pending {
 		a.stopAwaitingLocked()
 	}
+	a.syncPromptLocked()
 	note := ""
 	if approval.BecomePassword != "" {
 		note = " (with sudo password)"
@@ -331,6 +357,7 @@ func (a *ConsoleApprover) Confirm(ctx context.Context, question string) bool {
 	}
 	answer := make(chan bool, 1)
 	a.answer = answer
+	a.syncPromptLocked()
 	fmt.Fprintf(a.out, "%s [y/N] ", question)
 	a.mu.Unlock()
 
@@ -344,6 +371,7 @@ func (a *ConsoleApprover) Confirm(ctx context.Context, question string) bool {
 	if a.answer == answer {
 		a.answer = nil
 	}
+	a.syncPromptLocked()
 	a.mu.Unlock()
 	return yes
 }
@@ -368,6 +396,7 @@ func (a *ConsoleApprover) answerLocked(yes bool) {
 	default:
 	}
 	a.answer = nil
+	a.syncPromptLocked()
 }
 
 // LineConfirmer asks on a reader nobody else reads; used when the approval console is
@@ -433,6 +462,7 @@ func (a *ConsoleApprover) stopAwaitingLocked() {
 		a.restoreEcho()
 	}
 	a.awaiting, a.restoreEcho = nil, nil
+	a.syncPromptLocked()
 }
 
 // quoteArgv renders argv unambiguously for review.
