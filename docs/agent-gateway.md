@@ -268,15 +268,30 @@ a new devcontainer. The agent registers its own workspace with the
 1. The agent writes a random token into `<agent_path>/.sailwright-gateway-probe`.
 2. It calls `workspace_register` with `agent_path`, `host_path` and that
    token. The gateway reads the probe from `host_path` on the host, which
-   proves `host_path` is really the agent's mount. A path the agent only
-   names (your home directory, another checkout) cannot pass.
+   proves the agent can write there: `host_path` is its mount or a directory
+   inside it. A path the agent only names (your home directory, another
+   checkout) cannot pass.
 3. You approve the request once on the gateway terminal. The approval prompt
-   shows both paths.
+   shows both paths. If the host path resolves somewhere else by the time you
+   approve, nothing is registered.
 
 The mapping takes effect at once and is saved in
-`<state dir>/agent_workspaces.json`, so it survives restarts. Host paths
-that are a filesystem root, contain your home directory or overlap gateway
-directories are refused.
+`<state dir>/agent_workspaces.json`, so it survives restarts. The host path
+is stored resolved and pinned. If it is later replaced by a symlink or by
+another directory, which the agent can do inside its mount, `run_cli`
+refuses the workspace until you remove it and it is registered again. Host
+paths that are a filesystem root, contain your home directory or overlap
+gateway directories are refused. Directories below your home directory,
+such as a checkout, are allowed.
+
+The gateway never deletes the probe file; the agent removes it after the
+registration. To keep it out of commits, add `.sailwright-gateway-probe` to
+the project's `.gitignore`. The token proves nothing after the registration
+and is not a secret.
+
+`gateway_info` lists both `gateway.yaml` and registered workspaces under
+`agent_workspaces`. With `serve --bypass-approvals`, `workspace_register` is
+approved automatically after the probe check.
 
 To let the agent find the host path without asking you, pass it into the
 container in `devcontainer.json`:
@@ -286,7 +301,8 @@ container in `devcontainer.json`:
 ```
 
 You can also manage the registered workspaces yourself. A running gateway
-picks up changes without a restart:
+picks up changes at its next tool call, without a restart, and prints
+`registered workspaces reloaded` on its console:
 
 ```bash
 sailwright-gateway workspace list                     # gateway.yaml and registered entries
@@ -572,6 +588,7 @@ question follows the same ownership rules.
 | `token` | bearer token (owner-only permissions) |
 | `gateway.yaml` | optional configuration |
 | `agent_workspaces.json` | [registered agent workspaces](#agent-workspaces), written by `workspace_register` and `sailwright-gateway workspace` |
+| `agent_workspaces.lock` | lock that serializes changes to `agent_workspaces.json` |
 | `bin/sailwright` | pinned binary copy |
 | `data/` | gateway-owned config and extracted assets; only with `--state-dir` or on macOS: the data dir, see [Disk usage](#disk-usage) |
 | `work/` | empty working directory for commands |

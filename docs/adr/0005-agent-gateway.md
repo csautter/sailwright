@@ -42,8 +42,12 @@ policy on the host.
   through MCP. Additional workspaces live in `agent_workspaces.json` in the
   state directory. The agent can add one with `workspace_register` only after
   the gateway finds an agent-written probe token in the host directory, which
-  proves the directory is the agent's mount. The operator must then approve it
-  on the host terminal. This removes the YAML edit and restart for each new
+  proves the agent can write there (its mount or a directory inside it). The
+  operator must then approve it on the host terminal, and the path must still
+  resolve to the approved directory at that point. A registered host path is
+  stored resolved and pinned: it is refused on use once it is no longer the
+  same real directory, because the agent can replace a directory inside its
+  mount with a symlink. This removes the YAML edit and restart for each new
   devcontainer without letting the agent name arbitrary host directories.
 - **Trust model.** The agent is untrusted. The bearer token is readable by
   everything in the container, so it is not a boundary against the agent; the
