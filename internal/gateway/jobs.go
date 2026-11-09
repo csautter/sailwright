@@ -413,6 +413,7 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 
 	var sinks []io.Writer
 	sinks = append(sinks, j.output)
+	// logPath stays empty when the log file cannot be opened.
 	logPath := ""
 	if m.logsDir != "" {
 		path := filepath.Join(m.logsDir, id+".log")
@@ -426,21 +427,18 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 			}
 		}
 	}
-	var live LiveTail
-	liveEnded := false
+	// endLive removes the live tail once; it does nothing without one.
+	endLive := func(bool) {}
 	switch {
 	case m.follow != nil:
 		// Output is already redacted and stripped of escape sequences at this point.
 		sinks = append(sinks, &prefixWriter{prefix: "[" + id + "] ", next: m.follow})
 	case m.live != nil:
-		live = m.live
-		sinks = append(sinks, live.Begin(id, logPath))
-		// Removes the tail if the job panics before the regular End below.
-		defer func() {
-			if !liveEnded {
-				live.End(true)
-			}
-		}()
+		sinks = append(sinks, m.live.Begin(id, logPath))
+		var once sync.Once
+		endLive = func(failed bool) { once.Do(func() { m.live.End(failed) }) }
+		// Removes the tail if the job panics before the regular endLive below.
+		defer endLive(true)
 	}
 	writer := newLineRedactingWriter(redactor, io.MultiWriter(sinks...))
 
@@ -452,11 +450,8 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 	}
 	code, err := runner.Run(runCtx, argv, spec.Dir, writer)
 	_ = writer.Flush()
-	if live != nil {
-		// Remove the tail before the job is reported as finished.
-		liveEnded = true
-		live.End(err != nil || code != 0)
-	}
+	// Remove the tail before the job is reported as finished.
+	endLive(err != nil || code != 0)
 	// Keep the final frame before the job is reported as finished.
 	stopScreens()
 	if spec.OnFinished != nil {

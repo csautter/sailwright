@@ -315,11 +315,12 @@ func runServe(parent context.Context, flags serveFlags) error {
 	case !interactive:
 		fmt.Println("stdin is not a terminal: the approval console is disabled, only the safe set is available")
 	default:
-		approver = gateway.NewConsoleApprover(stdin, out, cfg.ApprovalTTLValue).
+		console := gateway.NewConsoleApprover(stdin, out, cfg.ApprovalTTLValue).
 			HideInputWith(gateway.TerminalInputHider(int(os.Stdin.Fd()))) // #nosec G115 -- file descriptors fit in int.
 		if hold != nil {
-			approver.(*gateway.ConsoleApprover).WithPromptHook(hold)
+			console.WithPromptHook(hold)
 		}
+		approver = console
 	}
 
 	// The shutdown question is read by the approval console when it runs, so the two
