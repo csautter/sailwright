@@ -382,7 +382,9 @@ func generateSecureLocalWindowsProvisionPassword() (string, error) {
 	const lowercase = "abcdefghijklmnopqrstuvwxyz"
 	const uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	const digits = "0123456789"
-	const special = "!@#$%^&*()-_=+[]{}"
+	// No braces: Ansible templates extra vars, so "{{" or "{%" in the
+	// password would be read as Jinja.
+	const special = "!@#$%^&*()-_=+[]"
 	const all = lowercase + uppercase + digits + special
 
 	requiredSets := []string{lowercase, uppercase, digits, special}
