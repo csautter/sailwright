@@ -149,6 +149,10 @@ func (c *LiveConsole) Hold(on bool) {
 		c.clearLocked(&b)
 	} else if c.holds > 0 {
 		c.holds--
+		if c.holds == 0 {
+			// The operator's Enter moved the cursor to a fresh line.
+			c.atLineStart = true
+		}
 		c.drawLocked(&b)
 	}
 	_, _ = io.WriteString(c.out, b.String())

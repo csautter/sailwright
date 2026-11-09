@@ -176,3 +176,32 @@ func TestLiveConsoleStripsControlCharacters(t *testing.T) {
 		t.Fatalf("row = %q", got)
 	}
 }
+
+func TestLiveConsoleReturnsAfterAPromptWithoutOutput(t *testing.T) {
+	c, out, _ := newTestLiveConsole(2, 80)
+	defer c.Close()
+	w := c.Begin("job1", "")
+	c.Hold(true)
+	_, _ = c.Write([]byte("Continue? [y/N] "))
+	_, _ = w.Write([]byte("later\n"))
+	out.Reset()
+	c.Hold(false)
+	if !strings.Contains(out.String(), "later") {
+		t.Fatalf("region not drawn after a prompt: %q", out.String())
+	}
+}
+
+func TestLiveConsoleBeginReplacesAnActiveTail(t *testing.T) {
+	c, out, _ := newTestLiveConsole(2, 80)
+	defer c.Close()
+	first := c.Begin("job1", "")
+	_, _ = first.Write([]byte("one\n"))
+	second := c.Begin("job2", "")
+	_, _ = second.Write([]byte("two\n"))
+	c.mu.Lock()
+	c.flushLocked()
+	c.mu.Unlock()
+	if !strings.Contains(out.String(), "job job2") {
+		t.Fatalf("second job not shown: %q", out.String())
+	}
+}

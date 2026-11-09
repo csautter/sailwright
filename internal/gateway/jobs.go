@@ -427,6 +427,7 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 		}
 	}
 	var live LiveTail
+	liveEnded := false
 	switch {
 	case m.follow != nil:
 		// Output is already redacted and stripped of escape sequences at this point.
@@ -434,6 +435,12 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 	case m.live != nil:
 		live = m.live
 		sinks = append(sinks, live.Begin(id, logPath))
+		// Removes the tail if the job panics before the regular End below.
+		defer func() {
+			if !liveEnded {
+				live.End(true)
+			}
+		}()
 	}
 	writer := newLineRedactingWriter(redactor, io.MultiWriter(sinks...))
 
@@ -447,6 +454,7 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 	_ = writer.Flush()
 	if live != nil {
 		// Remove the tail before the job is reported as finished.
+		liveEnded = true
 		live.End(err != nil || code != 0)
 	}
 	// Keep the final frame before the job is reported as finished.
