@@ -12,7 +12,7 @@
 set -u
 
 KIT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck source=test/release/lib/rt.sh
+# shellcheck source=test/release/lib/rt.sh disable=SC1091 # CI runs ShellCheck without -x
 . "$KIT_DIR/lib/rt.sh"
 # Invocation settings take precedence over release.env, including explicit empty
 # values (the Tart pass clears the UTM pull reference and credential override).
@@ -302,10 +302,10 @@ phase_install() {
 		rt_note "no RT_RELEASE_TAG: the checkout's install.sh installs the latest existing release $tag"
 	fi
 	rt_check INS-01 "checkout install.sh installs $tag into ~/.local/bin" --timeout 600 -- sh "$RT_REPO_ROOT/scripts/install.sh" --version "$tag"
-	# shellcheck disable=SC2016 # expanded by the inner shell, not here
 	# Releases before v0.27.0 have no --version flag; --help only proves the binary starts.
 	local probe=--help
 	[ -n "${RT_RELEASE_TAG:-}" ] && probe=--version
+	# shellcheck disable=SC2016 # expanded by the inner shell, not here
 	rt_check INS-02 "installed binaries run ($probe)" -- sh -c '"$HOME/.local/bin/sailwright" "$1" && "$HOME/.local/bin/sailwright-gateway" "$1"' sh "$probe"
 	rt_check INS-03 "sailwright install (host dependencies)" --timeout 5400 -- "$BIN" install
 	# shellcheck disable=SC2016 # expanded by the inner shell, not here
