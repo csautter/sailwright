@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -415,7 +416,7 @@ func (m *JobManager) execute(ctx context.Context, j *job, spec JobSpec) {
 			defer logFile.Close()
 			sinks = append(sinks, &cappedWriter{w: logFile, limit: maxJobLogBytes})
 			if m.follow == nil {
-				fmt.Fprintf(m.console, "  live output: tail -f %s\n", logPath)
+				fmt.Fprintf(m.console, "  live output: %s\n", liveOutputCommand(logPath))
 			}
 		}
 	}
@@ -707,4 +708,13 @@ func newJobID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(raw), nil
+}
+
+// liveOutputCommand returns a shell command that follows the job log on the
+// gateway host. Windows hosts have no tail, so PowerShell is used instead.
+func liveOutputCommand(logPath string) string {
+	if runtime.GOOS == "windows" {
+		return "Get-Content -Wait -Tail 50 -LiteralPath '" + strings.ReplaceAll(logPath, "'", "''") + "'"
+	}
+	return "tail -f " + logPath
 }
