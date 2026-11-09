@@ -178,9 +178,9 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 		}
 		return nil
 	}
-	job := func(callCtx context.Context, tool string) error {
+	jobWith := func(callCtx context.Context, tool string, params map[string]any) error {
 		var view gateway.JobView
-		if err := call(callCtx, tool, args, &view); err != nil {
+		if err := call(callCtx, tool, params, &view); err != nil {
 			return err
 		}
 		for !view.Done() {
@@ -198,6 +198,7 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 		}
 		return nil
 	}
+	job := func(callCtx context.Context, tool string) error { return jobWith(callCtx, tool, args) }
 	var listing gateway.ListTargetsOutput
 	if err := call(ctx, "list_targets", map[string]any{"command": "destroy"}, &listing); err != nil {
 		t.Fatal(err)
@@ -240,10 +241,24 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 			t.Log("cleanup verified: selected VM is missing")
 		}
 	}()
-	if err := job(ctx, "vm_create"); err != nil {
+	// The typed create/start tools do not take the guest-credential override.
+	// Targets on bridged networks therefore go through run_cli, which needs
+	// host approval (automatic under --bypass-approvals).
+	lifecycleTool := func(command, tool string) error {
+		if os.Getenv("SAILWRIGHT_E2E_INSECURE") != "1" {
+			return job(ctx, tool)
+		}
+		argv := []string{command, parts[0], "--arch", parts[2]}
+		if parts[1] != "" {
+			argv = append(argv, "--type", parts[1])
+		}
+		argv = append(argv, "--allow-insecure-credentials")
+		return jobWith(ctx, "run_cli", map[string]any{"args": argv, "reason": "release test: accept guest credential risk"})
+	}
+	if err := lifecycleTool("create", "vm_create"); err != nil {
 		t.Fatal(err)
 	}
-	if err := job(ctx, "vm_start"); err != nil {
+	if err := lifecycleTool("start", "vm_start"); err != nil {
 		t.Fatal(err)
 	}
 	var info gateway.VMInfoOutput
@@ -327,7 +342,7 @@ func runVMAccess(t *testing.T, windowsGuest bool) {
 		}
 		return strings.ReplaceAll(string(output), "\r\n", "\n")
 	}
-	if output := run("ssh", "-F", config, "-o", "ConnectionAttempts=30", "-o", "ConnectTimeout=5", alias, "uname -a"); !strings.Contains(output, "Linux") {
+	if output := run("ssh", "-F", config, "-o", "ConnectionAttempts=30", "-o", "ConnectTimeout=30", alias, "uname -a"); !strings.Contains(output, "Linux") {
 		t.Fatal("unexpected guest kernel")
 	}
 	source := filepath.Join(directory, "sailwright-access.txt")

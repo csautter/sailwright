@@ -10,7 +10,8 @@ real keypress does. Steps run in order:
   intr                   press Ctrl+C
   exit[:SECONDS]         wait for the command to exit (default 120 s)
 
-The transcript (ANSI sequences removed) goes to --log. A JSON summary is printed
+The transcript (ANSI sequences removed) goes to --log and stderr, so callers can
+assert on command output while parsing the JSON summary printed
 on stdout: the exit status, seconds from the last Ctrl+C to exit, and per-step
 timings. Exit status: the command's own status, 124 if a step timed out (the
 command is then killed), 125 for usage errors.
@@ -21,13 +22,16 @@ Example:
 """
 
 import argparse
+import fcntl
 import json
 import os
 import pty
 import re
 import select
 import signal
+import struct
 import sys
+import termios
 import time
 
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\r")
@@ -41,6 +45,13 @@ class Session:
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             try:
+                # Bash background jobs inherit ignored terminal signals. A new
+                # foreground terminal command must receive normal Ctrl+C/Ctrl+\.
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
+                signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+                # forkpty starts at 0x0; progress renderers cannot display bars
+                # until the terminal has a usable window size.
+                fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 120, 0, 0))
                 os.execvp(argv[0], argv)
             except OSError as error:
                 print(f"ptyctl: cannot run {argv[0]}: {error}", file=sys.stderr)
@@ -67,6 +78,8 @@ class Session:
         text = ANSI.sub("", data.decode("utf-8", errors="replace"))
         self.log.write(text)
         self.log.flush()
+        sys.stderr.write(text)
+        sys.stderr.flush()
         self.buffer = (self.buffer + text)[-1_000_000:]
 
     def reap(self, block=False):

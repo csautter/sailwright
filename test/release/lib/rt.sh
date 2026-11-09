@@ -22,6 +22,22 @@ rt__host() {
 	printf '%s\n' "${name%%.*}"
 }
 
+# Match run-owned processes by path. Colima's filesystem probes mention these paths
+# too, but are unrelated to builds and must never be selected for cleanup signals.
+rt_processes_matching() {
+	ps ax -o pid=,pgid=,stat=,command= | awk -v pattern="$1" '
+		index($0, pattern) && $0 !~ /grep|ptyctl|unix\.sh/ &&
+		$4 !~ /(^|\/)(awk|gawk|mawk|limactl)$/ { print }
+	'
+}
+
+# Reap a sampler before the next check redirects stderr. Otherwise Bash may write
+# a job-termination diagnostic (including the sampler's source) into that log.
+rt_stop_sampler() {
+	kill "$1" 2>/dev/null || true
+	wait "$1" 2>/dev/null || true
+}
+
 # rt_init PHASE: create the phase directory and reset its results.
 rt_init() {
 	RT_PHASE="$1"
@@ -128,7 +144,7 @@ rt_check() {
 	} >"$log"
 	cat "$tmp/stdout" "$tmp/stderr" >"$tmp/all"
 	if [ "$rc" = 124 ]; then
-		problems="timed out after ${timeout}s"
+		problems="timeout (exit 124; outer limit ${timeout}s)"
 	elif [ "$any_exit" = 0 ]; then
 		if [ "$nonzero" = 1 ]; then
 			[ "$rc" != 0 ] || problems="expected a non-zero exit"

@@ -76,6 +76,36 @@ func TestCancelledDownloadLeavesNoFileBehind(t *testing.T) {
 	}
 }
 
+func TestConcurrentDependencyProgressStopsAfterCancellation(t *testing.T) {
+	started := make(chan struct{}, 2)
+	server := stallingFileServer(t, started)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 2)
+	for _, name := range []string{"arm64.iso", "amd64.iso"} {
+		dep := WebFileDependency{LocalPath: filepath.Join(t.TempDir(), name), Source: server.URL + "/" + name}
+		go func() { done <- reconcileWebFileDependencies(ctx, []WebFileDependency{dep}) }()
+	}
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(10 * time.Second):
+			t.Fatal("both downloads did not start")
+		}
+	}
+	cancel()
+	for range 2 {
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("cancelled reconciliation succeeded")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("dependency progress did not stop after cancellation")
+		}
+	}
+}
+
 func TestInterruptedDependencyReconciliationStopsBeforeDownloads(t *testing.T) {
 	h, ctx := newInterruptHandler(context.Background(), nil, func(int) {})
 	h.escalate(os.Interrupt)

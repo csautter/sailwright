@@ -25,26 +25,64 @@ steps:
     with: {headless: true}
   - name: create VM
     op: create
+    unless_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    expect:
+      state: {command: start, field: start, regex: "^(ready to start|already running)$"}
+  - name: create VM with accepted credential risk
+    op: create
+    when_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    with: {allow_insecure_credentials: true}
     expect:
       state: {command: start, field: start, regex: "^(ready to start|already running)$"}
   - name: start VM
     op: start
+    unless_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    expect:
+      state: {command: start, field: start, regex: "^already running$"}
+  - name: start VM with accepted credential risk
+    op: start
+    when_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    with: {allow_insecure_credentials: true}
     expect:
       state: {command: start, field: start, regex: "^already running$"}
   - name: provision in check mode
     op: provision
     when_listed: provision
+    unless_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
     with: {check: true}
+    expect:
+      recap: {failed: 0, unreachable: 0}
+  - name: provision in check mode with accepted credential risk
+    op: provision
+    when_listed: provision
+    when_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    with: {check: true, allow_insecure_credentials: true}
     expect:
       recap: {failed: 0, unreachable: 0}
   - name: provision
     op: provision
     when_listed: provision
+    unless_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    expect:
+      recap: {failed: 0, unreachable: 0}
+  - name: provision with accepted credential risk
+    op: provision
+    when_listed: provision
+    when_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    with: {allow_insecure_credentials: true}
     expect:
       recap: {failed: 0, unreachable: 0}
   - name: provision again is idempotent
     op: provision
     when_listed: provision
+    unless_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    expect:
+      recap: {failed: 0, unreachable: 0, changed: 0}
+  - name: provision again is idempotent with accepted credential risk
+    op: provision
+    when_listed: provision
+    when_env: SAILWRIGHT_E2E_ALLOW_INSECURE_CREDENTIALS
+    with: {allow_insecure_credentials: true}
     expect:
       recap: {failed: 0, unreachable: 0, changed: 0}
   - name: stop VM

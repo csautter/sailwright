@@ -75,6 +75,15 @@ vm2                        : ok=3    changed=1    unreachable=0    failed=1    s
 	}
 }
 
+func TestParseRecapIgnoresAnsiColors(t *testing.T) {
+	output := "2026/11/08 21:37:23 x:provision stdout: PLAY RECAP ****\n" +
+		"2026/11/08 21:37:23 x:provision stdout: \x1b[0;32m192.168.179.3\x1b[0m              : \x1b[0;32mok=4   \x1b[0m changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   \n"
+	recap, ok := runner.ParseRecap(output)
+	if !ok || recap["ok"] != 4 || recap["failed"] != 0 {
+		t.Fatalf("unexpected recap %v (%v)", recap, ok)
+	}
+}
+
 func TestParseTarget(t *testing.T) {
 	target, err := runner.ParseTarget("ubuntu/server/amd64")
 	if err != nil || target.OS != "ubuntu" || target.Type != "server" || target.Arch != "amd64" {

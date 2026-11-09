@@ -500,11 +500,14 @@ func qemuEfiAarch64Dependency(related ...VirtualMachineConfig) WebFileDependency
 func DependencyReconciliation(ctx context.Context, vmconfig VirtualMachineConfig) error {
 	ctx, stopInterruptHandling := ensureInterruptHandling(ctx)
 	defer stopInterruptHandling()
+	return reconcileWebFileDependencies(ctx, webFileDependenciesForVMConfig(vmconfig))
+}
 
+func reconcileWebFileDependencies(ctx context.Context, dependencies []WebFileDependency) error {
 	p := mpb.New(mpb.WithWidth(80))
 	defer p.Wait()
 
-	for _, dep := range webFileDependenciesForVMConfig(vmconfig) {
+	for _, dep := range dependencies {
 		if err := buildContextError(ctx); err != nil {
 			return err
 		}
@@ -1286,6 +1289,18 @@ func downloadWebFileDependencyFromSource(ctx context.Context, p *mpb.Progress, d
 		Dst:              partialPath,
 		Mode:             getter.ClientModeFile,
 		ProgressListener: listener,
+		// The default getters are global mutable instances: Configure calls
+		// SetClient on each one. Concurrent downloads would overwrite each other's
+		// context/progress listener, leaving a progress container waiting forever.
+		Getters: map[string]getter.Getter{
+			"file":  new(getter.FileGetter),
+			"git":   new(getter.GitGetter),
+			"gcs":   new(getter.GCSGetter),
+			"hg":    new(getter.HgGetter),
+			"s3":    new(getter.S3Getter),
+			"http":  &getter.HttpGetter{Netrc: true},
+			"https": &getter.HttpGetter{Netrc: true},
+		},
 	}
 	err := client.Get()
 	if err == nil {

@@ -48,6 +48,10 @@ bundles of the operator are not touched. Hypervisor VM names are still global:
 every phase that creates a VM first checks that the target does not exist.
 `RT_APPDATA=default` uses the normal directories instead.
 
+Invocation `RT_*` settings override `release.env`, including explicit empty values.
+Use a separate `RT_RUN_DIR` for a second target and clear target-specific pull and
+guard settings when switching hypervisors.
+
 ## Results
 
 Each phase writes `test/release/out/<host>-<date>/<phase>/`:
@@ -73,6 +77,12 @@ python3 test/release/lib/ptyctl.py --log build.log \
   --step 'wait:(?i)downloading:600' --step intr --step exit:30 -- \
   sailwright build ubuntu --arch arm64 --headless
 ```
+
+The PTY helper keeps its JSON summary on stdout and writes the terminal transcript
+to stderr as well as `--log`, so output assertions and JSON checks can be combined.
+It provides a 24-row, 120-column terminal so progress renderers behave normally.
+Run the offline Unix helper regressions with
+`python3 -I -m unittest discover -s test/release/tests -v` (also run by `kit` and CI).
 
 Prefer a YAML scenario under `test/e2e/scenarios` when a check fits its step
 model; add a phase check only for what scenarios cannot express.

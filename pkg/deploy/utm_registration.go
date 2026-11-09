@@ -13,21 +13,53 @@ import (
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
 )
 
+// utmRegistrationSettleAttempts and utmRegistrationSettleInterval bound how long
+// a persisted registration may outlive its scripting entry. UTM writes its
+// preferences asynchronously, so right after a delete the old entry can still
+// be listed there even though the scripting collection no longer has it.
+var (
+	utmRegistrationSettleAttempts = 40
+	utmRegistrationSettleInterval = 250 * time.Millisecond
+)
+
 func utmRegistrationIDs(config alchemy_build.VirtualMachineConfig) ([]string, error) {
-	ids, err := utmScriptableRegistrationIDs(config)
+	var lastErr error
+	for attempt := 0; attempt < utmRegistrationSettleAttempts; attempt++ {
+		ids, unavailable, err := utmRegistrationSnapshotFunc(config)
+		if err != nil {
+			return nil, err
+		}
+		if unavailable == "" {
+			return ids, nil
+		}
+		lastErr = fmt.Errorf("UTM registration %s for %q is not available through scripting; remove the unavailable entry in the UTM library manually, then retry (preferences may still be synchronizing)", unavailable, utmVirtualMachineName(config))
+		time.Sleep(utmRegistrationSettleInterval)
+	}
+	if lastErr == nil {
+		return utmScriptableRegistrationIDs(config)
+	}
+	return nil, lastErr
+}
+
+var utmRegistrationSnapshotFunc = utmRegistrationSnapshot
+
+// utmRegistrationSnapshot returns the scriptable IDs and the first persisted ID
+// that scripting does not know about, or "" when the two views agree.
+func utmRegistrationSnapshot(config alchemy_build.VirtualMachineConfig) (ids []string, unavailable string, err error) {
+	ids, err = utmScriptableRegistrationIDs(config)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	persisted, err := utmPersistentRegistrationIDs(config)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	for _, id := range persisted {
 		if !slices.Contains(ids, id) {
-			return nil, fmt.Errorf("UTM registration %s for %q is not available through scripting; remove the unavailable entry in the UTM library manually, then retry (preferences may still be synchronizing)", id, utmVirtualMachineName(config))
+			return nil, id, nil
 		}
 	}
-	return ids, nil
+	return ids, "", nil
 }
 
 // UTM excludes entries whose bundles could not be loaded from its scripting
@@ -277,15 +309,24 @@ func ensureUtmRegistration(config alchemy_build.VirtualMachineConfig) error {
 	if _, err := runUtmAppleScript([]string{`tell application "UTM"`, fmt.Sprintf(`open POSIX file %q`, vmPath), `end tell`}); err != nil {
 		return err
 	}
+	var pathErr error
 	for attempt := 0; attempt < 25; attempt++ {
 		ids, err := utmScriptableRegistrationIDs(config)
 		if err != nil {
 			return err
 		}
 		if slices.Contains(ids, id) {
-			return verifyUtmRegistrationPath(config, id)
+			// UTM can publish the scripting entry before its bookmark reaches
+			// preferences. Keep the path guard closed while that write catches up.
+			pathErr = verifyUtmRegistrationPath(config, id)
+			if pathErr == nil {
+				return nil
+			}
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+	if pathErr != nil {
+		return pathErr
 	}
 	return fmt.Errorf("UTM did not register bundle %q with UUID %s", vmPath, id)
 }
@@ -298,19 +339,14 @@ func utmRegistrationPath(id string) (string, error) {
 	if err == nil {
 		return strings.TrimSpace(output), nil
 	}
-	script := fmt.Sprintf(`
- ObjC.import('Foundation');
- var home = ObjC.unwrap($.NSHomeDirectory());
- var prefs = $.NSDictionary.dictionaryWithContentsOfFile(home + '/Library/Containers/com.utmapp.UTM/Data/Library/Preferences/com.utmapp.UTM.plist');
- if (!prefs || prefs.isNil()) { prefs = $.NSDictionary.dictionaryWithContentsOfFile(home + '/Library/Preferences/com.utmapp.UTM.plist'); }
- var registry = prefs.objectForKey('Registry');
- var entry = registry.objectForKey(%q);
- var pkg = entry.objectForKey('Package');
- var bookmark = pkg.objectForKey('Bookmark');
- var url = $.NSURL.URLByResolvingBookmarkDataOptionsRelativeToURLBookmarkDataIsStaleError(bookmark, 768, null, Ref(), Ref());
- if (!url || url.isNil()) { throw new Error('Cannot resolve registered UTM bundle bookmark'); }
- ObjC.unwrap(url.path);
- `, strings.ToUpper(id))
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home for UTM registry: %w", err)
+	}
+	script := utmRegistryBookmarkScript(id, []string{
+		filepath.Join(home, "Library", "Containers", "com.utmapp.UTM", "Data", "Library", "Preferences", "com.utmapp.UTM.plist"),
+		filepath.Join(home, "Library", "Preferences", "com.utmapp.UTM.plist"),
+	})
 	output, err = runCommandWithCombinedOutput(alchemy_build.GetDirectoriesInstance().ProjectDir, utmAutomationCommandTimeout, "osascript", []string{"-l", "JavaScript", "-e", script})
 	if err != nil {
 		return "", fmt.Errorf("resolve UTM registry bookmark: %w; output: %s", err, strings.TrimSpace(output))
@@ -320,4 +356,31 @@ func utmRegistrationPath(id string) (string, error) {
 		return "", fmt.Errorf("invalid UTM registry bundle path %q", result)
 	}
 	return result, nil
+}
+
+func utmRegistryBookmarkScript(id string, paths []string) string {
+	encodedPaths, _ := json.Marshal(paths) // A slice of strings cannot fail JSON encoding.
+	return fmt.Sprintf(`
+ ObjC.import('Foundation');
+ (function() {
+   var paths = %s;
+   for (var i = 0; i < paths.length; i++) {
+     var prefs = $.NSDictionary.dictionaryWithContentsOfFile(paths[i]);
+     if (!prefs || prefs.isNil()) { continue; }
+     var registry = prefs.objectForKey('Registry');
+     if (!registry || registry.isNil()) { continue; }
+     var entry = registry.objectForKey(%q);
+     if (!entry || entry.isNil()) { continue; }
+     var pkg = entry.objectForKey('Package');
+     if (!pkg || pkg.isNil()) { throw new Error('Missing UTM registry package'); }
+     var bookmark = pkg.objectForKey('Bookmark');
+     if (!bookmark || bookmark.isNil()) { throw new Error('Missing UTM registry bookmark'); }
+     // JavaScript null bridges to NSNull here; NSURL requires Objective-C nil.
+     var url = $.NSURL.URLByResolvingBookmarkDataOptionsRelativeToURLBookmarkDataIsStaleError(bookmark, 768, $(), Ref(), Ref());
+     if (!url || url.isNil()) { throw new Error('Cannot resolve registered UTM bundle bookmark'); }
+     return ObjC.unwrap(url.path);
+   }
+   throw new Error('UTM registry entry is not persisted yet');
+ })();
+ `, encodedPaths, strings.ToUpper(id))
 }

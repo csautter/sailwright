@@ -127,11 +127,27 @@ func TestBecomeRedirectWarning(t *testing.T) {
 }
 
 func TestApprovalPromptShowsBecomeWarning(t *testing.T) {
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = writer.Close() })
 	out := &syncBuffer{}
-	approver := NewConsoleApprover(bufio.NewReader(strings.NewReader("deny job1\n")), out, time.Minute)
-	approver.Request(context.Background(), ApprovalRequest{ID: "job1", Become: true, BecomeWarning: "Ansible args after -- can point the play at another host"})
+	approver := NewConsoleApprover(bufio.NewReader(reader), out, time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	results := make(chan Approval, 1)
+	go func() {
+		results <- approver.Request(ctx, ApprovalRequest{ID: "job1", Become: true, BecomeWarning: "Ansible args after -- can point the play at another host"})
+	}()
+	// The command reader starts in the constructor; do not send a response
+	// until the request is actually pending and its prompt has been displayed.
+	waitFor(t, func() bool { return strings.Contains(out.String(), `"approve-sudo job1"`) })
 	if !strings.Contains(out.String(), "WARNING:   Ansible args after -- can point the play at another host") || !strings.Contains(out.String(), `"approve-sudo job1"`) {
 		t.Fatalf("the prompt must offer approve-sudo with the warning:\n%s", out.String())
+	}
+	if _, err := io.WriteString(writer, "deny job1\n"); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-results; got.Decision != DecisionDenied {
+		t.Fatalf("expected denial after displaying the prompt, got %+v", got)
 	}
 }
 

@@ -14,10 +14,21 @@ set -u
 KIT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=test/release/lib/rt.sh
 . "$KIT_DIR/lib/rt.sh"
+# Invocation settings take precedence over release.env, including explicit empty
+# values (the Tart pass clears the UTM pull reference and credential override).
+rt_setting_overrides=()
+for rt_setting in "${!RT_@}"; do
+	rt_setting_overrides+=("$rt_setting=${!rt_setting}")
+done
 if [ -f "$KIT_DIR/release.env" ]; then
 	# shellcheck disable=SC1091
 	. "$KIT_DIR/release.env"
 fi
+for rt_setting in "${rt_setting_overrides[@]}"; do
+	# shellcheck disable=SC2163 # entries are NAME=value assignments
+	export "$rt_setting"
+done
+unset rt_setting rt_setting_overrides
 
 HOST_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$(uname -m)" in
@@ -99,7 +110,7 @@ appdata_root() {
 }
 
 processes_matching() { # PATTERN -> matching processes, excluding this shell's tools
-	ps ax -o pid=,pgid=,stat=,command= | grep -F -- "$1" | grep -v -E 'grep|ptyctl|unix\.sh' || true
+	rt_processes_matching "$1"
 }
 
 e2e_env() { # common environment for direct E2E runs
@@ -179,8 +190,8 @@ phase_kit() {
 	rt_check KIT-02 "build gateway $RT_VERSION" --timeout 1800 -- make -C "$RT_REPO_ROOT" build-gateway-local VERSION="$RT_VERSION"
 	rt_check KIT-03 "binaries report the version" --match "$RT_VERSION" -- sh -c "'$BIN' --version; '$GW' --version"
 	rt_check KIT-04 "unit tests" --timeout 3600 -- go -C "$RT_REPO_ROOT" test ./cmd/... ./internal/... ./pkg/... -count=1
-	rt_check KIT-05 "race tests: gateway, operation locks, OCI, self-update" --timeout 3600 -- \
-		go -C "$RT_REPO_ROOT" test -race ./internal/gateway/... ./internal/operationlock/... ./internal/selfupdate/... ./pkg/oci/... -count=1
+	rt_check KIT-05 "race tests: builds, gateway, operation locks, OCI, self-update" --timeout 3600 -- \
+		go -C "$RT_REPO_ROOT" test -race ./pkg/build/... ./internal/gateway/... ./internal/operationlock/... ./internal/selfupdate/... ./pkg/oci/... -count=1
 	rt_check KIT-06 "E2E runner self-tests (fake CLI)" --timeout 1800 -- go -C "$RT_REPO_ROOT" test ./test/e2e/... -count=1
 	rt_check KIT-07 "self-update fixture tests (real install scripts, local release server)" --timeout 1800 -- \
 		sh -c "cd '$RT_REPO_ROOT' && python3 -I -m unittest discover -s test/selfupdate -v"
@@ -189,6 +200,8 @@ phase_kit() {
 	rt_check KIT-09 "local provisioning helper tests" --timeout 1800 -- \
 		sh -c "cd '$RT_REPO_ROOT' && python3 -I -m unittest discover -s test/localprovision/scripts -v"
 	rt_check KIT-10 "binary checksums" -- sh -c "shasum -a 256 '$BIN' '$GW' 2>/dev/null || sha256sum '$BIN' '$GW'"
+	rt_check KIT-11 "release kit helper regressions" --timeout 120 -- \
+		python3 -I -m unittest discover -s "$RT_KIT_DIR/tests" -v
 	rt_summary
 }
 
@@ -438,7 +451,7 @@ for t in json.load(sys.stdin)["targets"]:
 	left="$(processes_matching "$data")"
 	if [ -z "$left" ]; then rt_pass BI-03 "no build processes left after Ctrl+C"; else rt_fail BI-03 "no build processes left after Ctrl+C" "$left"; fi
 
-	rt_check BI-04 "build all --parallel 2: one Ctrl+C during downloads stops everything" --exit-nonzero \
+	rt_check BI-04 "build all --parallel 2: one Ctrl+C during downloads stops everything" --timeout 1000 --exit-nonzero \
 		--json 'd["seconds_after_last_intr"] < 45' --nomatch '==> .*: Starting|Build .* finished' -- \
 		python3 -I "$pty" --log "$RT_PHASE_DIR/logs/BI-04.pty.log" --step 'wait:(?i)downloading:900' --step sleep:5 --step intr --step exit:60 -- \
 		env DEV_ALCHEMY_APP_DATA_DIR="$data" "$BIN" build all --parallel 2 --headless --no-prebuilt
@@ -449,14 +462,14 @@ for t in json.load(sys.stdin)["targets"]:
 		rt_skip BI-06 "Ctrl+C while Packer runs" "RT_SKIP_PACKER_INTERRUPT=1"
 	else
 		# Let downloads finish (they are cached for the later steps), then interrupt Packer.
-		rt_check BI-06 "Ctrl+C while Packer runs: stop, optional video, exit" --exit-nonzero \
+		rt_check BI-06 "Ctrl+C while Packer runs: stop, optional video, exit" --timeout 5700 --exit-nonzero \
 			--json 'd["seconds_after_last_intr"] < 120' --match 'stopping all builds' -- \
 			python3 -I "$pty" --log "$RT_PHASE_DIR/logs/BI-06.pty.log" --step 'wait:==> :5400' --step sleep:90 --step intr --step exit:180 -- "${build[@]}"
 		rt_check BI-07 "interrupted build is not reported complete" --match '^(missing|incomplete)$' -- echo "$(state)"
 		left="$(processes_matching "$data")"
 		if [ -z "$left" ]; then rt_pass BI-08 "no build processes left after interrupting Packer"; else rt_fail BI-08 "no build processes left" "$left"; fi
 
-		rt_check BI-09 "second Ctrl+C skips VNC post-processing, third exits" --exit-any \
+		rt_check BI-09 "second Ctrl+C skips VNC post-processing, third exits" --timeout 2100 --exit-any \
 			--json 'd["seconds_after_last_intr"] < 20' -- \
 			python3 -I "$pty" --log "$RT_PHASE_DIR/logs/BI-09.pty.log" --step 'wait:==> :1800' --step sleep:90 --step intr \
 			--step 'wait:Press Ctrl\+C again:60' --step intr --step 'wait:(?i)skipping (VNC video )?post-processing:60' --step intr --step exit:20 -- "${build[@]}"
@@ -506,7 +519,7 @@ phase_build() {
 	) &
 	spid=$!
 	rt_check BLD-01 "full headless build of $RT_TARGET" --timeout 21600 -- sw build "${TARGET_ARGS[@]}" --headless --no-prebuilt
-	kill "$spid" 2>/dev/null
+	rt_stop_sampler "$spid"
 	rt_check BLD-02 "headless: no display window or VNC viewer" --nomatch 'Screen Sharing|vncviewer|remote-viewer|-display (gtk|sdl|cocoa)' --match 'qemu-system' -- cat "$sampler"
 	if grep -qE 'vncsnapshot|ffmpeg' "$sampler"; then rt_pass BLD-03 "VNC recording still ran in headless mode"; else rt_skip BLD-03 "VNC recording ran" "no recorder process sampled (Windows hosts or recording disabled)"; fi
 	rt_check BLD-04 "artifact is complete" --match '^exists$' -- echo "$(target_state build build)"
@@ -518,7 +531,7 @@ phase_build() {
 		local data="$RT_PHASE_DIR/pull-appdata"
 		rm -rf "$data"
 		rt_check BLD-07 "interrupted OCI pull" --exit-nonzero -- \
-			python3 -I "$RT_KIT_DIR/lib/ptyctl.py" --log "$RT_PHASE_DIR/logs/BLD-07.pty.log" --step 'wait:(?i)(MiB|GiB|%):600' --step sleep:20 --step intr --step exit:60 -- \
+			python3 -I "$RT_KIT_DIR/lib/ptyctl.py" --log "$RT_PHASE_DIR/logs/BLD-07.pty.log" --step 'wait:Downloading OCI artifact:600' --step sleep:20 --step intr --step exit:60 -- \
 			env DEV_ALCHEMY_APP_DATA_DIR="$data" "$BIN" pull "$RT_PULL_REF" --os "$T_OS" --type "${T_TYPE:-server}" --arch "$T_ARCH" --yes
 		rt_check BLD-08 "repeated pull completes and verifies the digest" --timeout 7200 -- \
 			env DEV_ALCHEMY_APP_DATA_DIR="$data" "$BIN" pull "$RT_PULL_REF" --os "$T_OS" --type "${T_TYPE:-server}" --arch "$T_ARCH" --yes
@@ -569,8 +582,11 @@ phase_vm() {
 		rt_check VM-13 "running guest uses NAT networking" --match 'Network: nat' -- sw vm info "${TARGET_ARGS[@]}"
 		;;
 	darwin)
-		if command -v utmctl >/dev/null 2>&1; then
-			rt_check VM-12 "identity is the registered UTM UUID" --match "${id1:-none}" -- utmctl list
+		if [ "$T_OS" = macos ]; then
+			rt_check VM-12 "Tart identity is a filesystem fingerprint" --match '^tart:[0-9a-f]{64}$' -- echo "$id1"
+		elif command -v utmctl >/dev/null 2>&1; then
+			rt_check VM-12 "identity is the registered UTM UUID" --match "${id1:-none}" -- \
+				bash -o pipefail -c 'utmctl list | tr "[:upper:]" "[:lower:]"'
 		fi
 		;;
 	esac
@@ -586,14 +602,15 @@ phase_vm() {
 	sw start "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"} >"$RT_PHASE_DIR/logs/VM-22.start.log" 2>&1 </dev/null &
 	spid=$!
 	sleep 2
-	rt_check VM-22 "a second operation waits for the lock and then succeeds" --timeout 1800 -- "${SELF[@]}" stop "${TARGET_ARGS[@]}"
+	rt_check VM-22 "a second operation waits for the lock and then succeeds" --timeout 1800 -- env SAILWRIGHT_LOCK_TIMEOUT=300s "${SELF[@]}" stop "${TARGET_ARGS[@]}"
 	wait "$spid"
 	rt_check VM-23 "destroy" --timeout 1800 -- "${SELF[@]}" destroy "${TARGET_ARGS[@]}"
 	rt_check VM-24 "recreate" --timeout 3600 -- "${SELF[@]}" create "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"}
 	id2="$(sw vm identity "${TARGET_ARGS[@]}" 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("instance_id",""))')"
 	if [ -n "$id2" ] && [ "$id2" != "$id1" ]; then rt_pass VM-25 "instance id changed after recreate" "$id1 -> $id2"; else rt_fail VM-25 "instance id changed after recreate" "'$id1' -> '$id2'"; fi
-	if [ "$HOST_OS" = darwin ] && command -v utmctl >/dev/null 2>&1; then
-		rt_check VM-26 "UTM holds no stale registration of the old bundle" --nomatch "${id1:-none}" -- utmctl list
+	if [ "$HOST_OS" = darwin ] && [ "$T_OS" != macos ] && command -v utmctl >/dev/null 2>&1; then
+		rt_check VM-26 "UTM holds no stale registration of the old bundle" --nomatch "${id1:-none}" -- \
+			bash -o pipefail -c 'utmctl list | tr "[:upper:]" "[:lower:]"'
 	fi
 	rt_check VM-27 "cleanup destroy" --timeout 1800 -- "${SELF[@]}" destroy "${TARGET_ARGS[@]}"
 	rt_check VM-28 "target is missing at the end" --match '^missing$' -- echo "$(target_state destroy state)"
@@ -622,27 +639,50 @@ phase_vm() {
 
 # ---------------------------------------------------------------- gateway (physical host)
 GW_STATE=""
+GW_AGENT=""
+GW_ROOT=""
 GW_PID=""
 gateway_start() { # MODE(--bypass-approvals|--no-approvals) LOG
-	GW_STATE="$RT_PHASE_DIR/gateway-state"
-	mkdir -p "$GW_STATE/agent"
+	mkdir -p "$GW_STATE" "$GW_AGENT"
 	cat >"$GW_STATE/gateway.yaml" <<EOF
 state_isolation: shared
-agent_dir: $GW_STATE/agent
+agent_dir: $GW_AGENT
 listen: 127.0.0.1:$RT_GATEWAY_PORT
 EOF
+	# Without a terminal the binary cannot be confirmed interactively, so pin its hash.
+	local pin=()
+	if [ "$1" != --bypass-approvals ]; then pin=(--binary-sha256 "$(shasum -a 256 "$BIN" | awk '{print $1}')"); fi
 	if [ "$RT_APPDATA" = default ]; then
-		"$GW" --state-dir "$GW_STATE" serve --config "$GW_STATE/gateway.yaml" --binary "$BIN" "$1" >"$2" 2>&1 </dev/null &
+		"$GW" --state-dir "$GW_STATE" serve --config "$GW_STATE/gateway.yaml" --binary "$BIN" ${pin[@]+"${pin[@]}"} "$1" >"$2" 2>&1 </dev/null &
 	else
-		DEV_ALCHEMY_APP_DATA_DIR="$RT_APPDATA" "$GW" --state-dir "$GW_STATE" serve --config "$GW_STATE/gateway.yaml" --binary "$BIN" "$1" >"$2" 2>&1 </dev/null &
+		DEV_ALCHEMY_APP_DATA_DIR="$RT_APPDATA" "$GW" --state-dir "$GW_STATE" serve --config "$GW_STATE/gateway.yaml" --binary "$BIN" ${pin[@]+"${pin[@]}"} "$1" >"$2" 2>&1 </dev/null &
 	fi
 	GW_PID=$!
 	local waited=0
-	until SAILWRIGHT_GATEWAY_DIR="$GW_STATE/agent" "$GW" connect --check >/dev/null 2>&1; do
+	until SAILWRIGHT_GATEWAY_DIR="$GW_AGENT" "$GW" connect --check >/dev/null 2>&1; do
 		sleep 1
 		waited=$((waited + 1))
 		if [ "$waited" -gt 60 ] || ! kill -0 "$GW_PID" 2>/dev/null; then return 1; fi
 	done
+}
+
+# The gateway refuses a state dir inside any git checkout, and the agent dir must
+# not overlap it. Use a short private directory under $HOME (Unix socket paths
+# are length-limited) and copy the evidence into the results folder afterwards.
+gateway_dirs() {
+	GW_ROOT="$(mktemp -d "$HOME/.sailwright-rt-gw.XXXXXX")"
+	GW_STATE="$GW_ROOT/state"
+	GW_AGENT="$GW_ROOT/agent"
+}
+
+gateway_finish() {
+	gateway_stop
+	if [ -n "$GW_ROOT" ] && [ -d "$GW_ROOT" ]; then
+		mkdir -p "$RT_PHASE_DIR/gateway-evidence"
+		cp -R "$GW_STATE/." "$RT_PHASE_DIR/gateway-evidence/" 2>/dev/null || true
+		case "$GW_ROOT" in "$HOME"/.sailwright-rt-gw.*) rm -rf "$GW_ROOT" ;; esac
+		GW_ROOT=""
+	fi
 }
 
 gateway_stop() {
@@ -656,18 +696,18 @@ gateway_stop() {
 phase_gateway() {
 	need_bin
 	rt_init gateway
-	trap gateway_stop EXIT
-	export SAILWRIGHT_GATEWAY_DIR="$RT_PHASE_DIR/gateway-state/agent"
-	rm -rf "$RT_PHASE_DIR/gateway-state"
+	gateway_dirs
+	trap gateway_finish EXIT
+	export SAILWRIGHT_GATEWAY_DIR="$GW_AGENT"
 	local log="$RT_PHASE_DIR/logs/GW-serve-bypass.log"
 	if gateway_start --bypass-approvals "$log"; then rt_pass GW-01 "gateway serves with --bypass-approvals (isolated state dir)"; else rt_fail GW-01 "gateway starts" "see logs/GW-serve-bypass.log"; rt_summary; return; fi
-	rt_check GW-02 "banner shows bypassed approvals" --match 'approvals: BYPASSED' -- cat "$log"
+	rt_check GW-02 "banner shows bypassed approvals" --match 'approvals:[[:space:]]+BYPASSED' -- cat "$log"
 	rt_check GW-03 "connect --check finds the gateway" -- "$GW" connect --check
 	rt_check GW-04 "audit records gateway_started with the binary hash" --match '"gateway_started"' --match '[0-9a-f]{64}' -- cat "$GW_STATE/audit.jsonl"
 	rt_e2e GW-05 "E2E smoke, cli-readonly, destroy-idempotent through the gateway" 'TestScenarios/(smoke|cli-readonly|destroy-idempotent)$' \
 		SAILWRIGHT_E2E_EXECUTOR=gateway "SAILWRIGHT_E2E_TARGET=$RT_TARGET"
 	rt_check GW-06 "TestVMAccess: create, vm_info, SSH, SCP, port refusal, cleanup" --timeout 3600 --match '--- PASS: TestVMAccess' -- \
-		env SAILWRIGHT_VM_ACCESS_E2E=1 SAILWRIGHT_E2E_TARGET="$RT_TARGET" PATH="$RT_BIN_DIR:$PATH" \
+		env SAILWRIGHT_VM_ACCESS_E2E=1 SAILWRIGHT_E2E_TARGET="$RT_TARGET" SAILWRIGHT_E2E_INSECURE="${RT_ALLOW_INSECURE_CREDENTIALS:-}" PATH="$RT_BIN_DIR:$PATH" \
 		go -C "$RT_REPO_ROOT" test -tags e2e ./test/e2e -run '^TestVMAccess$' -count=1 -timeout 55m -v
 	rt_check GW-07 "audit: vm_info and paired tunnels with traffic both ways" -- python3 -I -c '
 import json, sys
@@ -698,7 +738,9 @@ print(f"tunnels={opened}, with traffic={len(moved)}")' "$GW_STATE/audit.jsonl"
 		rt_check GW-21b "CLI starts it" --timeout 3600 -- "${SELF[@]}" start "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"}
 		rt_check GW-22 "tunnel to a VM the gateway did not create is refused" --exit-nonzero --timeout 300 --match 'not created by this gateway|403' -- \
 			sh -c "'$GW' vm tunnel '$RT_TARGET' 22 </dev/null"
-		rt_check GW-23 "provision_local is refused without an approval console" --exit-nonzero --timeout 600 --match 'no approval console' -- \
+		# The executor asks the gateway whether host changes are possible; without an approval
+		# console it reports no and the scenario skips, which is the refusal being observed.
+		rt_check GW-23 "provision_local is refused without an approval console (scenario skips with the gateway reason)" --timeout 600 --match 'no approval console' --match 'SKIP: TestScenarios/local-check' -- \
 			env SAILWRIGHT_E2E_EXECUTOR=gateway SAILWRIGHT_E2E_OUT="$RT_PHASE_DIR/e2e-GW-23" go -C "$RT_REPO_ROOT" test -tags e2e ./test/e2e -run 'TestScenarios/local-check$' -count=1 -v
 		rt_check GW-24 "cleanup CLI VM" --timeout 1800 -- "${SELF[@]}" destroy "${TARGET_ARGS[@]}"
 		gateway_stop
@@ -707,6 +749,7 @@ print(f"tunnels={opened}, with traffic={len(moved)}")' "$GW_STATE/audit.jsonl"
 	fi
 	rt_manual GW-30 "approval console: CLI-created VM via MCP vm_info" \
 		"Start '$GW serve --binary $BIN' in a terminal (no bypass). Create the VM with the CLI. Ask the agent to call vm_info for $RT_TARGET: the console shows vm_access_decision with VM_NOT_CREATED_BY_GATEWAY; type approve <id>; tunnels then work. Destroy/recreate with the CLI (once with a list_targets call in between, once without): the tunnel answers 'VM was recreated outside this gateway' until vm_info is approved again."
+	gateway_finish
 	trap - EXIT
 	rt_summary
 }
@@ -722,7 +765,7 @@ phase_cleanup() {
 			sh -c "if [ $mode = isolated ] && [ '$RT_APPDATA' != default ]; then export DEV_ALCHEMY_APP_DATA_DIR='$RT_APPDATA'; fi; '$BIN' destroy list --json 2>/dev/null"
 	done
 	local left
-	left="$(ps ax -o pid=,command= | grep -F "$RT_RUN_DIR" | grep -v grep || true)"
+	left="$(processes_matching "$RT_RUN_DIR")"
 	if [ -z "$left" ]; then rt_pass CL-02 "no kit processes left"; else rt_fail CL-02 "no kit processes left" "$left"; fi
 	rt_check CL-03 "run directory size (delete appdata after reporting)" --exit-any -- du -sh "$RT_RUN_DIR"
 	rt_summary
