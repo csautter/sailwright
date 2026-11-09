@@ -284,3 +284,21 @@ func TestLiveConsoleRedrawsInPlaceAndKeepsTheCursorRow(t *testing.T) {
 		t.Fatalf("redraw does not show the newest lines: %q", got)
 	}
 }
+
+func TestLiveConsoleCutsLongLinesOnACharacterBoundary(t *testing.T) {
+	c, _, _ := newTestLiveConsole(2, 80)
+	defer c.Close()
+	w := c.Begin("job1", "")
+	long := strings.Repeat("a", liveMaxLine-1) + "äöü" + strings.Repeat("b", 10<<10)
+	_, _ = w.Write([]byte(long + "\n" + long))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, row := range c.rowsLocked() {
+		if len(row) > liveMaxLine {
+			t.Fatalf("row keeps %d bytes, want at most %d", len(row), liveMaxLine)
+		}
+		if want := strings.Repeat("a", liveMaxLine-1); row != want {
+			t.Fatalf("row must end before the split character, got ...%q", row[len(row)-5:])
+		}
+	}
+}

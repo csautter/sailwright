@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
 	"golang.org/x/term"
@@ -14,7 +15,8 @@ import (
 const (
 	liveRedrawInterval = 250 * time.Millisecond
 	liveDefaultWidth   = 80
-	liveMaxPartial     = 4 << 10
+	// liveMaxLine limits the bytes kept per line; rows show only the start of it.
+	liveMaxLine = 4 << 10
 )
 
 // LiveTail shows the newest output of the running job on the gateway terminal.
@@ -321,7 +323,7 @@ func (c *LiveConsole) addOutput(p []byte) {
 		if idx < 0 {
 			break
 		}
-		c.tail = append(c.tail, sanitizeForTerminal(lastSegment(text[:idx])))
+		c.tail = append(c.tail, sanitizeForTerminal(cutLine(lastSegment(text[:idx]))))
 		text = text[idx+1:]
 	}
 	if surplus := len(c.tail) - c.lines; surplus > 0 {
@@ -329,11 +331,20 @@ func (c *LiveConsole) addOutput(p []byte) {
 	}
 	// A carriage return redraws the line in place (progress bars), so only the
 	// text after it is shown.
-	c.partial = lastSegment(text)
-	if len(c.partial) > liveMaxPartial {
-		c.partial = c.partial[len(c.partial)-liveMaxPartial:]
-	}
+	c.partial = cutLine(lastSegment(text))
 	c.dirty = true
+}
+
+// cutLine keeps the first liveMaxLine bytes of line without splitting a character.
+func cutLine(line string) string {
+	if len(line) <= liveMaxLine {
+		return line
+	}
+	cut := liveMaxLine
+	for cut > 0 && !utf8.RuneStart(line[cut]) {
+		cut--
+	}
+	return line[:cut]
 }
 
 // lastSegment returns the text after the last carriage return of a line.
