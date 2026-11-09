@@ -72,6 +72,8 @@ type Options struct {
 	GateForeignVMs bool
 	// AutoApprovals uses the --bypass-approvals approver instead of the console.
 	AutoApprovals bool
+	// NoWorkspace leaves agent_workspaces in gateway.yaml empty, as on a fresh host.
+	NoWorkspace bool
 }
 
 // Harness is a running gateway with a fake CLI behind it.
@@ -128,6 +130,9 @@ func Start(t testing.TB, opts Options) *Harness {
 		AgentDir:        agentDir,
 		// The fake CLI reports guests on TEST-NET-1, which is not on-link.
 		TunnelAllowedCIDRs: []string{"192.0.2.0/24"},
+	}
+	if opts.NoWorkspace {
+		cfg.AgentWorkspaces = nil
 	}
 	if err := cfg.Resolve(); err != nil {
 		t.Fatal(err)

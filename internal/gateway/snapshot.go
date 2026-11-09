@@ -66,7 +66,7 @@ func TranslateAgentPath(agentPath string, workspaces []WorkspaceMapping) (string
 		}
 	}
 	if best.Agent == "" {
-		return "", WorkspaceMapping{}, fmt.Errorf("bundle_root %q is not inside a configured agent workspace", agentPath)
+		return "", WorkspaceMapping{}, fmt.Errorf("bundle_root %q is not inside a configured agent workspace; register the workspace with workspace_register", agentPath)
 	}
 	rel := strings.TrimPrefix(strings.TrimPrefix(cleaned, best.Agent), "/")
 	if rel == ".." || strings.HasPrefix(rel, "../") {

@@ -34,6 +34,9 @@ type ApprovalRequest struct {
 	NotSafe   string
 	AgentNote string
 	BinarySHA string
+	// Command, if set, replaces the sailwright command line in the prompt, for
+	// requests that change the gateway rather than run the CLI.
+	Command string
 	// Become offers "approve-sudo": the operator also enters the sudo password that
 	// Ansible needs for become tasks on this host.
 	Become bool
@@ -90,8 +93,12 @@ func (AutoApprover) Enabled() bool { return true }
 // Request approves immediately. Become requests get no sudo password.
 func (a AutoApprover) Request(_ context.Context, req ApprovalRequest) Approval {
 	if a.Out != nil {
-		fmt.Fprintf(a.Out, "approval %s: auto-approved (--bypass-approvals) %s: sailwright %s\n",
-			req.ID, sanitizeForTerminal(req.Tool), quoteArgv(req.Argv))
+		command := "sailwright " + quoteArgv(req.Argv)
+		if req.Command != "" {
+			command = sanitizeForTerminal(req.Command)
+		}
+		fmt.Fprintf(a.Out, "approval %s: auto-approved (--bypass-approvals) %s: %s\n",
+			req.ID, sanitizeForTerminal(req.Tool), command)
 	}
 	return Approval{Decision: DecisionApproved, Auto: true}
 }
@@ -197,9 +204,13 @@ func (a *ConsoleApprover) printRequest(req ApprovalRequest, expires time.Time) {
 	b.WriteString("\n================ APPROVAL REQUIRED ================\n")
 	fmt.Fprintf(&b, "id:        %s\n", req.ID)
 	fmt.Fprintf(&b, "tool:      %s\n", sanitizeForTerminal(req.Tool))
-	fmt.Fprintf(&b, "command:   sailwright %s\n", quoteArgv(req.Argv))
-	fmt.Fprintf(&b, "workdir:   %s\n", sanitizeForTerminal(req.Dir))
-	fmt.Fprintf(&b, "binary:    sha256 %s\n", req.BinarySHA)
+	if req.Command != "" {
+		fmt.Fprintf(&b, "command:   %s\n", sanitizeForTerminal(req.Command))
+	} else {
+		fmt.Fprintf(&b, "command:   sailwright %s\n", quoteArgv(req.Argv))
+		fmt.Fprintf(&b, "workdir:   %s\n", sanitizeForTerminal(req.Dir))
+		fmt.Fprintf(&b, "binary:    sha256 %s\n", req.BinarySHA)
+	}
 	if req.Snapshot != nil {
 		fmt.Fprintf(&b, "bundle:    %s (host %s)\n", sanitizeForTerminal(req.Snapshot.AgentRoot), sanitizeForTerminal(req.Snapshot.HostRoot))
 		fmt.Fprintf(&b, "snapshot:  %d files, %d bytes, tree sha256 %s\n", req.Snapshot.Files, req.Snapshot.Bytes, req.Snapshot.TreeHash)
