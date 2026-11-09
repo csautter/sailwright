@@ -11,6 +11,8 @@
 
 ## Quality Checks & Tooling
 
+- Run and extend release candidate checks with the [release testing runbook](docs/release-testing.md): one approved phase at a time, fresh run directory per rerun, no weakened gates.
+
 - Full host-modifying E2E scenarios are intentionally opt-in. Their absence
   from automatic PR CI is an accepted risk documented in
   [ADR 0007](docs/adr/0007-manual-host-e2e-accepted-risk.md), not a recurring

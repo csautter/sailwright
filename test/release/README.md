@@ -19,6 +19,9 @@ Copy-Item test\release\release.env.ps1.example test\release\release.env.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File test\release\windows.ps1 preflight kit cli
 ```
 
+See the [release testing runbook](../../docs/release-testing.md) for the working
+protocol, where each kind of check must run, and known pitfalls.
+
 ## Phases
 
 | Phase | Changes | Needs |
