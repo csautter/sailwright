@@ -3,6 +3,7 @@ package deploy
 import (
 	"fmt"
 	"os"
+	"os/exec"
 
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
 )
@@ -69,6 +70,11 @@ func DestroyTargetExists(config alchemy_build.VirtualMachineConfig) (bool, error
 
 		return false, fmt.Errorf("failed to stat UTM VM bundle %q: %w", vmPath, err)
 	case isTartMacOSDeployTarget(config):
+		// Without the tart executable no Tart VM can exist on this host. Report the target as
+		// absent so listings keep working on hosts that never installed Tart.
+		if _, err := exec.LookPath("tart"); err != nil {
+			return false, nil
+		}
 		state, err := localTartVMState(alchemy_build.GetDirectoriesInstance().ProjectDir, tartMacOSVMName(config))
 		if err != nil {
 			return false, err

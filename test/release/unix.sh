@@ -12,7 +12,7 @@
 set -u
 
 KIT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck source=test/release/lib/rt.sh
+# shellcheck source=test/release/lib/rt.sh disable=SC1091 # CI runs ShellCheck without -x
 . "$KIT_DIR/lib/rt.sh"
 # Invocation settings take precedence over release.env, including explicit empty
 # values (the Tart pass clears the UTM pull reference and credential override).
@@ -302,8 +302,11 @@ phase_install() {
 		rt_note "no RT_RELEASE_TAG: the checkout's install.sh installs the latest existing release $tag"
 	fi
 	rt_check INS-01 "checkout install.sh installs $tag into ~/.local/bin" --timeout 600 -- sh "$RT_REPO_ROOT/scripts/install.sh" --version "$tag"
+	# Releases before v0.27.0 have no --version flag; --help only proves the binary starts.
+	local probe=--help
+	[ -n "${RT_RELEASE_TAG:-}" ] && probe=--version
 	# shellcheck disable=SC2016 # expanded by the inner shell, not here
-	rt_check INS-02 "installed binaries run" -- sh -c '"$HOME/.local/bin/sailwright" --version && "$HOME/.local/bin/sailwright-gateway" --version'
+	rt_check INS-02 "installed binaries run ($probe)" -- sh -c '"$HOME/.local/bin/sailwright" "$1" && "$HOME/.local/bin/sailwright-gateway" "$1"' sh "$probe"
 	rt_check INS-03 "sailwright install (host dependencies)" --timeout 5400 -- "$BIN" install
 	# shellcheck disable=SC2016 # expanded by the inner shell, not here
 	rt_check INS-04 "ansible-core >= 2.19 after install" --match 'core 2\.(19|[2-9][0-9])' -- sh -c 'PATH="$HOME/.local/bin:$PATH" ansible --version'
@@ -311,7 +314,7 @@ phase_install() {
 	if [ "$HOST_OS" = darwin ]; then
 		# shellcheck disable=SC2016 # expanded by the inner shell, not here
 		rt_check INS-06 "Homebrew tap installs sailwright and the gateway" --timeout 1800 -- \
-			sh -c 'brew install csautter/sailwright/sailwright csautter/sailwright/sailwright-gateway && "$(brew --prefix)/bin/sailwright" --version'
+			sh -c 'brew install csautter/sailwright/sailwright csautter/sailwright/sailwright-gateway && "$(brew --prefix)/bin/sailwright" "$1" && "$(brew --prefix)/bin/sailwright-gateway" "$1"' sh "$probe"
 	fi
 	rt_summary
 }
@@ -496,8 +499,11 @@ for t in json.load(sys.stdin)["targets"]:
 		if [ -z "$left" ]; then rt_pass BI-12 "orphans cleaned up by the kit"; else rt_fail BI-12 "orphans cleaned up by the kit" "$left"; fi
 	fi
 	if [ "$HOST_OS" = darwin ]; then
-		rt_manual BI-13 "sudo prompt during a single build still works" \
-			"In a terminal: $BIN build windows11 --arch $HOST_ARCH --headless ; enter the sudo password when the ISO step asks, wait for '==> ', then Ctrl+C. Expected: the prompt appears and accepts the password; Ctrl+C stops the build."
+		# The Windows 11 ARM64 unattended ISO is built with hdiutil and xorriso and needs no
+		# sudo, so no password prompt is expected here. The check keeps the single-build
+		# case: the build owns the terminal and one Ctrl+C stops it.
+		rt_manual BI-13 "single build owns the terminal and stops on Ctrl+C (no sudo prompt expected)" \
+			"In a terminal: $BIN build windows11 --arch $HOST_ARCH --headless ; wait for '==> ', then Ctrl+C. Expected: no sudo password prompt (the ISO step needs no sudo); Ctrl+C stops the build. Report anything that asks for a password, or a build that keeps running."
 	fi
 	rt_summary
 }
