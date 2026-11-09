@@ -107,16 +107,21 @@ const (
 )
 
 // newLiveConsole returns the terminal with a live job tail, or nil when it is off or
-// stdout cannot redraw in place (not a terminal, or no VT support).
-func newLiveConsole(flags serveFlags) *gateway.LiveConsole {
+// stdout cannot redraw in place (not a terminal, or no VT support). Close the
+// console, then call restore before the process exits.
+func newLiveConsole(flags serveFlags) (live *gateway.LiveConsole, restore func()) {
 	if flags.follow || flags.liveLines <= 0 {
-		return nil
+		return nil, func() {}
 	}
 	fd := int(os.Stdout.Fd()) // #nosec G115 -- file descriptors fit in int.
-	if !term.IsTerminal(fd) || !gateway.EnableVirtualTerminal(os.Stdout) {
-		return nil
+	if !term.IsTerminal(fd) {
+		return nil, func() {}
 	}
-	return gateway.NewLiveConsole(os.Stdout, flags.liveLines, gateway.TerminalSize(fd))
+	restore, ok := gateway.EnableVirtualTerminal(os.Stdout)
+	if !ok {
+		return nil, restore
+	}
+	return gateway.NewLiveConsole(os.Stdout, flags.liveLines, gateway.TerminalSize(fd)), restore
 }
 
 func newTokenCommand(stateDir *string) *cobra.Command {
@@ -275,7 +280,9 @@ func runServe(parent context.Context, flags serveFlags) error {
 	var out io.Writer = os.Stdout
 	var liveTail gateway.LiveTail
 	var hold func(bool)
-	if live := newLiveConsole(flags); live != nil {
+	live, restoreTerminal := newLiveConsole(flags)
+	defer restoreTerminal()
+	if live != nil {
 		defer live.Close()
 		out, liveTail, hold = live, live, live.Hold
 	}
