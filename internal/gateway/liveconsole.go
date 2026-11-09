@@ -33,7 +33,7 @@ type LiveTail interface {
 type LiveConsole struct {
 	out   io.Writer
 	lines int
-	width func() int
+	size  func() (width, height int)
 	now   func() time.Time
 
 	// termMu serializes terminal writes and guards the cursor state below. It is
@@ -73,23 +73,23 @@ type liveFrame struct {
 	dirty   bool
 }
 
-// NewLiveConsole wraps out. The region shows up to lines job lines; width reports the
-// terminal width (0 or less means unknown).
-func NewLiveConsole(out io.Writer, lines int, width func() int) *LiveConsole {
-	if width == nil {
-		width = func() int { return 0 }
+// NewLiveConsole wraps out. The region shows up to lines job lines; size reports the
+// terminal size (0 or less means unknown).
+func NewLiveConsole(out io.Writer, lines int, size func() (width, height int)) *LiveConsole {
+	if size == nil {
+		size = func() (int, int) { return 0, 0 }
 	}
-	return &LiveConsole{out: out, lines: lines, width: width, now: time.Now, atLineStart: true}
+	return &LiveConsole{out: out, lines: lines, size: size, now: time.Now, atLineStart: true}
 }
 
-// TerminalWidth reports the width of the terminal on fd.
-func TerminalWidth(fd int) func() int {
-	return func() int {
-		width, _, err := term.GetSize(fd)
+// TerminalSize reports the size of the terminal on fd.
+func TerminalSize(fd int) func() (width, height int) {
+	return func() (int, int) {
+		width, height, err := term.GetSize(fd)
 		if err != nil {
-			return 0
+			return 0, 0
 		}
-		return width
+		return width, height
 	}
 }
 
@@ -234,21 +234,33 @@ func (c *LiveConsole) drawLocked(b *strings.Builder, f liveFrame) {
 	if !f.active || c.holds > 0 || !c.atLineStart || c.drawn > 0 {
 		return
 	}
-	width := c.width()
+	width, height := c.size()
 	if width <= 0 {
 		width = liveDefaultWidth
 	}
 	maxWidth := width - 1 // a full-width row wraps on some terminals
+	rows := f.rows
+	if height > 0 {
+		// The header and the cursor row need one row each. Rows above the top of
+		// the screen cannot be cleared again.
+		fit := height - 2
+		if fit < 0 {
+			return
+		}
+		if len(rows) > fit {
+			rows = rows[len(rows)-fit:]
+		}
+	}
 	header := fmt.Sprintf("── job %s · %s", f.id, f.elapsed)
 	if f.logPath != "" {
 		header += " · full log: " + sanitizeForTerminal(f.logPath)
 	}
 	header += " ──"
 	fmt.Fprintf(b, "\x1b[2m%s\x1b[0m\n", runewidth.Truncate(header, maxWidth, "…"))
-	for _, row := range f.rows {
+	for _, row := range rows {
 		fmt.Fprintf(b, "\x1b[2m%s\x1b[0m\n", runewidth.Truncate(row, maxWidth, "…"))
 	}
-	c.drawn = 1 + len(f.rows)
+	c.drawn = 1 + len(rows)
 	c.lastElapsed = f.elapsed
 }
 

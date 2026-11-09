@@ -8,9 +8,13 @@ import (
 )
 
 func newTestLiveConsole(lines, width int) (*LiveConsole, *syncBuffer, *time.Time) {
+	return newSizedTestLiveConsole(lines, width, 0)
+}
+
+func newSizedTestLiveConsole(lines, width, height int) (*LiveConsole, *syncBuffer, *time.Time) {
 	out := &syncBuffer{}
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	c := NewLiveConsole(out, lines, func() int { return width })
+	c := NewLiveConsole(out, lines, func() (int, int) { return width, height })
 	c.now = func() time.Time { return now }
 	return c, out, &now
 }
@@ -239,5 +243,21 @@ func TestLiveConsoleJobOutputDoesNotWaitForABlockedTerminal(t *testing.T) {
 	case <-written:
 	case <-time.After(2 * time.Second):
 		t.Fatal("job output waited for the blocked terminal")
+	}
+}
+
+func TestLiveConsoleFitsTheRegionIntoTheTerminalHeight(t *testing.T) {
+	c, out, _ := newSizedTestLiveConsole(10, 80, 5)
+	w := c.Begin("job1", "")
+	_, _ = w.Write([]byte("1\n2\n3\n4\n5\n6\n"))
+	c.redraw(true)
+	rows := region(out.String())
+	c.Close()
+	// Header plus three rows leaves the cursor row on a five-row screen.
+	if got := strings.Join(rows[1:], "|"); len(rows) != 4 || got != "4|5|6" {
+		t.Fatalf("region = %q, want the header and the newest three lines", rows)
+	}
+	if !strings.HasSuffix(out.String(), "\r\x1b[4A\x1b[J") {
+		t.Fatalf("End must clear exactly the drawn rows:\n%q", out.String())
 	}
 }

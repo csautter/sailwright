@@ -80,6 +80,9 @@ func newServeCommand(stateDir *string) *cobra.Command {
 Run it in a foreground terminal: requests outside the safe set are shown there and
 need "approve <id>" from you. Agents cannot approve their own requests.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if flags.liveLines > maxLiveLines {
+				return fmt.Errorf("--live-lines must be at most %d, got %d", maxLiveLines, flags.liveLines)
+			}
 			flags.stateDir = *stateDir
 			return runServe(cmd.Context(), flags)
 		},
@@ -92,11 +95,16 @@ need "approve <id>" from you. Agents cannot approve their own requests.`,
 	command.Flags().BoolVar(&flags.bypass, "bypass-approvals", false, "DANGEROUS, disposable test hosts only: approve every request and VM access automatically and pin the binary without asking")
 	command.MarkFlagsMutuallyExclusive("no-approvals", "bypass-approvals")
 	command.Flags().BoolVar(&flags.follow, "follow", false, "Mirror job output to this terminal (approval prompts still appear)")
-	command.Flags().IntVar(&flags.liveLines, "live-lines", defaultLiveLines, "Show the last N lines of the running job at the bottom of this terminal; 0 turns it off")
+	command.Flags().IntVar(&flags.liveLines, "live-lines", defaultLiveLines, fmt.Sprintf("Show the last N lines (at most %d) of the running job at the bottom of this terminal; 0 turns it off", maxLiveLines))
 	return command
 }
 
-const defaultLiveLines = 8
+const (
+	defaultLiveLines = 8
+	// maxLiveLines keeps a mistyped value from filling the terminal; the region
+	// is also cut to the terminal height when it is drawn.
+	maxLiveLines = 100
+)
 
 // newLiveConsole returns the terminal with a live job tail, or nil when it is off or
 // stdout cannot redraw in place (not a terminal, or no VT support).
@@ -108,7 +116,7 @@ func newLiveConsole(flags serveFlags) *gateway.LiveConsole {
 	if !term.IsTerminal(fd) || !gateway.EnableVirtualTerminal(os.Stdout) {
 		return nil
 	}
-	return gateway.NewLiveConsole(os.Stdout, flags.liveLines, gateway.TerminalWidth(fd))
+	return gateway.NewLiveConsole(os.Stdout, flags.liveLines, gateway.TerminalSize(fd))
 }
 
 func newTokenCommand(stateDir *string) *cobra.Command {

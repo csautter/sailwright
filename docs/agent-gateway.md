@@ -432,7 +432,9 @@ job id, the elapsed time and the path of the full log. Other gateway messages
 are still printed above it. The region is hidden while the approval console
 waits for your input. When the job ends, the region is removed. If the job
 failed, its last lines stay in the scrollback. Use `--live-lines N` to change
-the height, or `--live-lines 0` to turn the region off.
+the height (at most 100), or `--live-lines 0` to turn the region off. The
+region never takes more rows than the terminal has; in a short terminal it
+shows fewer lines.
 
 If stdout is not a terminal, or the terminal cannot process VT sequences, the
 gateway prints a command that follows the job log instead: `tail -f
