@@ -323,3 +323,56 @@ func TestAddRegisteredWorkspaceRefusesPathChangedSinceApproval(t *testing.T) {
 		t.Fatalf("nothing may be saved: %+v %v", registered, err)
 	}
 }
+
+// Concurrent writers (gateway approvals, the operator CLI) must not lose updates.
+func TestRegisteredWorkspaceWritesAreSerialized(t *testing.T) {
+	cfg := workspaceTestConfig(t)
+	const writers = 8
+	errs := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		host := resolvedTempDir(t)
+		agent := "/workspaces/w" + string(rune('a'+i))
+		go func() {
+			_, err := AddRegisteredWorkspace(cfg, WorkspaceMapping{Agent: agent, Host: host}, "")
+			errs <- err
+		}()
+	}
+	for i := 0; i < writers; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if registered, err := LoadRegisteredWorkspaces(cfg); err != nil || len(registered) != writers {
+		t.Fatalf("lost updates: %d of %d (%v)", len(registered), writers, err)
+	}
+}
+
+// A same-size rewrite within one timestamp tick still reaches a running gateway.
+func TestWorkspaceRegistryReloadsSameSizeRewrite(t *testing.T) {
+	cfg := workspaceTestConfig(t)
+	if err := ensurePrivateDir(cfg.StateDir); err != nil {
+		t.Fatal(err)
+	}
+	host := resolvedTempDir(t)
+	stamp := time.Now().Add(-time.Hour).Truncate(time.Second)
+	write := func(agent string) {
+		if err := saveRegisteredWorkspaces(cfg.StateDir, []RegisteredWorkspace{{Agent: agent, Host: host, RegisteredAt: stamp}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(WorkspacesPath(cfg.StateDir), stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("/workspaces/aaa")
+	registry, err := loadWorkspaceRegistry(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("/workspaces/bbb")
+	if _, _, ok := registry.lookup("/workspaces/bbb"); !ok {
+		t.Fatalf("same-size rewrite not reloaded: %+v", registry.All())
+	}
+	if _, _, ok := registry.lookup("/workspaces/aaa"); ok {
+		t.Fatal("removed workspace still active")
+	}
+}

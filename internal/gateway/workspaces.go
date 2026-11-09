@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -19,6 +20,8 @@ import (
 
 const (
 	workspacesFileName      = "agent_workspaces.json"
+	workspacesLockName      = "agent_workspaces.lock"
+	workspacesLockTimeout   = 10 * time.Second
 	workspacesSchemaVersion = 1
 	// WorkspaceProbeName is the file the agent writes into its workspace to prove
 	// which host directory backs it.
@@ -57,37 +60,48 @@ func WorkspacesPath(stateDir string) string {
 // LoadRegisteredWorkspaces reads and validates the registered workspaces of cfg's
 // state dir. A missing file means none.
 func LoadRegisteredWorkspaces(cfg Config) ([]RegisteredWorkspace, error) {
-	workspaces, _, err := loadRegisteredWorkspaces(cfg)
-	return workspaces, err
+	data, err := readWorkspacesFile(cfg.StateDir)
+	if err != nil {
+		return nil, err
+	}
+	return parseRegisteredWorkspaces(cfg, data)
 }
 
-type fileStamp struct {
-	modTime time.Time
-	size    int64
-	exists  bool
-}
-
-func loadRegisteredWorkspaces(cfg Config) ([]RegisteredWorkspace, fileStamp, error) {
-	path := WorkspacesPath(cfg.StateDir)
+// readWorkspacesFile returns the raw file, or nil when it does not exist.
+func readWorkspacesFile(stateDir string) ([]byte, error) {
+	path := WorkspacesPath(stateDir)
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, fileStamp{}, nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil, fileStamp{}, fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	stamp := fileStamp{modTime: info.ModTime(), size: info.Size(), exists: true}
 	if info.Size() > maxConfigFileSizeBytes {
-		return nil, stamp, fmt.Errorf("%s is larger than %d bytes", path, maxConfigFileSizeBytes)
+		return nil, fmt.Errorf("%s is larger than %d bytes", path, maxConfigFileSizeBytes)
 	}
 	// #nosec G304 -- the path is in the operator's gateway state dir.
 	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, stamp, fmt.Errorf("read %s: %w", path, err)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
 	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	if data == nil {
+		data = []byte{}
+	}
+	return data, nil
+}
+
+func parseRegisteredWorkspaces(cfg Config, data []byte) ([]RegisteredWorkspace, error) {
+	if data == nil {
+		return nil, nil
+	}
+	path := WorkspacesPath(cfg.StateDir)
 	var file workspacesFile
 	if err := json.Unmarshal(data, &file); err != nil || file.SchemaVersion != workspacesSchemaVersion {
-		return nil, stamp, fmt.Errorf("%s is not a gateway workspaces file (schema %d); fix or remove it", path, workspacesSchemaVersion)
+		return nil, fmt.Errorf("%s is not a gateway workspaces file (schema %d); fix or remove it", path, workspacesSchemaVersion)
 	}
 	for i, workspace := range file.Workspaces {
 		mapping, err := normalizeWorkspaceMapping(WorkspaceMapping{Agent: workspace.Agent, Host: workspace.Host})
@@ -95,11 +109,11 @@ func loadRegisteredWorkspaces(cfg Config) ([]RegisteredWorkspace, fileStamp, err
 			err = cfg.checkWorkspaceAgainstGatewayDirs(mapping)
 		}
 		if err != nil {
-			return nil, stamp, fmt.Errorf("%s: workspace %d: %w", path, i, err)
+			return nil, fmt.Errorf("%s: workspace %d: %w", path, i, err)
 		}
 		file.Workspaces[i].Agent, file.Workspaces[i].Host = mapping.Agent, mapping.Host
 	}
-	return file.Workspaces, stamp, nil
+	return file.Workspaces, nil
 }
 
 func saveRegisteredWorkspaces(stateDir string, workspaces []RegisteredWorkspace) error {
@@ -113,6 +127,33 @@ func saveRegisteredWorkspaces(stateDir string, workspaces []RegisteredWorkspace)
 	return writePrivateFileAtomic(WorkspacesPath(stateDir), append(data, '\n'))
 }
 
+// lockRegisteredWorkspaces serializes read-modify-write cycles of the workspaces file
+// across processes, so a `sailwright-gateway workspace` edit and an approval in a
+// running gateway cannot overwrite each other. The OS drops the lock if the holder dies.
+func lockRegisteredWorkspaces(stateDir string) (func(), error) {
+	if err := ensurePrivateDir(stateDir); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(stateDir, workspacesLockName)
+	// #nosec G304 -- the path is in the operator's gateway state dir.
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, privateFilePermission)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	deadline := time.Now().Add(workspacesLockTimeout)
+	for {
+		err := lockFile(file)
+		if err == nil {
+			return func() { _ = file.Close() }, nil
+		}
+		if !errors.Is(err, errLockHeld) || time.Now().After(deadline) {
+			_ = file.Close()
+			return nil, fmt.Errorf("lock %s: %w", path, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // AddRegisteredWorkspace validates mapping as a new agent-writable workspace and
 // appends it to the registered workspaces. The host path is stored resolved.
 func AddRegisteredWorkspace(cfg Config, mapping WorkspaceMapping, approvalID string) (RegisteredWorkspace, error) {
@@ -123,7 +164,12 @@ func AddRegisteredWorkspace(cfg Config, mapping WorkspaceMapping, approvalID str
 // path the operator approved; the mapping is refused if the host path resolves
 // elsewhere now, e.g. because the agent swapped a directory for a symlink since.
 func addRegisteredWorkspace(cfg Config, mapping WorkspaceMapping, approvalID string, approvedHost string) (RegisteredWorkspace, error) {
-	registered, _, err := loadRegisteredWorkspaces(cfg)
+	unlock, err := lockRegisteredWorkspaces(cfg.StateDir)
+	if err != nil {
+		return RegisteredWorkspace{}, err
+	}
+	defer unlock()
+	registered, err := LoadRegisteredWorkspaces(cfg)
 	if err != nil {
 		return RegisteredWorkspace{}, err
 	}
@@ -150,7 +196,12 @@ func addRegisteredWorkspace(cfg Config, mapping WorkspaceMapping, approvalID str
 // RemoveRegisteredWorkspace removes the registered workspace for an agent path. It
 // reports false when none is registered; gateway.yaml entries are not touched.
 func RemoveRegisteredWorkspace(cfg Config, agentPath string) (bool, error) {
-	registered, _, err := loadRegisteredWorkspaces(cfg)
+	unlock, err := lockRegisteredWorkspaces(cfg.StateDir)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	registered, err := LoadRegisteredWorkspaces(cfg)
 	if err != nil {
 		return false, err
 	}
@@ -270,25 +321,33 @@ func sameHostPath(a, b string) bool {
 }
 
 // workspaceRegistry holds the gateway.yaml workspaces plus the registered ones. It
-// rereads the registered file when it changes, so `sailwright-gateway workspace`
-// edits reach a running gateway.
+// rereads the registered file on every use and reparses it when its content changed,
+// so `sailwright-gateway workspace` edits reach a running gateway at the next call.
 type workspaceRegistry struct {
 	cfg     Config
 	console io.Writer
 
 	mu         sync.Mutex
 	registered []RegisteredWorkspace
-	stamp      fileStamp
+	data       []byte // file content the registered list was parsed from
+	parsed     bool
 	loadErr    string
 	pending    map[string]string // agent path -> approval id
 }
 
 func loadWorkspaceRegistry(cfg Config, console io.Writer) (*workspaceRegistry, error) {
-	registered, stamp, err := loadRegisteredWorkspaces(cfg)
+	data, err := readWorkspacesFile(cfg.StateDir)
 	if err != nil {
 		return nil, err
 	}
-	return &workspaceRegistry{cfg: cfg, console: console, registered: registered, stamp: stamp, pending: map[string]string{}}, nil
+	registered, err := parseRegisteredWorkspaces(cfg, data)
+	if err != nil {
+		return nil, err
+	}
+	if console == nil {
+		console = io.Discard
+	}
+	return &workspaceRegistry{cfg: cfg, console: console, registered: registered, data: data, parsed: true, pending: map[string]string{}}, nil
 }
 
 // All returns every workspace; a gateway.yaml entry wins over a registered one with
@@ -314,19 +373,22 @@ func (r *workspaceRegistry) lookup(agentPath string) (WorkspaceMapping, string, 
 	return findWorkspace(agentPath, r.cfg.AgentWorkspaces, r.registered)
 }
 
-// reloadLocked rereads the file when it changed. An invalid file fails closed: only
-// the gateway.yaml workspaces stay usable until it is fixed.
+// reloadLocked rereads the file and reparses it when the content changed. Comparing
+// content instead of modification time also catches same-size rewrites within one
+// timestamp tick. An invalid file fails closed: only the gateway.yaml workspaces stay
+// usable until it is fixed.
 func (r *workspaceRegistry) reloadLocked() {
-	info, err := os.Stat(WorkspacesPath(r.cfg.StateDir))
-	current := fileStamp{}
-	if err == nil {
-		current = fileStamp{modTime: info.ModTime(), size: info.Size(), exists: true}
-	}
-	if current == r.stamp {
+	data, err := readWorkspacesFile(r.cfg.StateDir)
+	if err == nil && r.parsed && bytes.Equal(data, r.data) && (data == nil) == (r.data == nil) {
 		return
 	}
-	registered, stamp, err := loadRegisteredWorkspaces(r.cfg)
-	r.stamp = stamp
+	var registered []RegisteredWorkspace
+	if err == nil {
+		registered, err = parseRegisteredWorkspaces(r.cfg, data)
+		r.data, r.parsed = data, true
+	} else {
+		r.data, r.parsed = nil, false
+	}
 	if err != nil {
 		r.registered = nil
 		if msg := err.Error(); msg != r.loadErr {
@@ -337,6 +399,7 @@ func (r *workspaceRegistry) reloadLocked() {
 	}
 	r.loadErr = ""
 	r.registered = registered
+	fmt.Fprintf(r.console, "registered workspaces reloaded from %s: %d\n", workspacesFileName, len(registered))
 }
 
 // add registers mapping after the operator approved approvedHost.
@@ -346,7 +409,6 @@ func (r *workspaceRegistry) add(mapping WorkspaceMapping, approvalID string, app
 	if _, err := addRegisteredWorkspace(r.cfg, mapping, approvalID, approvedHost); err != nil {
 		return err
 	}
-	r.stamp = fileStamp{} // force a reload
 	r.reloadLocked()
 	return nil
 }
