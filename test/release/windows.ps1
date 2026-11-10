@@ -1,4 +1,4 @@
-<#
+﻿<#
 Release test phases for Windows hosts. See test/release/README.md.
 
     powershell -NoProfile -ExecutionPolicy Bypass -File test\release\windows.ps1 <phase> [<phase>...]
