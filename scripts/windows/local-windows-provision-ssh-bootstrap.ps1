@@ -255,7 +255,7 @@ function Ensure-LocalUserProfile([string]$name, [securestring]$password, [string
 
     Write-Output ('Ensuring the temporary local Ansible account has a registered Windows user profile.')
     $credential = New-Object System.Management.Automation.PSCredential ('.\' + $name), $password
-    $process = Start-Process -FilePath 'powershell.exe' -Credential $credential -LoadUserProfile -WindowStyle Hidden -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'exit 0') -Wait -PassThru
+    $process = Start-Process -FilePath 'powershell.exe' -Credential $credential -LoadUserProfile -WorkingDirectory $env:SystemRoot -WindowStyle Hidden -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'exit 0') -Wait -PassThru
     if ($process.ExitCode -ne 0) {
         throw ('Failed to initialize a local Windows profile for "' + $name + '" (exit code ' + [string]$process.ExitCode + ').')
     }
