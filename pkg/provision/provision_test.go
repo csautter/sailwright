@@ -460,6 +460,18 @@ func TestGenerateSecureLocalWindowsProvisionPasswordMeetsComplexityRequirements(
 	}
 }
 
+func TestGenerateSecureLocalWindowsProvisionPasswordHasNoTemplateBraces(t *testing.T) {
+	for range 500 {
+		password, err := generateSecureLocalWindowsProvisionPassword()
+		if err != nil {
+			t.Fatalf("generateSecureLocalWindowsProvisionPassword returned error: %v", err)
+		}
+		if strings.ContainsAny(password, "{}") {
+			t.Fatalf("password must not contain braces that Ansible reads as Jinja, got %q", password)
+		}
+	}
+}
+
 func TestWriteSSHBytesEncodesSSHWireStringLength(t *testing.T) {
 	var buffer bytes.Buffer
 	if err := writeSSHBytes(&buffer, []byte("abc")); err != nil {
