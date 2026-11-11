@@ -235,9 +235,18 @@ host E2E decision in ADR 0007.
 ## Amendment: ownership gate in isolated mode (2026-11-11)
 
 Isolated state separates app-data, Vagrant state and caches, but not hypervisor
-VM names: Hyper-V, UTM and Tart find VMs by name, so an isolated gateway's
-`vm_info`, tunnels and lifecycle jobs reach the operator's VMs. The ownership
-gate (approval for VMs the gateway did not create) therefore applies in both
-modes. Isolated gateways from before this amendment kept no ownership records,
-so their existing VMs need one approval per gateway run until they are
-destroyed and recreated through the gateway.
+VM names: libvirt (`qemu:///system`), Hyper-V, UTM and Tart find VMs by name, so
+an isolated gateway's `vm_info`, tunnels and lifecycle jobs reach the
+operator's VMs. The ownership gate (approval for VMs the gateway did not
+create) therefore applies in both modes; this supersedes "In shared mode" in
+the shared CLI data amendment's consequences.
+
+Consequences:
+
+- Isolated gateways from before this amendment kept no ownership records, so
+  their existing VMs need one approval per gateway run until they are destroyed
+  and recreated through the gateway. Without an approval console the agent
+  cannot use or destroy them. They are not adopted automatically: with global
+  names, adoption cannot tell them from the operator's VMs.
+- A one-time startup note tells operators of isolated gateways without
+  ownership records about this.

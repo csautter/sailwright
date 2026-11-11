@@ -120,9 +120,13 @@ The agent, and everything it reads, is treated as untrusted.
   [issue #302](https://github.com/csautter/sailwright/issues/302); Linux mocked
   regression tests do not validate the macOS automation APIs.
   With `state_isolation: isolated` app-data, Vagrant state and caches are
-  separate, but hypervisor VM names are still global (Hyper-V, UTM, Tart), so
-  the same ownership gate applies in both modes. A gateway upgraded from a
-  version without the gate asks once per run for VMs it created earlier.
+  separate, but hypervisor VM names are still global (libvirt, Hyper-V, UTM,
+  Tart), so the same ownership gate applies in both modes. Isolated gateways
+  before 0.27.0 kept no ownership records, so VMs they created count as not
+  created by the gateway: approve their `vm_info` access request once per
+  gateway run, or destroy and recreate them through the gateway. Without an
+  approval console the agent cannot use or destroy them. The gateway prints a
+  one-time startup note about this.
 - **Transport.** Agents reach the gateway through a Unix socket in a
   dedicated agent folder (`~/.sailwright-gateway`) that you mount read-only
   into the devcontainer. Access is limited by file permissions (`0600`) and by
@@ -448,7 +452,9 @@ Type "approve 3f2a9c1d" or "deny 3f2a9c1d" and press Enter.
   `EXTERNAL-PATHS`, `NETWORK-WRITE`, `CREDENTIALS`, `ALL-TARGETS`.
 - Other console commands: `approve-sudo <id>`, `pending`.
 - Without an interactive terminal (or with `--no-approvals`) the approval
-  tools are disabled and only the safe set is available.
+  tools are disabled and only the safe set is available. VMs the gateway did
+  not create then stay closed to the agent: `vm_info` and tunnels are refused
+  and lifecycle jobs on them fail.
 - `serve --bypass-approvals` is for disposable test hosts only. It approves
   every request and every access request for VMs the gateway did not create,
   pins the binary without asking, and works without a terminal. Any agent
@@ -461,7 +467,8 @@ Type "approve 3f2a9c1d" or "deny 3f2a9c1d" and press Enter.
 When `state_isolation` is unset, new gateways use `shared`. If `data_dir/app`
 from an older gateway exists, the gateway keeps `isolated` so that those VMs
 stay managed, and prints a startup note; set `state_isolation: shared`
-explicitly after destroying them.
+explicitly after destroying them. Those VMs have no ownership record, so the
+agent needs operator approval to use them (see [Security model](#security-model)).
 
 In `shared` mode, gateway jobs use the normal CLI's
 app-data and cache directories, including `DEV_ALCHEMY_APP_DATA_DIR`,
