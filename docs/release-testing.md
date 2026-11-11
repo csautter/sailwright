@@ -75,10 +75,12 @@ were not run instead of leaving the gap implicit.
   inherit that. A child that must react to Ctrl+C has to reset both to default.
 - `jobs`/`wait` diagnostics from Bash can leak the sampler's source text into
   the next check. Reap background samplers explicitly.
-- Timing-based lock tests need a backend that holds the lock long enough.
-  Tart's `stop` finishes before a second CLI process can start, so a
-  "concurrent start is refused" check cannot observe the lock there. Cover
-  lock contention on a slower backend and record the limitation.
+- Do not time lock contention with a fixed sleep. The kit starts the competing
+  command only after the holder record of the first one appears in the lock
+  file, with an immediate lock timeout. Tart's `stop` (and sometimes Hyper-V's,
+  about 3.6 s) can finish before that; VM-20 then reports `INCONCLUSIVE` as a
+  skip, not a pass. Cover lock contention on a slower backend and record the
+  limitation.
 - A check with a skip path can pass vacuously. State in the check text what a
   skip proves.
 
@@ -101,7 +103,9 @@ were not run instead of leaving the gap implicit.
 - The gateway refuses a state directory inside any git checkout, and its agent
   directory must not overlap the state directory. Create both outside the
   repository, with a short path (Unix socket paths are length-limited), and copy
-  the evidence back afterwards.
+  the evidence back afterwards (`gateway-evidence/` in the phase directory).
+- On Windows, stop the gateway's whole process tree and wait for it to exit
+  before starting the next gateway on the same state directory.
 - Without a terminal, `--no-approvals` cannot confirm the binary
   interactively; pass `--binary-sha256`.
 - Approval of VMs the gateway did not create applies in both `shared` and

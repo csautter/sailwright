@@ -327,9 +327,25 @@ if (((ToInt `$info) -band `$mask) -ne ((ToInt `$hostIp.IPAddress) -band `$mask))
     $envBackup = $env:DEV_ALCHEMY_APP_DATA_DIR
     if ($AppData -ne 'default') { $env:DEV_ALCHEMY_APP_DATA_DIR = $AppData }
     $stop = Start-Process -FilePath $Bin -ArgumentList (@('stop') + $TargetArgs) -PassThru -NoNewWindow -RedirectStandardOutput $stopLog -RedirectStandardError "$stopLog.err"
+    # Without an opened handle, Windows PowerShell 5.1 reports an empty ExitCode.
+    $null = $stop.Handle
     $env:DEV_ALCHEMY_APP_DATA_DIR = $envBackup
-    Start-Sleep -Seconds 3
-    Sw VM-20 'concurrent start is refused while stop holds the lock (lock protocol 2)' (@('start') + $TargetArgs + $Insecure) -Extra @{ SAILWRIGHT_LOCK_TIMEOUT = '2s' } -NonZero -Match @('resource busy', 'held by pid \d+')
+    # Start the competing command only once stop holds the target lock: its holder
+    # record (lock protocol 2 keeps it readable) names the stop process. A stop that
+    # finishes before that is seen proves nothing either way.
+    $locks = Join-Path (Get-AppDataRoot) 'locks'
+    $held = $false
+    $deadline = (Get-Date).AddSeconds(60)
+    while (-not $stop.HasExited -and (Get-Date) -lt $deadline) {
+        $holders = Get-ChildItem -File $locks -ErrorAction SilentlyContinue | ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName -ErrorAction SilentlyContinue }
+        if ($holders -match ('"pid":' + $stop.Id + ',')) { $held = $true; break }
+        Start-Sleep -Milliseconds 50
+    }
+    if ($held) {
+        Sw VM-20 'concurrent start is refused while stop holds the lock (lock protocol 2)' (@('start') + $TargetArgs + $Insecure) -Extra @{ SAILWRIGHT_LOCK_TIMEOUT = '0s' } -NonZero -Match @('resource busy', 'held by pid \d+')
+    } else {
+        Add-RtSkip VM-20 'concurrent start is refused while stop holds the lock (lock protocol 2)' "INCONCLUSIVE: stop finished before its lock was observed (exited: $($stop.HasExited)); lock contention not tested"
+    }
     $stop.WaitForExit()
     if ($stop.ExitCode -eq 0) { Add-RtPass VM-21 'stop finished normally' } else { Add-RtFail VM-21 'stop finished normally' "exit $($stop.ExitCode)" }
     Sw VM-22 'destroy' (@('destroy') + $TargetArgs)
@@ -349,16 +365,27 @@ if (((ToInt `$info) -band `$mask) -ne ((ToInt `$hostIp.IPAddress) -band `$mask))
 
 # ---------------------------------------------------------------- gateway (physical Hyper-V host)
 $script:GwProcess = $null
+# The gateway refuses a state dir inside a git checkout (the run dir is inside it),
+# and its agent dir must not overlap the state dir. Keep both outside the checkout
+# and copy the evidence back into the phase dir afterwards (Complete-RtGateway).
+function Get-RtGatewayRoot { Join-Path $env:LOCALAPPDATA ('sailwright-release-test\' + (Split-Path -Leaf $RunDir)) }
+function Get-RtGatewayState { Join-Path (Get-RtGatewayRoot) 'state' }
+function Get-RtGatewayAgent { Join-Path (Get-RtGatewayRoot) 'agent' }
 function Start-RtGateway([string]$Mode, [string]$Log) {
-    $state = Join-Path $script:RtPhaseDir 'gateway-state'
-    New-Item -ItemType Directory -Force -Path "$state\agent" | Out-Null
-    Set-Content -Path "$state\gateway.yaml" -Encoding ASCII -Value "state_isolation: shared`nagent_dir: $($state -replace '\\','/')/agent`nlisten: 127.0.0.1:$GatewayPort"
+    $state = Get-RtGatewayState
+    $agent = Get-RtGatewayAgent
+    New-Item -ItemType Directory -Force -Path $state, $agent | Out-Null
+    Set-Content -Path "$state\gateway.yaml" -Encoding ASCII -Value "state_isolation: shared`nagent_dir: $($agent -replace '\\','/')`nlisten: 127.0.0.1:$GatewayPort"
+    $gwArgs = @('--state-dir', "`"$state`"", 'serve', '--config', "`"$state\gateway.yaml`"", '--binary', "`"$Bin`"")
+    # Without a terminal the binary cannot be confirmed interactively, so pin its hash.
+    if ($Mode -ne '--bypass-approvals') { $gwArgs += @('--binary-sha256', (Get-FileHash -Algorithm SHA256 -LiteralPath $Bin).Hash.ToLowerInvariant()) }
     $backup = $env:DEV_ALCHEMY_APP_DATA_DIR
     if ($AppData -ne 'default') { $env:DEV_ALCHEMY_APP_DATA_DIR = $AppData }
-    $script:GwProcess = Start-Process -FilePath $Gw -ArgumentList @('--state-dir', "`"$state`"", 'serve', '--config', "`"$state\gateway.yaml`"", '--binary', "`"$Bin`"", $Mode) `
+    $script:GwProcess = Start-Process -FilePath $Gw -ArgumentList ($gwArgs + $Mode) `
         -PassThru -NoNewWindow -RedirectStandardOutput $Log -RedirectStandardError "$Log.err"
+    $null = $script:GwProcess.Handle
     $env:DEV_ALCHEMY_APP_DATA_DIR = $backup
-    $env:SAILWRIGHT_GATEWAY_DIR = "$state\agent"
+    $env:SAILWRIGHT_GATEWAY_DIR = $agent
     $env:SAILWRIGHT_GATEWAY_URL = "http://127.0.0.1:$GatewayPort/mcp"
     for ($i = 0; $i -lt 60; $i++) {
         $probe = Invoke-RtProcess -File $Gw -Arguments @('connect', '--check') -TimeoutSec 30
@@ -369,21 +396,37 @@ function Start-RtGateway([string]$Mode, [string]$Log) {
     $false
 }
 function Stop-RtGateway {
-    if ($script:GwProcess -and -not $script:GwProcess.HasExited) { & taskkill.exe /PID $script:GwProcess.Id 2>$null | Out-Null; Start-Sleep 3; if (-not $script:GwProcess.HasExited) { Stop-Process -Id $script:GwProcess.Id -Force } }
+    # A console gateway without a window ignores a plain taskkill. Stop the whole
+    # tree, so no job keeps the pinned binary open, and wait for the exit before the
+    # next gateway pins into the same state dir.
+    if ($script:GwProcess -and -not $script:GwProcess.HasExited) {
+        & taskkill.exe /PID $script:GwProcess.Id /T /F 2>$null | Out-Null
+        if (-not $script:GwProcess.WaitForExit(30000)) { Write-Warning "gateway pid $($script:GwProcess.Id) did not exit within 30 s" }
+    }
     $script:GwProcess = $null
+}
+function Complete-RtGateway {
+    Stop-RtGateway
+    $root = Get-RtGatewayRoot
+    if (Test-Path $root) {
+        $evidence = Join-Path $script:RtPhaseDir 'gateway-evidence'
+        New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+        Copy-Item -Recurse -Force -Path (Join-Path (Get-RtGatewayState) '*') -Destination $evidence -Exclude 'bin' -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+    }
 }
 
 function Invoke-PhaseGateway {
     Assert-Bin
     Initialize-RtPhase gateway
-    $state = Join-Path $script:RtPhaseDir 'gateway-state'
-    Remove-Item -Recurse -Force $state -ErrorAction SilentlyContinue
+    $state = Get-RtGatewayState
+    Remove-Item -Recurse -Force (Get-RtGatewayRoot) -ErrorAction SilentlyContinue
     $env:Path = "$BinDir;$env:Path"
     try {
         $log = Join-Path $script:RtPhaseDir 'logs\GW-serve-bypass.log'
         if (-not (Start-RtGateway '--bypass-approvals' $log)) { Add-RtFail GW-01 'gateway starts with --bypass-approvals' "see $log"; return }
         Add-RtPass GW-01 'gateway serves with --bypass-approvals (isolated state dir)'
-        Invoke-RtScript GW-02 'banner shows bypassed approvals' "Get-Content '$log'" -Match @('approvals: BYPASSED')
+        Invoke-RtScript GW-02 'banner shows bypassed approvals' "Get-Content '$log'" -Match @('approvals:\s+BYPASSED')
         Invoke-RtScript GW-04 'audit records gateway_started with the binary hash' "Get-Content '$state\audit.jsonl'" -Match @('"gateway_started"', '[0-9a-f]{64}')
         Invoke-RtE2E GW-05 'E2E smoke, cli-readonly, destroy-idempotent through the gateway' 'TestScenarios/(smoke|cli-readonly|destroy-idempotent)$' @{ SAILWRIGHT_E2E_EXECUTOR = 'gateway'; SAILWRIGHT_E2E_TARGET = $Target }
         Invoke-RtE2E GW-06 'TestVMAccess natively on Windows (OpenSSH, SSH_ASKPASS)' '^TestVMAccess$' @{ SAILWRIGHT_VM_ACCESS_E2E = '1'; SAILWRIGHT_E2E_TARGET = $Target } 'TestVMAccess'
@@ -417,9 +460,9 @@ if (`$opened -lt 1 -or `$opened -ne `$closed.Count -or `$moved -lt 1) { throw 't
             Sw GW-24 'cleanup CLI VM' (@('destroy') + $TargetArgs)
             Stop-RtGateway
         } else { Add-RtFail GW-20 'gateway starts with --no-approvals' "see $log" }
-        Add-RtManual GW-30 'approval console: CLI-created VM via MCP vm_info' "Start '$Gw serve --binary $Bin' in an elevated terminal (no bypass). Create the VM with the CLI. Ask the agent to call vm_info for ${Target}: the console shows vm_access_decision with VM_NOT_CREATED_BY_GATEWAY; type approve <id>; tunnels work. Destroy/recreate with the CLI (once with list_targets between, once without): the tunnel answers 'VM was recreated outside this gateway' until vm_info is approved again."
+        Add-RtManual GW-30 'approval console: CLI-created VM via MCP vm_info' "Start '$Gw --state-dir <new empty dir outside the checkout> serve --binary $Bin' in an elevated terminal (no bypass), so no earlier ownership records or grants apply. Create the VM with the CLI. Ask the agent to call vm_info for ${Target}: the console shows vm_access_decision with VM_NOT_CREATED_BY_GATEWAY; type approve <id>; tunnels work. Destroy/recreate with the CLI (once with list_targets between, once without): the tunnel answers 'VM was recreated outside this gateway' until vm_info is approved again."
     } finally {
-        Stop-RtGateway
+        Complete-RtGateway
         Remove-Item Env:SAILWRIGHT_GATEWAY_DIR, Env:SAILWRIGHT_GATEWAY_URL -ErrorAction SilentlyContinue
     }
     Complete-RtPhase
