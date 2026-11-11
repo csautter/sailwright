@@ -85,7 +85,9 @@ the generated mounts (including sibling repos, `~/.sailwright-gateway` and
 Code devcontainer. Differences: the repository is seeded from a git bundle of
 your committed branches instead of being bind-mounted, `.vscode-server` and Codex
 state stay per container, and only the agent logins (`link-agent-auth.sh`) and
-the GitHub token (`github-auth.sh`) are shared.
+the GitHub token (`github-auth.sh`) are shared. Without VS Code there is no
+Claude Code extension, so the image installs the Claude Code CLI (pinned in
+the `Dockerfile`, self-update off) next to Codex.
 
 - Turn on **Settings → Experimental → Cloud VM** in Orca; the recipe only shows
   up under **Run on** after that, and only while `orca.yaml` is on `main`.

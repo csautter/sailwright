@@ -6,6 +6,8 @@ ENV NODE_VERSION=24.22.0
 ENV RENOVATE_VERSION="44.168.3"
 # renovate: datasource=npm depName=@openai/codex versioning=npm
 ENV CODEX_VERSION="0.164.0"
+# renovate: datasource=npm depName=@anthropic-ai/claude-code versioning=npm
+ENV CLAUDE_CODE_VERSION="2.1.322"
 # renovate: datasource=npm depName=azure-functions-core-tools versioning=npm
 ENV AZURE_FUNCTIONS_CORE_TOOLS_VERSION="4.16.0"
 # renovate: datasource=custom.powershell-linux-x64 depName=PowerShell/PowerShell versioning=semver
@@ -103,6 +105,14 @@ RUN npm install --global "renovate@${RENOVATE_VERSION}" \
 
 RUN npm install --global "@openai/codex@${CODEX_VERSION}" \
     && codex --version \
+    && npm cache clean --force
+
+# Claude Code CLI. The VS Code extension brings its own copy, but Orca
+# workspaces (scripts/orca-vm) have no VS Code server and need this one.
+# Pinned here, so the CLI's self-update is off (DISABLE_AUTOUPDATER).
+ENV DISABLE_AUTOUPDATER=1
+RUN npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && claude --version \
     && npm cache clean --force
 
 RUN npm install --global "azure-functions-core-tools@${AZURE_FUNCTIONS_CORE_TOOLS_VERSION}" --unsafe-perm true \
