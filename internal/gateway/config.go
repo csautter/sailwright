@@ -273,7 +273,7 @@ func (c *Config) Resolve() error {
 	if c.StateIsolation != "shared" && c.StateIsolation != "isolated" {
 		return fmt.Errorf("state_isolation must be shared or isolated")
 	}
-	// Hypervisor VM names are global (Hyper-V, UTM, Tart), so even isolated state
+	// Hypervisor VM names are global (libvirt, Hyper-V, UTM, Tart), so even isolated state
 	// reaches the operator's VMs: gate them in both modes.
 	c.GateForeignVMs = true
 	if c.StateIsolation == "shared" {
