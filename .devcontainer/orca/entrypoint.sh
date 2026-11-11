@@ -3,6 +3,9 @@
 # Prepares sshd and the environment of SSH sessions for ORCA_SSH_USER (the
 # devcontainer's remoteUser), then runs sshd in the foreground. Devcontainer
 # lifecycle commands are run by the scripts/orca-vm/* host scripts, not here.
+# Single-quoted snippets are written out verbatim and expand later.
+# shellcheck disable=SC2016
+
 set -euo pipefail
 
 user="${ORCA_SSH_USER:-root}"

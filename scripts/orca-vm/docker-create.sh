@@ -3,9 +3,12 @@
 # Starts one container per workspace from the devcontainer image plus an sshd
 # layer (.devcontainer/orca/Dockerfile), seeds the repository, runs the devcontainer lifecycle commands and
 # prints the SSH recipe result on stdout. Progress goes to stderr.
+# Single-quoted snippets run in the container shell, where $HOME expands.
+# shellcheck disable=SC2016
+
 set -euo pipefail
 
-# shellcheck source=docker-lib.sh
+# shellcheck source=docker-lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/docker-lib.sh"
 
 recipe_id="${ORCA_RECIPE_ID:-docker-devcontainer}"

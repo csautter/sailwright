@@ -2,7 +2,7 @@
 # Orca environment recipe "docker-devcontainer": suspend (stops the container).
 set -euo pipefail
 
-# shellcheck source=docker-lib.sh
+# shellcheck source=docker-lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/docker-lib.sh"
 
 read_payload

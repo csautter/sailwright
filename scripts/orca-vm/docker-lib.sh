@@ -36,6 +36,9 @@
 # them is a C:/... path (host_path), and MSYS argument conversion is turned off
 # so container paths such as /workspaces/x reach docker unchanged.
 
+# Single-quoted snippets run remotely or are jq programs and literal devcontainer variables.
+# shellcheck disable=SC2016
+
 IS_WINDOWS=false
 case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=true ;; esac
 if $IS_WINDOWS; then
@@ -65,6 +68,7 @@ LEGACY_SSH_KEY="${ORCA_VM_DIR}/.ssh/id_ed25519"
 KNOWN_HOSTS="${STATE_DIR}/known_hosts"
 USER_KNOWN_HOSTS="${HOST_HOME}/.ssh/known_hosts"
 LOCK_DIR="${STATE_DIR}/locks"
+# shellcheck disable=SC2034 # used by docker-create.sh
 LABEL_RECIPE="org.orca.recipe"
 LABEL_REPO="org.orca.repo"
 LOOPBACK="127.0.0.1"
@@ -928,8 +932,11 @@ read_payload() {
     PAYLOAD="$(cat)"
     RESOURCE_ID="$(printf '%s' "$PAYLOAD" | jq -r '.recipeResult.userData.resourceId // empty')"
     [ -n "$RESOURCE_ID" ] || die "no recipeResult.userData.resourceId in lifecycle payload"
+    # shellcheck disable=SC2034 # read by the sourcing scripts
     PAYLOAD_IMAGE="$(printf '%s' "$PAYLOAD" | jq -r '.recipeResult.userData.image // empty')"
+    # shellcheck disable=SC2034
     PAYLOAD_HOST_KEY="$(printf '%s' "$PAYLOAD" | jq -r '.recipeResult.userData.hostKey // empty')"
+    # shellcheck disable=SC2034
     PAYLOAD_PORT="$(printf '%s' "$PAYLOAD" | jq -r '.recipeResult.connection.target.port // empty')"
 }
 

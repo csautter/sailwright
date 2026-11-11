@@ -7,7 +7,7 @@
 # ORCA_DOCKER_SKIP_FETCH=1 skips the fetch and the rescue.
 set -euo pipefail
 
-# shellcheck source=docker-lib.sh
+# shellcheck source=docker-lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/docker-lib.sh"
 
 read_payload

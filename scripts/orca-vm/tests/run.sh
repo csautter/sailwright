@@ -8,6 +8,8 @@
 # ssh-keygen); docker is stubbed, HOME and the state directory are temporary.
 #
 #   scripts/orca-vm/tests/run.sh
+# Test snippets are deliberately single-quoted: they expand in the inner shell.
+# shellcheck disable=SC2016
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

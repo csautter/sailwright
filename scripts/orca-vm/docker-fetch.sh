@@ -7,7 +7,7 @@
 #   scripts/orca-vm/docker-fetch.sh <container> one container (must be running)
 set -euo pipefail
 
-# shellcheck source=docker-lib.sh
+# shellcheck source=docker-lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/docker-lib.sh"
 
 if [ $# -gt 0 ]; then

@@ -40,7 +40,7 @@
 # documented interface: run `doctor` after Orca updates.
 set -euo pipefail
 
-# shellcheck source=docker-lib.sh
+# shellcheck source=docker-lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/docker-lib.sh"
 
 SHARED_CONTAINER="$(sanitize_name "orca-${REPO_NAME}-shared")"
@@ -158,6 +158,7 @@ ensure_container() {
         return 0
     fi
     CONTAINER_PORT="$(printf '%s' "$result" | jq -r '.connection.target.port')"
+    # shellcheck disable=SC2034 # part of the result contract set by this function
     CONTAINER_HOST_KEY="$(printf '%s' "$result" | jq -r '.userData.hostKey')"
 }
 
@@ -213,7 +214,7 @@ ensure_target() {
             rpc ssh.updateTarget "$(jq -nc --arg i "$id" --argjson t "$target" '{targetId: $i, target: $t}')" >/dev/null
         fi
     fi
-    [ -n "$id" ] && [ "$id" != null ] || die "could not register SSH host ${name} in Orca"
+    if [ -z "$id" ] || [ "$id" = null ]; then die "could not register SSH host ${name} in Orca"; fi
     log "connecting Orca to ${name} (first connect installs the Orca server)"
     local state
     state="$(rpc ssh.connect "$(jq -nc --arg i "$id" '{targetId: $i}')" | jq -c '.result.state')"
@@ -455,10 +456,16 @@ orca_cloud_vm_setting() {
 
 cmd_doctor() {
     local ok=true
-    docker info >/dev/null 2>&1 && log "docker: ok" || { log "docker: daemon not reachable"; ok=false; }
-    orca_cli status --json 2>/dev/null | jq -e '.result.runtime.reachable == true' >/dev/null \
-        && log "orca runtime: ok (${ORCA_APP_DIR}, $(orca_cli --version 2>/dev/null || echo 'version unknown'))" \
-        || { log "orca runtime: not reachable (start Orca)"; ok=false; }
+    if docker info >/dev/null 2>&1; then
+        log "docker: ok"
+    else
+        log "docker: daemon not reachable"; ok=false
+    fi
+    if orca_cli status --json 2>/dev/null | jq -e '.result.runtime.reachable == true' >/dev/null; then
+        log "orca runtime: ok (${ORCA_APP_DIR}, $(orca_cli --version 2>/dev/null || echo 'version unknown'))"
+    else
+        log "orca runtime: not reachable (start Orca)"; ok=false
+    fi
     if rpc ssh.listEditableTargets >/dev/null 2>&1; then
         log "orca rpc ssh.*: ok"
     else
@@ -470,8 +477,11 @@ cmd_doctor() {
         log "orca node (${ORCA_NODE}): failed"; ok=false
     fi
     if $IS_WINDOWS; then
-        [ -f "${ORCA_VM_DIR}/recipe.cmd" ] && log "recipe.cmd: ok" \
-            || { log "recipe.cmd: missing (Orca runs the recipe through cmd.exe on Windows)"; ok=false; }
+        if [ -f "${ORCA_VM_DIR}/recipe.cmd" ]; then
+            log "recipe.cmd: ok"
+        else
+            log "recipe.cmd: missing (Orca runs the recipe through cmd.exe on Windows)"; ok=false
+        fi
     fi
     if [ -f "$SSH_KEY" ]; then
         log "ssh key: ${SSH_KEY}"

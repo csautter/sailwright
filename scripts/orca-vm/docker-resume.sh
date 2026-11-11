@@ -4,7 +4,7 @@
 # (the published SSH port can change on restart; the host key does not).
 set -euo pipefail
 
-# shellcheck source=docker-lib.sh
+# shellcheck source=docker-lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/docker-lib.sh"
 
 read_payload
