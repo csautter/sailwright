@@ -41,7 +41,9 @@ on_exit cleanup
 
 log "starting container ${name}"
 # Runs as root (the image entrypoint starts sshd); sessions and lifecycle
-# commands use remoteUser.
+# commands use remoteUser. IS_SANDBOX=1 lets Claude Code accept
+# --dangerously-skip-permissions (Orca's agent view passes it) when remoteUser
+# is root: the container is an isolated, per-workspace sandbox.
 docker run -d --init --user root \
     --name "$name" --hostname "$name" \
     --label "${LABEL_RECIPE}=${recipe_id}" \
@@ -50,6 +52,7 @@ docker run -d --init --user root \
     -e "ORCA_SSH_PUBLIC_KEY=$(cat "${SSH_KEY}.pub")" \
     -e "ORCA_SSH_USER=${CONTAINER_USER}" \
     -e ORCA_DOCKER_WORKSPACE=1 \
+    -e IS_SANDBOX=1 \
     ${DOCKER_RUN_ARGS[@]+"${DOCKER_RUN_ARGS[@]}"} \
     "$image" >/dev/null
 created=true
