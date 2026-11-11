@@ -188,6 +188,10 @@ func buildPackerArgs(config VirtualMachineConfig, packerFile string) []string {
 		"-var", fmt.Sprintf("cpus=%s", getVmCpuCountString(config)),
 		"-var", fmt.Sprintf("memory=%d", getVmMemoryMB(config)),
 	)
+	if config.Headless && packerFile == hypervPackerFile {
+		// The hyperv-iso plugin opens a vmconnect console unless headless is set.
+		args = append(args, "-var", "headless=true")
+	}
 	if stagedArtifact, ok := firstStagedBuildArtifact(config); ok {
 		args = append(args, "-var", fmt.Sprintf("artifact_output_path=%s", stagedArtifact))
 	}
