@@ -31,10 +31,11 @@ const (
 var ErrVMAccessPending = errors.New("VM access waits for operator approval")
 
 // vmOwnership decides which VMs the agent may use without asking. With shared state
-// the gateway and the operator manage the same VMs, so only VMs this gateway created
-// (persisted across restarts) and VMs the operator granted (for this gateway run) are
-// open to the agent. Isolated state holds only gateway VMs, so nothing is gated; a
-// nil *vmOwnership is the same as disabled.
+// the gateway and the operator manage the same VMs; with isolated state they still
+// share hypervisor VM names (Hyper-V, UTM, Tart), so the gateway can reach the
+// operator's VMs in both modes. Only VMs this gateway created (persisted across
+// restarts) and VMs the operator granted (for this gateway run) are open to the
+// agent. A nil or disabled *vmOwnership gates nothing (tests only).
 //
 // `sailwright create` fails for an existing VM, so a successful create job proves the
 // gateway made that VM; a failed create counts too once the CLI reports, under its

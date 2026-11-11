@@ -154,7 +154,7 @@ func TestOwnershipDisabledAllowsEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ok, err := o.confirm("ubuntu/server/amd64", "any"); !ok || err != nil || o.knowsInstance("ubuntu/server/amd64") {
-		t.Fatalf("isolated mode gated a VM: %v %v", ok, err)
+		t.Fatalf("disabled ownership gated a VM: %v %v", ok, err)
 	}
 }
 

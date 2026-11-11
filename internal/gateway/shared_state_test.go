@@ -102,3 +102,27 @@ func TestUnsetIsolationKeepsLegacyGatewayState(t *testing.T) {
 		t.Fatal("explicit shared setting overridden")
 	}
 }
+
+// Hypervisor VM names are global, so an isolated gateway still sees (and its vm_info
+// would hand out credentials for) the operator's VMs on Hyper-V, UTM and Tart. VMs
+// it did not create must stay gated in both modes, including legacy isolation.
+func TestIsolatedStateGatesForeignVMs(t *testing.T) {
+	t.Setenv(envAppDataDir, t.TempDir())
+	explicit := Config{StateDir: t.TempDir(), AgentDir: t.TempDir(), StateIsolation: "isolated"}
+	if err := explicit.Resolve(); err != nil {
+		t.Fatal(err)
+	}
+	if !explicit.GateForeignVMs {
+		t.Fatal("state_isolation: isolated does not gate VMs the gateway did not create")
+	}
+	legacy := Config{StateDir: t.TempDir(), AgentDir: t.TempDir()}
+	if err := os.MkdirAll(filepath.Join(legacy.StateDir, "data", "app"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Resolve(); err != nil {
+		t.Fatal(err)
+	}
+	if !legacy.LegacyIsolation || !legacy.GateForeignVMs {
+		t.Fatalf("legacy isolation does not gate foreign VMs: legacy=%v gate=%v", legacy.LegacyIsolation, legacy.GateForeignVMs)
+	}
+}

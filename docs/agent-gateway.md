@@ -119,7 +119,10 @@ The agent, and everything it reads, is treated as untrusted.
   Native UTM/Tart lifecycle, access and approval validation remains tracked in
   [issue #302](https://github.com/csautter/sailwright/issues/302); Linux mocked
   regression tests do not validate the macOS automation APIs.
-  Use `state_isolation: isolated` for complete separation.
+  With `state_isolation: isolated` app-data, Vagrant state and caches are
+  separate, but hypervisor VM names are still global (Hyper-V, UTM, Tart), so
+  the same ownership gate applies in both modes. A gateway upgraded from a
+  version without the gate asks once per run for VMs it created earlier.
 - **Transport.** Agents reach the gateway through a Unix socket in a
   dedicated agent folder (`~/.sailwright-gateway`) that you mount read-only
   into the devcontainer. Access is limited by file permissions (`0600`) and by

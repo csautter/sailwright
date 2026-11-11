@@ -67,8 +67,8 @@ type Options struct {
 	PullAllowlist []string
 	JobTimeout    string
 	FollowOutput  bool
-	// GateForeignVMs enables the shared-state rule that VMs the gateway did not
-	// create need operator approval, while keeping the test's isolated state.
+	// GateForeignVMs enables the rule that VMs the gateway did not create need
+	// operator approval (on in real gateways; off by default in tests).
 	GateForeignVMs bool
 	// AutoApprovals uses the --bypass-approvals approver instead of the console.
 	AutoApprovals bool
