@@ -220,7 +220,20 @@ function Invoke-PhaseInstall {
     Invoke-RtCheck -Id INS-02 -Desc 'second install is idempotent' -File $Bin -Arguments @('install', '--hyperv=false', '--vagrant=false') -TimeoutSec 7200
     Invoke-RtCheck -Id INS-03 -Desc 'Cygwin with Ansible is found' -File $Bin -Arguments @('provision', 'local', '--check', '--yes') -TimeoutSec 3600 -AnyExit -NoMatch @('(?i)cygwin.*not found')
     if ($env:RT_WITH_HYPERV -eq '1') {
-        Invoke-RtCheck -Id INS-10 -Desc 'install --hyperv --vagrant (may request a restart)' -File $Bin -Arguments @('install', '--hyperv', '--vagrant') -TimeoutSec 7200 -AnyExit -Match @('(?i)hyper-v')
+        # Mirror the installer's pre-check (Assert-HyperVCapableProcessor): with a
+        # hypervisor present (always inside a VM) Windows hides the processor flags and
+        # the installer cannot refuse, so only a bare host without VT-x/AMD-V can show
+        # the refusal.
+        $hypervisorPresent = [bool](Get-CimInstance Win32_ComputerSystem).HypervisorPresent
+        $incapable = @(Get-CimInstance Win32_Processor | Where-Object { -not $_.VMMonitorModeExtensions -or -not $_.VirtualizationFirmwareEnabled })
+        if (-not $hypervisorPresent -and $incapable.Count) {
+            Invoke-RtCheck -Id INS-10 -Desc 'install --hyperv --vagrant refuses without hardware virtualization, before package installs' -File $Bin -Arguments @('install', '--hyperv', '--vagrant') -TimeoutSec 1800 -NonZero `
+                -Match @('needs hardware virtualization') -NoMatch @('Chocolatey (is already installed|not found)')
+        } else {
+            Invoke-RtCheck -Id INS-10 -Desc 'install --hyperv --vagrant enables Hyper-V (may request a restart)' -File $Bin -Arguments @('install', '--hyperv', '--vagrant') -TimeoutSec 7200 -Match @('(?i)hyper-v')
+            $why = if ($hypervisorPresent) { 'a hypervisor is present (always true in a VM), so the installer skips the processor check' } else { 'the processor exposes hardware virtualization' }
+            Add-RtSkip INS-10r 'refusal without hardware virtualization' "not reachable on this host: $why"
+        }
         Invoke-RtScript INS-11 'ADK installer signature was checked' "Get-Content '$($script:RtPhaseDir)\logs\INS-10.log'" -AnyExit -Match @('(?i)signature|authenticode|oscdimg')
         Add-RtManual INS-12 'restart, then verify' 'If INS-10 reported a pending restart: restart Windows, open an elevated PowerShell and run: test\release\windows.ps1 hyperv-verify'
     } else { Add-RtSkip INS-10 'opt-in Hyper-V setup' 'RT_WITH_HYPERV not set' }
