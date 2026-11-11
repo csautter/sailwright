@@ -79,6 +79,16 @@ function Assert-OpenSSHCapabilityStateIsUsable($capabilityState, $sshdServiceSta
     }
 }
 
+# A capability install that Windows can only finish after a restart (for example
+# one still pending from enabling Hyper-V) ends without the sshd service. Name the
+# restart instead of reporting a missing service.
+function Get-SshdMissingMessage($capabilityState, [bool]$rebootPending) {
+    if ([bool]$capabilityState.Pending -or $rebootPending) {
+        return ('The sshd service is not available yet: the OpenSSH Server capability is in state "' + [string]$capabilityState.State + '" and Windows has a restart pending. Restart Windows, then retry provisioning.')
+    }
+    return 'The sshd service was not found after enabling OpenSSH Server.'
+}
+
 function Write-OpenSSHPendingStateGuidance($capabilityState, $sshdServiceState) {
     if (-not [bool]$capabilityState.Pending) {
         return
@@ -460,7 +470,8 @@ if (Test-OpenSSHCapabilityInstallNeeded $capabilityState $sshdServiceState) {
 Write-Output 'Preparing the sshd service for loopback-only provisioning.'
 $sshdService = Get-Service -Name 'sshd' -ErrorAction SilentlyContinue
 if ($null -eq $sshdService) {
-    throw 'The sshd service was not found after enabling OpenSSH Server.'
+    $rebootPending = Test-Path -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
+    throw (Get-SshdMissingMessage (Get-WindowsCapabilityState $openSSHCapabilityName) $rebootPending)
 }
 if (([string]$state.SshdServiceStartMode).ToLowerInvariant() -eq 'disabled') {
     Set-Service -Name 'sshd' -StartupType Manual
