@@ -6,6 +6,8 @@ ENV NODE_VERSION=24.22.0
 ENV RENOVATE_VERSION="44.168.3"
 # renovate: datasource=npm depName=@openai/codex versioning=npm
 ENV CODEX_VERSION="0.164.0"
+# renovate: datasource=npm depName=@anthropic-ai/claude-code versioning=npm
+ENV CLAUDE_CODE_VERSION="2.1.322"
 # renovate: datasource=npm depName=azure-functions-core-tools versioning=npm
 ENV AZURE_FUNCTIONS_CORE_TOOLS_VERSION="4.16.0"
 # renovate: datasource=custom.powershell-linux-x64 depName=PowerShell/PowerShell versioning=semver
@@ -31,6 +33,11 @@ ENV TRIVY_VERSION="0.76.2"
 ENV TRIVY_SHA256_AMD64="bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf"
 # renovate: datasource=custom.trivy-linux-arm64 depName=aquasecurity/trivy version=0.76.2 versioning=semver
 ENV TRIVY_SHA256_ARM64="ab9d51f86e6a5fb936f605faff6b593ac51bc378fff4d3e8b9d58358b9c367c3"
+# renovate: datasource=custom.gh-linux-amd64 depName=cli/cli versioning=semver
+ENV GH_VERSION="2.103.3"
+ENV GH_SHA256_AMD64="4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d"
+# renovate: datasource=custom.gh-linux-arm64 depName=cli/cli version=2.103.3 versioning=semver
+ENV GH_SHA256_ARM64="ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306ce63"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -100,6 +107,14 @@ RUN npm install --global "@openai/codex@${CODEX_VERSION}" \
     && codex --version \
     && npm cache clean --force
 
+# Claude Code CLI. The VS Code extension brings its own copy, but Orca
+# workspaces (scripts/orca-vm) have no VS Code server and need this one.
+# Pinned here, so the CLI's self-update is off (DISABLE_AUTOUPDATER).
+ENV DISABLE_AUTOUPDATER=1
+RUN npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && claude --version \
+    && npm cache clean --force
+
 RUN npm install --global "azure-functions-core-tools@${AZURE_FUNCTIONS_CORE_TOOLS_VERSION}" --unsafe-perm true \
     && func --version \
     && npm cache clean --force
@@ -150,5 +165,19 @@ RUN arch="$(dpkg --print-architecture)" \
     && tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy \
     && rm -f /tmp/trivy.tar.gz \
     && trivy --version
+
+# GitHub CLI; .devcontainer/setup-github-auth.sh logs it in with the token
+# shared by initialize-host.sh.
+RUN arch="$(dpkg --print-architecture)" \
+    && case "${arch}" in \
+        amd64) gh_sha256="${GH_SHA256_AMD64}" ;; \
+        arm64) gh_sha256="${GH_SHA256_ARM64}" ;; \
+        *) echo "Unsupported GitHub CLI architecture: ${arch}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.tar.gz" -o /tmp/gh.tar.gz \
+    && printf '%s  %s\n' "${gh_sha256}" /tmp/gh.tar.gz | sha256sum -c - \
+    && tar -xzf /tmp/gh.tar.gz -C /usr/local --strip-components=1 "gh_${GH_VERSION}_linux_${arch}/bin/gh" \
+    && rm -f /tmp/gh.tar.gz \
+    && gh --version
 
 RUN go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0

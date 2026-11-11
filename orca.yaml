@@ -1,0 +1,10 @@
+# Orca configuration. Per-workspace environment recipes run on this machine
+# from the repository root; see scripts/orca-vm/docker-lib.sh. The recipe is
+# offered under "Run on" only after Settings > Experimental > Cloud VM is on.
+environmentRecipes:
+  - id: docker-devcontainer
+    name: Docker (devcontainer image)
+    create: '"./scripts/orca-vm/recipe" create'
+    suspend: '"./scripts/orca-vm/recipe" suspend'
+    resume: '"./scripts/orca-vm/recipe" resume'
+    destroy: '"./scripts/orca-vm/recipe" destroy'

@@ -4,3 +4,8 @@
 .devcontainer/** text eol=lf
 Dockerfile text eol=lf
 Makefile text eol=lf
+
+# Orca recipe entry points: the extension-less sh script keeps LF, the
+# cmd.exe batch files (Windows) keep CRLF.
+scripts/orca-vm/recipe text eol=lf
+*.cmd text eol=crlf

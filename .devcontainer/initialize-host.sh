@@ -70,6 +70,13 @@ if [ -f "$HOST_HOOK" ]; then
     echo "Warning: host hook $HOST_HOOK failed; continuing" >&2
 fi
 
+# GitHub token for gh and git in the container (see github-auth.sh). Lives
+# outside the workspace next to the host hook; only its github/ subdirectory
+# is mounted. A failure only warns.
+GITHUB_SHARE_DIR="$CONFIG_HOME/sailwright/devcontainer/github"
+CONFIG_HOME="$CONFIG_HOME" bash "$SCRIPT_DIR/github-auth.sh" host ||
+  echo "Warning: sharing the GitHub token failed; continuing" >&2
+
 mkdir -p "$GENERATED_DIR"
 TMP_FILE="$(mktemp "$GENERATED_DIR/compose.local.XXXXXX")"
 trap 'rm -f "$TMP_FILE"' EXIT
@@ -144,6 +151,8 @@ add_mount "$REPO_ROOT" "/workspaces/$REPO_NAME"
 add_mount "$USER_HOME/.sailwright-gateway" /run/sailwright-gateway ro
 add_mount "$USER_HOME/.claude-devcontainer" /root/.claude
 add_mount "$USER_HOME/.codex-devcontainer" /root/.codex
+mkdir -p "$GITHUB_SHARE_DIR"
+add_mount "$GITHUB_SHARE_DIR" /run/sailwright-github ro
 
 # VS Code's remote Machine settings (clone-color.sh writes the window color
 # there) get a volume per clone; the rest of .vscode-server/data stays shared.
@@ -152,7 +161,10 @@ printf '      - vscode-machine:/root/.vscode-server/data/Machine\n' >>"$TMP_FILE
 MOUNTED+=("volume $MACHINE_VOLUME -> /root/.vscode-server/data/Machine")
 
 # Agent configuration, mounted when present on the host.
+# Only the skills and agents directories of ~/.agents, never the whole tree:
+# it may be a git repository whose hooks or config would then run on the host.
 add_if_exists "$USER_HOME/.agents/skills" /root/.agents/skills
+add_if_exists "$USER_HOME/.agents/agents" /root/.agents/agents
 add_if_exists "$USER_HOME/.agents/skills" /root/.claude/skills
 # The host Codex login is shared through its auth.json only (postStartCommand
 # symlinks it into /root/.codex); the host state itself stays untouched.

@@ -86,3 +86,8 @@ test/e2e/out/
 # Saved infrastructure plans and local provenance (may contain sensitive data)
 tf.plan
 tf.plan.*
+
+# Orca per-workspace Docker recipe: local ${localEnv:...} values and the
+# symlinks left where older versions kept the SSH key
+/scripts/orca-vm/local.env
+/scripts/orca-vm/.ssh/

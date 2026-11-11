@@ -9,13 +9,41 @@ never blocks startup. The creation log lists what was mounted and skipped.
 
 Mounted automatically when present:
 
-- Agent config: `~/.agents/skills` (for Claude and Codex), `~/.codex`
+- Agent config: `~/.agents/skills` (for Claude and Codex), `~/.agents/agents`,
+  `~/.codex`
   (`/root/.codex-host`, only for its `auth.json`), `~/.gemini`
 - Sibling repos next to this checkout: `sailwright-plans`,
   `sailwright-roles-private`
 - Always: `~/.sailwright-gateway` (read-only, see
   [agent gateway](../docs/agent-gateway.md)), `~/.claude-devcontainer`
-  (`/root/.claude`) and `~/.codex-devcontainer` (`/root/.codex`)
+  (`/root/.claude`), `~/.codex-devcontainer` (`/root/.codex`) and
+  `~/.config/sailwright/devcontainer/github` (read-only, see
+  [GitHub CLI and git credentials](#github-cli-and-git-credentials))
+
+## GitHub CLI and git credentials
+
+The image has `gh`. `github-auth.sh host` (run by `initialize-host.sh`) writes
+a GitHub token to `~/.config/sailwright/devcontainer/github/token` on the host.
+That directory is mounted read-only at `/run/sailwright-github`. On every start,
+`github-auth.sh container` logs `gh` in with the token, makes `gh` the git
+credential helper for `github.com` and rewrites `git@github.com:` remotes to
+HTTPS, so `gh`, `git fetch` and `git push` work without SSH keys.
+
+The token comes from, first match wins:
+
+1. `~/.config/sailwright/devcontainer/github-token`: a token you create for the
+   containers. Prefer a
+   [fine-grained token](https://github.com/settings/personal-access-tokens/new)
+   limited to the repositories the agents need (Contents and Pull requests:
+   read and write). An empty file shares no token at all.
+2. `gh auth token` of your host login. Every process in the container, coding
+   agents included, can then use it with all of its scopes (usually `repo`,
+   `workflow` and `read:org`, so every repository you can reach).
+
+`$XDG_CONFIG_HOME` is honored; under WSL the Windows profile's `.config` is
+used. A changed token is picked up at the next container start (Orca: when a
+workspace is created). When no token is shared any more, a login made from
+an earlier shared token is logged out and the HTTPS rewrite removed.
 
 ## Agent sessions
 
@@ -46,6 +74,38 @@ settings (`~/.vscode-server/data/Machine/settings.json`), not to the tracked
 `~/.vscode-server/data` is shared by all clones and one clone's color would
 otherwise show up in every window. Edit the palette at the top of the script
 to change them.
+
+## Orca workspaces (optional)
+
+[Orca](https://www.onorca.dev) can run each workspace in its own local Docker
+container built from this devcontainer: recipe **Docker (devcontainer image)**
+in [`orca.yaml`](../orca.yaml), scripts in [`scripts/orca-vm/`](../scripts/orca-vm/).
+The scripts read the Compose service from `docker compose config`, so the image,
+the generated mounts (including sibling repos, `~/.sailwright-gateway` and
+`mounts.local`), `local/container.env` and the lifecycle commands match the VS
+Code devcontainer. Differences: the repository is seeded from a git bundle of
+your committed branches instead of being bind-mounted, `.vscode-server` and Codex
+state stay per container, and only the agent logins (`link-agent-auth.sh`) and
+the GitHub token (`github-auth.sh`) are shared. Without VS Code there is no
+Claude Code extension, so the image installs the Claude Code CLI (pinned in
+the `Dockerfile`, self-update off) next to Codex.
+
+- Turn on **Settings → Experimental → Cloud VM** in Orca; the recipe only shows
+  up under **Run on** after that, and only while `orca.yaml` is on `main`.
+- Works on macOS and on Windows (Orca runs `scripts/orca-vm/recipe.cmd`, which
+  starts the scripts with Git Bash). Needs Docker, `jq` and Git for Windows
+  (`winget install jqlang.jq` for `jq`).
+- The devcontainer feature (Python) needs the devcontainer CLI
+  (`npm install -g @devcontainers/cli`). Without it, put
+  `ORCA_DOCKER_SKIP_FEATURES=1` in the gitignored `scripts/orca-vm/local.env`;
+  the image still has Debian's Python 3.
+- Branches made in a workspace are fetched to
+  `refs/remotes/orca/<container>/*` when it is deleted
+  (`scripts/orca-vm/docker-fetch.sh` fetches them on demand), so unpushed
+  work is not lost. With a shared GitHub token, workspaces can also push to
+  `origin` themselves.
+- `scripts/orca-vm/docker-workspace.sh doctor` checks Docker, Orca and the Cloud
+  VM switch; `scripts/orca-vm/tests/run.sh` tests the scripts without Docker.
 
 ## Extra personal mounts (optional)
 

@@ -75,6 +75,26 @@
     },
     {
       "customType": "regex",
+      "description": "Update Codex CLI devcontainer version pin",
+      "managerFilePatterns": [
+        "/(^|/)\\.devcontainer/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+versioning=(?<versioning>\\S+)\\s+ENV\\s+CODEX_VERSION=\"(?<currentValue>[^\"]+)\""
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Update Claude Code CLI devcontainer version pin",
+      "managerFilePatterns": [
+        "/(^|/)\\.devcontainer/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+versioning=(?<versioning>\\S+)\\s+ENV\\s+CLAUDE_CODE_VERSION=\"(?<currentValue>[^\"]+)\""
+      ]
+    },
+    {
+      "customType": "regex",
       "description": "Update annotated custom dependency pins in Go and shell scripts",
       "managerFilePatterns": [
         "/(^|/)\\.github/runners/prepare-tart-base\\.sh$/",
@@ -266,6 +286,17 @@
         "# renovate: datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+versioning=(?<versioning>\\S+)\\s+ENV\\s+TRIVY_VERSION=\"(?<currentValue>[^\"]+)\"\\s+ENV\\s+TRIVY_SHA256_AMD64=\"(?<currentDigest>[a-f0-9]{64})\"",
         "# renovate: datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+version=(?<currentValue>\\S+)\\s+versioning=(?<versioning>\\S+)\\s+ENV\\s+TRIVY_SHA256_ARM64=\"(?<currentDigest>[a-f0-9]{64})\""
       ]
+    },
+    {
+      "customType": "regex",
+      "description": "Update GitHub CLI devcontainer archive version and SHA256 pins",
+      "managerFilePatterns": [
+        "/(^|/)\\.devcontainer/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+versioning=(?<versioning>\\S+)\\s+ENV\\s+GH_VERSION=\"(?<currentValue>[^\"]+)\"\\s+ENV\\s+GH_SHA256_AMD64=\"(?<currentDigest>[a-f0-9]{64})\"",
+        "# renovate: datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+version=(?<currentValue>\\S+)\\s+versioning=(?<versioning>\\S+)\\s+ENV\\s+GH_SHA256_ARM64=\"(?<currentDigest>[a-f0-9]{64})\""
+      ]
     }
   ],
   "customDatasources": {
@@ -363,6 +394,20 @@
       "transformTemplates": [
         "{ \"releases\": ( $githubReleases := $type($) = \"array\" ? $ : []; $append([], $filter($map($githubReleases, function($release) { $exists($release.tag_name) and $exists($release.assets) ? ( $version := $replace($release.tag_name, /^v/, \"\"); $asset := $release.assets[name = \"trivy_\" & $version & \"_Linux-ARM64.tar.gz\"][0]; $type($asset.digest) = \"string\" ? { \"version\": $version, \"releaseTimestamp\": $release.published_at, \"sourceUrl\": $release.html_url, \"digest\": $replace($asset.digest, /^sha256:/, \"\"), \"isStable\": $not($release.prerelease) } : undefined ) : undefined }), function($item) { $exists($item) })) ) }"
       ]
+    },
+    "gh-linux-amd64": {
+      "defaultRegistryUrlTemplate": "https://api.github.com/repos/cli/cli/releases?per_page=100",
+      "format": "json",
+      "transformTemplates": [
+        "{ \"releases\": ( $githubReleases := $type($) = \"array\" ? $ : []; $append([], $filter($map($githubReleases, function($release) { $exists($release.tag_name) and $exists($release.assets) ? ( $version := $replace($release.tag_name, /^v/, \"\"); $asset := $release.assets[name = \"gh_\" & $version & \"_linux_amd64.tar.gz\"][0]; $type($asset.digest) = \"string\" ? { \"version\": $version, \"releaseTimestamp\": $release.published_at, \"sourceUrl\": $release.html_url, \"digest\": $replace($asset.digest, /^sha256:/, \"\"), \"isStable\": $not($release.prerelease) } : undefined ) : undefined }), function($item) { $exists($item) })) ) }"
+      ]
+    },
+    "gh-linux-arm64": {
+      "defaultRegistryUrlTemplate": "https://api.github.com/repos/cli/cli/releases?per_page=100",
+      "format": "json",
+      "transformTemplates": [
+        "{ \"releases\": ( $githubReleases := $type($) = \"array\" ? $ : []; $append([], $filter($map($githubReleases, function($release) { $exists($release.tag_name) and $exists($release.assets) ? ( $version := $replace($release.tag_name, /^v/, \"\"); $asset := $release.assets[name = \"gh_\" & $version & \"_linux_arm64.tar.gz\"][0]; $type($asset.digest) = \"string\" ? { \"version\": $version, \"releaseTimestamp\": $release.published_at, \"sourceUrl\": $release.html_url, \"digest\": $replace($asset.digest, /^sha256:/, \"\"), \"isStable\": $not($release.prerelease) } : undefined ) : undefined }), function($item) { $exists($item) })) ) }"
+      ]
     }
   },
   "packageRules": [
@@ -442,6 +487,16 @@
         "aquasecurity/trivy"
       ],
       "groupName": "Trivy shared artifacts"
+    },
+    {
+      "matchDatasources": [
+        "custom.gh-linux-amd64",
+        "custom.gh-linux-arm64"
+      ],
+      "matchPackageNames": [
+        "cli/cli"
+      ],
+      "groupName": "GitHub CLI devcontainer artifacts"
     }
   ]
 }
