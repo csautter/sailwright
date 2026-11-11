@@ -1,0 +1,14 @@
+#!/bin/sh
+# Entry point of the Orca environment recipe "docker-devcontainer":
+#
+#   "./scripts/orca-vm/recipe" create|suspend|resume|destroy
+#
+# runs scripts/orca-vm/docker-<step>.sh. Orca hands the orca.yaml command to
+# /bin/sh on macOS and Linux, which runs this file, and to cmd.exe on Windows,
+# which runs recipe.cmd next to it instead (cmd.exe cannot start ./x.sh). The
+# quotes around the path are what lets cmd.exe accept the forward slashes.
+case "${1:-}" in
+    create|suspend|resume|destroy) ;;
+    *) echo "usage: recipe create|suspend|resume|destroy" >&2; exit 2 ;;
+esac
+exec "$(dirname "$0")/docker-$1.sh"

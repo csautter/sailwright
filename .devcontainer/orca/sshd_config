@@ -1,0 +1,14 @@
+# Orca per-workspace container: key-only login for Orca's SSH relay.
+# The port is published on 127.0.0.1 only (scripts/orca-vm/docker-create.sh).
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthorizedKeysFile .ssh/authorized_keys
+AllowTcpForwarding yes
+AllowStreamLocalForwarding yes
+StreamLocalBindUnlink yes
+X11Forwarding no
+PermitUserEnvironment no
+ClientAliveInterval 30
+ClientAliveCountMax 6

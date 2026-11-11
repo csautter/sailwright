@@ -47,6 +47,35 @@ settings (`~/.vscode-server/data/Machine/settings.json`), not to the tracked
 otherwise show up in every window. Edit the palette at the top of the script
 to change them.
 
+## Orca workspaces (optional)
+
+[Orca](https://www.onorca.dev) can run each workspace in its own local Docker
+container built from this devcontainer: recipe **Docker (devcontainer image)**
+in [`orca.yaml`](../orca.yaml), scripts in [`scripts/orca-vm/`](../scripts/orca-vm/).
+The scripts read the Compose service from `docker compose config`, so the image,
+the generated mounts (including sibling repos, `~/.sailwright-gateway` and
+`mounts.local`), `local/container.env` and the lifecycle commands match the VS
+Code devcontainer. Differences: the repository is seeded from a git bundle of
+your committed branches instead of being bind-mounted, `.vscode-server` and Codex
+state stay per container, and only the agent logins are shared
+(`link-agent-auth.sh`).
+
+- Turn on **Settings → Experimental → Cloud VM** in Orca; the recipe only shows
+  up under **Run on** after that, and only while `orca.yaml` is on `main`.
+- Works on macOS and on Windows (Orca runs `scripts/orca-vm/recipe.cmd`, which
+  starts the scripts with Git Bash). Needs Docker, `jq` and Git for Windows
+  (`winget install jqlang.jq` for `jq`).
+- The devcontainer feature (Python) needs the devcontainer CLI
+  (`npm install -g @devcontainers/cli`). Without it, put
+  `ORCA_DOCKER_SKIP_FEATURES=1` in the gitignored `scripts/orca-vm/local.env`;
+  the image still has Debian's Python 3.
+- Branches made in a workspace are fetched to
+  `refs/remotes/orca/<container>/*` when it is deleted
+  (`scripts/orca-vm/docker-fetch.sh` fetches them on demand). Push from the
+  host; the containers hold no credentials for `origin`.
+- `scripts/orca-vm/docker-workspace.sh doctor` checks Docker, Orca and the Cloud
+  VM switch; `scripts/orca-vm/tests/run.sh` tests the scripts without Docker.
+
 ## Extra personal mounts (optional)
 
 Copy `mounts.local.example` to `mounts.local` and add `source:target[:ro]`
