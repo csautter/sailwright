@@ -13,6 +13,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEVCONTAINER_JSON="$SCRIPT_DIR/devcontainer.json"
 LOG_FILE="/tmp/install-extensions.log"
 
+# Orca workspace containers (scripts/orca-vm) have no VS Code server to wait for.
+if [ -n "${ORCA_DOCKER_WORKSPACE:-}" ]; then
+  exit 0
+fi
+
 if ! command -v jq >/dev/null 2>&1; then
   echo "$(date -Iseconds) jq not found, skipping extension install" >>"$LOG_FILE"
   exit 0

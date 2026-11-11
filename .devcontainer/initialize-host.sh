@@ -161,7 +161,10 @@ printf '      - vscode-machine:/root/.vscode-server/data/Machine\n' >>"$TMP_FILE
 MOUNTED+=("volume $MACHINE_VOLUME -> /root/.vscode-server/data/Machine")
 
 # Agent configuration, mounted when present on the host.
+# Only the skills and agents directories of ~/.agents, never the whole tree:
+# it may be a git repository whose hooks or config would then run on the host.
 add_if_exists "$USER_HOME/.agents/skills" /root/.agents/skills
+add_if_exists "$USER_HOME/.agents/agents" /root/.agents/agents
 add_if_exists "$USER_HOME/.agents/skills" /root/.claude/skills
 # The host Codex login is shared through its auth.json only (postStartCommand
 # symlinks it into /root/.codex); the host state itself stays untouched.

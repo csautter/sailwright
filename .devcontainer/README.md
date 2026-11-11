@@ -9,7 +9,8 @@ never blocks startup. The creation log lists what was mounted and skipped.
 
 Mounted automatically when present:
 
-- Agent config: `~/.agents/skills` (for Claude and Codex), `~/.codex`
+- Agent config: `~/.agents/skills` (for Claude and Codex), `~/.agents/agents`,
+  `~/.codex`
   (`/root/.codex-host`, only for its `auth.json`), `~/.gemini`
 - Sibling repos next to this checkout: `sailwright-plans`,
   `sailwright-roles-private`
