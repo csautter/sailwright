@@ -104,11 +104,11 @@ were not run instead of leaving the gap implicit.
   the evidence back afterwards.
 - Without a terminal, `--no-approvals` cannot confirm the binary
   interactively; pass `--binary-sha256`.
-- Approval of VMs the gateway did not create only exists with
-  `state_isolation: shared`. A gateway with a legacy `data/app` directory
-  defaults to `isolated` and silently skips the approval, so a "no approval
-  needed" result there says nothing about the feature. Test it on a gateway
-  with `shared` and a private state directory.
+- Approval of VMs the gateway did not create applies in both `shared` and
+  `isolated` mode (VM names are global). Releases before 0.27.0 skipped it
+  with `isolated`, which a gateway with a legacy `data/app` directory selects
+  by default; on such a build a "no approval needed" result says nothing about
+  the feature.
 - A grant belongs to the VM instance it was given for. After a recreate, the
   tunnel is refused again until `vm_info` is approved again.
 - The typed `vm_create`, `vm_start` and `vm_provision` tools do not take the

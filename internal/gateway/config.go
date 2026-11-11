@@ -97,7 +97,8 @@ type Config struct {
 	// selected because <data_dir>/app from an older gateway exists.
 	LegacyIsolation bool `yaml:"-"`
 	// GateForeignVMs requires operator approval before the agent uses a VM this
-	// gateway did not create. Set for shared state, where the operator's VMs live.
+	// gateway did not create. Always set: hypervisor VM names are global, so the
+	// operator's VMs are reachable with isolated state too.
 	GateForeignVMs        bool           `yaml:"-"`
 	SharedAppData         string         `yaml:"-"`
 	SharedCache           string         `yaml:"-"`
@@ -272,8 +273,10 @@ func (c *Config) Resolve() error {
 	if c.StateIsolation != "shared" && c.StateIsolation != "isolated" {
 		return fmt.Errorf("state_isolation must be shared or isolated")
 	}
+	// Hypervisor VM names are global (libvirt, Hyper-V, UTM, Tart), so even isolated state
+	// reaches the operator's VMs: gate them in both modes.
+	c.GateForeignVMs = true
 	if c.StateIsolation == "shared" {
-		c.GateForeignVMs = true
 		if err := c.resolveSharedDirs(os.Getenv, runtime.GOOS); err != nil {
 			return err
 		}

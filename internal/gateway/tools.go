@@ -21,7 +21,7 @@ const (
 	maxAgentNoteLength = 2000
 	serverInstructions = `This server drives the sailwright CLI on the host machine through a fixed policy.
 
-- Safe tools (vm_*, artifact_pull, list_targets, command_help) run immediately. With shared host state, VMs this gateway did not create belong to the operator: lifecycle tools on them wait for approval, and vm_info asks the operator for access first; call it again after approval.
+- Safe tools (vm_*, artifact_pull, list_targets, command_help) run immediately. VMs this gateway did not create may belong to the operator: lifecycle tools on them wait for approval, and vm_info asks the operator for access first; call it again after approval.
 - provision_local, install and run_cli calls outside the safe set wait for a human to approve them on the host terminal. You cannot approve them yourself. Explain why you need the call in the "reason" field.
 - Long operations are jobs: poll job_status and read job_output with the returned next_offset. Only one job runs at a time.
 - Use list_targets first to see which os/type/arch combinations exist on this host.
@@ -521,7 +521,7 @@ func (g *Gateway) submitSafe(tool string, op Operation, req *mcp.CallToolRequest
 			NotSafe: fmt.Sprintf("VM %s was not created by this gateway and may be your own", key),
 		}
 		if !g.ownership.allowed(key) {
-			// Another VM in the shared state, possibly the operator's: ask first.
+			// A VM the gateway did not create, possibly the operator's: ask first.
 			spec.Tier, spec.NeedsApproval = tierApproval, true
 			spec.Risk, spec.NotSafe = foreign.Risk, foreign.NotSafe
 		} else {
@@ -539,7 +539,7 @@ func (g *Gateway) submitSafe(tool string, op Operation, req *mcp.CallToolRequest
 	return nil, view, err
 }
 
-// vmInstanceOps act on an existing VM, which may be the operator's in shared mode.
+// vmInstanceOps act on an existing VM, which may be the operator's (see vmOwnership).
 var vmInstanceOps = map[OpKind]bool{OpStart: true, OpStop: true, OpDestroy: true, OpProvision: true}
 
 func (g *Gateway) recordOwnership(err error) {

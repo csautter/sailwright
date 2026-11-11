@@ -31,10 +31,11 @@ const (
 var ErrVMAccessPending = errors.New("VM access waits for operator approval")
 
 // vmOwnership decides which VMs the agent may use without asking. With shared state
-// the gateway and the operator manage the same VMs, so only VMs this gateway created
-// (persisted across restarts) and VMs the operator granted (for this gateway run) are
-// open to the agent. Isolated state holds only gateway VMs, so nothing is gated; a
-// nil *vmOwnership is the same as disabled.
+// the gateway and the operator manage the same VMs; with isolated state they still
+// share hypervisor VM names (libvirt, Hyper-V, UTM, Tart), so the gateway can reach the
+// operator's VMs in both modes. Only VMs this gateway created (persisted across
+// restarts) and VMs the operator granted (for this gateway run) are open to the
+// agent. A nil or disabled *vmOwnership gates nothing (tests only).
 //
 // `sailwright create` fails for an existing VM, so a successful create job proves the
 // gateway made that VM; a failed create counts too once the CLI reports, under its
@@ -413,4 +414,31 @@ func (g *Gateway) watchCreate(spec *JobSpec, target VMTarget) error {
 		g.recordOwnership(g.ownership.created(target.Key(), jobID, instanceID))
 	}
 	return nil
+}
+
+// isolatedOwnershipNoticeFile marks that IsolatedOwnershipNotice was shown.
+const isolatedOwnershipNoticeFile = ".isolated-ownership-notice"
+
+// IsolatedOwnershipNotice returns a startup note, once per state directory, for an
+// isolated gateway without ownership records. Gateways before the ownership gate
+// applied to isolated state recorded nothing, so the VMs they created now count as
+// not created by the gateway. Adopting them automatically would also adopt the
+// operator's VMs, which share the hypervisor's global names.
+func IsolatedOwnershipNotice(cfg Config) (string, error) {
+	if cfg.StateIsolation != "isolated" {
+		return "", nil
+	}
+	for _, name := range []string{ownershipFileName, isolatedOwnershipNoticeFile} {
+		if _, err := os.Stat(filepath.Join(cfg.StateDir, name)); err == nil {
+			return "", nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+	}
+	if err := writePrivateFileAtomic(filepath.Join(cfg.StateDir, isolatedOwnershipNoticeFile), []byte("shown\n")); err != nil {
+		return "", err
+	}
+	return "note: VMs this gateway did not create need operator approval with state_isolation: isolated too, because hypervisor VM names are global. " +
+		"VMs created by a gateway before 0.27.0 have no ownership record: approve their vm_info access request once per gateway run, or destroy and recreate them through the gateway. " +
+		"Without an approval console (--no-approvals or no terminal) the agent cannot use or destroy them.", nil
 }

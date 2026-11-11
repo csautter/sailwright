@@ -226,6 +226,13 @@ func runServe(parent context.Context, flags serveFlags) error {
 	if cfg.LegacyIsolation {
 		fmt.Printf("note: keeping isolated VM state in %s from an older gateway; set state_isolation: shared to share VMs and caches with the CLI after destroying those VMs\n", filepath.Join(cfg.DataDir, "app"))
 	}
+	note, err := gateway.IsolatedOwnershipNotice(cfg)
+	if err != nil {
+		return err
+	}
+	if note != "" {
+		fmt.Println(note)
+	}
 	if cfg.StateIsolation == "shared" {
 		old := filepath.Join(cfg.DataDir, "app")
 		marker := filepath.Join(cfg.StateDir, ".shared-data-notice")

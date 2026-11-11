@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
@@ -100,5 +101,63 @@ func TestUnsetIsolationKeepsLegacyGatewayState(t *testing.T) {
 	}
 	if explicit.StateIsolation != "shared" || explicit.LegacyIsolation {
 		t.Fatal("explicit shared setting overridden")
+	}
+}
+
+// Hypervisor VM names are global, so an isolated gateway still sees (and its vm_info
+// would hand out credentials for) the operator's VMs on libvirt, Hyper-V, UTM and Tart. VMs
+// it did not create must stay gated in both modes, including legacy isolation.
+func TestIsolatedStateGatesForeignVMs(t *testing.T) {
+	t.Setenv(envAppDataDir, t.TempDir())
+	explicit := Config{StateDir: t.TempDir(), AgentDir: t.TempDir(), StateIsolation: "isolated"}
+	if err := explicit.Resolve(); err != nil {
+		t.Fatal(err)
+	}
+	if !explicit.GateForeignVMs {
+		t.Fatal("state_isolation: isolated does not gate VMs the gateway did not create")
+	}
+	legacy := Config{StateDir: t.TempDir(), AgentDir: t.TempDir()}
+	if err := os.MkdirAll(filepath.Join(legacy.StateDir, "data", "app"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Resolve(); err != nil {
+		t.Fatal(err)
+	}
+	if !legacy.LegacyIsolation || !legacy.GateForeignVMs {
+		t.Fatalf("legacy isolation does not gate foreign VMs: legacy=%v gate=%v", legacy.LegacyIsolation, legacy.GateForeignVMs)
+	}
+}
+
+// Agents on isolated gateways meet the same approvals, so the instructions must not
+// limit the rule to shared state.
+func TestServerInstructionsDescribeGateInBothModes(t *testing.T) {
+	if strings.Contains(serverInstructions, "shared host state") || !strings.Contains(serverInstructions, "VMs this gateway did not create") {
+		t.Fatalf("server instructions do not describe the ownership gate for both modes:\n%s", serverInstructions)
+	}
+}
+
+// An isolated gateway from before the gate has no ownership records, so its existing
+// VMs now need approval. The operator is told once.
+func TestIsolatedOwnershipNoticeShownOnce(t *testing.T) {
+	cfg := Config{StateDir: t.TempDir(), StateIsolation: "isolated"}
+	note, err := IsolatedOwnershipNotice(cfg)
+	if err != nil || !strings.Contains(note, "approval") || !strings.Contains(note, "approval console") {
+		t.Fatalf("first start: note=%q err=%v", note, err)
+	}
+	if note, err := IsolatedOwnershipNotice(cfg); note != "" || err != nil {
+		t.Fatalf("note repeated: %q %v", note, err)
+	}
+
+	recorded := Config{StateDir: t.TempDir(), StateIsolation: "isolated"}
+	if err := os.WriteFile(filepath.Join(recorded.StateDir, ownershipFileName), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if note, err := IsolatedOwnershipNotice(recorded); note != "" || err != nil {
+		t.Fatalf("gateway with ownership records got the note: %q %v", note, err)
+	}
+
+	shared := Config{StateDir: t.TempDir(), StateIsolation: "shared"}
+	if note, err := IsolatedOwnershipNotice(shared); note != "" || err != nil {
+		t.Fatalf("shared gateway got the note: %q %v", note, err)
 	}
 }
