@@ -102,3 +102,26 @@ turns out to be broken.
 While a single build runs in the foreground, Packer owns the terminal and handles
 Ctrl+C first; Sailwright counts it once Packer exits. Press Ctrl+C again after that
 to skip the VNC video post-processing.
+
+## Windows: Cancelled Hyper-V Build Leaves a Packer VM Running
+
+A cancelled Hyper-V build can leave its Packer build VM
+(`linux-ubuntu-<type>-packer-<timestamp>` or the Windows 11 build VM) running.
+When the `sailwright` process itself is killed, Packer, its plugins and a
+`vmconnect` window can keep running too: the CLI does not stop its process tree
+on Windows. A gateway `job_cancel` terminates the job's processes (a Windows job
+object), so Packer gets no chance to remove the VM. `sailwright destroy` does
+not see these VMs, because a build VM is not a managed VM.
+
+Pressing Ctrl+C in the console that runs the build reaches Packer directly and
+lets it remove its VM. For the other cases, clean up from an elevated
+PowerShell after checking that no other build is running:
+
+```powershell
+Get-Process packer*, vmconnect -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-VM -Name 'linux-ubuntu-*-packer-*' | Stop-VM -TurnOff -Force -PassThru | Remove-VM -Force
+```
+
+Remove-VM keeps the disk. Delete the matching
+`<cache>\linux\hyperv-ubuntu-<type>-output-*` directory as well; the next
+`sailwright build` also replaces it.
