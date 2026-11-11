@@ -15,15 +15,17 @@
 #   1. <config>/sailwright/devcontainer/github-token: a token you created for
 #      the containers, preferably a fine-grained one limited to the repositories
 #      the agents need. An empty file shares nothing.
-#   2. `gh auth token` of the host's own gh login.
+#   2. `gh auth token` of the host's own gh login. When no gh is found at
+#      all (e.g. WSL's bash without the Windows PATH), a token shared earlier
+#      is kept rather than removed.
 # <config> is $XDG_CONFIG_HOME or ~/.config (the Windows profile's .config under
 # WSL). Everything in the containers can use the token, and with the host's own
 # login that is every repository it can reach.
 #
 # Without a shared token, a login made earlier from a shared token is logged
 # out again and the remote rewrite removed; a login of your own made inside the
-# container is left alone. Test overrides: GH_CMD (host), GITHUB_AUTH_DIR and
-# GITHUB_AUTH_STATE (container).
+# container is left alone. Test overrides: GH_CMD (host; "none" means no gh),
+# GITHUB_AUTH_DIR and GITHUB_AUTH_STATE (container).
 set -uo pipefail
 
 TOKEN_RE='^[A-Za-z0-9_]+$'
@@ -33,28 +35,43 @@ log() { echo ">>> github auth: $*"; }
 
 # --- host ------------------------------------------------------------------------
 
-host_gh_token() {
-    local gh="${GH_CMD:-}"
-    if [ -z "$gh" ]; then
-        if command -v gh >/dev/null 2>&1; then gh=gh
-        elif command -v gh.exe >/dev/null 2>&1; then gh=gh.exe
-        else return 1
-        fi
+# Prints the host's gh, or fails when there is none. VS Code may run
+# initializeCommand with WSL's bash.exe, whose PATH often lacks the Windows
+# gh.exe: ask Windows where it is.
+host_gh() {
+    local bin
+    case "${GH_CMD:-}" in none) return 1 ;; ?*) printf "%s" "$GH_CMD"; return 0 ;; esac
+    for bin in gh gh.exe; do
+        command -v "$bin" >/dev/null 2>&1 && { printf '%s' "$bin"; return 0; }
+    done
+    if command -v wslpath >/dev/null 2>&1 && command -v cmd.exe >/dev/null 2>&1; then
+        bin="$(cmd.exe /d /c where gh.exe 2>/dev/null | head -n 1 | tr -d '\r')"
+        [ -n "$bin" ] && bin="$(wslpath -u "$bin" 2>/dev/null)" && [ -x "$bin" ] \
+            && { printf '%s' "$bin"; return 0; }
     fi
-    "$gh" auth token --hostname "$HOST" 2>/dev/null
+    return 1
 }
 
 host() {
     local config_home="${CONFIG_HOME:?CONFIG_HOME is not set}"
     local override="${config_home}/sailwright/devcontainer/github-token"
     local share_dir="${config_home}/sailwright/devcontainer/github"
-    local token="" source tmp
+    local token="" source tmp gh
     if [ -f "$override" ]; then
         token="$(tr -d '\r\n' <"$override")"
         source="$override"
-    else
-        token="$(host_gh_token | tr -d '\r\n')" || token=""
+    elif gh="$(host_gh)"; then
+        token="$("$gh" auth token --hostname "$HOST" 2>/dev/null | tr -d '\r\n')" || token=""
         source="the host's gh login"
+    else
+        # The login state is unknown here, not gone: keep what an earlier run
+        # shared, so running containers and new Orca workspaces keep working.
+        if [ -s "${share_dir}/token" ]; then
+            log "gh not found on this host; keeping the token shared earlier"
+        else
+            log "no token shared (gh not found; create ${override} or install gh and run \`gh auth login\`)"
+        fi
+        return 0
     fi
     (umask 077 && mkdir -p "$share_dir")
     if [ -n "$token" ] && ! [[ "$token" =~ $TOKEN_RE ]]; then
