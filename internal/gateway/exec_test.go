@@ -66,7 +66,17 @@ func TestRunnerCancelTerminatesDescendants(t *testing.T) {
 		done <- err
 	}()
 
-	waitFor(t, func() bool { return readBeat(beat) != "" })
+	// Starting the pinned test binary twice (parent, then child) is the slow part
+	// under a full parallel `go test ./...` run, and on Windows each fresh copy is
+	// scanned before it runs. Only the startup gets the long wait; the assertions
+	// after cancel stay strict.
+	startup := time.Now().Add(60 * time.Second)
+	for readBeat(beat) == "" {
+		if time.Now().After(startup) {
+			t.Fatal("process tree helper did not start writing beats")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	before := readBeat(beat)
 	waitFor(t, func() bool { return readBeat(beat) != before })
 
