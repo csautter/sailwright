@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Orca environment recipe "docker-devcontainer": destroy. Fetches the
-# container's branches to the host (the container holds no credentials for
-# origin), then removes the container and its known_hosts entries. If the fetch
+# container's branches to the host (unpushed work exists only there), then removes the container and its known_hosts entries. If the fetch
 # fails, the branches are saved under the state directory's rescue/ first; if
 # that fails too, nothing is removed. Shared named volumes and host mounts
 # (agent logins, skills, caches, shared directories) are kept.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetches the branches of Orca workspace containers into this (host) checkout
 # as refs/remotes/orca/<container>/*, so work can be reviewed and pushed from
-# the host. The containers hold no credentials for origin.
+# the host. Branches that were never pushed from the container exist only there.
 #
 #   scripts/orca-vm/docker-fetch.sh             all running containers of this repo
 #   scripts/orca-vm/docker-fetch.sh <container> one container (must be running)

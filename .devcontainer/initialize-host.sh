@@ -70,6 +70,13 @@ if [ -f "$HOST_HOOK" ]; then
     echo "Warning: host hook $HOST_HOOK failed; continuing" >&2
 fi
 
+# GitHub token for gh and git in the container (see github-auth.sh). Lives
+# outside the workspace next to the host hook; only its github/ subdirectory
+# is mounted. A failure only warns.
+GITHUB_SHARE_DIR="$CONFIG_HOME/sailwright/devcontainer/github"
+CONFIG_HOME="$CONFIG_HOME" bash "$SCRIPT_DIR/github-auth.sh" host ||
+  echo "Warning: sharing the GitHub token failed; continuing" >&2
+
 mkdir -p "$GENERATED_DIR"
 TMP_FILE="$(mktemp "$GENERATED_DIR/compose.local.XXXXXX")"
 trap 'rm -f "$TMP_FILE"' EXIT
@@ -144,6 +151,8 @@ add_mount "$REPO_ROOT" "/workspaces/$REPO_NAME"
 add_mount "$USER_HOME/.sailwright-gateway" /run/sailwright-gateway ro
 add_mount "$USER_HOME/.claude-devcontainer" /root/.claude
 add_mount "$USER_HOME/.codex-devcontainer" /root/.codex
+mkdir -p "$GITHUB_SHARE_DIR"
+add_mount "$GITHUB_SHARE_DIR" /run/sailwright-github ro
 
 # VS Code's remote Machine settings (clone-color.sh writes the window color
 # there) get a volume per clone; the rest of .vscode-server/data stays shared.

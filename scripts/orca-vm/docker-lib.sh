@@ -811,7 +811,8 @@ create_repo_bundle() {
 }
 
 # Prints a remote URL without credentials, or fails when it is not an allowed
-# form; the containers must never get credentials for origin. Allowed:
+# form; credentials never travel into the containers in the remote URL (the
+# GitHub token is shared separately, see .devcontainer/github-auth.sh). Allowed:
 #   https://, http://, git://  userinfo (tokens such as
 #                              https://x-access-token:ghp_...@host/...),
 #                              query string and fragment are removed

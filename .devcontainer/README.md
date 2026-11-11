@@ -15,7 +15,34 @@ Mounted automatically when present:
   `sailwright-roles-private`
 - Always: `~/.sailwright-gateway` (read-only, see
   [agent gateway](../docs/agent-gateway.md)), `~/.claude-devcontainer`
-  (`/root/.claude`) and `~/.codex-devcontainer` (`/root/.codex`)
+  (`/root/.claude`), `~/.codex-devcontainer` (`/root/.codex`) and
+  `~/.config/sailwright/devcontainer/github` (read-only, see
+  [GitHub CLI and git credentials](#github-cli-and-git-credentials))
+
+## GitHub CLI and git credentials
+
+The image has `gh`. `github-auth.sh host` (run by `initialize-host.sh`) writes
+a GitHub token to `~/.config/sailwright/devcontainer/github/token` on the host.
+That directory is mounted read-only at `/run/sailwright-github`. On every start,
+`github-auth.sh container` logs `gh` in with the token, makes `gh` the git
+credential helper for `github.com` and rewrites `git@github.com:` remotes to
+HTTPS, so `gh`, `git fetch` and `git push` work without SSH keys.
+
+The token comes from, first match wins:
+
+1. `~/.config/sailwright/devcontainer/github-token`: a token you create for the
+   containers. Prefer a
+   [fine-grained token](https://github.com/settings/personal-access-tokens/new)
+   limited to the repositories the agents need (Contents and Pull requests:
+   read and write). An empty file shares no token at all.
+2. `gh auth token` of your host login. Every process in the container, coding
+   agents included, can then use it with all of its scopes (usually `repo`,
+   `workflow` and `read:org`, so every repository you can reach).
+
+`$XDG_CONFIG_HOME` is honored; under WSL the Windows profile's `.config` is
+used. A changed token is picked up at the next container start (Orca: when a
+workspace is created). When no token is shared any more, a login made from
+an earlier shared token is logged out and the HTTPS rewrite removed.
 
 ## Agent sessions
 
@@ -57,8 +84,8 @@ the generated mounts (including sibling repos, `~/.sailwright-gateway` and
 `mounts.local`), `local/container.env` and the lifecycle commands match the VS
 Code devcontainer. Differences: the repository is seeded from a git bundle of
 your committed branches instead of being bind-mounted, `.vscode-server` and Codex
-state stay per container, and only the agent logins are shared
-(`link-agent-auth.sh`).
+state stay per container, and only the agent logins (`link-agent-auth.sh`) and
+the GitHub token (`github-auth.sh`) are shared.
 
 - Turn on **Settings → Experimental → Cloud VM** in Orca; the recipe only shows
   up under **Run on** after that, and only while `orca.yaml` is on `main`.
@@ -71,8 +98,9 @@ state stay per container, and only the agent logins are shared
   the image still has Debian's Python 3.
 - Branches made in a workspace are fetched to
   `refs/remotes/orca/<container>/*` when it is deleted
-  (`scripts/orca-vm/docker-fetch.sh` fetches them on demand). Push from the
-  host; the containers hold no credentials for `origin`.
+  (`scripts/orca-vm/docker-fetch.sh` fetches them on demand), so unpushed
+  work is not lost. With a shared GitHub token, workspaces can also push to
+  `origin` themselves.
 - `scripts/orca-vm/docker-workspace.sh doctor` checks Docker, Orca and the Cloud
   VM switch; `scripts/orca-vm/tests/run.sh` tests the scripts without Docker.
 

@@ -27,7 +27,8 @@
 # Example:
 #   docker-workspace.sh create fix-login -- --agent codex --prompt "Fix the login test"
 #
-# The containers hold no credentials for origin: `rm` and `down` first fetch the
+# A container's branches are pushed only if its shared GitHub token allows it
+# (.devcontainer/github-auth.sh), so `rm` and `down` first fetch the
 # container's branches to refs/remotes/orca/<container>/* (docker-fetch.sh) and
 # refuse to remove anything if that fails, unless --force (or --no-fetch for rm).
 # Parallel calls are safe: work on one container is serialised by a lock.

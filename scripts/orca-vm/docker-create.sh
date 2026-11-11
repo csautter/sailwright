@@ -113,8 +113,9 @@ git reset -q --hard
 rm -f /tmp/repo.bundle
 EOF
 
-# Host key of the origin server, so git fetch/push from the container does not
-# prompt. Credentials for it are not copied (see docker-fetch.sh).
+# Host key of the origin server, so git fetch/push over SSH from the container
+# does not prompt. No SSH credentials are copied; GitHub remotes use HTTPS with
+# the shared gh token instead (.devcontainer/github-auth.sh, postStartCommand).
 origin_host="" origin_port=""
 case "$origin_url" in
     ssh://*)
