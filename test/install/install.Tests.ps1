@@ -204,11 +204,12 @@ Describe 'Installer entry point' {
         $message | Should -Match 'install\.ps1 is for Windows|release v0\.0\.0'
     }
 
+    # Match the error id, not the message: PowerShell localizes the message text.
     It 'rejects unknown parameters' {
-        { & $installer -Bogus } | Should -Throw '*cannot be found that matches parameter name*'
+        { & $installer -Bogus } | Should -Throw -ErrorId 'NamedParameterNotFound*'
     }
 
     It 'rejects a switch value that @args splits off' {
-        { & $installer -NoGateway:$false } | Should -Throw '*positional parameter cannot be found*'
+        { & $installer -NoGateway:$false } | Should -Throw -ErrorId 'PositionalParameterNotFound*'
     }
 }
