@@ -260,9 +260,11 @@ func TestRegisteredWorkspaceIsPinnedAgainstSymlinkSwap(t *testing.T) {
 	if _, _, err := TranslateAgentPath("/workspaces/sub", []WorkspaceMapping{registered}); err != nil {
 		t.Fatalf("real directory: %v", err)
 	}
-	if _, err := CreateConfinedSnapshot("/workspaces/sub", registered, ".", sub, filepath.Join(t.TempDir(), "stage"), defaultLimits()); err != nil {
+	realSnapshot, err := CreateConfinedSnapshot("/workspaces/sub", registered, ".", sub, filepath.Join(t.TempDir(), "stage"), defaultLimits())
+	if err != nil {
 		t.Fatalf("snapshot of real directory: %v", err)
 	}
+	t.Cleanup(func() { _ = RemoveSnapshot(realSnapshot.Dir) })
 
 	swapForSymlink(t, sub, secret)
 	if _, _, err := TranslateAgentPath("/workspaces/sub", []WorkspaceMapping{registered}); err == nil || !strings.Contains(err.Error(), "must stay a real directory") {
@@ -273,9 +275,12 @@ func TestRegisteredWorkspaceIsPinnedAgainstSymlinkSwap(t *testing.T) {
 	}
 	static := registered
 	static.Registered = false
-	if _, err := CreateConfinedSnapshot("/workspaces/sub", static, ".", sub, filepath.Join(t.TempDir(), "stage"), defaultLimits()); err != nil {
+	// The snapshot is read-only; remove it explicitly so TempDir cleanup works for non-root users.
+	followed, err := CreateConfinedSnapshot("/workspaces/sub", static, ".", sub, filepath.Join(t.TempDir(), "stage"), defaultLimits())
+	if err != nil {
 		t.Fatalf("gateway.yaml entries keep following symlinks: %v", err)
 	}
+	t.Cleanup(func() { _ = RemoveSnapshot(followed.Dir) })
 }
 
 // The directory opened for the snapshot must be the one at the pinned path after the
