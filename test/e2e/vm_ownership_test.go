@@ -104,18 +104,23 @@ func TestVMOwnership(t *testing.T) {
 		return nil
 	}
 	targetInput := map[string]any{"os": osName, "type": osType, "arch": arch}
-	state := func() string {
+	// exists asks `create list`, which reports the VM itself. The destroy listing
+	// also counts a registered Hyper-V box, which a named instance leaves behind.
+	exists := func() bool {
 		var listing gateway.ListTargetsOutput
-		if err := call("list_targets", map[string]any{"command": "destroy"}, &listing); err != nil {
+		if err := call("list_targets", map[string]any{"command": "create"}, &listing); err != nil {
 			t.Fatal(err)
 		}
 		for _, vm := range listing.Targets {
-			if vm.OS == osName && vm.Type == osType && vm.Arch == arch {
-				return vm.Fields["state"]
+			if vm.OS == osName && vm.Type == osType && vm.Arch == arch && vm.Name == "" {
+				if vm.Exists != nil {
+					return *vm.Exists
+				}
+				return vm.Fields["create"] == "already created"
 			}
 		}
 		t.Fatal("target is not listed by this host")
-		return ""
+		return false
 	}
 	// vmInfo requests access and retries while the (automatic) approval is pending.
 	vmInfo := func() gateway.VMInfoOutput {
@@ -185,8 +190,8 @@ func TestVMOwnership(t *testing.T) {
 		}
 	}
 
-	if got := state(); got != "missing" {
-		t.Fatalf("selected VM already exists (state %q); refusing to touch it", got)
+	if exists() {
+		t.Fatal("selected VM already exists; refusing to touch it")
 	}
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Minute)
@@ -208,8 +213,8 @@ func TestVMOwnership(t *testing.T) {
 		step := fmt.Sprintf("recreate (list_targets in between: %t)", withListing)
 		lifecycle(ctx, "destroy")
 		if withListing {
-			if got := state(); got != "missing" {
-				t.Fatalf("%s: state after destroy is %q", step, got)
+			if exists() {
+				t.Fatalf("%s: VM still listed after destroy", step)
 			}
 		}
 		lifecycle(ctx, "create")
