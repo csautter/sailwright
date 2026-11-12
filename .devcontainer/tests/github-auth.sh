@@ -67,6 +67,16 @@ assert_true "host: no gh login shares nothing" test ! -e "${SHARE}/token"
 assert_true "host: share directory still created (bind source)" test -d "$SHARE"
 assert_true "host: no temp files left" test -z "$(ls -A "$SHARE")"
 
+printf 'gho_host\n' >"${GH_STUB_DIR}/login"
+host
+nogh() { CONFIG_HOME="$CONFIG" GH_CMD=none bash "$SCRIPT" host 2>&1; }
+assert_true "host: no gh keeps the token shared earlier" grep -q 'keeping the token' <<<"$(nogh)"
+assert_eq "host: kept token unchanged" "gho_host" "$(cat "${SHARE}/token")"
+rm -f "${SHARE}/token"
+assert_true "host: no gh and no earlier token shares nothing" grep -q 'gh not found' <<<"$(nogh)"
+assert_true "host: no gh creates no token" test ! -e "${SHARE}/token"
+rm -f "${GH_STUB_DIR}/login"
+
 # --- container ---------------------------------------------------------------------
 TOKENS="${TMP}/run"
 mkdir -p "$TOKENS"

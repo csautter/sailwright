@@ -43,7 +43,9 @@ The token comes from, first match wins:
 `$XDG_CONFIG_HOME` is honored; under WSL the Windows profile's `.config` is
 used. A changed token is picked up at the next container start (Orca: when a
 workspace is created). When no token is shared any more, a login made from
-an earlier shared token is logged out and the HTTPS rewrite removed.
+an earlier shared token is logged out and the HTTPS rewrite removed. A start
+where no `gh` can be found on the host at all (for example VS Code running
+`initializeCommand` with WSL's `bash.exe`) keeps the token shared earlier.
 
 ## Agent sessions
 
@@ -86,7 +88,7 @@ the generated mounts (including sibling repos, `~/.sailwright-gateway` and
 Code devcontainer. Differences: the repository is seeded from a git bundle of
 your committed branches instead of being bind-mounted, `.vscode-server` and Codex
 state stay per container, and only the agent logins (`link-agent-auth.sh`) and
-the GitHub token (`github-auth.sh`) are shared. Without VS Code there is no
+the git credentials (see below) are shared. Without VS Code there is no
 Claude Code extension, so the image installs the Claude Code CLI (pinned in
 the `Dockerfile`, self-update off) next to Codex.
 
@@ -102,8 +104,15 @@ the `Dockerfile`, self-update off) next to Codex.
 - Branches made in a workspace are fetched to
   `refs/remotes/orca/<container>/*` when it is deleted
   (`scripts/orca-vm/docker-fetch.sh` fetches them on demand), so unpushed
-  work is not lost. With a shared GitHub token, workspaces can also push to
+  work is not lost. With shared git credentials, workspaces can also push to
   `origin` themselves.
+- Git credentials (`share_credentials` in `scripts/orca-vm/docker-lib.sh`, on
+  create and resume): the host's `gh auth token` logs the container's `gh` in
+  directly (on top of `github-auth.sh`; a login the container made itself is
+  kept), and GitHub SSH remotes are rewritten to HTTPS.
+  `ORCA_DOCKER_GITHUB_AUTH=none` in `scripts/orca-vm/local.env` turns it off.
+  SSH keys are never copied into workspaces: agents run as root there and
+  could read or use them, and a personal key opens much more than `origin`.
 - `scripts/orca-vm/docker-workspace.sh doctor` checks Docker, Orca and the Cloud
   VM switch; `scripts/orca-vm/tests/run.sh` tests the scripts without Docker.
 

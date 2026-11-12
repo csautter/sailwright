@@ -22,6 +22,8 @@
 # mounts, so one login is shared without sharing caches or sqlite state.
 # OpenCode v2 keeps its logins in SQLite instead; share_opencode_auth copies
 # the host's (GitHub Copilot by default) with `opencode auth export | import`.
+# share_credentials logs the container's gh in with the host's gh token; no
+# SSH keys or other git credentials are copied.
 #
 # Host-side state (SSH key, known_hosts, locks) lives outside the repository in
 # ORCA_DOCKER_STATE_DIR (default ~/.config/orca-docker/<repo>), so processes in
@@ -495,6 +497,126 @@ share_opencode_auth() {
     creds=""
 }
 
+# --- git credentials -------------------------------------------------------------
+#
+# share_credentials runs on create, resume and every
+# `docker-workspace.sh create`. It never fails the caller and never logs or
+# stores a secret on the host side.
+#
+#   ORCA_DOCKER_GITHUB_AUTH  gh (default): log the container's gh in with the
+#                            host's `gh auth token`, make gh the git credential
+#                            helper and rewrite GitHub SSH remotes to HTTPS;
+#                            none: leave the container's gh alone.
+#
+# SSH keys are deliberately never copied: agents run as root in the container,
+# so a key there (or one unlocked in an ssh-agent there) is readable by them,
+# and personal keys usually open far more than the repository's remote.
+
+GITHUB_HOST=github.com
+
+# Prints the host's gh binary, or fails when there is none.
+host_gh() {
+    local bin
+    for bin in gh gh.exe; do
+        command -v "$bin" >/dev/null 2>&1 && { command -v "$bin"; return 0; }
+    done
+    return 1
+}
+
+# Runs in the container as remoteUser; reads the token (or an empty line to
+# revoke) on stdin. Exit codes: 0 logged in, 3 kept the container's own login,
+# 4 nothing to revoke, 127 no gh.
+# shellcheck disable=SC2016
+_GH_CONTAINER_SCRIPT='
+host=$1
+command -v gh >/dev/null 2>&1 || exit 127
+IFS= read -r token || token=""
+state="$HOME/.config/orca-docker/github-token.sha256"
+hash() { printf "%s" "$1" | sha256sum | cut -d" " -f1; }
+key="url.https://${host}/.insteadOf"
+current="$(gh auth token --hostname "$host" 2>/dev/null)" || current=""
+ours=false
+[ -n "$current" ] && [ -f "$state" ] && [ "$(hash "$current")" = "$(cat "$state")" ] && ours=true
+if [ -z "$token" ]; then
+    [ -f "$state" ] || exit 4
+    if $ours; then gh auth logout --hostname "$host" >/dev/null 2>&1 || true; fi
+    for p in "git@${host}:" "ssh://git@${host}/"; do
+        git config --global --fixed-value --unset-all "$key" "$p" 2>/dev/null || true
+    done
+    rm -f "$state"
+    exit 0
+fi
+if [ -n "$current" ] && [ "$current" != "$token" ] && ! $ours; then exit 3; fi
+if [ "$current" != "$token" ]; then
+    printf "%s\n" "$token" | gh auth login --hostname "$host" --git-protocol https --with-token || exit 1
+fi
+mkdir -p "${state%/*}"
+(umask 077 && hash "$token" >"$state")
+gh auth setup-git --hostname "$host" || exit 1
+for p in "git@${host}:" "ssh://git@${host}/"; do
+    git config --global --get-all "$key" 2>/dev/null | grep -qxF "$p" || git config --global --add "$key" "$p"
+done
+'
+
+# Shares the host's gh login with the container (see above).
+share_github_auth() {
+    local name="$1" bin token="" rc=0
+    case "${ORCA_DOCKER_GITHUB_AUTH-gh}" in
+        gh) ;;
+        ''|none) return 0 ;;
+        *) log "github auth: unknown ORCA_DOCKER_GITHUB_AUTH '${ORCA_DOCKER_GITHUB_AUTH}' (gh or none), skipped"; return 0 ;;
+    esac
+    # Without a host gh the login state is unknown: leave the container as is.
+    if ! bin="$(host_gh)"; then
+        log "github auth: no gh on the host, login not shared"
+        return 0
+    fi
+    token="$("$bin" auth token --hostname "$GITHUB_HOST" 2>/dev/null | tr -d '\r\n')" || token=""
+    [[ "$token" =~ ^[A-Za-z0-9_]+$ ]] || token=""
+    printf '%s\n' "$token" | cexec -i "$name" sh -c "$_GH_CONTAINER_SCRIPT" _ "$GITHUB_HOST" >/dev/null 2>&1 || rc=$?
+    if [ -z "$token" ]; then
+        case "$rc" in
+            0) log "github auth: no gh login on the host any more, removed the shared login" ;;
+            4|127) log "github auth: no gh login on the host (run 'gh auth login' there), not shared" ;;
+            *) log "github auth: removing the earlier shared login failed (continuing)" ;;
+        esac
+        return 0
+    fi
+    token=""
+    case "$rc" in
+        0) log "github auth: shared the host's gh login; git uses HTTPS for ${GITHUB_HOST}" ;;
+        3) log "github auth: kept the container's own gh login" ;;
+        127) log "github auth: no gh in the container, login not shared" ;;
+        *) log "github auth: gh auth login in the container failed (offline, expired or missing scopes?)" ;;
+    esac
+}
+
+# Prints "host port" of an SSH remote URL (port empty for the default), or
+# fails for other transports.
+ssh_remote_host() {
+    local url="$1" hp host port=""
+    case "$url" in
+        ssh://*)
+            hp="${url#ssh://}"; hp="${hp#*@}"; hp="${hp%%/*}"
+            host="${hp%%:*}"
+            [ "$hp" = "$host" ] || port="${hp#*:}"
+            ;;
+        *://*) return 1 ;;
+        *:*)
+            hp="${url#*@}"; host="${hp%%:*}"
+            ;;
+        *) return 1 ;;
+    esac
+    [ -n "$host" ] || return 1
+    printf '%s %s' "$host" "$port"
+}
+
+# Shares the host's git credentials and agent logins with a running container.
+share_credentials() {
+    share_github_auth "$1"
+    share_opencode_auth "$1"
+}
+
 write_remote_env() {
     local name="$1"
     remote_env_file_content | cexec -i "$name" sh -c \
@@ -815,8 +937,8 @@ create_repo_bundle() {
 }
 
 # Prints a remote URL without credentials, or fails when it is not an allowed
-# form; credentials never travel into the containers in the remote URL (the
-# GitHub token is shared separately, see .devcontainer/github-auth.sh). Allowed:
+# form; credentials never travel into the containers in the remote URL (git
+# credentials, if any, come from the devcontainer's own mounts). Allowed:
 #   https://, http://, git://  userinfo (tokens such as
 #                              https://x-access-token:ghp_...@host/...),
 #                              query string and fragment are removed

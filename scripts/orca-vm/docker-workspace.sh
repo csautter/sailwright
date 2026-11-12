@@ -27,10 +27,11 @@
 # Example:
 #   docker-workspace.sh create fix-login -- --agent codex --prompt "Fix the login test"
 #
-# A container's branches are pushed only if its shared GitHub token allows it
-# (.devcontainer/github-auth.sh), so `rm` and `down` first fetch the
-# container's branches to refs/remotes/orca/<container>/* (docker-fetch.sh) and
-# refuse to remove anything if that fails, unless --force (or --no-fetch for rm).
+# A container can push only with the git credentials it was given (the host's
+# gh login, see share_credentials in docker-lib.sh; never SSH keys), so `rm`
+# and `down` first fetch the container's branches to
+# refs/remotes/orca/<container>/* (docker-fetch.sh) and refuse to remove
+# anything if that fails, unless --force (or --no-fetch for rm).
 # Parallel calls are safe: work on one container is serialised by a lock.
 #
 # Requires Orca, Docker and jq on macOS or Windows (Git Bash). Orca's CLI has
@@ -152,7 +153,7 @@ ensure_container() {
     else
         assert_owned "$name"
         bring_up "$name"
-        share_opencode_auth "$name"
+        share_credentials "$name"
         CONTAINER_PORT="$BROUGHT_UP_PORT"
         CONTAINER_HOST_KEY="$BROUGHT_UP_HOST_KEY"
         return 0

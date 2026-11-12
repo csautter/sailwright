@@ -120,19 +120,10 @@ rm -f /tmp/repo.bundle
 EOF
 
 # Host key of the origin server, so git fetch/push over SSH from the container
-# does not prompt. No SSH credentials are copied; GitHub remotes use HTTPS with
-# the shared gh token instead (.devcontainer/github-auth.sh, postStartCommand).
+# does not prompt. No SSH keys are copied; the host's gh login is shared by
+# share_credentials below, so GitHub remotes use HTTPS.
 origin_host="" origin_port=""
-case "$origin_url" in
-    ssh://*)
-        hp="${origin_url#ssh://}"; hp="${hp#*@}"; hp="${hp%%/*}"
-        origin_host="${hp%%:*}"
-        [ "$hp" = "$origin_host" ] || origin_port="${hp#*:}"
-        ;;
-    *@*:*)
-        hp="${origin_url#*@}"; origin_host="${hp%%:*}"
-        ;;
-esac
+[ -z "$origin_url" ] || read -r origin_host origin_port <<<"$(ssh_remote_host "$origin_url")" || true
 if [ -n "$origin_host" ]; then
     lookup="$origin_host"
     [ -z "$origin_port" ] || [ "$origin_port" = 22 ] || lookup="[${origin_host}]:${origin_port}"
@@ -146,6 +137,6 @@ log "postCreateCommand"
 run_lifecycle container postCreateCommand "$name"
 log "postStartCommand"
 run_lifecycle container postStartCommand "$name" || log "postStartCommand failed (continuing)"
-share_opencode_auth "$name"
+share_credentials "$name"
 
 emit_result "$name" "$port" "$image" "$host_key"

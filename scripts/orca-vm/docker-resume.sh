@@ -19,7 +19,7 @@ fi
 
 log "postStartCommand"
 run_lifecycle container postStartCommand "$RESOURCE_ID" || log "postStartCommand failed (continuing)"
-share_opencode_auth "$RESOURCE_ID"
+share_credentials "$RESOURCE_ID"
 
 image="${PAYLOAD_IMAGE:-$(docker inspect -f '{{.Config.Image}}' "$RESOURCE_ID")}"
 emit_result "$RESOURCE_ID" "$BROUGHT_UP_PORT" "$image" "$BROUGHT_UP_HOST_KEY"

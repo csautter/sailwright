@@ -433,6 +433,79 @@ assert_true "opencode auth: no opencode in the container is logged" grep -q 'no 
 assert_true "opencode auth: no host opencode is not an error" \
     lib "host_opencode() { return 1; }; share_opencode_auth c1 2>/dev/null"
 
+# --- share_github_auth -------------------------------------------
+# The docker stub runs the container-side script locally with a fake container
+# home and a fake gh; the host gh is stubbed too.
+GC="${TMP}/gc"
+mkdir -p "${GC}/bin" "${GC}/cbin"
+GC_PATH="${TMP_PATH}/gc"
+cat >"${GC}/bin/docker" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"${GC}/docker.args"
+[ "\$1" = exec ] || exit 1
+shift 5 # exec -u <user> -i <name>
+HOME="${GC}/ctr" PATH="${GC_PATH}/cbin:\$PATH" exec "\$@"
+EOF
+cat >"${GC}/bin/gh" <<'EOF'
+#!/bin/sh
+[ "$1 $2" = "auth token" ] && [ -n "${HOST_TOKEN:-}" ] && { echo "$HOST_TOKEN"; exit 0; }
+exit 1
+EOF
+cat >"${GC}/cbin/gh" <<'EOF'
+#!/bin/sh
+f="$HOME/gh-token"
+case "$1 $2" in
+    "auth token") [ -s "$f" ] && cat "$f" || exit 1 ;;
+    "auth login") cat >"$f" ;;
+    "auth logout") rm -f "$f" ;;
+    "auth setup-git") echo setup >>"$HOME/gh-setup" ;;
+    *) exit 2 ;;
+esac
+EOF
+chmod +x "${GC}/bin/"* "${GC}/cbin/"*
+gc() { # snippet
+    lib "PATH='${GC_PATH}/bin':\$PATH; $1" 2>>"${GC}/log"
+}
+reset_ctr() { rm -rf "${GC}/ctr" "${GC}/log" "${GC}/docker.args"; mkdir -p "${GC}/ctr"; }
+ctr_git() { HOME="${GC}/ctr" git config --global --get-all url.https://github.com/.insteadOf 2>/dev/null; }
+
+reset_ctr
+HOST_TOKEN=gho_hosttoken gc 'share_github_auth c1'
+assert_eq "github auth: host token logged in" "gho_hosttoken" "$(cat "${GC}/ctr/gh-token" 2>/dev/null)"
+assert_true "github auth: gh is the git credential helper" test -s "${GC}/ctr/gh-setup"
+assert_eq "github auth: SSH remotes rewritten to HTTPS" "git@github.com:|ssh://git@github.com/" "$(ctr_git | paste -sd'|' -)"
+assert_true "github auth: token not logged" bash -c "! grep -q hosttoken '${GC}/log'"
+assert_true "github auth: token not on the command line" bash -c "! grep -q hosttoken '${GC}/docker.args'"
+HOST_TOKEN=gho_hosttoken gc 'share_github_auth c1'
+assert_eq "github auth: rewrite added once" "2" "$(ctr_git | wc -l | tr -d ' ')"
+HOST_TOKEN=gho_rotated gc 'share_github_auth c1'
+assert_eq "github auth: rotated host token replaces the shared login" "gho_rotated" "$(cat "${GC}/ctr/gh-token")"
+gc 'share_github_auth c1'
+assert_true "github auth: host logout removes the shared login" test ! -e "${GC}/ctr/gh-token"
+assert_eq "github auth: host logout removes the rewrite" "" "$(ctr_git)"
+reset_ctr
+printf 'gho_own\n' >"${GC}/ctr/gh-token"
+HOST_TOKEN=gho_hosttoken gc 'share_github_auth c1'
+assert_eq "github auth: container's own login kept" "gho_own" "$(cat "${GC}/ctr/gh-token")"
+assert_true "github auth: own login logged" grep -q "kept the container's own gh login" "${GC}/log"
+gc 'share_github_auth c1'
+assert_eq "github auth: own login survives a host logout" "gho_own" "$(cat "${GC}/ctr/gh-token")"
+reset_ctr
+HOST_TOKEN=gho_hosttoken gc 'share_github_auth c1'
+HOST_TOKEN=gho_hosttoken gc 'host_gh() { return 1; }; share_github_auth c1'
+assert_eq "github auth: no host gh leaves the shared login alone" "gho_hosttoken" "$(cat "${GC}/ctr/gh-token")"
+rm -f "${GC}/docker.args"
+HOST_TOKEN=gho_hosttoken ORCA_DOCKER_GITHUB_AUTH=none gc 'share_github_auth c1'
+assert_true "github auth: none disables" test ! -e "${GC}/docker.args"
+
+assert_eq "ssh_remote_host: scp form" "github.com " "$(lib 'ssh_remote_host git@github.com:o/r.git')"
+assert_eq "ssh_remote_host: ssh URL with port" "h.example 2222" "$(lib 'ssh_remote_host ssh://git@h.example:2222/o/r.git')"
+assert_true "ssh_remote_host: https rejected" lib_fails 'ssh_remote_host https://github.com/o/r.git'
+
+rm -f "${GC}/docker.args"
+HOST_TOKEN=gho_hosttoken gc 'share_credentials c1'
+assert_true "share_credentials: no .ssh in the container" test ! -e "${GC}/ctr/.ssh"
+
 DESTROY_SCRIPT="${REPO}/scripts/orca-vm/docker-destroy.sh"
 # --- rescue_container_branches and docker-destroy.sh ---------------------------------
 mkdir -p "${TMP}/rs/bin"
