@@ -1,5 +1,5 @@
 BeforeAll {
-    # Load only the replacement helper, without downloading a release or
+    # Load only the installer helpers, without downloading a release or
     # changing PATH. Its filesystem behavior can also be tested off Windows.
     $installer = Join-Path $PSScriptRoot '../../scripts/install.ps1'
     $tokens = $null
@@ -9,15 +9,15 @@ BeforeAll {
     if ($parseErrors.Count) {
         throw "Could not parse $installer"
     }
-    $helper = $ast.Find({
-        param($node)
-        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-            $node.Name -eq 'Install-Binaries'
-    }, $true)
-    if (-not $helper) {
-        throw 'Install-Binaries helper not found'
+    foreach ($helperName in @('Install-Binaries', 'Invoke-InstalledCliVersion', 'Assert-InstalledCliRuns')) {
+        $helper = $ast.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq $helperName
+        }, $true)
+        if (-not $helper) { throw "$helperName helper not found" }
+        . ([scriptblock]::Create($helper.Extent.Text))
     }
-    . ([scriptblock]::Create($helper.Extent.Text))
     $script:copyItemCommand = Get-Command Copy-Item -CommandType Cmdlet
     $script:moveItemCommand = Get-Command Move-Item -CommandType Cmdlet
 }
@@ -210,5 +210,72 @@ Describe 'Installer entry point' {
 
     It 'rejects a switch value that @args splits off' {
         { & $installer -NoGateway:$false } | Should -Throw '*positional parameter cannot be found*'
+    }
+}
+
+Describe 'Installed CLI start check' {
+    It 'checks the installed path and accepts a successful launch' {
+        Mock Invoke-InstalledCliVersion {}
+        Assert-InstalledCliRuns -BinaryPath 'C:\custom install\sailwright.exe'
+        Should -Invoke Invoke-InstalledCliVersion -Times 1 -Exactly -ParameterFilter {
+            $BinaryPath -eq 'C:\custom install\sailwright.exe'
+        }
+    }
+
+    It 'explains a policy block independently of the Windows language' {
+        Mock Invoke-InstalledCliVersion {
+            $native = [System.ComponentModel.Win32Exception]::new(1260, 'simulated localized message')
+            throw [System.Exception]::new('wrapped process failure', $native)
+        }
+        { Assert-InstalledCliRuns -BinaryPath 'C:\bin\sailwright.exe' } |
+            Should -Throw '*is installed*Windows policy blocks running it*https://*'
+    }
+
+    It 'does not diagnose other start failures as policy blocks' {
+        Mock Invoke-InstalledCliVersion { throw [System.ComponentModel.Win32Exception]::new(5) }
+        { Assert-InstalledCliRuns -BinaryPath 'C:\bin\sailwright.exe' } |
+            Should -Throw '*version check failed*Details:*'
+    }
+
+    It 'passes --version and accepts a zero exit code' {
+        $stub = Join-Path $TestDrive 'version-success.ps1'
+        Set-Content -LiteralPath $stub -Value 'if ($args[0] -ne "--version") { throw "missing version argument" }; $global:LASTEXITCODE = 0'
+        Invoke-InstalledCliVersion -BinaryPath $stub
+    }
+
+    It 'checks help for a legacy release without the version flag' {
+        $stub = Join-Path $TestDrive 'legacy.ps1'
+        Set-Content -LiteralPath $stub -Value @'
+if ($args[0] -eq '--version') {
+    Write-Output 'Error: unknown flag: --version'
+    $global:LASTEXITCODE = 1
+} elseif ($args[0] -eq '--help') {
+    $global:LASTEXITCODE = 0
+} else { throw 'unexpected argument' }
+'@
+        Invoke-InstalledCliVersion -BinaryPath $stub
+    }
+
+    It 'rejects a failed help check for a legacy release' {
+        $stub = Join-Path $TestDrive 'legacy-broken.ps1'
+        Set-Content -LiteralPath $stub -Value @'
+if ($args[0] -eq '--version') {
+    Write-Output 'Error: unknown flag: --version'
+    $global:LASTEXITCODE = 1
+} else { $global:LASTEXITCODE = 9 }
+'@
+        try {
+            { Invoke-InstalledCliVersion -BinaryPath $stub } | Should -Throw '*--help exited with code 9*'
+        } finally { $global:LASTEXITCODE = 0 }
+    }
+
+    It 'reports nonzero version exit codes' {
+        $stub = Join-Path $TestDrive 'version-stub.ps1'
+        Set-Content -LiteralPath $stub -Value '$global:LASTEXITCODE = 7'
+        try {
+            { Invoke-InstalledCliVersion -BinaryPath $stub } | Should -Throw '*exited with code 7*'
+        } finally {
+            $global:LASTEXITCODE = 0
+        }
     }
 }

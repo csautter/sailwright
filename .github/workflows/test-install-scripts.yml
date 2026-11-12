@@ -11,6 +11,8 @@ on:
       - "scripts/install.ps1"
       - "test/install/**"
       - "docs/installation.md"
+      - "docs/what-gets-installed.md"
+      - "docs/troubleshooting.md"
       - ".github/workflows/test-install-scripts.yml"
   # Archive names and layout are checked against each PR's own build by the
   # install-script-check job in release-binaries.yml.
@@ -102,7 +104,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Test binary replacement recovery offline
+      - name: Test binary replacement recovery and policy diagnostics offline
         run: |
           $ErrorActionPreference = 'Stop'
           Install-Module -Name Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck
