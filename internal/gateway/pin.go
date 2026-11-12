@@ -11,9 +11,19 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const pinnedBinaryPermission = 0o500
+
+// Indirections for tests of the Windows replacement path. pinReplaceTimeout bounds
+// how long PinBinary retries replacing a pinned copy that Windows still holds open.
+var (
+	pinReplaceTimeout = 15 * time.Second
+	pinGOOS           = runtime.GOOS
+	pinRename         = os.Rename
+	pinRetryDelay     = 250 * time.Millisecond
+)
 
 // PinnedBinary is the gateway-owned copy of the sailwright binary under test.
 // Only this copy is ever executed, so changing the source after startup has no effect.
@@ -62,6 +72,7 @@ func PinBinary(source string, stateDir string, expectedSHA256 string) (PinnedBin
 	if err := ensurePrivateDir(binDir); err != nil {
 		return PinnedBinary{}, fmt.Errorf("create pinned binary dir: %w", err)
 	}
+	removeReplacedPins(binDir)
 	name := "sailwright"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
@@ -104,7 +115,7 @@ func PinBinary(source string, stateDir string, expectedSHA256 string) (PinnedBin
 		// Rename cannot replace a read-only file on Windows.
 		_ = os.Chmod(target, 0o600)
 	}
-	if err := os.Rename(tmpName, target); err != nil {
+	if err := installPinnedBinary(tmpName, target); err != nil {
 		return PinnedBinary{}, fmt.Errorf("install pinned binary: %w", err)
 	}
 
@@ -113,6 +124,44 @@ func PinBinary(source string, stateDir string, expectedSHA256 string) (PinnedBin
 		return PinnedBinary{}, err
 	}
 	return pinned, nil
+}
+
+// installPinnedBinary moves tmp to target. Windows refuses to replace an executable
+// that is still running (a job of a gateway that just stopped) or briefly held by a
+// virus scanner, but lets it be renamed: move the old copy aside and retry.
+func installPinnedBinary(tmp, target string) error {
+	err := pinRename(tmp, target)
+	if err == nil || pinGOOS != "windows" {
+		return err
+	}
+	deadline := time.Now().Add(pinReplaceTimeout)
+	for {
+		aside := filepath.Join(filepath.Dir(target), fmt.Sprintf(".replaced-%d-%s", time.Now().UnixNano(), filepath.Base(target)))
+		moveErr := pinRename(target, aside)
+		if moveErr == nil || errors.Is(moveErr, os.ErrNotExist) {
+			if err = pinRename(tmp, target); err == nil {
+				// Still running copies cannot be removed yet; the next pin retries.
+				_ = os.Remove(aside)
+				return nil
+			}
+		} else {
+			err = moveErr
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(pinRetryDelay)
+	}
+}
+
+// removeReplacedPins deletes copies installPinnedBinary moved aside, once nothing
+// runs them any more.
+func removeReplacedPins(binDir string) {
+	matches, _ := filepath.Glob(filepath.Join(binDir, ".replaced-*"))
+	for _, match := range matches {
+		_ = os.Chmod(match, 0o600)
+		_ = os.Remove(match)
+	}
 }
 
 // Verify re-hashes the pinned copy and fails if it changed since pinning.
