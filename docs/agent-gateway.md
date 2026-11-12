@@ -529,6 +529,7 @@ question follows the same ownership rules.
 | `token` | bearer token (owner-only permissions) |
 | `gateway.yaml` | optional configuration |
 | `bin/sailwright` | pinned binary copy |
+| `bin/.replaced-*` | Windows only: a previous pinned copy that was still running when the gateway re-pinned; removed on the next start |
 | `data/` | gateway-owned config and extracted assets; only with `--state-dir` or on macOS: the data dir, see [Disk usage](#disk-usage) |
 | `work/` | empty working directory for commands |
 | `staging/` | read-only bundle snapshots, removed after each job |
