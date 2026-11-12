@@ -31,10 +31,18 @@ def routed(path):
             and not any(fnmatch.fnmatchcase(path, pattern) for pattern in OTHER_PLATFORMS))
 
 
-def select(name, event, files):
+# GitHub gives runs that Dependabot triggers no Actions secrets, so the Azure
+# login cannot succeed. A maintainer who adds ci:hyperv starts a run as
+# themselves, which does get the secrets.
+SECRETLESS_ACTORS = ('dependabot[bot]',)
+
+
+def select(name, event, files, actor=''):
     if name != 'pull_request':
         return name in ('workflow_dispatch', 'schedule')
     if event.get('action') == 'labeled' and event['label']['name'] != 'ci:hyperv':
+        return False
+    if actor in SECRETLESS_ACTORS:
         return False
     pr = event['pull_request']
     return (pr['head']['ref'].startswith('release-please--')
@@ -53,8 +61,9 @@ if __name__ == '__main__':
             f'repos/{os.environ["GITHUB_REPOSITORY"]}/pulls/{event["number"]}/files?per_page=100',
             '--jq', '.[] | .filename, (.previous_filename // .filename)',
         ], text=True).splitlines()
-    selected = select(name, event, files)
+    selected = select(name, event, files, os.environ.get('GITHUB_ACTOR', ''))
     matched = next((path for path in files if routed(path)), None)
-    print(f'event={name} hyperv={str(selected).lower()} first_routed_path={matched or "-"}')
+    print(f'event={name} actor={os.environ.get("GITHUB_ACTOR", "-")} '
+          f'hyperv={str(selected).lower()} first_routed_path={matched or "-"}')
     with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
         print(f'hyperv={str(selected).lower()}', file=stream)
