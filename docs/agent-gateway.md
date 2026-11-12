@@ -426,10 +426,24 @@ Operations run as jobs. Poll `job_status` and read `job_output` from
 state, the job's snapshot is removed and the next job can be submitted right
 away.
 
-To watch a job on the host, follow the log file the gateway prints when the job
-starts (`tail -f <state-dir>/logs/<job>.log`), or start the gateway with
-`--follow` to mirror all job output to its terminal. Approval prompts still
-appear there.
+While a job runs, the gateway terminal shows its last 8 lines in a small
+region at the bottom. The region is redrawn in place and has a header with the
+job id, the elapsed time and the path of the full log. Other gateway messages
+are still printed above it. The region is hidden while the approval console
+waits for your input. Commands you type between prompts stay visible, but
+while the region is still growing a redraw can hide them; they still run when
+you press Enter. When the job ends, the region is removed. If the job
+failed, its last lines stay in the scrollback. Use `--live-lines N` to change
+the height (at most 100), or `--live-lines 0` to turn the region off. The
+region never takes more rows than the terminal has; in a short terminal it
+shows fewer lines.
+
+If stdout is not a terminal, the terminal cannot process VT sequences, or
+`TERM=dumb` is set, the gateway prints a command that follows the job log
+instead (and a note saying why, if you passed `--live-lines`): `tail -f
+<state-dir>/logs/<job>.log`, or `Get-Content -Wait` on Windows. To mirror all
+job output to the terminal, start the gateway with `--follow`; this replaces
+the region. Approval prompts still appear there.
 
 The safe set never includes `local` or `all` targets, custom paths,
 arguments after `--`, `push`, credentials or TLS options, or parallel builds.

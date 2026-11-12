@@ -37,8 +37,11 @@ type Options struct {
 	Console  io.Writer
 	// FollowOutput mirrors job output to Console.
 	FollowOutput bool
-	Version      string
-	Getenv       func(string) string
+	// LiveTail shows the newest lines of the running job on the terminal; FollowOutput
+	// takes precedence.
+	LiveTail LiveTail
+	Version  string
+	Getenv   func(string) string
 }
 
 // Gateway wires policy, execution, jobs and the MCP server together.
@@ -160,6 +163,7 @@ func New(opts Options) (*Gateway, error) {
 		OnFinish:    g.refreshTargetsAsync,
 		Console:     opts.Console,
 		Follow:      followWriter(opts.FollowOutput, opts.Console),
+		Live:        opts.LiveTail,
 		CacheDir:    dirs.Cache,
 		ScreensDir:  dirs.Screens,
 		StuckAfter:  cfg.ScreenStuckAfterValue,

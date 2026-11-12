@@ -67,6 +67,8 @@ type Options struct {
 	PullAllowlist []string
 	JobTimeout    string
 	FollowOutput  bool
+	// LiveTail receives the running job's output for the terminal tail.
+	LiveTail gateway.LiveTail
 	// GateForeignVMs enables the rule that VMs the gateway did not create need
 	// operator approval (on in real gateways; off by default in tests).
 	GateForeignVMs bool
@@ -179,6 +181,7 @@ func Start(t testing.TB, opts Options) *Harness {
 		Console:      h.Console,
 		Version:      "test",
 		FollowOutput: opts.FollowOutput,
+		LiveTail:     opts.LiveTail,
 		Getenv: func(name string) string {
 			if value, ok := env[name]; ok {
 				return value

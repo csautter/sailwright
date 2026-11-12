@@ -3,6 +3,7 @@ package gateway
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -437,5 +438,81 @@ func TestRedactorWithKeepsRequiredShortSecrets(t *testing.T) {
 	r := NewRedactor("longenough").WithRequired("pw").With("xy")
 	if got := r.String("pw xy longenough"); strings.Contains(got, "pw") || strings.Contains(got, "longenough") {
 		t.Fatalf("With must keep the minimum length of the redactor it extends, got %q", got)
+	}
+}
+
+// The prompt hook brackets every wait for operator input, so the live job tail can
+// get out of the way while the operator types.
+func TestConsoleApproverReportsPrompts(t *testing.T) {
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = writer.Close() })
+	out := &syncBuffer{}
+	var mu sync.Mutex
+	var events []bool
+	approver := NewConsoleApprover(bufio.NewReader(reader), out, time.Minute).
+		HideInputWith(func() (func(), error) { return func() {}, nil }).
+		WithPromptHook(func(waiting bool) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, waiting)
+		})
+	seen := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return fmt.Sprint(events)
+	}
+
+	decisions := make(chan Decision, 1)
+	go func() {
+		decisions <- approver.Request(context.Background(), ApprovalRequest{ID: "job1", Become: true}).Decision
+	}()
+	waitFor(t, func() bool { return strings.Contains(out.String(), `approve job1`) })
+	if got := seen(); got != "[true]" {
+		t.Fatalf("events while pending = %s", got)
+	}
+	// Typing the password keeps the prompt open; an empty one returns to the request.
+	_, _ = io.WriteString(writer, "approve-sudo job1\n")
+	waitFor(t, func() bool { return strings.Contains(out.String(), "sudo password for job job1") })
+	_, _ = io.WriteString(writer, "\n")
+	waitFor(t, func() bool { return strings.Contains(out.String(), "empty password") })
+	_, _ = io.WriteString(writer, "deny job1\n")
+	<-decisions
+	if got := seen(); got != "[true false]" {
+		t.Fatalf("events after the decision = %s", got)
+	}
+
+	answers := make(chan bool, 1)
+	go func() { answers <- approver.Confirm(context.Background(), "Delete it?") }()
+	waitFor(t, func() bool { return strings.HasSuffix(out.String(), "Delete it? [y/N] ") })
+	_, _ = io.WriteString(writer, "n\n")
+	<-answers
+	if got := seen(); got != "[true false true false]" {
+		t.Fatalf("events after Confirm = %s", got)
+	}
+}
+
+// An expired request is not ended by the operator's Enter, so its note starts on a
+// fresh line and is printed before the prompt is reported as closed.
+func TestConsoleApproverPrintsTheExpiryBeforeClosingThePrompt(t *testing.T) {
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = writer.Close() })
+	out := &syncBuffer{}
+	var mu sync.Mutex
+	var atClose string
+	approver := NewConsoleApprover(bufio.NewReader(reader), out, 50*time.Millisecond).
+		WithPromptHook(func(waiting bool) {
+			if !waiting {
+				mu.Lock()
+				defer mu.Unlock()
+				atClose = out.String()
+			}
+		})
+	if got := approver.Request(context.Background(), ApprovalRequest{ID: "job1"}).Decision; got != DecisionExpired {
+		t.Fatalf("decision = %s, want expired", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.HasSuffix(atClose, "\napproval job1: expired\n") {
+		t.Fatalf("console when the prompt closed:\n%q", atClose)
 	}
 }

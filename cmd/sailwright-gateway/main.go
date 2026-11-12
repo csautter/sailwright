@@ -44,6 +44,9 @@ type serveFlags struct {
 	noApprovals  bool
 	bypass       bool
 	follow       bool
+	liveLines    int
+	// liveLinesSet is true when --live-lines was given on the command line.
+	liveLinesSet bool
 }
 
 func newRootCommand() *cobra.Command {
@@ -79,7 +82,11 @@ func newServeCommand(stateDir *string) *cobra.Command {
 Run it in a foreground terminal: requests outside the safe set are shown there and
 need "approve <id>" from you. Agents cannot approve their own requests.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if flags.liveLines > maxLiveLines {
+				return fmt.Errorf("--live-lines must be at most %d, got %d", maxLiveLines, flags.liveLines)
+			}
 			flags.stateDir = *stateDir
+			flags.liveLinesSet = cmd.Flags().Changed("live-lines")
 			return runServe(cmd.Context(), flags)
 		},
 	}
@@ -91,7 +98,51 @@ need "approve <id>" from you. Agents cannot approve their own requests.`,
 	command.Flags().BoolVar(&flags.bypass, "bypass-approvals", false, "DANGEROUS, disposable test hosts only: approve every request and VM access automatically and pin the binary without asking")
 	command.MarkFlagsMutuallyExclusive("no-approvals", "bypass-approvals")
 	command.Flags().BoolVar(&flags.follow, "follow", false, "Mirror job output to this terminal (approval prompts still appear)")
+	command.Flags().IntVar(&flags.liveLines, "live-lines", defaultLiveLines, fmt.Sprintf("Show the last N lines (at most %d) of the running job at the bottom of this terminal; 0 turns it off", maxLiveLines))
 	return command
+}
+
+const (
+	defaultLiveLines = 8
+	// maxLiveLines keeps a mistyped value from filling the terminal; the region
+	// is also cut to the terminal height when it is drawn.
+	maxLiveLines = 100
+)
+
+// newLiveConsole returns the terminal with a live job tail, or nil when it is off or
+// stdout cannot redraw in place (not a terminal, or no VT support). Close the
+// console, then call restore before the process exits.
+func newLiveConsole(flags serveFlags) (live *gateway.LiveConsole, restore func()) {
+	fd := int(os.Stdout.Fd()) // #nosec G115 -- file descriptors fit in int.
+	show, restore, reason := liveTailState(flags,
+		func() bool { return term.IsTerminal(fd) },
+		func() (func(), bool) { return gateway.EnableVirtualTerminal(os.Stdout) })
+	if !show {
+		if reason != "" && flags.liveLinesSet {
+			fmt.Printf("note: --live-lines is ignored: %s\n", reason)
+		}
+		return nil, restore
+	}
+	return gateway.NewLiveConsole(os.Stdout, flags.liveLines, gateway.TerminalSize(fd)), restore
+}
+
+// liveTailState decides whether the live job tail is shown. reason says why not,
+// unless the tail is turned off with --live-lines 0.
+func liveTailState(flags serveFlags, isTerminal func() bool, enableVT func() (restore func(), ok bool)) (show bool, restore func(), reason string) {
+	restore = func() {}
+	switch {
+	case flags.liveLines <= 0:
+		return false, restore, ""
+	case flags.follow:
+		return false, restore, "--follow mirrors all job output instead"
+	case !isTerminal():
+		return false, restore, "stdout is not a terminal"
+	}
+	restore, ok := enableVT()
+	if !ok {
+		return false, restore, "the terminal cannot process VT sequences"
+	}
+	return true, restore, ""
 }
 
 func newTokenCommand(stateDir *string) *cobra.Command {
@@ -245,16 +296,31 @@ func runServe(parent context.Context, flags serveFlags) error {
 			}
 		}
 	}
+	// From here on, every terminal write goes through out, so the live job tail at the
+	// bottom of the terminal can be redrawn in place.
+	var out io.Writer = os.Stdout
+	var liveTail gateway.LiveTail
+	var hold func(bool)
+	live, restoreTerminal := newLiveConsole(flags)
+	defer restoreTerminal()
+	if live != nil {
+		defer live.Close()
+		out, liveTail, hold = live, live, live.Hold
+	}
 	var approver gateway.Approver = gateway.DisabledApprover{}
 	switch {
 	case flags.noApprovals:
 	case flags.bypass:
-		approver = gateway.AutoApprover{Out: os.Stdout}
+		approver = gateway.AutoApprover{Out: out}
 	case !interactive:
 		fmt.Println("stdin is not a terminal: the approval console is disabled, only the safe set is available")
 	default:
-		approver = gateway.NewConsoleApprover(stdin, os.Stdout, cfg.ApprovalTTLValue).
+		console := gateway.NewConsoleApprover(stdin, out, cfg.ApprovalTTLValue).
 			HideInputWith(gateway.TerminalInputHider(int(os.Stdin.Fd()))) // #nosec G115 -- file descriptors fit in int.
+		if hold != nil {
+			console.WithPromptHook(hold)
+		}
+		approver = console
 	}
 
 	// The shutdown question is read by the approval console when it runs, so the two
@@ -263,7 +329,7 @@ func runServe(parent context.Context, flags serveFlags) error {
 	if console, ok := approver.(*gateway.ConsoleApprover); ok {
 		confirmer = console
 	} else if interactive {
-		confirmer = gateway.LineConfirmer{In: stdin, Out: os.Stdout}
+		confirmer = gateway.LineConfirmer{In: stdin, Out: out}
 	}
 
 	g, err := gateway.New(gateway.Options{
@@ -271,9 +337,10 @@ func runServe(parent context.Context, flags serveFlags) error {
 		Pinned:       pinned,
 		Token:        token,
 		Approver:     approver,
-		Console:      os.Stdout,
+		Console:      out,
 		Version:      version,
 		FollowOutput: flags.follow,
+		LiveTail:     liveTail,
 	})
 	if err != nil {
 		return err
@@ -314,7 +381,7 @@ func runServe(parent context.Context, flags serveFlags) error {
 	defer listeners.Close()
 	printBanner(cfg, pinned, listeners.SocketPath, listeners.ViewURL, approver)
 	if flags.bypass {
-		fmt.Println("WARNING: --bypass-approvals is set: every request and VM access is approved automatically. Use it only on disposable test hosts.")
+		fmt.Fprintln(out, "WARNING: --bypass-approvals is set: every request and VM access is approved automatically. Use it only on disposable test hosts.")
 	}
 	serveErr := g.ServeListeners(ctx, listeners)
 	listeners.Close()
