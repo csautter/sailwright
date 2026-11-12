@@ -145,14 +145,15 @@ rt_check NEXT "clean output" --nomatch 'Screen Sharing' -- printf '%s\\n' qemu-s
                              [processes[0], processes[1], processes[7]])
 
     def _wait_lock_holder(self, locks, script):
-        # The watched process writes its holder record (or not) and then lingers briefly.
+        # The watched process runs SCRIPT (with the locks dir as $1; its own pid is $$,
+        # as macOS Bash 3.2 has no BASHPID) and then lingers briefly.
         return subprocess.run(
             ["bash", "-c", '''
 . "$1"
-locks=$2
-( eval "$3"; sleep 1 ) &
+sh -c "$3
+sleep 1" sh "$2" &
 watched=$!
-rt_wait_lock_holder "$locks" "$watched" 100
+rt_wait_lock_holder "$2" "$watched" 100
 status=$?
 wait "$watched"
 exit "$status"
@@ -177,7 +178,7 @@ exit "$status"
             (locks / "other.lock").write_text(
                 '{"pid":1,"program":"sailwright","operation":"stop"}')
             result = self._wait_lock_holder(locks, '''
-printf '{"pid":%s,"program":"sailwright","operation":"stop"}' "$BASHPID" >"$locks/t.lock"
+printf '{"pid":%s,"program":"sailwright","operation":"stop"}' "$$" >"$1/t.lock"
 ''')
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
