@@ -60,7 +60,9 @@ The agent, and everything it reads, is treated as untrusted.
 - **Snapshots against late edits.** Files from the agent's workspace are
   only used through `bundle_root`. The gateway copies that directory into a
   read-only snapshot before asking you, shows its tree hash, and runs the
-  snapshot. Editing the files after approval changes nothing.
+  snapshot. Editing the files after approval changes nothing. A workspace
+  the agent registers needs your approval and a probe file that proves the
+  host path is its mount.
 - **No shell, clean environment.** Commands are started directly with an
   argument list. The child environment is rebuilt from a short allowlist plus
   `env_passthrough`; `SSH_AUTH_SOCK`, cloud credentials and similar host
@@ -255,6 +257,62 @@ The token comes from `SAILWRIGHT_GATEWAY_TOKEN` or the selected directory's
 `token` file. The stdio bridge, VM tunnel client and E2E runner all use this
 same discovery.
 
+### Agent workspaces
+
+`run_cli` with `bundle_root` only reads files from an agent workspace: a
+directory the agent sees (`/workspaces/my-roles`) mapped to the host directory
+that backs it. You don't have to edit `gateway.yaml` or restart the gateway for
+a new devcontainer. The agent registers its own workspace with the
+`workspace_register` tool:
+
+1. The agent writes a random token into `<agent_path>/.sailwright-gateway-probe`.
+2. It calls `workspace_register` with `agent_path`, `host_path` and that
+   token. The gateway reads the probe from `host_path` on the host, which
+   proves the agent can write there: `host_path` is its mount or a directory
+   inside it. A path the agent only names (your home directory, another
+   checkout) cannot pass.
+3. You approve the request once on the gateway terminal. The approval prompt
+   shows both paths. If the host path resolves somewhere else by the time you
+   approve, nothing is registered.
+
+The mapping takes effect at once and is saved in
+`<state dir>/agent_workspaces.json`, so it survives restarts. The host path
+is stored resolved and pinned. If it is later replaced by a symlink or by
+another directory, which the agent can do inside its mount, `run_cli`
+refuses the workspace until you remove it and it is registered again. Host
+paths that are a filesystem root, contain your home directory or overlap
+gateway directories are refused. Directories below your home directory,
+such as a checkout, are allowed.
+
+The gateway never deletes the probe file; the agent removes it after the
+registration. To keep it out of commits, add `.sailwright-gateway-probe` to
+the project's `.gitignore`. The token proves nothing after the registration
+and is not a secret.
+
+`gateway_info` lists both `gateway.yaml` and registered workspaces under
+`agent_workspaces`. With `serve --bypass-approvals`, `workspace_register` is
+approved automatically after the probe check.
+
+To let the agent find the host path without asking you, pass it into the
+container in `devcontainer.json`:
+
+```json
+"containerEnv": { "SAILWRIGHT_HOST_WORKSPACE": "${localWorkspaceFolder}" }
+```
+
+You can also manage the registered workspaces yourself. A running gateway
+picks up changes at its next tool call, without a restart, and prints
+`registered workspaces reloaded` on its console:
+
+```bash
+sailwright-gateway workspace list                     # gateway.yaml and registered entries
+sailwright-gateway workspace add /workspaces/my-roles /home/me/Projects/my-roles
+sailwright-gateway workspace remove /workspaces/my-roles
+```
+
+Entries in `gateway.yaml` (`agent_workspaces`) still work. They win over a
+registered entry for the same agent path, and only you can change them.
+
 ## Host and container setups
 
 | Setup | How the agent connects | Extra configuration |
@@ -311,7 +369,7 @@ env_passthrough:                   # values are redacted from output and logs
   - LIBVIRT_UBUNTU_ANSIBLE_PASSWORD
 pull_allowlist:                    # registry/namespace prefixes for artifact_pull
   - ghcr.io/csautter/sailwright
-agent_workspaces:                  # container path -> host path of the bind mount
+agent_workspaces:                  # container path -> host path of the bind mount; see Agent workspaces for runtime registration
   - agent: /workspaces/my-roles
     host: /home/me/Projects/my-roles
 job_timeout: 6h
@@ -341,6 +399,7 @@ screen_stuck_after: 15m            # hint when console and output stay unchanged
 | `vm_provision` | safe | `provision <vm>` with an embedded playbook, `--check`, `--verbosity` |
 | `artifact_pull` | safe | `pull <ref> --yes --no-docker-credentials` for allowlisted references |
 | `provision_local` | approval | `provision local --yes [--check]` on this host |
+| `workspace_register` | approval | add an [agent workspace](#agent-workspaces) after a probe-file check |
 | `install` | approval | `install [--with-go] [--virtualbox] [--hyperv] [--vagrant]` |
 | `run_cli` | safe or approval | any command line; safe if it parses into the safe set |
 | `job_status`, `job_output`, `job_cancel`, `job_list` | control | job handling |
@@ -528,6 +587,8 @@ question follows the same ownership rules.
 | --- | --- |
 | `token` | bearer token (owner-only permissions) |
 | `gateway.yaml` | optional configuration |
+| `agent_workspaces.json` | [registered agent workspaces](#agent-workspaces), written by `workspace_register` and `sailwright-gateway workspace` |
+| `agent_workspaces.lock` | lock that serializes changes to `agent_workspaces.json` |
 | `bin/sailwright` | pinned binary copy |
 | `bin/.replaced-*` | Windows only: a previous pinned copy that was still running when the gateway re-pinned; removed on the next start |
 | `data/` | gateway-owned config and extracted assets; only with `--state-dir` or on macOS: the data dir, see [Disk usage](#disk-usage) |

@@ -313,14 +313,6 @@ func (g *Gateway) requestVMAccess(tool, osName, osType, arch, instanceID string,
 	if pending, ok := g.ownership.beginRequest(key, id); !ok {
 		return fmt.Errorf("%w: request %s for VM %s is waiting on the host terminal; call %s again after the operator approves it", ErrVMAccessPending, pending, key, tool)
 	}
-	g.backgroundMu.Lock()
-	if g.closed {
-		g.backgroundMu.Unlock()
-		g.ownership.endRequest(key, false, "")
-		return errors.New("gateway is closing")
-	}
-	g.background.Add(1)
-	g.backgroundMu.Unlock()
 	argv := []string{"vm", "info", osName, "--arch", arch}
 	if osType != "" {
 		argv = append(argv, "--type", osType)
@@ -328,24 +320,22 @@ func (g *Gateway) requestVMAccess(tool, osName, osType, arch, instanceID string,
 	if name != "" {
 		argv = append(argv, "--name", name)
 	}
-	decided := make(chan Decision, 1)
-	go func() {
-		defer g.background.Done()
-		ctx, cancel := context.WithCancel(g.backgroundCtx)
-		defer cancel()
-		approval := g.approver.Request(ctx, ApprovalRequest{
-			ID: id, Tool: tool, Argv: argv, Dir: g.dirs.Work, BinarySHA: g.pinned.SHA256,
-			Risk:    []string{riskForeignVM},
-			NotSafe: fmt.Sprintf("VM %s was not created by this gateway and may be your own. Approving gives the agent its credentials and SSH/WinRM tunnels, and lets it start, stop, provision and destroy it until the gateway stops or the VM is destroyed", key),
-		})
+	req := ApprovalRequest{
+		ID: id, Tool: tool, Argv: argv, Dir: g.dirs.Work, BinarySHA: g.pinned.SHA256,
+		Risk:    []string{riskForeignVM},
+		NotSafe: fmt.Sprintf("VM %s was not created by this gateway and may be your own. Approving gives the agent its credentials and SSH/WinRM tunnels, and lets it start, stop, provision and destroy it until the gateway stops or the VM is destroyed", key),
+	}
+	decision, decided, err := g.askOperatorAsync(req, func(approval Approval) {
 		approved := approval.Decision == DecisionApproved
 		g.ownership.endRequest(key, approved, instanceID)
 		_ = g.audit.Record(AuditEvent{Event: "vm_access_decision", Tool: tool, JobID: id, Decision: string(approval.Decision), Params: map[string]any{"os": osName, "type": osType, "arch": arch, "name": name}, Risk: []string{riskForeignVM}, AutoApproved: approval.Auto})
-		decided <- approval.Decision
-	}()
-	// The console answers "busy" at once while another approval is open.
-	select {
-	case decision := <-decided:
+	})
+	if err != nil {
+		g.ownership.endRequest(key, false, "")
+		return err
+	}
+	if decided {
+		// The console answers "busy" at once while another approval is open.
 		if decision == DecisionBusy {
 			return fmt.Errorf("%w: VM %s was not created by this gateway and needs operator approval, but another approval is open on the host terminal; call %s again later", ErrVMAccessPending, key, tool)
 		}
@@ -353,9 +343,37 @@ func (g *Gateway) requestVMAccess(tool, osName, osType, arch, instanceID string,
 			return nil
 		}
 		return fmt.Errorf("operator access to VM %s: %s", key, decision)
-	case <-time.After(busyProbe):
 	}
 	return fmt.Errorf("%w: VM %s was not created by this gateway, so the operator must approve request %s on the host terminal; call %s again after approval", ErrVMAccessPending, key, id, tool)
+}
+
+// askOperatorAsync asks the operator in the background; an MCP call cannot wait for
+// a human for the full approval TTL without running into client timeouts. settle runs
+// with the decision once it is made. decided is true when the decision arrived within
+// busyProbe (e.g. "busy" or an auto-approval).
+func (g *Gateway) askOperatorAsync(req ApprovalRequest, settle func(Approval)) (decision Decision, decided bool, err error) {
+	g.backgroundMu.Lock()
+	if g.closed {
+		g.backgroundMu.Unlock()
+		return "", false, errors.New("gateway is closing")
+	}
+	g.background.Add(1)
+	g.backgroundMu.Unlock()
+	result := make(chan Decision, 1)
+	go func() {
+		defer g.background.Done()
+		ctx, cancel := context.WithCancel(g.backgroundCtx)
+		defer cancel()
+		approval := g.approver.Request(ctx, req)
+		settle(approval)
+		result <- approval.Decision
+	}()
+	select {
+	case decision := <-result:
+		return decision, true, nil
+	case <-time.After(busyProbe):
+		return "", false, nil
+	}
 }
 
 // instanceAllowed reports whether the agent may use the VM at target without

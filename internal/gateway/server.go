@@ -56,6 +56,7 @@ type Gateway struct {
 	redactor         *Redactor
 	vmResolver       ManagedVMResolver
 	ownership        *vmOwnership
+	workspaces       *workspaceRegistry
 	tunnelSlots      chan struct{}
 	tunnelDial       func(context.Context, string, string) (net.Conn, error)
 	token            string
@@ -134,6 +135,10 @@ func New(opts Options) (*Gateway, error) {
 		version:   opts.Version,
 	}
 	g.ownership, err = loadVMOwnership(cfg.GateForeignVMs, cfg.StateDir)
+	if err != nil {
+		return nil, err
+	}
+	g.workspaces, err = loadWorkspaceRegistry(cfg, opts.Console)
 	if err != nil {
 		return nil, err
 	}

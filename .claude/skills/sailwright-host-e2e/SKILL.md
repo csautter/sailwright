@@ -75,7 +75,13 @@ Read `docs/agent-gateway.md` once if you have not seen it.
    `vm_provision`, `artifact_pull`) for anything the scenarios did not
    cover, or to narrow down a failure. Use `run_cli` with `bundle_root` for
    files from your workspace (absolute paths below `bundle_root`); expect an
-   approval prompt.
+   approval prompt. If `bundle_root` is rejected as outside a configured
+   agent workspace, don't ask the user to edit `gateway.yaml`. Register it
+   with `workspace_register`: write a random hex token to
+   `<workspace>/.sailwright-gateway-probe`, pass it as `probe_token` with the
+   host path (`$SAILWRIGHT_HOST_WORKSPACE` or ask the user), and have the user
+   approve once. No restart or `/mcp` reconnect is needed. Delete the probe
+   afterwards.
 5. **Clean up.** `list_targets` for `destroy`; every target you touched must
    show `state: missing`. Cancel jobs you started and no longer need.
 6. **Report.** Summarise per scenario and step: host OS/arch, binary hash,

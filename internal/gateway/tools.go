@@ -26,6 +26,7 @@ const (
 - Long operations are jobs: poll job_status and read job_output with the returned next_offset. Only one job runs at a time.
 - Use list_targets first to see which os/type/arch combinations exist on this host.
 - For run_cli with files from your workspace, set bundle_root to the directory that contains them and use absolute paths below it; the gateway runs a read-only snapshot of that directory.
+- If bundle_root is rejected as outside a configured agent workspace (gateway_info.agent_workspaces), register your workspace once with workspace_register instead of asking for a gateway.yaml edit. Use $SAILWRIGHT_HOST_WORKSPACE as host_path when it is set; otherwise ask the user for the host path of the checkout.
 - Builds can print nothing for a long time while the installer runs in the VM. job_status shows last_output_at, screen_changed_at (visible console changes) and stuck_suspected (a hint only). Call job_screenshot only when the user asks to see the VM console; a human on the host can watch the live view shown in the gateway terminal.`
 )
 
@@ -52,6 +53,7 @@ func (g *Gateway) newMCPServer() *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{Name: "provision_local", Description: "Provision THIS HOST with an embedded playbook. Always needs human approval on the host."}, g.toolProvisionLocal)
 	mcp.AddTool(server, &mcp.Tool{Name: "install", Description: "Install sailwright host dependencies. Always needs human approval on the host."}, g.toolInstall)
+	mcp.AddTool(server, &mcp.Tool{Name: "workspace_register", Description: workspaceRegisterDescription}, g.toolWorkspaceRegister)
 	mcp.AddTool(server, &mcp.Tool{Name: "run_cli", Description: "Run any sailwright command line. Calls inside the safe set run directly; everything else (paths, args after --, other commands) waits for human approval on the host."}, g.toolRunCLI)
 
 	mcp.AddTool(server, &mcp.Tool{Name: "job_status", Description: "Get the state of a job.", Annotations: readOnly}, g.toolJobStatus)
@@ -223,7 +225,7 @@ type ScreenshotInfo struct {
 func (g *Gateway) toolGatewayInfo(_ context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, GatewayInfo, error) {
 	grammar := g.grammar()
 	var workspaces []string
-	for _, mapping := range g.cfg.AgentWorkspaces {
+	for _, mapping := range g.workspaces.All() {
 		workspaces = append(workspaces, mapping.Agent)
 	}
 	return nil, GatewayInfo{
@@ -235,7 +237,7 @@ func (g *Gateway) toolGatewayInfo(_ context.Context, _ *mcp.CallToolRequest, _ e
 		DataDir:         g.cfg.DataDir,
 		ApprovalEnabled: g.approver.Enabled(),
 		SafeTools:       []string{"list_targets", "command_help", "vm_info", "vm_build", "vm_create", "vm_start", "vm_stop", "vm_destroy", "vm_provision", "artifact_pull", "job_screenshot", "run_cli (safe subset)"},
-		ApprovalTools:   []string{"provision_local", "install", "run_cli (everything else)"},
+		ApprovalTools:   []string{"provision_local", "install", "workspace_register", "run_cli (everything else)"},
 		Playbooks:       grammar.Playbooks,
 		PullAllowlist:   g.cfg.PullAllowlist,
 		AgentWorkspaces: workspaces,
@@ -373,7 +375,7 @@ func (g *Gateway) toolRunCLI(_ context.Context, req *mcp.CallToolRequest, in run
 	var snapshot *Snapshot
 	bundleRoot := ""
 	if in.BundleRoot != "" {
-		hostRoot, mapping, err := TranslateAgentPath(in.BundleRoot, g.cfg.AgentWorkspaces)
+		hostRoot, mapping, err := TranslateAgentPath(in.BundleRoot, g.workspaces.All())
 		if err != nil {
 			return nil, JobView{}, err
 		}
@@ -385,7 +387,7 @@ func (g *Gateway) toolRunCLI(_ context.Context, req *mcp.CallToolRequest, in run
 		if rel == "" {
 			rel = "."
 		}
-		created, err := CreateConfinedSnapshot(bundleRoot, mapping.Host, rel, hostRoot, g.dirs.Staging, SnapshotLimits{MaxBytes: g.cfg.SnapshotMaxBytes, MaxFiles: g.cfg.SnapshotMaxFiles})
+		created, err := CreateConfinedSnapshot(bundleRoot, mapping, rel, hostRoot, g.dirs.Staging, SnapshotLimits{MaxBytes: g.cfg.SnapshotMaxBytes, MaxFiles: g.cfg.SnapshotMaxFiles})
 		if err != nil {
 			return nil, JobView{}, fmt.Errorf("snapshot bundle_root: %w", err)
 		}

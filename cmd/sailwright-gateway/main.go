@@ -58,7 +58,7 @@ func newRootCommand() *cobra.Command {
 	root.PersistentFlags().StringVar(&stateDir, "state-dir", "", "Gateway state directory (default: <user config dir>/sailwright-gateway)")
 
 	root.AddCommand(newVMCommand())
-	root.AddCommand(newServeCommand(&stateDir), newTokenCommand(&stateDir), newCleanCommand(&stateDir), newConnectCommand())
+	root.AddCommand(newServeCommand(&stateDir), newTokenCommand(&stateDir), newCleanCommand(&stateDir), newWorkspaceCommand(&stateDir), newConnectCommand())
 	return root
 }
 
