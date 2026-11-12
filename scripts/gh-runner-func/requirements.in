@@ -7,7 +7,7 @@
 # Ref: aka.ms/functions-azure-monitor-python
 # azure-monitor-opentelemetry
 
-azure-functions==1.25.0
+azure-functions==1.26.0
 azure-identity==1.27.0
 azure-keyvault-secrets==4.12.0
 azure-mgmt-compute==39.0.0

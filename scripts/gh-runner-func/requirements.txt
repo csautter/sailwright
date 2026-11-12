@@ -11,9 +11,9 @@ azure-core==1.41.0 \
     #   azure-identity
     #   azure-keyvault-secrets
     #   azure-mgmt-core
-azure-functions==1.25.0 \
-    --hash=sha256:0d01e52c0871a01a65911bc163a0dfd7f09725ba43cea17a09909cc5d298c1d2 \
-    --hash=sha256:3c737657110b6cfd14e6871515ab66c377b9ceecaca8dcbf5b391d2433424756
+azure-functions==1.26.0 \
+    --hash=sha256:4d97c30716a14db3b584dfe0dd72df5ea38adb922ad5ca046e4b0af0a309ddcb \
+    --hash=sha256:f4aad4a401bdc7833cce4c17352ce410fc4e419dcc6ece5f02247fdee3fbb838
     # via -r requirements.in
 azure-identity==1.27.0 \
     --hash=sha256:6a4c50e25e8e9a47b324a95ad024897e56cb3c6241e0094e93b126a2bf71edc5 \
