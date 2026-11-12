@@ -8,7 +8,7 @@ require (
 	github.com/KarpelesLab/vncpasswd v1.0.1
 	github.com/charmbracelet/huh v1.0.0
 	github.com/hashicorp/go-getter v1.8.10
-	github.com/klauspost/compress v1.20.2
+	github.com/klauspost/compress v1.20.4
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/spf13/cobra v1.10.2
