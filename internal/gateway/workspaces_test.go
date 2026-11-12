@@ -300,7 +300,19 @@ func TestCheckPinnedWorkspaceRejectsReplacedDirectory(t *testing.T) {
 	if err := checkPinnedWorkspace(root, workspace); err != nil {
 		t.Fatalf("unchanged: %v", err)
 	}
-	if err := os.Rename(sub, filepath.Join(mount, "moved")); err != nil {
+	err = os.Rename(sub, filepath.Join(mount, "moved"))
+	if runtime.GOOS == "windows" {
+		// Windows refuses to rename a directory while the gateway holds it open, so
+		// the swap this check guards against cannot happen there.
+		if err == nil {
+			t.Fatal("Windows renamed a directory held open by os.Root")
+		}
+		if err := checkPinnedWorkspace(root, workspace); err != nil {
+			t.Fatalf("after refused rename: %v", err)
+		}
+		return
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(sub, 0o700); err != nil {
