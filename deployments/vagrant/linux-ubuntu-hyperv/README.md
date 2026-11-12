@@ -68,6 +68,13 @@ Default guest credentials:
 - Username: `packer`
 - Password: `P@ssw0rd!`
 
+The image grants `packer` password sudo only (no `NOPASSWD`). The Vagrantfile
+sets `config.ssh.sudo_command` so Vagrant's privileged steps, such as setting
+the hostname of `--name` instances or privileged shell provisioners you add,
+authenticate with this password through a temporary `SUDO_ASKPASS` helper that
+is removed after each command. If you change the guest password, update both
+`config.ssh.password` and `config.ssh.sudo_command`.
+
 ## Provision with Ansible
 
 Do not create `inventory/hyperv_ubuntu.yml` manually.

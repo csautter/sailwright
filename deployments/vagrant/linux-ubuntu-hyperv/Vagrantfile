@@ -31,6 +31,14 @@ Vagrant.configure("2") do |config|
   # Optional: Set up SSH credentials if needed
   config.ssh.username = "packer"
   config.ssh.password = "P@ssw0rd!"
+  # The image has no passwordless sudo. Vagrant feeds privileged scripts (such as
+  # "Setting hostname" for named instances) to the shell on stdin, so `sudo -S`
+  # cannot be used; authenticate through a temporary askpass helper instead.
+  # mktemp creates the helper with mode 0600 before the password is written; the
+  # EXIT trap removes it on every exit path, and the signal traps turn HUP, INT
+  # and TERM into exits so the EXIT trap runs in bash and dash alike. The shell
+  # exits with sudo's status, which is the status of the piped script.
+  config.ssh.sudo_command = %q{askpass=$(mktemp) || exit; trap 'rm -f "$askpass"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; printf '#!/bin/sh\necho %s\n' "'P@ssw0rd!'" > "$askpass" && chmod 700 "$askpass" && SUDO_ASKPASS="$askpass" sudo -A -E -H %c}
 
   # Disable the default root synced folder.
   config.vm.synced_folder ".", "/vagrant", id: "vagrant-root", disabled: true
