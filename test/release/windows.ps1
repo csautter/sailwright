@@ -411,8 +411,13 @@ function Complete-RtGateway {
     if (Test-Path $root) {
         $evidence = Join-Path $script:RtPhaseDir 'gateway-evidence'
         New-Item -ItemType Directory -Force -Path $evidence | Out-Null
-        Copy-Item -Recurse -Force -Path (Join-Path (Get-RtGatewayState) '*') -Destination $evidence -Exclude 'bin' -ErrorAction SilentlyContinue
-        Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+        # Keep the only copy of the audit log when copying it fails.
+        try {
+            Copy-Item -Recurse -Force -Path (Join-Path (Get-RtGatewayState) '*') -Destination $evidence -Exclude 'bin' -ErrorAction Stop
+            Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+        } catch {
+            Write-RtNote "gateway evidence not copied ($($_.Exception.Message)); kept $root"
+        }
     }
 }
 
