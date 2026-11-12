@@ -207,6 +207,9 @@ Hyper-V template, `pkg/build` or `pkg/deploy` code not owned by another platform
 the repository) to force a build; unrelated label events do not restart or
 cancel builds. Release PRs (`release-please--*`), manual dispatches,
 and the weekly Monday 04:00 UTC schedule always select Hyper-V.
+Runs that Dependabot triggers skip Hyper-V, because GitHub gives them no
+Actions secrets for the Azure login. To build a Dependabot PR, a maintainer
+adds `ci:hyperv`; that run starts as the maintainer.
 Linux Go tests and Packer syntax validation must pass before provisioning.
 New commits cancel older runs for the same PR; cleanup uses stable run-ID names
 and fails visibly if resource-group deletion cannot be confirmed.
