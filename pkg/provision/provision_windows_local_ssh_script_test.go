@@ -2,6 +2,7 @@ package provision
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -28,6 +29,84 @@ func TestWindowsSSHBootstrapCredentialedStartProcessSetsWorkingDirectory(t *test
 	for _, line := range matches {
 		if !strings.Contains(strings.ToLower(line), "-workingdirectory") {
 			t.Errorf("Start-Process -Credential without -WorkingDirectory: %s", strings.TrimSpace(line))
+		}
+	}
+}
+
+// An OpenSSH capability install that only completes after a restart leaves no sshd
+// service. The bootstrap must name the pending restart rather than a missing service.
+func TestWindowsSSHBootstrapNamesPendingRestartWhenSshdIsMissing(t *testing.T) {
+	pwsh, err := exec.LookPath("pwsh")
+	if err != nil {
+		t.Skip("pwsh not available")
+	}
+	scriptPath := filepath.Join("..", "..", filepath.FromSlash(localWindowsSSHBootstrapScriptPath))
+	data, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read bootstrap script: %v", err)
+	}
+	function := regexp.MustCompile(`(?ms)^function Get-SshdMissingMessage\b.*?^}`).Find(data)
+	if function == nil {
+		t.Fatal("bootstrap script defines no Get-SshdMissingMessage")
+	}
+	script := string(function) + `
+Get-SshdMissingMessage @{ State = 'InstallPending'; Pending = $true } $false
+Get-SshdMissingMessage @{ State = 'Installed'; Pending = $false } $true
+Get-SshdMissingMessage @{ State = 'Installed'; Pending = $false } $false
+`
+	out, err := exec.Command(pwsh, "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("pwsh: %v\n%s", err, out)
+	}
+	lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(string(out), "\r\n", "\n")), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("unexpected output:\n%s", out)
+	}
+	for i, want := range []string{`state "InstallPending" and Windows has a restart pending`, `restart pending`, `was not found after enabling OpenSSH Server`} {
+		if !strings.Contains(lines[i], want) {
+			t.Errorf("case %d: %q does not contain %q", i, lines[i], want)
+		}
+	}
+}
+
+// When Windows cannot answer the capability query (for example while servicing is
+// still in flux), the missing-sshd report must keep the restart guidance instead of
+// replacing it with the query error.
+func TestWindowsSSHBootstrapSshdMissingReportSurvivesCapabilityQueryFailure(t *testing.T) {
+	pwsh, err := exec.LookPath("pwsh")
+	if err != nil {
+		t.Skip("pwsh not available")
+	}
+	scriptPath := filepath.Join("..", "..", filepath.FromSlash(localWindowsSSHBootstrapScriptPath))
+	data, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read bootstrap script: %v", err)
+	}
+	var functions []string
+	for _, name := range []string{"Get-WindowsCapabilityState", "Get-OpenSSHCapabilityStateForReport", "Get-SshdMissingMessage"} {
+		function := regexp.MustCompile(`(?ms)^function ` + regexp.QuoteMeta(name) + `\b.*?^}`).Find(data)
+		if function == nil {
+			t.Fatalf("bootstrap script defines no %s", name)
+		}
+		functions = append(functions, string(function))
+	}
+	script := `$ErrorActionPreference = 'Stop'
+function Get-WindowsCapability { throw 'DISM is busy' }
+` + strings.Join(functions, "\n") + `
+Get-SshdMissingMessage (Get-OpenSSHCapabilityStateForReport 'OpenSSH.Server~~~~0.0.1.0') $true
+Get-SshdMissingMessage (Get-OpenSSHCapabilityStateForReport 'OpenSSH.Server~~~~0.0.1.0') $false
+`
+	out, err := exec.Command(pwsh, "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("pwsh: %v\n%s", err, out)
+	}
+	lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(string(out), "\r\n", "\n")), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("unexpected output:\n%s", out)
+	}
+	for i, want := range []string{`state "unknown (DISM is busy)" and Windows has a restart pending`, `was not found after enabling OpenSSH Server`} {
+		if !strings.Contains(lines[i], want) {
+			t.Errorf("case %d: %q does not contain %q", i, lines[i], want)
 		}
 	}
 }
