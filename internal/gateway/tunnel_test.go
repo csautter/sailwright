@@ -219,7 +219,9 @@ func TestTunnelAllowsAddressesOnHostSubnets(t *testing.T) {
 	}
 	for _, value := range addresses {
 		prefix, err := netip.ParsePrefix(value.String())
-		if err != nil || !prefix.Addr().Is4() || prefix.Addr().IsLoopback() || prefix.Bits() > 30 {
+		// Link-local (APIPA) host addresses are refused by design, so a neighbor
+		// there proves nothing; Windows hosts often have several such adapters.
+		if err != nil || !prefix.Addr().Is4() || !prefix.Addr().IsGlobalUnicast() || prefix.Bits() > 30 {
 			continue
 		}
 		// Pick a neighbor of the host address inside the same subnet.

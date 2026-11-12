@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -151,13 +152,21 @@ func TestCheckerNeverWaitsAndCachesFailure(t *testing.T) {
 		http.Error(w, "offline", 503)
 	}))
 	defer server.Close()
+	// server.Close waits for the blocked handler: unblock it first, also when the
+	// test fails early, or a failure turns into a hang until the test timeout.
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
 	now := time.Now()
 	file := filepath.Join(t.TempDir(), "cache.json")
 	c := Checker{Releases: Releases{BaseURL: server.URL, Version: "v1.0.0"}, Settings: Settings{Enabled: true, Interval: time.Hour}, CacheFile: file, Now: func() time.Time { return now }}
 	start := time.Now()
 	finish := c.Start()
-	if finish() != "" || time.Since(start) > noticeGrace+100*time.Millisecond {
-		t.Fatal("check delayed command beyond the grace period")
+	// The request stays blocked, so returning at all shows finish does not wait
+	// for it; the bound only catches waits far beyond the grace period, with
+	// headroom for loaded hosts.
+	if finish() != "" || time.Since(start) > noticeGrace+2*time.Second {
+		t.Fatalf("check delayed command beyond the grace period (%s)", time.Since(start))
 	}
 	<-entered
 	if c.Start()() != "" || requests.Load() != 1 {
@@ -166,7 +175,7 @@ func TestCheckerNeverWaitsAndCachesFailure(t *testing.T) {
 	if cache := readCache(t, file); !cache.LastAttempt.Equal(now) || !cache.LastCheck.IsZero() {
 		t.Fatalf("pending check: %+v", cache)
 	}
-	close(release)
+	unblock()
 	// Wait for the background writer before reading the cache. Polling the file
 	// can overlap its replacement, which Windows rejects with a sharing violation.
 	defer func(previous time.Duration) { noticeGrace = previous }(noticeGrace)

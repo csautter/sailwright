@@ -25,7 +25,9 @@ func TestProcessTreeHelper(t *testing.T) {
 		if err := child.Start(); err != nil {
 			os.Exit(2)
 		}
-		time.Sleep(time.Minute)
+		// Outlive the startup budget, so the parent cannot exit on its own (and
+		// end Run without a cancel) while the test still waits for the first beat.
+		time.Sleep(2 * treeHelperStartup)
 	case "child":
 		beat := os.Getenv(treeBeatEnvKey)
 		// Stop when the test is gone (its temp dir is removed) or after 10 s, so a failed
@@ -39,6 +41,9 @@ func TestProcessTreeHelper(t *testing.T) {
 		}
 	}
 }
+
+// treeHelperStartup bounds how long the helper tree may take to write its first beat.
+const treeHelperStartup = 60 * time.Second
 
 func readBeat(path string) string {
 	data, _ := os.ReadFile(path)
@@ -60,13 +65,26 @@ func TestRunnerCancelTerminatesDescendants(t *testing.T) {
 	runner := &Runner{Binary: pinned, Env: append(os.Environ(), treeHelperEnv+"=parent", treeBeatEnvKey+"="+beat)}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	// Kill the helper tree when an assertion fails early, so it does not keep
+	// running or holding the pinned binary open during temp dir cleanup.
+	defer cancel()
 	done := make(chan error, 1)
 	go func() {
 		_, err := runner.Run(ctx, []string{"-test.run=^TestProcessTreeHelper$"}, t.TempDir(), nopWriter{})
 		done <- err
 	}()
 
-	waitFor(t, func() bool { return readBeat(beat) != "" })
+	// Starting the pinned test binary twice (parent, then child) is the slow part
+	// under a full parallel `go test ./...` run, and on Windows each fresh copy is
+	// scanned before it runs. Only the startup gets the long wait; the assertions
+	// after cancel stay strict.
+	startup := time.Now().Add(treeHelperStartup)
+	for readBeat(beat) == "" {
+		if time.Now().After(startup) {
+			t.Fatal("process tree helper did not start writing beats")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	before := readBeat(beat)
 	waitFor(t, func() bool { return readBeat(beat) != before })
 
