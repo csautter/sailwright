@@ -52,6 +52,22 @@ Invocation `RT_*` settings override `release.env`, including explicit empty valu
 Use a separate `RT_RUN_DIR` for a second target and clear target-specific pull and
 guard settings when switching hypervisors.
 
+### Windows host prerequisites
+
+Install these before `kit`; preflight does not check all of them:
+
+- PowerShell 7 (`pwsh`) on `PATH`: the self-update fixture tests (KIT-06) start it.
+- Pester 5 or later for KIT-07 (`Install-Module Pester -MinimumVersion 5.0 -Scope CurrentUser`).
+- A real Python 3, not the Microsoft Store alias, and `sh` from Git for Windows
+  (`C:\Program Files\Git\usr\bin`) on `PATH` for KIT-04 and KIT-06.
+- No other gateway listening on `127.0.0.1:7391` (for example a `sailwright-gateway
+  dev` session for an agent): a gateway lock test in KIT-04 fails while one runs.
+  Stop it for the `kit` phase.
+- An `origin` remote that fetches without a prompt (PRE-08). Without a GitHub SSH
+  key, use the HTTPS URL.
+- Disposable VM guests: about 80 GB of free disk for `install`, the build cache and
+  one VM.
+
 ## Results
 
 Each phase writes `test/release/out/<host>-<date>/<phase>/`:
