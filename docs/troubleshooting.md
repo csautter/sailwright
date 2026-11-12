@@ -106,7 +106,7 @@ to skip the VNC video post-processing.
 ## Windows: Cancelled Hyper-V Build Leaves a Packer VM Running
 
 A cancelled Hyper-V build can leave its Packer build VM
-(`linux-ubuntu-<type>-packer-<timestamp>` or the Windows 11 build VM) running.
+(`linux-ubuntu-<type>-packer-<timestamp>` or `win11-packer-<timestamp>`) running.
 When the `sailwright` process itself is killed, Packer, its plugins and a
 `vmconnect` window can keep running too: the CLI does not stop its process tree
 on Windows. A gateway `job_cancel` terminates the job's processes (a Windows job
@@ -119,9 +119,10 @@ PowerShell after checking that no other build is running:
 
 ```powershell
 Get-Process packer*, vmconnect -ErrorAction SilentlyContinue | Stop-Process -Force
-Get-VM -Name 'linux-ubuntu-*-packer-*' | Stop-VM -TurnOff -Force -PassThru | Remove-VM -Force
+Get-VM -Name 'linux-ubuntu-*-packer-*', 'win11-packer-*' | Stop-VM -TurnOff -Force -PassThru | Remove-VM -Force
 ```
 
-Remove-VM keeps the disk. Delete the matching
-`<cache>\linux\hyperv-ubuntu-<type>-output-*` directory as well; the next
-`sailwright build` also replaces it.
+Remove-VM keeps the disk. Delete the matching Packer output directory as well:
+`<cache>\linux\hyperv-ubuntu-<type>-output-<timestamp>` or
+`<cache>\windows11\hyperv-output-<timestamp>`. Each build creates a new
+timestamped directory, so a later build does not remove the stale one.
