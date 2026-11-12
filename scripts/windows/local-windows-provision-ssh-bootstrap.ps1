@@ -79,6 +79,16 @@ function Assert-OpenSSHCapabilityStateIsUsable($capabilityState, $sshdServiceSta
     }
 }
 
+# The missing-sshd report reads the capability state only to explain the failure, so
+# a failing query must not replace that explanation with the query error.
+function Get-OpenSSHCapabilityStateForReport([string]$name) {
+    try {
+        return Get-WindowsCapabilityState $name
+    } catch {
+        return @{ State = ('unknown (' + $_.Exception.Message + ')'); Pending = $false }
+    }
+}
+
 # A capability install that Windows can only finish after a restart (for example
 # one still pending from enabling Hyper-V) ends without the sshd service. Name the
 # restart instead of reporting a missing service.
@@ -471,7 +481,7 @@ Write-Output 'Preparing the sshd service for loopback-only provisioning.'
 $sshdService = Get-Service -Name 'sshd' -ErrorAction SilentlyContinue
 if ($null -eq $sshdService) {
     $rebootPending = Test-Path -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
-    throw (Get-SshdMissingMessage (Get-WindowsCapabilityState $openSSHCapabilityName) $rebootPending)
+    throw (Get-SshdMissingMessage (Get-OpenSSHCapabilityStateForReport $openSSHCapabilityName) $rebootPending)
 }
 if (([string]$state.SshdServiceStartMode).ToLowerInvariant() -eq 'disabled') {
     Set-Service -Name 'sshd' -StartupType Manual
