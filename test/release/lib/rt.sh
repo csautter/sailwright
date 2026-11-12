@@ -38,6 +38,21 @@ rt_stop_sampler() {
 	wait "$1" 2>/dev/null || true
 }
 
+# rt_wait_lock_holder LOCKS_DIR PID [TRIES]: succeed once a lock file in LOCKS_DIR
+# holds the holder record of PID (sailwright writes it after taking the lock and
+# truncates it on release). Fail when PID exits first or after TRIES 50 ms polls
+# (default 1200). Records of other processes, such as a stale one left by a killed
+# holder, do not count.
+rt_wait_lock_holder() {
+	local tries=0
+	while [ "$tries" -lt "${3:-1200}" ] && kill -0 "$2" 2>/dev/null; do
+		if grep -qsF "\"pid\":$2," "$1"/*; then return 0; fi
+		sleep 0.05
+		tries=$((tries + 1))
+	done
+	return 1
+}
+
 # rt_init PHASE: create the phase directory and reset its results.
 rt_init() {
 	RT_PHASE="$1"

@@ -144,6 +144,43 @@ rt_check NEXT "clean output" --nomatch 'Screen Sharing' -- printf '%s\\n' qemu-s
             self.assertEqual(result.stdout.splitlines(),
                              [processes[0], processes[1], processes[7]])
 
+    def _wait_lock_holder(self, locks, script):
+        # The watched process writes its holder record (or not) and then lingers briefly.
+        return subprocess.run(
+            ["bash", "-c", '''
+. "$1"
+locks=$2
+( eval "$3"; sleep 1 ) &
+watched=$!
+rt_wait_lock_holder "$locks" "$watched" 100
+status=$?
+wait "$watched"
+exit "$status"
+''', "test", str(KIT / "lib/rt.sh"), str(locks), script],
+            capture_output=True, text=True, timeout=15,
+        )
+
+    def test_lock_wait_ignores_stale_holder_of_another_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            locks = Path(directory) / "locks"
+            locks.mkdir()
+            # A stop that was killed never truncates its record.
+            (locks / "stale.lock").write_text(
+                '{"pid":999999,"program":"sailwright","operation":"stop","target":"t"}')
+            result = self._wait_lock_holder(locks, ":")
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_lock_wait_sees_holder_record_of_watched_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            locks = Path(directory) / "locks"
+            locks.mkdir()
+            (locks / "other.lock").write_text(
+                '{"pid":1,"program":"sailwright","operation":"stop"}')
+            result = self._wait_lock_holder(locks, '''
+printf '{"pid":%s,"program":"sailwright","operation":"stop"}' "$BASHPID" >"$locks/t.lock"
+''')
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -598,19 +598,14 @@ phase_vm() {
 	esac
 	# Lock contention between two CLI processes.
 	local stoplog="$RT_PHASE_DIR/logs/VM-20.stop.log" spid
-	sw stop "${TARGET_ARGS[@]}" >"$stoplog" 2>&1 </dev/null &
+	# Run the CLI as the direct background child (env execs it), so $! is the pid in
+	# its holder record; a backgrounded `sw` would report its subshell instead.
+	env ${APPDATA_ENV[@]+"${APPDATA_ENV[@]}"} "$BIN" stop "${TARGET_ARGS[@]}" >"$stoplog" 2>&1 </dev/null &
 	spid=$!
-	# Start the competing command only once stop holds the target lock (its holder
-	# record is in the lock file). A stop that finishes before that, as on Tart,
-	# proves nothing either way.
-	local held=0 tries=0 locks
-	locks="$(appdata_root)/locks"
-	while [ "$tries" -lt 1200 ] && kill -0 "$spid" 2>/dev/null; do
-		if grep -qs '"operation":"stop"' "$locks"/*; then held=1; break; fi
-		sleep 0.05
-		tries=$((tries + 1))
-	done
-	if [ "$held" = 1 ]; then
+	# Start the competing command only once this stop holds the target lock (its
+	# holder record is in the lock file). A stop that finishes before that, as on
+	# Tart, proves nothing either way.
+	if rt_wait_lock_holder "$(appdata_root)/locks" "$spid"; then
 		rt_check VM-20 "concurrent start is refused while stop holds the lock" --exit-nonzero --match 'resource busy' --match 'held by pid [0-9]+' -- \
 			env SAILWRIGHT_LOCK_TIMEOUT=0s "${SELF[@]}" start "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"}
 	else
