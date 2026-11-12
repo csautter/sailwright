@@ -598,11 +598,19 @@ phase_vm() {
 	esac
 	# Lock contention between two CLI processes.
 	local stoplog="$RT_PHASE_DIR/logs/VM-20.stop.log" spid
-	sw stop "${TARGET_ARGS[@]}" >"$stoplog" 2>&1 </dev/null &
+	# Run the CLI as the direct background child (env execs it), so $! is the pid in
+	# its holder record; a backgrounded `sw` would report its subshell instead.
+	env ${APPDATA_ENV[@]+"${APPDATA_ENV[@]}"} "$BIN" stop "${TARGET_ARGS[@]}" >"$stoplog" 2>&1 </dev/null &
 	spid=$!
-	sleep 2
-	rt_check VM-20 "concurrent start is refused while stop holds the lock" --exit-nonzero --match 'resource busy' --match 'held by pid [0-9]+' -- \
-		env SAILWRIGHT_LOCK_TIMEOUT=2s "${SELF[@]}" start "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"}
+	# Start the competing command only once this stop holds the target lock (its
+	# holder record is in the lock file). A stop that finishes before that, as on
+	# Tart, proves nothing either way.
+	if rt_wait_lock_holder "$(appdata_root)/locks" "$spid"; then
+		rt_check VM-20 "concurrent start is refused while stop holds the lock" --exit-nonzero --match 'resource busy' --match 'held by pid [0-9]+' -- \
+			env SAILWRIGHT_LOCK_TIMEOUT=0s "${SELF[@]}" start "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"}
+	else
+		rt_skip VM-20 "concurrent start is refused while stop holds the lock" "INCONCLUSIVE: stop finished before its lock was observed; lock contention not tested"
+	fi
 	wait "$spid"
 	rt_check VM-21 "stop finished normally" --match "." -- cat "$stoplog"
 	sw start "${TARGET_ARGS[@]}" ${INSECURE[@]+"${INSECURE[@]}"} >"$RT_PHASE_DIR/logs/VM-22.start.log" 2>&1 </dev/null &
@@ -754,7 +762,7 @@ print(f"tunnels={opened}, with traffic={len(moved)}")' "$GW_STATE/audit.jsonl"
 		rt_fail GW-20 "gateway starts with --no-approvals" "see $log"
 	fi
 	rt_manual GW-30 "approval console: CLI-created VM via MCP vm_info" \
-		"Start '$GW serve --binary $BIN' in a terminal (no bypass). Create the VM with the CLI. Ask the agent to call vm_info for $RT_TARGET: the console shows vm_access_decision with VM_NOT_CREATED_BY_GATEWAY; type approve <id>; tunnels then work. Destroy/recreate with the CLI (once with a list_targets call in between, once without): the tunnel answers 'VM was recreated outside this gateway' until vm_info is approved again."
+		"Start '$GW --state-dir <new empty dir outside the checkout> serve --binary $BIN' in a terminal (no bypass), so no earlier ownership records or grants apply. Create the VM with the CLI. Ask the agent to call vm_info for $RT_TARGET: the console shows vm_access_decision with VM_NOT_CREATED_BY_GATEWAY; type approve <id>; tunnels then work. Destroy/recreate with the CLI (once with a list_targets call in between, once without): the tunnel answers 'VM was recreated outside this gateway' until vm_info is approved again."
 	gateway_finish
 	trap - EXIT
 	rt_summary
