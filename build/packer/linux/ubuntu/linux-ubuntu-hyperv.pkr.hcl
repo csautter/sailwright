@@ -70,6 +70,12 @@ variable "artifact_output_path" {
   description = "Optional Vagrant box artifact path. Used to stage no-cache rebuilds before promotion."
 }
 
+variable "headless" {
+  type        = bool
+  default     = false
+  description = "Do not open a vmconnect console window during the build (set by `sailwright build --headless`)."
+}
+
 locals {
   default_ubuntu_iso_url = "https://releases.ubuntu.com/${var.ubuntu_version}/ubuntu-${var.ubuntu_version}-live-server-amd64.iso"
   effective_iso_url      = var.iso_url != "" ? var.iso_url : local.default_ubuntu_iso_url
@@ -96,6 +102,7 @@ source "hyperv-iso" "ubuntu" {
   disk_size          = 64000
   switch_name        = var.switch_name
   enable_secure_boot = false
+  headless           = var.headless
 
   cd_label = "cidata"
   cd_files = [

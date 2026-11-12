@@ -163,3 +163,22 @@ func TestWindowsAmd64QemuAttachesVirtioDriverIso(t *testing.T) {
 		`["-drive", "if=none,id=virtio-drivers,format=raw,media=cdrom,file=${local.win11_virtio_iso},readonly=true"]`,
 	)
 }
+
+// buildPackerArgs and hypervUbuntuPackerArgs pass -var headless=true to both
+// Hyper-V templates; packer rejects an undeclared variable, so each template
+// must declare it and hand it to the hyperv-iso builder.
+func TestHypervTemplatesDeclareAndUseHeadless(t *testing.T) {
+	t.Parallel()
+
+	for _, templatePath := range []string{ubuntuHypervTemplatePath, hypervPackerFile} {
+		t.Run(filepath.Base(templatePath), func(t *testing.T) {
+			t.Parallel()
+
+			got := readRepoFile(t, templatePath)
+			assertContainsAll(t, templatePath, got, `variable "headless"`)
+			if !containsCollapsedAssignment(got, "headless", "var.headless") {
+				t.Errorf("expected template %q to set headless = var.headless", templatePath)
+			}
+		})
+	}
+}

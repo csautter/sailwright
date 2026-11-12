@@ -20,6 +20,12 @@ func RunHypervUbuntuBuildOnWindows(ctx context.Context, config VirtualMachineCon
 		return fmt.Errorf("failed to initialize packer: %w", err)
 	}
 
+	args := hypervUbuntuPackerArgs(config)
+	return RunBuildScript(ctx, config, packerExecutable, args)
+}
+
+// hypervUbuntuPackerArgs builds the packer arguments for the Ubuntu Hyper-V template.
+func hypervUbuntuPackerArgs(config VirtualMachineConfig) []string {
 	args := []string{
 		"build",
 		"-var", fmt.Sprintf("iso_url=%s", ubuntuLiveServerISOPath("amd64", ubuntuLiveServerAMD64Version)),
@@ -28,13 +34,15 @@ func RunHypervUbuntuBuildOnWindows(ctx context.Context, config VirtualMachineCon
 		"-var", fmt.Sprintf("ubuntu_type=%s", defaultUbuntuType(config.UbuntuType)),
 		"-var", fmt.Sprintf("cpus=%s", getVmCpuCountString(config)),
 		"-var", fmt.Sprintf("memory=%d", getVmMemoryMB(config)),
-		ubuntuHypervPackerFile,
+	}
+	if config.Headless {
+		// The hyperv-iso plugin opens a vmconnect console unless headless is set.
+		args = append(args, "-var", "headless=true")
 	}
 	if stagedArtifact, ok := firstStagedBuildArtifact(config); ok {
-		args = append(args[:len(args)-1], "-var", fmt.Sprintf("artifact_output_path=%s", stagedArtifact), args[len(args)-1])
+		args = append(args, "-var", fmt.Sprintf("artifact_output_path=%s", stagedArtifact))
 	}
-
-	return RunBuildScript(ctx, config, packerExecutable, args)
+	return append(args, ubuntuHypervPackerFile)
 }
 
 func defaultUbuntuType(ubuntuType string) string {

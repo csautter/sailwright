@@ -52,7 +52,9 @@ Depending on the backend, the initial boot may happen during `create` or require
 
 Use `sailwright build <osname> --headless` or `sailwright build all --headless`
 to build without a QEMU display window or an automatically opened VNC viewer.
-On macOS, this suppresses both the QEMU window and Screen Sharing. VNC recording
+On macOS, this suppresses both the QEMU window and Screen Sharing. On Windows,
+Hyper-V builds (Ubuntu and Windows 11) also skip the vmconnect console window
+that Packer would otherwise open. VNC recording
 remains enabled on macOS and Linux hosts; Windows hosts do not currently record
 VNC. The flag applies to `build`, including parallel builds, and does not change
 the display behavior of `create` or `start`.
