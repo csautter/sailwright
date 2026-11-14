@@ -465,8 +465,8 @@ if (`$opened -lt 1 -or `$opened -ne `$closed.Count -or `$moved -lt 1) { throw 't
             Sw GW-21 'CLI creates a VM outside the gateway' (@('create') + $TargetArgs + $Insecure)
             Sw GW-21b 'CLI starts it' (@('start') + $TargetArgs + $Insecure)
             Invoke-RtCheck -Id GW-22 -Desc 'tunnel to a VM the gateway did not create is refused' -File $Gw -Arguments @('vm', 'tunnel', $Target, '22') -NonZero -TimeoutSec 300 -Match @('not created by this gateway|403')
-            Invoke-RtCheck -Id GW-23 -Desc 'provision_local is refused without an approval console' -File (Get-Command go).Source -Arguments @('test', '-tags', 'e2e', './test/e2e', '-run', 'TestScenarios/local-check$', '-count=1', '-v') `
-                -Env @{ SAILWRIGHT_E2E_EXECUTOR = 'gateway'; SAILWRIGHT_E2E_OUT = (Join-Path $script:RtPhaseDir 'e2e-GW-23') } -NonZero -TimeoutSec 600 -Match @('no approval console')
+            Invoke-RtCheck -Id GW-23 -Desc 'provision_local is refused without an approval console (scenario skips with the gateway reason)' -File (Get-Command go).Source -Arguments @('test', '-tags', 'e2e', './test/e2e', '-run', 'TestScenarios/local-check$', '-count=1', '-v') `
+                -Env @{ SAILWRIGHT_E2E_EXECUTOR = 'gateway'; SAILWRIGHT_E2E_OUT = (Join-Path $script:RtPhaseDir 'e2e-GW-23') } -TimeoutSec 600 -Match @('no approval console', 'SKIP: TestScenarios/local-check')
             Sw GW-24 'cleanup CLI VM' (@('destroy') + $TargetArgs)
             Stop-RtGateway
         } else { Add-RtFail GW-20 'gateway starts with --no-approvals' "see $log" }
