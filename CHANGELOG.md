@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0](https://github.com/csautter/sailwright/compare/v0.27.0...v0.28.0) (2026-11-14)
+
+
+### Added
+
+* gateway live job tail ([21fbc7b](https://github.com/csautter/sailwright/commit/21fbc7bbc23e3a75acf036432d733150ef185813))
+* gateway roles folder auto mapping ([32a5ab3](https://github.com/csautter/sailwright/commit/32a5ab331c9d91d2723f803012ae574d219a2ffc))
+* **gateway:** add workspace list, add and remove commands ([6e231ba](https://github.com/csautter/sailwright/commit/6e231baa528f9ad28e764a02b65d03b7deb23f07))
+* **gateway:** register agent workspaces at runtime with workspace_register ([ba5ef50](https://github.com/csautter/sailwright/commit/ba5ef50e8d28efc558409cc90275d91af3f5c469))
+* **gateway:** show a live tail of the running job in the terminal ([32df580](https://github.com/csautter/sailwright/commit/32df580c492514f263479c3ed9ecb0249199a5aa))
+
+
+### Fixed
+
+* **build:** pass --headless to the Hyper-V Packer templates ([c629b35](https://github.com/csautter/sailwright/commit/c629b357714502b734f9ef64d727ab220086609f))
+* **build:** pass --headless to the Hyper-V Packer templates ([d4e73fe](https://github.com/csautter/sailwright/commit/d4e73fed3b82417407d6d25bf3eb387d458fabac))
+* **deploy:** always remove the Hyper-V Ubuntu askpass helper ([ed9893d](https://github.com/csautter/sailwright/commit/ed9893d4bebf754868c0b633e6f49d0f6023652c))
+* **deploy:** let Vagrant sudo on Hyper-V Ubuntu guests without NOPASSWD ([7f3cb46](https://github.com/csautter/sailwright/commit/7f3cb46164fad493ca272292e45d2bdd03696b15))
+* **deploy:** let Vagrant sudo on Hyper-V Ubuntu guests without NOPASSWD ([8f58b46](https://github.com/csautter/sailwright/commit/8f58b46b10c82d07ddf6555ff35c3046c8ad4093))
+* **gateway:** cap long lines in the live tail ([f4ddc09](https://github.com/csautter/sailwright/commit/f4ddc098ec358f3917a102a24e33fbdf19b9dd18))
+* **gateway:** fit the live tail into the terminal height ([dee2140](https://github.com/csautter/sailwright/commit/dee21408c511994ed15ce9265918067b0919f033))
+* **gateway:** keep job output flowing while the terminal is blocked ([8f67270](https://github.com/csautter/sailwright/commit/8f67270d32fc2c06afbdb9292748de5fe3de032a))
+* **gateway:** keep typed commands and expiry notes intact around the live tail ([e3f1761](https://github.com/csautter/sailwright/commit/e3f176178060282d0b10c6eed6a47a75e21a79d9))
+* **gateway:** lock workspace file writes and reload on content change ([50e5b53](https://github.com/csautter/sailwright/commit/50e5b53e22e08c29ae7e0808c8ac0b99de93bc19))
+* **gateway:** pin registered workspace host paths against symlink swaps ([2cc282a](https://github.com/csautter/sailwright/commit/2cc282abe5e3a9614e89be7110d5df998677a1e8))
+* **gateway:** quote operator command paths and normalize workspace remove ([e2900b7](https://github.com/csautter/sailwright/commit/e2900b79e741fc9d7dc02038191834c784a9f1ef))
+* **gateway:** remove the live tail after a panic and redraw it after prompts ([6480471](https://github.com/csautter/sailwright/commit/6480471a97a3ba7a7d8c228e0a689a7e68bbab33))
+* **gateway:** replace a still-running pinned binary on Windows ([57e1289](https://github.com/csautter/sailwright/commit/57e1289dbc3093041e5a6b8cc2b59e31f9651f1a))
+* **gateway:** replace a still-running pinned binary on Windows ([81069fc](https://github.com/csautter/sailwright/commit/81069fc8b89465dc313e12d83cc59a59c242c5e1))
+* **gateway:** restore the Windows console mode on exit ([7514668](https://github.com/csautter/sailwright/commit/75146687f5dea548090bad0d8f45a93251f0e702))
+* **gateway:** say why --live-lines is ignored ([89836a8](https://github.com/csautter/sailwright/commit/89836a8b8d4042cf4d7018c426a556776f8e621b))
+* optimize orca workspace ([99f5528](https://github.com/csautter/sailwright/commit/99f55282ab4f623606b069a2c791d7d5f81a8fe0))
+* **provision:** keep restart guidance when the capability query fails ([6504fee](https://github.com/csautter/sailwright/commit/6504fee01d23f00524ce32c601f94abd24f8c915))
+* **provision:** report a pending Windows restart when sshd is missing ([c4483ce](https://github.com/csautter/sailwright/commit/c4483ceeb9fa31892a00c4d942989a6b842f0d55))
+* **provision:** report a pending Windows restart when sshd is missing ([a603cc5](https://github.com/csautter/sailwright/commit/a603cc58ddb62c581a7eb6e875806322df866e9d))
+* **release-kit:** accept the skip-based refusal in GW-23 on Windows ([0bd00cd](https://github.com/csautter/sailwright/commit/0bd00cdafeb529bf311118e4945d9d06e764fe7b))
+* **release-kit:** fixes from the 0.28.0 Hyper-V host test ([9056b20](https://github.com/csautter/sailwright/commit/9056b2055156d89d3894e3fbb3046ee63cac8623))
+* **release-kit:** wait for the gateway by deadline ([7cb43ee](https://github.com/csautter/sailwright/commit/7cb43eee46dcf43257c31f62cfb99225ffb49147))
+* **test:** pick a matching ssh and scp on Windows ([843fe0a](https://github.com/csautter/sailwright/commit/843fe0ad8b4be9404b772eba9c0eacb33bb58ef0))
+
+
+### Changed
+
+* **gateway:** share workspace validation and async operator prompts ([00792af](https://github.com/csautter/sailwright/commit/00792af4d289d7c78bdcf09caebb8df23aaba843))
+* **gateway:** simplify the live tail wiring ([6b2a3c8](https://github.com/csautter/sailwright/commit/6b2a3c8f08398b87cf72d1314eaac7578367416d))
+
+
+### Build
+
+* **deps:** list go-runewidth as a direct dependency ([bcec1bf](https://github.com/csautter/sailwright/commit/bcec1bf341417a5e8cffe1dfb313d3cb0718fa01))
+
+
+### CI
+
+* **windows:** skip Azure Hyper-V builds for Dependabot runs ([1f239d3](https://github.com/csautter/sailwright/commit/1f239d3e2b9d452db25e8bd2da607dcd2696f6e5))
+* **windows:** skip Azure Hyper-V builds for Dependabot runs ([a50359c](https://github.com/csautter/sailwright/commit/a50359cac97eedc5fd1d76e101fa6a162a0a3d1d))
+
 ## [0.27.0](https://github.com/csautter/sailwright/compare/v0.26.0...v0.27.0) (2026-11-12)
 
 
