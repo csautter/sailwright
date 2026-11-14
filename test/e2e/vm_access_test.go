@@ -54,20 +54,37 @@ func newSSHClient() (sshClient, error) {
 	}
 	client := sshClient{askpass: true, extra: []string{"-o", "ControlMaster=no", "-o", "ControlPath=none"}}
 	system := filepath.Join(os.Getenv("SystemRoot"), "System32", "OpenSSH")
-	for _, name := range []string{"ssh", "scp"} {
-		path := filepath.Join(system, name+".exe")
-		if _, err := os.Stat(path); err != nil {
-			if path, err = exec.LookPath(name); err != nil {
-				return sshClient{}, fmt.Errorf("client prerequisite %s: %w", name, err)
-			}
-		}
-		if name == "ssh" {
-			client.ssh = path
-		} else {
-			client.scp = path
-		}
+	sshPath, scpPath, err := resolveWindowsSSHClient(system, exec.LookPath, func(path string) bool {
+		_, err := os.Stat(path)
+		return err == nil
+	})
+	if err != nil {
+		return sshClient{}, err
 	}
+	client.ssh, client.scp = sshPath, scpPath
 	return client, nil
+}
+
+// resolveWindowsSSHClient returns an ssh and scp that belong together. scp starts
+// the ssh next to it, so mixing tools fails: a host with only the OpenSSH server
+// capability has System32\OpenSSH\scp.exe but no ssh.exe there.
+func resolveWindowsSSHClient(systemDir string, lookPath func(string) (string, error), exists func(string) bool) (string, string, error) {
+	ssh, scp := filepath.Join(systemDir, "ssh.exe"), filepath.Join(systemDir, "scp.exe")
+	if exists(ssh) && exists(scp) {
+		return ssh, scp, nil
+	}
+	ssh, err := lookPath("ssh")
+	if err != nil {
+		return "", "", fmt.Errorf("client prerequisite ssh: %w", err)
+	}
+	if sibling := filepath.Join(filepath.Dir(ssh), "scp.exe"); exists(sibling) {
+		return ssh, sibling, nil
+	}
+	scp, err = lookPath("scp")
+	if err != nil {
+		return "", "", fmt.Errorf("client prerequisite scp: %w", err)
+	}
+	return ssh, scp, nil
 }
 
 func (c sshClient) command(ctx context.Context, binary string, password string, argv ...string) (*exec.Cmd, error) {
