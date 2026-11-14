@@ -387,7 +387,12 @@ function Start-RtGateway([string]$Mode, [string]$Log) {
     $env:DEV_ALCHEMY_APP_DATA_DIR = $backup
     $env:SAILWRIGHT_GATEWAY_DIR = $agent
     $env:SAILWRIGHT_GATEWAY_URL = "http://127.0.0.1:$GatewayPort/mcp"
-    for ($i = 0; $i -lt 60; $i++) {
+    # The gateway lists the targets through the CLI before it listens, which took about
+    # 75 s on a Hyper-V host. Wait by deadline, not by attempt count.
+    $timeout = 300
+    if ($env:RT_GATEWAY_START_TIMEOUT -match '^\d+$') { $timeout = [int]$env:RT_GATEWAY_START_TIMEOUT }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    while ($clock.Elapsed.TotalSeconds -lt $timeout) {
         $probe = Invoke-RtProcess -File $Gw -Arguments @('connect', '--check') -TimeoutSec 30
         if ($probe.ExitCode -eq 0) { return $true }
         if ($script:GwProcess.HasExited) { return $false }

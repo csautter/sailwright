@@ -672,11 +672,13 @@ EOF
 		DEV_ALCHEMY_APP_DATA_DIR="$RT_APPDATA" "$GW" --state-dir "$GW_STATE" serve --config "$GW_STATE/gateway.yaml" --binary "$BIN" ${pin[@]+"${pin[@]}"} "$1" >"$2" 2>&1 </dev/null &
 	fi
 	GW_PID=$!
-	local waited=0
+	# The gateway lists the targets through the CLI before it listens, which took about
+	# 75 s on a Hyper-V host. Wait by deadline, not by a short fixed count.
+	local waited=0 limit="${RT_GATEWAY_START_TIMEOUT:-300}"
 	until SAILWRIGHT_GATEWAY_DIR="$GW_AGENT" "$GW" connect --check >/dev/null 2>&1; do
 		sleep 1
 		waited=$((waited + 1))
-		if [ "$waited" -gt 60 ] || ! kill -0 "$GW_PID" 2>/dev/null; then return 1; fi
+		if [ "$waited" -gt "$limit" ] || ! kill -0 "$GW_PID" 2>/dev/null; then return 1; fi
 	done
 }
 
