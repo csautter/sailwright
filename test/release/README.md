@@ -63,6 +63,9 @@ Install these before `kit`; preflight does not check all of them:
 - No other gateway listening on `127.0.0.1:7391` (for example a `sailwright-gateway
   dev` session for an agent): a gateway lock test in KIT-04 fails while one runs.
   Stop it for the `kit` phase.
+- The Windows OpenSSH client capability (`Add-WindowsCapability -Online -Name
+  OpenSSH.Client~~~~0.0.1.0`): `TestVMAccess` needs `ssh.exe` and `scp.exe` together
+  in `C:\Windows\System32\OpenSSH`.
 - An `origin` remote that fetches without a prompt (PRE-08). Without a GitHub SSH
   key, use the HTTPS URL.
 - Disposable VM guests: about 80 GB of free disk for `install`, the build cache and

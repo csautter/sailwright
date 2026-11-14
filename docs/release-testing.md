@@ -129,6 +129,41 @@ were not run instead of leaving the gap implicit.
 - Hosts that run a gateway for MCP clients need `SAILWRIGHT_GATEWAY_DIR` set;
   the default `/run/sailwright-gateway` only exists in a devcontainer.
 
+### Windows and Hyper-V
+
+- A fresh `RT_RUN_DIR` has an empty isolated app-data directory, so the built box
+  from `build` is missing. Rerunning `vm` or `gateway` in a new run directory then
+  fails with `Couldn't open file ...\appdata\cache\ubuntu\hyperv-ubuntu-server-amd64.box`.
+  Point `RT_APPDATA` at the `appdata` of the run that did the build.
+- Give `RT_RUN_DIR` as an absolute path. A relative path creates the run
+  directory in the repository root, and PRE-08f then reports uncommitted product
+  changes.
+- A registered Vagrant box without a VM makes PRE-11 fail, because `destroy list`
+  reports the target as `exists`. Confirm that `Get-VM` is empty, then remove the
+  stale boxes with `vagrant box remove`.
+- An ignored `vendor/` directory left by an older `go mod vendor` breaks every
+  `go` call with "inconsistent vendoring". Move it away before `kit`.
+- The Windows SSH tools for `TestVMAccess` need the Windows capability
+  `OpenSSH.Client`. With only `OpenSSH.Server`, `System32\OpenSSH` has `scp.exe`
+  but no `ssh.exe`.
+- On Hyper-V the gateway can take over a minute to start listening, because it
+  lists the targets first. The kit waits up to `RT_GATEWAY_START_TIMEOUT` seconds
+  (default 300).
+- A cancelled Hyper-V build, directly or through the gateway, can leave the build
+  VM, its disk under `%TEMP%\hyperv*` and Packer processes behind. The kit does not
+  remove them. Check `Get-VM` before the next phase and remove only what the run
+  created.
+- To use the MCP tools against a gateway that you start by hand, run the gateway
+  from `dist\`, not from an older `go install` copy on `PATH`, and set
+  `SAILWRIGHT_GATEWAY_DIR` to its agent directory. Without a `gateway.yaml` the
+  token is in the state directory itself. A legacy `isolated` gateway needs
+  `<data dir>\app` to exist before it starts.
+- `workspace_register` accepts only POSIX-style agent paths (`/workspaces/x`), so
+  a Windows agent cannot register a `C:\` path.
+- Check for elevation with `[Security.Principal.WindowsBuiltInRole]::Administrator`,
+  not with the role name `Administrator`, which returns `False` in an elevated
+  shell.
+
 ### CI interplay
 
 - Branch CI that downloads large files from an external cache can exhaust its
