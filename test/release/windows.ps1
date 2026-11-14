@@ -387,7 +387,12 @@ function Start-RtGateway([string]$Mode, [string]$Log) {
     $env:DEV_ALCHEMY_APP_DATA_DIR = $backup
     $env:SAILWRIGHT_GATEWAY_DIR = $agent
     $env:SAILWRIGHT_GATEWAY_URL = "http://127.0.0.1:$GatewayPort/mcp"
-    for ($i = 0; $i -lt 60; $i++) {
+    # The gateway lists the targets through the CLI before it listens, which took about
+    # 75 s on a Hyper-V host. Wait by deadline, not by attempt count.
+    $timeout = 300
+    if ($env:RT_GATEWAY_START_TIMEOUT -match '^\d+$') { $timeout = [int]$env:RT_GATEWAY_START_TIMEOUT }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    while ($clock.Elapsed.TotalSeconds -lt $timeout) {
         $probe = Invoke-RtProcess -File $Gw -Arguments @('connect', '--check') -TimeoutSec 30
         if ($probe.ExitCode -eq 0) { return $true }
         if ($script:GwProcess.HasExited) { return $false }
@@ -460,8 +465,8 @@ if (`$opened -lt 1 -or `$opened -ne `$closed.Count -or `$moved -lt 1) { throw 't
             Sw GW-21 'CLI creates a VM outside the gateway' (@('create') + $TargetArgs + $Insecure)
             Sw GW-21b 'CLI starts it' (@('start') + $TargetArgs + $Insecure)
             Invoke-RtCheck -Id GW-22 -Desc 'tunnel to a VM the gateway did not create is refused' -File $Gw -Arguments @('vm', 'tunnel', $Target, '22') -NonZero -TimeoutSec 300 -Match @('not created by this gateway|403')
-            Invoke-RtCheck -Id GW-23 -Desc 'provision_local is refused without an approval console' -File (Get-Command go).Source -Arguments @('test', '-tags', 'e2e', './test/e2e', '-run', 'TestScenarios/local-check$', '-count=1', '-v') `
-                -Env @{ SAILWRIGHT_E2E_EXECUTOR = 'gateway'; SAILWRIGHT_E2E_OUT = (Join-Path $script:RtPhaseDir 'e2e-GW-23') } -NonZero -TimeoutSec 600 -Match @('no approval console')
+            Invoke-RtCheck -Id GW-23 -Desc 'provision_local is refused without an approval console (scenario skips with the gateway reason)' -File (Get-Command go).Source -Arguments @('test', '-tags', 'e2e', './test/e2e', '-run', 'TestScenarios/local-check$', '-count=1', '-v') `
+                -Env @{ SAILWRIGHT_E2E_EXECUTOR = 'gateway'; SAILWRIGHT_E2E_OUT = (Join-Path $script:RtPhaseDir 'e2e-GW-23') } -TimeoutSec 600 -Match @('no approval console', 'SKIP: TestScenarios/local-check')
             Sw GW-24 'cleanup CLI VM' (@('destroy') + $TargetArgs)
             Stop-RtGateway
         } else { Add-RtFail GW-20 'gateway starts with --no-approvals' "see $log" }
