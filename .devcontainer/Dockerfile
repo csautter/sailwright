@@ -11,10 +11,10 @@ ENV CLAUDE_CODE_VERSION="2.1.322"
 # renovate: datasource=npm depName=azure-functions-core-tools versioning=npm
 ENV AZURE_FUNCTIONS_CORE_TOOLS_VERSION="4.16.0"
 # renovate: datasource=custom.powershell-linux-x64 depName=PowerShell/PowerShell versioning=semver
-ENV POWERSHELL_VERSION="7.6.7"
-ENV POWERSHELL_SHA256_X64="6896f9e3a6b0a354bf470835a96da76d2f801cd50dcf047ad7c4563bf93bf431"
-# renovate: datasource=custom.powershell-linux-arm64 depName=PowerShell/PowerShell version=7.6.7 versioning=semver
-ENV POWERSHELL_SHA256_ARM64="ba465efdfb0984c1c5dc5ed9eb0b79a7e91a1b52c45f99377058c0659b84d3f1"
+ENV POWERSHELL_VERSION="7.7.0"
+ENV POWERSHELL_SHA256_X64="c89d9c682d2c403dfe726f3df948e359675235a5bd6fab535776de69729ca0cb"
+# renovate: datasource=custom.powershell-linux-arm64 depName=PowerShell/PowerShell version=7.7.0 versioning=semver
+ENV POWERSHELL_SHA256_ARM64="e59c89776eaa59790d44b3edd14277435225ab08b6e7603763101b89de83d935"
 # renovate: datasource=custom.terragrunt-linux-amd64 depName=gruntwork-io/terragrunt versioning=semver
 ENV TERRAGRUNT_VERSION="1.1.6"
 ENV TERRAGRUNT_SHA256_AMD64="d75a80bb264758ba00dabcb17f4b507fcdab4ca90d9e41f96750df036bf69b04"
