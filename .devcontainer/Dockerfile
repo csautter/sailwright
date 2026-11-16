@@ -180,4 +180,4 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm -f /tmp/gh.tar.gz \
     && gh --version
 
-RUN go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+RUN go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
