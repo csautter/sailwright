@@ -9,7 +9,7 @@ ENV CODEX_VERSION="0.164.0"
 # renovate: datasource=npm depName=@anthropic-ai/claude-code versioning=npm
 ENV CLAUDE_CODE_VERSION="2.1.325"
 # renovate: datasource=npm depName=azure-functions-core-tools versioning=npm
-ENV AZURE_FUNCTIONS_CORE_TOOLS_VERSION="4.16.0"
+ENV AZURE_FUNCTIONS_CORE_TOOLS_VERSION="4.16.1"
 # renovate: datasource=custom.powershell-linux-x64 depName=PowerShell/PowerShell versioning=semver
 ENV POWERSHELL_VERSION="7.6.7"
 ENV POWERSHELL_SHA256_X64="6896f9e3a6b0a354bf470835a96da76d2f801cd50dcf047ad7c4563bf93bf431"
