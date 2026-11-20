@@ -166,8 +166,8 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm -f /tmp/trivy.tar.gz \
     && trivy --version
 
-# GitHub CLI; .devcontainer/setup-github-auth.sh logs it in with the token
-# shared by initialize-host.sh.
+# GitHub CLI; .devcontainer/github-auth.sh logs it in with the token
+# shared by initialize-host.sh, if any.
 RUN arch="$(dpkg --print-architecture)" \
     && case "${arch}" in \
         amd64) gh_sha256="${GH_SHA256_AMD64}" ;; \

@@ -29,23 +29,61 @@ That directory is mounted read-only at `/run/sailwright-github`. On every start,
 credential helper for `github.com` and rewrites `git@github.com:` remotes to
 HTTPS, so `gh`, `git fetch` and `git push` work without SSH keys.
 
-The token comes from, first match wins:
+Anything that runs in the container (a coding agent, or a malicious
+`postinstall` script of a dependency) can read the token and use it within
+seconds, for example to push a workflow that leaks Actions secrets. So the
+container gets no token unless you create one for it, and that token should
+only reach the repositories and rights the agents need.
 
-1. `~/.config/sailwright/devcontainer/github-token`: a token you create for the
-   containers. Prefer a
-   [fine-grained token](https://github.com/settings/personal-access-tokens/new)
-   limited to the repositories the agents need (Contents and Pull requests:
-   read and write). An empty file shares no token at all.
-2. `gh auth token` of your host login. Every process in the container, coding
-   agents included, can then use it with all of its scopes (usually `repo`,
-   `workflow` and `read:org`, so every repository you can reach).
+The token comes from:
+
+1. `~/.config/sailwright/devcontainer/github-token`: a one-line token you
+   create for the containers (`chmod 600` it). An empty file shares no token at
+   all.
+2. Only with `SAILWRIGHT_GH_SHARE_HOST_LOGIN=1` and no such file: `gh auth
+   token` of your host login, with a warning at every start. Every process in
+   the container can then use it with all of its scopes (usually `repo`,
+   `workflow` and `read:org`, so every repository you can reach), without
+   expiry. Set the variable in the environment `initializeCommand` runs in
+   (VS Code's, and Orca's for its workspaces). The shared token is common to
+   the devcontainer and all Orca workspaces, so a start without the variable
+   removes it again for all of them.
+
+Without either, no token is shared and the start prints how to create one.
+**Behavior change:** earlier versions shared the host login without asking;
+a container that got it is logged out at its next start.
+
+Recommended token: a
+[fine-grained personal access token](https://github.com/settings/personal-access-tokens/new)
+with
+
+- **Repository access:** Only select repositories, namely the repositories
+  the agents work on. A repository created later must be added to the token
+  by hand.
+- **Repository permissions:** Contents, Pull requests and Issues: read and
+  write; Metadata: read. Nothing else: no Workflows, Administration, Secrets
+  or Actions write.
+- **Expiration:** a date, not "No expiration".
+
+Protect `main` with a ruleset (require a pull request, block force pushes), so
+the token cannot change it directly. Known limitation: without the Workflows
+permission, agents cannot push changes to `.github/workflows/`; you push
+those yourself. That is intended, because pushing a workflow is the usual way
+from a stolen token to the repository's Actions secrets.
+
+For classic tokens (`ghp_`, `gho_`, including the host login), the start asks
+the GitHub API for the token's scopes (`X-OAuth-Scopes`) and warns about
+`workflow`, `admin:*`, `delete_repo` and `write:packages`. The token is never
+printed.
 
 `$XDG_CONFIG_HOME` is honored; under WSL the Windows profile's `.config` is
 used. A changed token is picked up at the next container start (Orca: when a
-workspace is created). When no token is shared any more, a login made from
-an earlier shared token is logged out and the HTTPS rewrite removed. A start
-where no `gh` can be found on the host at all (for example VS Code running
-`initializeCommand` with WSL's `bash.exe`) keeps the token shared earlier.
+workspace is created or resumed). When no token is shared any more, a login
+made from an earlier shared token is logged out and the HTTPS rewrite
+removed; a login you made inside the container yourself is kept. With the
+opt-in, a start where no `gh` can be found on the host at all (for example
+VS Code running `initializeCommand` with WSL's `bash.exe`) keeps the token
+shared earlier.
 
 ## Agent sessions
 
@@ -106,11 +144,12 @@ the `Dockerfile`, self-update off) next to Codex.
   (`scripts/orca-vm/docker-fetch.sh` fetches them on demand), so unpushed
   work is not lost. With shared git credentials, workspaces can also push to
   `origin` themselves.
-- Git credentials (`share_credentials` in `scripts/orca-vm/docker-lib.sh`, on
-  create and resume): the host's `gh auth token` logs the container's `gh` in
-  directly (on top of `github-auth.sh`; a login the container made itself is
-  kept), and GitHub SSH remotes are rewritten to HTTPS.
-  `ORCA_DOCKER_GITHUB_AUTH=none` in `scripts/orca-vm/local.env` turns it off.
+- Git credentials: Orca workspaces get the same GitHub token as the
+  devcontainer, through `github-auth.sh` in the devcontainer lifecycle (see
+  [GitHub CLI and git credentials](#github-cli-and-git-credentials)). The
+  template's own `share_credentials` GitHub sharing is turned off in
+  `scripts/orca-vm/defaults.env` (`ORCA_DOCKER_GITHUB_AUTH=none`), so there is
+  one token file and one opt-in.
   SSH keys are never copied into workspaces: agents run as root there and
   could read or use them, and a personal key opens much more than `origin`.
 - `scripts/orca-vm/docker-workspace.sh doctor` checks Docker, Orca and the Cloud

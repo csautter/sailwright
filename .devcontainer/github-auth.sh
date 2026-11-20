@@ -11,21 +11,27 @@
 #                             github.com and rewrites GitHub SSH remotes to
 #                             HTTPS.
 #
-# Token source on the host, first match wins:
+# Token source on the host:
 #   1. <config>/sailwright/devcontainer/github-token: a token you created for
 #      the containers, preferably a fine-grained one limited to the repositories
-#      the agents need. An empty file shares nothing.
-#   2. `gh auth token` of the host's own gh login. When no gh is found at
-#      all (e.g. WSL's bash without the Windows PATH), a token shared earlier
-#      is kept rather than removed.
+#      the agents work on (see .devcontainer/README.md). An empty file shares
+#      nothing.
+#   2. Only with SAILWRIGHT_GH_SHARE_HOST_LOGIN=1: `gh auth token` of the host's
+#      own gh login, with a warning, because every process in the containers
+#      then holds every scope and repository of that login. When no gh is
+#      found at all (e.g. WSL's bash without the Windows PATH), a token shared
+#      earlier is kept rather than removed.
+#   Otherwise no token is shared, and a token shared earlier is removed.
 # <config> is $XDG_CONFIG_HOME or ~/.config (the Windows profile's .config under
-# WSL). Everything in the containers can use the token, and with the host's own
-# login that is every repository it can reach.
+# WSL). Classic tokens (ghp_, gho_) are checked for risky scopes through the
+# X-OAuth-Scopes header of the GitHub API; the token itself is never printed
+# or put on a command line.
 #
 # Without a shared token, a login made earlier from a shared token is logged
 # out again and the remote rewrite removed; a login of your own made inside the
 # container is left alone. Test overrides: GH_CMD (host; "none" means no gh),
-# GITHUB_AUTH_DIR and GITHUB_AUTH_STATE (container).
+# GITHUB_SCOPES_CMD (host; prints the scopes of the token on stdin, "none"
+# skips the check), GITHUB_AUTH_DIR and GITHUB_AUTH_STATE (container).
 set -uo pipefail
 
 TOKEN_RE='^[A-Za-z0-9_]+$'
@@ -52,14 +58,52 @@ host_gh() {
     return 1
 }
 
+# Prints the X-OAuth-Scopes header GitHub returns for the token on stdin (empty
+# for fine-grained tokens), or fails when GitHub cannot be asked. The token is
+# passed to curl through a config on stdin, never as an argument.
+token_scopes() {
+    local token headers
+    IFS= read -r token || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+    headers="$(printf 'header = "Authorization: token %s"\n' "$token" \
+        | curl -fsS -I --max-time 5 --config - "https://api.${HOST}/" 2>/dev/null)" || return 1
+    printf '%s\n' "$headers" | tr -d '\r' | sed -n 's/^[Xx]-[Oo][Aa]uth-[Ss]copes:[[:space:]]*//p'
+}
+
+# Warns about scopes of a classic token that let a stolen token do much more
+# than push branches and open pull requests. Never fails.
+warn_risky_scopes() {
+    local token="$1" scopes scope risky=""
+    case "$token" in ghp_*|gho_*|ghu_*) ;; *) return 0 ;; esac
+    case "${GITHUB_SCOPES_CMD:-}" in
+        none) return 0 ;;
+        ?*) scopes="$(printf '%s\n' "$token" | "$GITHUB_SCOPES_CMD")" || return 0 ;;
+        *) scopes="$(printf '%s\n' "$token" | token_scopes)" || return 0 ;;
+    esac
+    for scope in $(printf '%s' "$scopes" | tr ',' ' '); do
+        case "$scope" in
+            workflow|delete_repo|write:packages|admin:*) risky="${risky:+${risky}, }${scope}" ;;
+        esac
+    done
+    [ -z "$risky" ] || log "WARNING: the shared token has the scopes ${risky}; anything running in the containers can use them (prefer a fine-grained token, see .devcontainer/README.md)" >&2
+}
+
 host() {
     local config_home="${CONFIG_HOME:?CONFIG_HOME is not set}"
     local override="${config_home}/sailwright/devcontainer/github-token"
     local share_dir="${config_home}/sailwright/devcontainer/github"
     local token="" source tmp gh
+    (umask 077 && mkdir -p "$share_dir")
     if [ -f "$override" ]; then
         token="$(tr -d '\r\n' <"$override")"
         source="$override"
+    elif [ "${SAILWRIGHT_GH_SHARE_HOST_LOGIN:-}" != 1 ]; then
+        rm -f "${share_dir}/token"
+        log "no token shared. Create a fine-grained token for the repositories the agents work on" \
+            "(https://github.com/settings/personal-access-tokens/new, see .devcontainer/README.md)" \
+            "and save it to ${override} (chmod 600), or set SAILWRIGHT_GH_SHARE_HOST_LOGIN=1" \
+            "to share the host's gh login with all of its rights"
+        return 0
     elif gh="$(host_gh)"; then
         token="$("$gh" auth token --hostname "$HOST" 2>/dev/null | tr -d '\r\n')" || token=""
         source="the host's gh login"
@@ -73,19 +117,23 @@ host() {
         fi
         return 0
     fi
-    (umask 077 && mkdir -p "$share_dir")
     if [ -n "$token" ] && ! [[ "$token" =~ $TOKEN_RE ]]; then
         log "ignoring the token from ${source} (unexpected characters)" >&2
         token=""
     fi
     if [ -z "$token" ]; then
         rm -f "${share_dir}/token"
-        log "no token shared (create ${override} or run \`gh auth login\` on the host)"
+        log "no token shared (nothing usable in ${source})"
         return 0
     fi
     tmp="$(umask 077 && mktemp "${share_dir}/token.XXXXXX")" || return 1
     printf '%s\n' "$token" >"$tmp" && mv -f "$tmp" "${share_dir}/token"
-    log "sharing the token from ${source}"
+    if [ "$source" = "$override" ]; then
+        log "sharing the token from ${source}"
+    else
+        log "WARNING: sharing the host's gh login (SAILWRIGHT_GH_SHARE_HOST_LOGIN=1): every process in the containers, coding agents and package install scripts included, can use it with all of its scopes and repositories. Prefer a fine-grained token in ${override}" >&2
+    fi
+    warn_risky_scopes "$token"
 }
 
 # --- container -------------------------------------------------------------------
