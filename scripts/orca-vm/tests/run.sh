@@ -13,7 +13,7 @@
 set -uo pipefail
 
 # Never inherit personal credential paths or launcher configuration into fixtures.
-for test_env_name in ${!ORCA_DOCKER_@} ${!SAILWRIGHT_@}; do unset "$test_env_name"; done
+for test_env_name in ${!ORCA_DOCKER_@}; do unset "$test_env_name"; done
 unset XDG_CONFIG_HOME CONFIG_HOME GITHUB_AUTH_DIR GITHUB_AUTH_STATE GH_CMD GITHUB_SCOPES_CMD GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR BASH_ENV
 HOME="$(mktemp -d)/home"
 export HOME

@@ -183,29 +183,61 @@ container() {
         [ -f "$marker" ] || continue
         shared_hash="$(cat "$marker")"
         local accounts account stored after retained
-        accounts="$(gh auth status --hostname "$HOST" --json hosts --jq '.hosts[][] | .login' 2>/dev/null)" || {
-            log "WARNING: cannot enumerate accounts; keeping the shared-login marker for retry"
-            return 0
-        }
         retained=false
-        for account in $accounts; do
-            stored="$(gh auth token --hostname "$HOST" --user "$account" 2>/dev/null)" || {
-                log "WARNING: cannot inspect account; keeping the shared-login marker for retry"
-                return 0
-            }
-            [ "$(token_hash "$stored")" = "$shared_hash" ] || continue
-            if [ -n "$token" ] && [ "$(token_hash "$token")" = "$shared_hash" ]; then retained=true; continue; fi
-            if ! gh auth logout --hostname "$HOST" --user "$account" >/dev/null 2>&1; then
-                log "WARNING: logout failed; keeping the shared-login marker for retry"
-                return 0
+        if accounts="$(gh auth status --hostname "$HOST" --json hosts --jq '.hosts[][] | .login' 2>/dev/null)"; then
+            for account in $accounts; do
+                stored="$(gh auth token --hostname "$HOST" --user "$account" 2>/dev/null)" || {
+                    log "WARNING: cannot inspect account; keeping the shared-login marker for retry"
+                    return 0
+                }
+                [ -n "$stored" ] || return 0
+                [ "$(token_hash "$stored")" = "$shared_hash" ] || continue
+                if [ -n "$token" ] && [ "$(token_hash "$token")" = "$shared_hash" ]; then retained=true; continue; fi
+                if ! gh auth logout --hostname "$HOST" --user "$account" >/dev/null 2>&1; then
+                    log "WARNING: logout failed; keeping the shared-login marker for retry"
+                    return 0
+                fi
+                # Re-enumerate to distinguish removal from a failed token read.
+                local remaining other
+                remaining="$(gh auth status --hostname "$HOST" --json hosts --jq '.hosts[][] | .login' 2>/dev/null)" || return 0
+                for other in $remaining; do
+                    [ "$other" = "$account" ] || continue
+                    after="$(gh auth token --hostname "$HOST" --user "$account" 2>/dev/null)" || return 0
+                    if [ "$(token_hash "$after")" = "$shared_hash" ]; then
+                        log "WARNING: shared login remains; keeping its marker for retry"
+                        return 0
+                    fi
+                done
+                log "logged out the earlier shared login; revoke previously exposed tokens at GitHub Settings > Applications or personal access tokens"
+            done
+        else
+            log "WARNING: JSON account listing unavailable; gh >= 2.81 is required for multi-account cleanup; checking active account only and keeping unverified markers for retry"
+            local status
+            if ! stored="$(gh auth token --hostname "$HOST" 2>/dev/null)" || [ -z "$stored" ]; then
+                status="$(gh auth status --hostname "$HOST" 2>&1)"
+                case "$status" in
+                    "You are not logged into any GitHub hosts."*) stored="" ;;
+                    *) return 0 ;;
+                esac
             fi
-            after="$(gh auth token --hostname "$HOST" --user "$account" 2>/dev/null)" || after=""
-            if [ "$(token_hash "$after")" = "$shared_hash" ]; then
-                log "WARNING: shared login remains; keeping its marker for retry"
-                return 0
+            [ -z "$stored" ] || [ "$(token_hash "$stored")" = "$shared_hash" ] || return 0
+            if [ -z "$stored" ]; then
+                : # Explicitly empty store, also covers a duplicate legacy marker.
+            elif [ -n "$token" ] && [ "$(token_hash "$token")" = "$shared_hash" ]; then
+                retained=true
+            else
+                gh auth logout --hostname "$HOST" >/dev/null 2>&1 || return 0
+                if after="$(gh auth token --hostname "$HOST" 2>/dev/null)" && [ -n "$after" ]; then
+                    [ "$(token_hash "$after")" != "$shared_hash" ] || return 0
+                else
+                    status="$(gh auth status --hostname "$HOST" 2>&1)"
+                    case "$status" in
+                        "You are not logged into any GitHub hosts."*) ;;
+                        *) return 0 ;;
+                    esac
+                fi
             fi
-            log "logged out the earlier shared login; revoke previously exposed tokens at GitHub Settings > Applications or personal access tokens"
-        done
+        fi
         current="$(gh auth token --hostname "$HOST" 2>/dev/null)" || current=""
         [ -n "$current" ] || remove_rewrite
         [ "$marker" != "$legacy" ] || $retained || rm -f "$legacy"

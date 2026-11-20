@@ -584,15 +584,49 @@ if [ -f "$state" ]; then
     shared_hash="$(cat "$state")"
     # Enumerate every stored identity, including inactive accounts. Failure must
     # preserve the marker: an unavailable credential store is not an empty one.
-    accounts="$(gh auth status --hostname "$host" --json hosts --jq ".hosts[][] | .login" 2>/dev/null)" || exit 5
-    for account in $accounts; do
-        stored="$(gh auth token --hostname "$host" --user "$account" 2>/dev/null)" || exit 5
-        [ "$(hash "$stored")" = "$shared_hash" ] || continue
-        if [ -n "$token" ] && [ "$(hash "$token")" = "$shared_hash" ]; then retained=true; continue; fi
-        gh auth logout --hostname "$host" --user "$account" >/dev/null 2>&1 || exit 5
-        after="$(gh auth token --hostname "$host" --user "$account" 2>/dev/null)" || after=""
-        [ "$(hash "$after")" != "$shared_hash" ] || exit 5
-    done
+    if accounts="$(gh auth status --hostname "$host" --json hosts --jq ".hosts[][] | .login" 2>/dev/null)"; then
+        for account in $accounts; do
+            stored="$(gh auth token --hostname "$host" --user "$account" 2>/dev/null)" || exit 5
+            [ -n "$stored" ] || exit 5
+            [ "$(hash "$stored")" = "$shared_hash" ] || continue
+            if [ -n "$token" ] && [ "$(hash "$token")" = "$shared_hash" ]; then retained=true; continue; fi
+            gh auth logout --hostname "$host" --user "$account" >/dev/null 2>&1 || exit 5
+            remaining="$(gh auth status --hostname "$host" --json hosts --jq ".hosts[][] | .login" 2>/dev/null)" || exit 5
+            for other in $remaining; do
+                [ "$other" = "$account" ] || continue
+                after="$(gh auth token --hostname "$host" --user "$account" 2>/dev/null)" || exit 5
+                [ "$(hash "$after")" != "$shared_hash" ] || exit 5
+            done
+        done
+    else
+        echo "github auth: JSON account listing unavailable; gh >= 2.81 is required for multi-account cleanup; checking active account only" >&2
+        if ! stored="$(gh auth token --hostname "$host" 2>/dev/null)" || [ -z "$stored" ]; then
+            status="$(gh auth status --hostname "$host" 2>&1)"
+            case "$status" in
+                "You are not logged into any GitHub hosts."*) stored="" ;;
+                *) exit 5 ;;
+            esac
+        fi
+        # A different active account cannot prove the marked account is absent.
+        [ -z "$stored" ] || [ "$(hash "$stored")" = "$shared_hash" ] || exit 5
+        if [ -z "$stored" ]; then
+            : # Explicitly empty store; there is nothing left to revoke.
+        elif [ -n "$token" ] && [ "$(hash "$token")" = "$shared_hash" ]; then
+            retained=true
+        else
+            gh auth logout --hostname "$host" >/dev/null 2>&1 || exit 5
+            if after="$(gh auth token --hostname "$host" 2>/dev/null)" && [ -n "$after" ]; then
+                [ "$(hash "$after")" != "$shared_hash" ] || exit 5
+            else
+                # Token read failure alone does not prove an empty store.
+                status="$(gh auth status --hostname "$host" 2>&1)"
+                case "$status" in
+                    "You are not logged into any GitHub hosts."*) ;;
+                    *) exit 5 ;;
+                esac
+            fi
+        fi
+    fi
 fi
 current="$(gh auth token --hostname "$host" 2>/dev/null)" || current=""
 if [ -z "$token" ]; then
@@ -740,6 +774,32 @@ refresh_github_auth() {
     [ -f "$helper" ] || return 0
     bash "$helper" host >&2 || return 1
     cexec -i "$name" bash -s -- container <"$helper" >&2
+}
+
+# Keep hash evidence across old postStart hooks, which may delete markers even
+# when logout fails. Only hashes and quoted paths cross back to the host.
+# Hook markers use ~/.config/<provider>/github-token.sha256, or the container's
+# explicit GITHUB_AUTH_STATE. No checkout files are replaced.
+# shellcheck disable=SC2016
+run_post_start() {
+    local name="$1" retry=""
+    if [ -f "$DEVCONTAINER_DIR/github-auth.sh" ]; then
+        retry="$(cexec "$name" bash -c '
+            set -e
+            for marker in "$HOME"/.config/*/github-token.sha256 "${GITHUB_AUTH_STATE:-}"; do
+                [ -f "$marker" ] || continue
+                digest=$(cat "$marker")
+                [[ "$digest" =~ ^[a-fA-F0-9]{64}$ ]] || exit 1
+                printf "mkdir -p %q; (umask 077; printf %%s %q >%q)\n" "${marker%/*}" "$digest" "$marker"
+            done
+        ')" || { log "github auth: cannot preserve retry markers; postStartCommand skipped"; return 0; }
+    fi
+    log "postStartCommand"
+    run_lifecycle container postStartCommand "$name" || log "postStartCommand failed (continuing)"
+    if [ -n "$retry" ]; then
+        printf '%s\n' "$retry" | cexec -i "$name" bash -se \
+            || { log "github auth: cannot restore retry markers"; return 1; }
+    fi
 }
 
 # Shares the host's git credentials and agent logins with a running container.

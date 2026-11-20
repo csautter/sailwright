@@ -17,12 +17,7 @@ if [ -n "$PAYLOAD_PORT" ] && [ "$PAYLOAD_PORT" != "$BROUGHT_UP_PORT" ]; then
     forget_known_host "$PAYLOAD_PORT" "$BROUGHT_UP_HOST_KEY"
 fi
 
-# A repository auth helper is streamed from the host by share_credentials.
-# Replaying an old checkout hook could discard migration retry markers.
-if [ ! -f "$DEVCONTAINER_DIR/github-auth.sh" ]; then
-    log "postStartCommand"
-    run_lifecycle container postStartCommand "$RESOURCE_ID" || log "postStartCommand failed (continuing)"
-fi
+run_post_start "$RESOURCE_ID"
 share_credentials "$RESOURCE_ID"
 
 image="${PAYLOAD_IMAGE:-$(docker inspect -f '{{.Config.Image}}' "$RESOURCE_ID")}"

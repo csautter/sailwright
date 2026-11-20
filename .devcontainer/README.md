@@ -63,12 +63,24 @@ by token hash, including inactive accounts; failed or ineffective logout keeps
 the marker for retry and unrelated accounts remain available.
 
 Orca reattach does not replay `initializeCommand` or `postStartCommand`.
-Resume also skips these hooks here: mount configuration, vendoring, installs and
-local setup already ran at creation; the targeted host step creates the GitHub
-share directory when necessary. This prevents an old checkout's hook from
-deleting retry markers. Recreate the container to apply changed mounts; run any
-local start hook explicitly if it needs to start a service after resume.
+A real resume runs `postStartCommand` again, including local services and agent
+login links. Before that hook the launcher saves the existing GitHub marker
+hashes, restores them afterwards even if the hook fails, and then runs the
+current host-owned auth helper. Thus an old checkout's auth hook cannot discard
+the evidence needed for logout retries. Resume does not rerun `initializeCommand`;
+the auth host step creates its share directory. Recreate to apply changed mounts.
 Ordinary VS Code starts retain their configured lifecycle hooks.
+
+Complete multi-account cleanup requires **gh >= 2.81** inside the container
+(`gh auth status --json hosts`). If JSON status is unavailable, cleanup falls
+back to the active account: the token is held only in a shell variable and
+compared by hash before logout. A marker is removed only after confirmed removal
+or an explicit empty-store status. An unrelated active account, failed read,
+backend error or ineffective logout retains the marker and warns about the
+multi-account minimum. Upgrade gh inside an old container (or recreate it) and
+retry to clean up inactive accounts. Sailwright's current image meets this
+minimum; no host gh upgrade is needed for container account enumeration.
+
 If untrusted code ran with an earlier shared token, revoke it at GitHub
 Settings > Applications (GitHub CLI authorization), then run `gh auth login`
 on the host again. Logging out a container does not invalidate a copied token.
