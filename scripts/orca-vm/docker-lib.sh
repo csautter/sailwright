@@ -22,8 +22,9 @@
 # mounts, so one login is shared without sharing caches or sqlite state.
 # OpenCode v2 keeps its logins in SQLite instead; share_opencode_auth copies
 # the host's (GitHub Copilot by default) with `opencode auth export | import`.
-# share_credentials logs the container's gh in with the host's gh token; no
-# SSH keys or other git credentials are copied.
+# share_credentials logs the container's gh in with a GitHub token you created
+# for the containers (the host's own gh login only on opt-in); no SSH keys or
+# other git credentials are copied.
 #
 # Host-side state (SSH key, known_hosts, locks) lives outside the repository in
 # ORCA_DOCKER_STATE_DIR (default ~/.config/orca-docker/<repo>), so processes in
@@ -114,6 +115,23 @@ fi
 # Prints a new temporary file path in host_path form.
 host_mktemp() { host_path "$(mktemp "${TMPDIR:-/tmp}/$1.XXXXXX")"; }
 
+# Optional, committed repository defaults for the ORCA_DOCKER_* variables:
+# KEY=value lines, values taken literally (no quotes, no expansion), # comments.
+# A variable already set in the environment or in local.env wins.
+_load_defaults_env() {
+    local line key
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        case "$line" in ''|'#'*) continue ;; esac
+        key="${line%%=*}"
+        if [ "$key" = "$line" ] || ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            log "defaults.env: ignoring line '${key}'"
+            continue
+        fi
+        eval "[ -n \"\${${key}+x}\" ]" || export "${key}=${line#*=}"
+    done <"$1"
+}
+
 # Optional, gitignored file for ${localEnv:...} values that the Orca app
 # process does not inherit from the login shell (API keys, ...). It is
 # sourced as shell code: keep it to KEY=value lines.
@@ -122,6 +140,9 @@ if [ -f "${ORCA_VM_DIR}/local.env" ] && [ "${ORCA_DOCKER_SKIP_LOCAL_ENV:-}" != 1
     # shellcheck disable=SC1091
     . "${ORCA_VM_DIR}/local.env"
     set +a
+fi
+if [ -f "${ORCA_VM_DIR}/defaults.env" ]; then
+    _load_defaults_env "${ORCA_VM_DIR}/defaults.env"
 fi
 
 # --- exit hooks and locks ------------------------------------------------------
@@ -503,10 +524,25 @@ share_opencode_auth() {
 # `docker-workspace.sh create`. It never fails the caller and never logs or
 # stores a secret on the host side.
 #
-#   ORCA_DOCKER_GITHUB_AUTH  gh (default): log the container's gh in with the
-#                            host's `gh auth token`, make gh the git credential
-#                            helper and rewrite GitHub SSH remotes to HTTPS;
+#   ORCA_DOCKER_GITHUB_AUTH  token (default): log the container's gh in with
+#                            the token in ORCA_DOCKER_GITHUB_TOKEN_FILE, make gh
+#                            the git credential helper and rewrite GitHub SSH
+#                            remotes to HTTPS. Without that file (or with an
+#                            empty one) no token is shared and a login shared
+#                            earlier is removed.
+#                            host (alias gh): the same with the host's
+#                            `gh auth token` instead, with a warning: every
+#                            process in the container, coding agents and
+#                            package install scripts included, then holds
+#                            every scope and repository of the host login.
 #                            none: leave the container's gh alone.
+#   ORCA_DOCKER_GITHUB_TOKEN_FILE  default ${STATE_DIR}/github-token
+#                            (~/.config/orca-docker/<repo>/github-token): one
+#                            line, preferably a fine-grained token limited to
+#                            the repositories the agents work on; chmod 600.
+#
+# Classic tokens (ghp_, gho_) are checked for risky scopes through the
+# X-OAuth-Scopes header of the GitHub API (curl reads the token from stdin).
 #
 # SSH keys are deliberately never copied: agents run as root in the container,
 # so a key there (or one unlocked in an ssh-agent there) is readable by them,
@@ -524,8 +560,9 @@ host_gh() {
 }
 
 # Runs in the container as remoteUser; reads the token (or an empty line to
-# revoke) on stdin. Exit codes: 0 logged in, 3 kept the container's own login,
-# 4 nothing to revoke, 127 no gh.
+# revoke) on stdin. Exit codes: 0 logged in or revoked, 3 kept the container's
+# own login, 4 nothing to revoke, 127 no gh. On revoke, the HTTPS rewrite stays
+# when a login of the container's own remains.
 # shellcheck disable=SC2016
 _GH_CONTAINER_SCRIPT='
 host=$1
@@ -539,10 +576,12 @@ ours=false
 [ -n "$current" ] && [ -f "$state" ] && [ "$(hash "$current")" = "$(cat "$state")" ] && ours=true
 if [ -z "$token" ]; then
     [ -f "$state" ] || exit 4
-    if $ours; then gh auth logout --hostname "$host" >/dev/null 2>&1 || true; fi
-    for p in "git@${host}:" "ssh://git@${host}/"; do
-        git config --global --fixed-value --unset-all "$key" "$p" 2>/dev/null || true
-    done
+    if $ours || [ -z "$current" ]; then
+        gh auth logout --hostname "$host" >/dev/null 2>&1 || true
+        for p in "git@${host}:" "ssh://git@${host}/"; do
+            git config --global --fixed-value --unset-all "$key" "$p" 2>/dev/null || true
+        done
+    fi
     rm -f "$state"
     exit 0
 fi
@@ -558,37 +597,97 @@ for p in "git@${host}:" "ssh://git@${host}/"; do
 done
 '
 
-# Shares the host's gh login with the container (see above).
+GITHUB_TOKEN_FILE="${ORCA_DOCKER_GITHUB_TOKEN_FILE:-${STATE_DIR}/github-token}"
+
+# Prints the X-OAuth-Scopes header GitHub returns for the token on stdin (empty
+# for fine-grained tokens), or fails when GitHub cannot be asked. curl reads
+# the token from its config on stdin, never from an argument.
+github_token_scopes() {
+    local token headers
+    IFS= read -r token || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+    headers="$(printf 'header = "Authorization: token %s"\n' "$token" \
+        | curl -fsS -I --max-time 5 --config - "https://api.${GITHUB_HOST}/" 2>/dev/null)" || return 1
+    printf '%s\n' "$headers" | tr -d '\r' | sed -n 's/^[Xx]-[Oo][Aa]uth-[Ss]copes:[[:space:]]*//p'
+}
+
+# Warns about scopes of a classic token that reach far beyond pushing branches
+# and opening pull requests. Never fails.
+warn_github_token_scopes() {
+    local token="$1" scopes scope risky=""
+    case "$token" in ghp_*|gho_*|ghu_*) ;; *) return 0 ;; esac
+    scopes="$(printf '%s\n' "$token" | github_token_scopes)" || return 0
+    for scope in $(printf '%s' "$scopes" | tr ',' ' '); do
+        case "$scope" in
+            workflow|delete_repo|write:packages|admin:*) risky="${risky:+${risky}, }${scope}" ;;
+        esac
+    done
+    [ -z "$risky" ] || log "github auth: WARNING: the shared token has the scopes ${risky}; anything running in the container can use them (prefer a fine-grained token)"
+}
+
+# Warns when other users can read or change the token file. Windows (Git Bash) and
+# WSL's /mnt drives report no meaningful modes.
+warn_token_file_mode() {
+    $IS_WINDOWS && return 0
+    case "$1" in /mnt/*) return 0 ;; esac
+    [ -z "$(find "$1" -prune \( -perm -004 -o -perm -040 -o -perm -002 -o -perm -020 \) -print 2>/dev/null)" ] || log "github auth: WARNING: $1 is open to other users; run chmod 600 '$1'"
+}
+
+# Shares a GitHub token with the container (see above).
 share_github_auth() {
-    local name="$1" bin token="" rc=0
-    case "${ORCA_DOCKER_GITHUB_AUTH-gh}" in
-        gh) ;;
+    local name="$1" bin token="" source rc=0
+    case "${ORCA_DOCKER_GITHUB_AUTH-token}" in
+        token)
+            if [ -f "$GITHUB_TOKEN_FILE" ]; then
+                warn_token_file_mode "$GITHUB_TOKEN_FILE"
+                token="$(tr -d '\r\n' <"$GITHUB_TOKEN_FILE")"
+                source="token file"
+            else
+                source="none"
+            fi
+            ;;
+        host|gh)
+            # Without a host gh the login state is unknown: leave the container as is.
+            if ! bin="$(host_gh)"; then
+                log "github auth: no gh on the host, login not shared"
+                return 0
+            fi
+            token="$("$bin" auth token --hostname "$GITHUB_HOST" 2>/dev/null | tr -d '\r\n')" || token=""
+            source="host"
+            ;;
         ''|none) return 0 ;;
-        *) log "github auth: unknown ORCA_DOCKER_GITHUB_AUTH '${ORCA_DOCKER_GITHUB_AUTH}' (gh or none), skipped"; return 0 ;;
+        *) log "github auth: unknown ORCA_DOCKER_GITHUB_AUTH '${ORCA_DOCKER_GITHUB_AUTH}' (token, host or none), skipped"; return 0 ;;
     esac
-    # Without a host gh the login state is unknown: leave the container as is.
-    if ! bin="$(host_gh)"; then
-        log "github auth: no gh on the host, login not shared"
-        return 0
+    if [ -n "$token" ] && ! [[ "$token" =~ ^[A-Za-z0-9_]+$ ]]; then
+        log "github auth: ignoring the token in ${GITHUB_TOKEN_FILE} (unexpected characters)"
+        token=""
     fi
-    token="$("$bin" auth token --hostname "$GITHUB_HOST" 2>/dev/null | tr -d '\r\n')" || token=""
-    [[ "$token" =~ ^[A-Za-z0-9_]+$ ]] || token=""
     printf '%s\n' "$token" | cexec -i "$name" sh -c "$_GH_CONTAINER_SCRIPT" _ "$GITHUB_HOST" >/dev/null 2>&1 || rc=$?
     if [ -z "$token" ]; then
         case "$rc" in
-            0) log "github auth: no gh login on the host any more, removed the shared login" ;;
-            4|127) log "github auth: no gh login on the host (run 'gh auth login' there), not shared" ;;
+            0) log "github auth: no token to share any more, removed the shared login" ;;
+            4|127) ;;
             *) log "github auth: removing the earlier shared login failed (continuing)" ;;
+        esac
+        case "$source" in
+            none) log "github auth: no token shared. Create a fine-grained token for the repositories the agents work on (https://github.com/settings/personal-access-tokens/new) and save it to ${GITHUB_TOKEN_FILE} (chmod 600), or set ORCA_DOCKER_GITHUB_AUTH=host to share the host's gh login with all of its rights" ;;
+            host) log "github auth: no gh login on the host (run 'gh auth login' there), not shared" ;;
+            *) log "github auth: no usable token in ${GITHUB_TOKEN_FILE}, not shared" ;;
         esac
         return 0
     fi
-    token=""
     case "$rc" in
-        0) log "github auth: shared the host's gh login; git uses HTTPS for ${GITHUB_HOST}" ;;
+        0) if [ "$source" = host ]; then
+               log "github auth: WARNING: shared the host's gh login (ORCA_DOCKER_GITHUB_AUTH=${ORCA_DOCKER_GITHUB_AUTH}): every process in the container, coding agents and package install scripts included, can use it with all of its scopes and repositories. Prefer a fine-grained token in ${GITHUB_TOKEN_FILE}"
+           else
+               log "github auth: shared the token from ${GITHUB_TOKEN_FILE}; git uses HTTPS for ${GITHUB_HOST}"
+           fi
+           warn_github_token_scopes "$token" ;;
         3) log "github auth: kept the container's own gh login" ;;
         127) log "github auth: no gh in the container, login not shared" ;;
         *) log "github auth: gh auth login in the container failed (offline, expired or missing scopes?)" ;;
     esac
+    token=""
 }
 
 # Prints "host port" of an SSH remote URL (port empty for the default), or

@@ -120,8 +120,8 @@ rm -f /tmp/repo.bundle
 EOF
 
 # Host key of the origin server, so git fetch/push over SSH from the container
-# does not prompt. No SSH keys are copied; the host's gh login is shared by
-# share_credentials below, so GitHub remotes use HTTPS.
+# does not prompt. No SSH keys are copied; a GitHub token, if configured, is
+# shared by share_credentials below, so GitHub remotes use HTTPS.
 origin_host="" origin_port=""
 [ -z "$origin_url" ] || read -r origin_host origin_port <<<"$(ssh_remote_host "$origin_url")" || true
 if [ -n "$origin_host" ]; then
