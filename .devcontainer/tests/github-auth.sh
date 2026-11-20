@@ -5,6 +5,15 @@
 #   .devcontainer/tests/github-auth.sh
 set -uo pipefail
 
+# Never inherit personal credential paths or launcher configuration into fixtures.
+for test_env_name in ${!ORCA_DOCKER_@} ${!SAILWRIGHT_@}; do unset "$test_env_name"; done
+unset XDG_CONFIG_HOME CONFIG_HOME GITHUB_AUTH_DIR GITHUB_AUTH_STATE GH_CMD GITHUB_SCOPES_CMD GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR BASH_ENV
+HOME="$(mktemp -d)/home"
+export HOME
+export XDG_CONFIG_HOME="$HOME/.config" USERPROFILE="" GIT_CONFIG_GLOBAL="$HOME/.gitconfig"
+mkdir -p "$HOME"
+
+bash "$(dirname "${BASH_SOURCE[0]}")/github-auth-isolation.sh" || exit 1
 bash "$(dirname "${BASH_SOURCE[0]}")/github-auth-migration.sh" || exit 1
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/github-auth.sh"
@@ -30,6 +39,7 @@ cat >"${TMP}/bin/gh" <<'EOF'
 echo "$*" >>"${GH_STUB_DIR}/calls"
 login="${GH_STUB_DIR}/login"
 case "$1 $2" in
+    "auth status") [ ! -s "$login" ] || echo fixture ;;
     "auth token") [ -s "$login" ] && cat "$login" || exit 1 ;;
     "auth login") read -r t; [ "$t" != bad ] || exit 1; printf '%s\n' "$t" >"$login" ;;
     "auth logout") rm -f "$login" ;;

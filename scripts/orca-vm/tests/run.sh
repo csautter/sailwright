@@ -12,8 +12,18 @@
 # shellcheck disable=SC2016
 set -uo pipefail
 
+# Never inherit personal credential paths or launcher configuration into fixtures.
+for test_env_name in ${!ORCA_DOCKER_@} ${!SAILWRIGHT_@}; do unset "$test_env_name"; done
+unset XDG_CONFIG_HOME CONFIG_HOME GITHUB_AUTH_DIR GITHUB_AUTH_STATE GH_CMD GITHUB_SCOPES_CMD GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR BASH_ENV
+HOME="$(mktemp -d)/home"
+export HOME
+export XDG_CONFIG_HOME="$HOME/.config" USERPROFILE="" GIT_CONFIG_GLOBAL="$HOME/.gitconfig"
+mkdir -p "$HOME"
+
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORCA_VM_SRC="$(cd "${TESTS_DIR}/.." && pwd)"
+bash "${TESTS_DIR}/github-auth-isolation.sh" || exit 1
+bash "${TESTS_DIR}/github-auth-lifecycle.sh" || exit 1
 bash "${TESTS_DIR}/github-auth-regression.sh" || exit 1
 LINK_AUTH_SRC="$(cd "${ORCA_VM_SRC}/../.." && pwd)/.devcontainer/link-agent-auth.sh"
 IS_WINDOWS=false
@@ -456,6 +466,7 @@ cat >"${GC}/cbin/gh" <<'EOF'
 #!/bin/sh
 f="$HOME/gh-token"
 case "$1 $2" in
+    "auth status") [ ! -s "$f" ] || echo fixture ;;
     "auth token") [ -s "$f" ] && cat "$f" || exit 1 ;;
     "auth login") cat >"$f" ;;
     "auth logout") rm -f "$f" ;;

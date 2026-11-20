@@ -546,7 +546,7 @@ share_opencode_auth() {
 #                            line, preferably a fine-grained token limited to
 #                            the repositories the agents work on; chmod 600.
 #
-# Classic tokens (ghp_, gho_) are checked for risky scopes through the
+# Classic tokens (ghp_, gho_, ghu_) are checked for risky scopes through the
 # X-OAuth-Scopes header of the GitHub API (curl reads the token from stdin).
 #
 # SSH keys are deliberately never copied: agents run as root in the container,
@@ -579,14 +579,25 @@ key="url.https://${host}/.insteadOf"
 current="$(gh auth token --hostname "$host" 2>/dev/null)" || current=""
 ours=false
 [ -n "$current" ] && [ -f "$state" ] && [ "$(hash "$current")" = "$(cat "$state")" ] && ours=true
+retained=false
+if [ -f "$state" ]; then
+    shared_hash="$(cat "$state")"
+    # Enumerate every stored identity, including inactive accounts. Failure must
+    # preserve the marker: an unavailable credential store is not an empty one.
+    accounts="$(gh auth status --hostname "$host" --json hosts --jq ".hosts[][] | .login" 2>/dev/null)" || exit 5
+    for account in $accounts; do
+        stored="$(gh auth token --hostname "$host" --user "$account" 2>/dev/null)" || exit 5
+        [ "$(hash "$stored")" = "$shared_hash" ] || continue
+        if [ -n "$token" ] && [ "$(hash "$token")" = "$shared_hash" ]; then retained=true; continue; fi
+        gh auth logout --hostname "$host" --user "$account" >/dev/null 2>&1 || exit 5
+        after="$(gh auth token --hostname "$host" --user "$account" 2>/dev/null)" || after=""
+        [ "$(hash "$after")" != "$shared_hash" ] || exit 5
+    done
+fi
+current="$(gh auth token --hostname "$host" 2>/dev/null)" || current=""
 if [ -z "$token" ]; then
     [ -f "$state" ] || exit 4
-    if $ours || [ -z "$current" ]; then
-        if $ours; then
-            gh auth logout --hostname "$host" >/dev/null 2>&1 || exit 5
-            after="$(gh auth token --hostname "$host" 2>/dev/null)" || after=""
-            [ "$after" != "$current" ] || exit 5
-        fi
+    if [ -z "$current" ]; then
         for p in "git@${host}:" "ssh://git@${host}/"; do
             git config --global --fixed-value --unset-all "$key" "$p" 2>/dev/null || true
         done
@@ -594,13 +605,11 @@ if [ -z "$token" ]; then
     rm -f "$state"
     exit 0
 fi
-if [ -n "$current" ] && [ "$current" != "$token" ] && ! $ours; then exit 3; fi
+if [ -n "$current" ] && [ "$current" != "$token" ] && ! $ours; then
+    $retained || rm -f "$state"
+    exit 3
+fi
 if [ "$current" != "$token" ]; then
-    if $ours; then
-        gh auth logout --hostname "$host" >/dev/null 2>&1 || exit 5
-        after="$(gh auth token --hostname "$host" 2>/dev/null)" || after=""
-        [ "$after" != "$current" ] || exit 5
-    fi
     printf "%s\n" "$token" | gh auth login --hostname "$host" --git-protocol https --with-token || exit 1
 fi
 mkdir -p "${state%/*}"
@@ -724,8 +733,18 @@ ssh_remote_host() {
     printf '%s %s' "$host" "$port"
 }
 
+# Refresh only authentication using host-owned code, even for an old container
+# checkout. No initializeCommand or arbitrary container lifecycle is replayed.
+refresh_github_auth() {
+    local name="$1" helper="$DEVCONTAINER_DIR/github-auth.sh"
+    [ -f "$helper" ] || return 0
+    bash "$helper" host >&2 || return 1
+    cexec -i "$name" bash -s -- container <"$helper" >&2
+}
+
 # Shares the host's git credentials and agent logins with a running container.
 share_credentials() {
+    refresh_github_auth "$1" || { log "github auth: refresh failed; keeping retry markers"; return 0; }
     share_github_auth "$1"
     share_opencode_auth "$1"
 }

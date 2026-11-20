@@ -56,7 +56,19 @@ Without either, no token is shared and the start prints how to create one.
 **Behavior change:** earlier versions shared the host login without asking;
 a container that got it is logged out at its next start or Orca reattach,
 including logins marked by the older Orca hash file. Resume and reattach
-refresh the host share before running the container authentication hook.
+refresh the host share and stream the current host authentication helper into
+container Bash over stdin. This also migrates containers whose independent
+checkout still contains an older helper. All stored GitHub accounts are checked
+by token hash, including inactive accounts; failed or ineffective logout keeps
+the marker for retry and unrelated accounts remain available.
+
+Orca reattach does not replay `initializeCommand` or `postStartCommand`.
+Resume also skips these hooks here: mount configuration, vendoring, installs and
+local setup already ran at creation; the targeted host step creates the GitHub
+share directory when necessary. This prevents an old checkout's hook from
+deleting retry markers. Recreate the container to apply changed mounts; run any
+local start hook explicitly if it needs to start a service after resume.
+Ordinary VS Code starts retain their configured lifecycle hooks.
 If untrusted code ran with an earlier shared token, revoke it at GitHub
 Settings > Applications (GitHub CLI authorization), then run `gh auth login`
 on the host again. Logging out a container does not invalidate a copied token.
@@ -80,7 +92,7 @@ permission, agents cannot push changes to `.github/workflows/`; you push
 those yourself. That is intended, because pushing a workflow is the usual way
 from a stolen token to the repository's Actions secrets.
 
-For classic tokens (`ghp_`, `gho_`, including the host login), the start asks
+For classic tokens (`ghp_`, `gho_`, `ghu_`, including the host login), the start asks
 the GitHub API for the token's scopes (`X-OAuth-Scopes`) and warns about
 `workflow`, `admin:*`, `delete_repo` and `write:packages`. The token is never
 printed.

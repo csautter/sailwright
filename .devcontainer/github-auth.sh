@@ -23,7 +23,7 @@
 #      earlier is kept rather than removed.
 #   Otherwise no token is shared, and a token shared earlier is removed.
 # <config> is $XDG_CONFIG_HOME or ~/.config (the Windows profile's .config under
-# WSL). Classic tokens (ghp_, gho_) are checked for risky scopes through the
+# WSL). Classic tokens (ghp_, gho_, ghu_) are checked for risky scopes through the
 # X-OAuth-Scopes header of the GitHub API; the token itself is never printed
 # or put on a command line.
 #
@@ -89,7 +89,17 @@ warn_risky_scopes() {
 }
 
 host() {
-    local config_home="${CONFIG_HOME:?CONFIG_HOME is not set}"
+    local config_home="${CONFIG_HOME:-${XDG_CONFIG_HOME:-${HOME}/.config}}"
+    # Match initialize-host.sh when VS Code/Orca uses a Windows checkout in WSL.
+    if [ -z "${CONFIG_HOME:-}" ] && [ -n "${WSL_DISTRO_NAME:-}" ] && command -v wslpath >/dev/null 2>&1; then
+        local repo win_profile
+        repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+        case "$(wslpath -m "$repo" 2>/dev/null)" in
+            [A-Za-z]:/*)
+                win_profile="$(cmd.exe /d /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')" || return 1
+                config_home="$(wslpath -u "$win_profile")/.config" || return 1 ;;
+        esac
+    fi
     local override="${config_home}/sailwright/devcontainer/github-token"
     local share_dir="${config_home}/sailwright/devcontainer/github"
     local token="" source tmp gh
@@ -172,22 +182,33 @@ container() {
     for marker in "$state" "$legacy"; do
         [ -f "$marker" ] || continue
         shared_hash="$(cat "$marker")"
-        if [ -n "$current" ] && [ "$(token_hash "$current")" = "$shared_hash" ] && [ "$current" != "$token" ]; then
-            if ! gh auth logout --hostname "$HOST" >/dev/null 2>&1; then
+        local accounts account stored after retained
+        accounts="$(gh auth status --hostname "$HOST" --json hosts --jq '.hosts[][] | .login' 2>/dev/null)" || {
+            log "WARNING: cannot enumerate accounts; keeping the shared-login marker for retry"
+            return 0
+        }
+        retained=false
+        for account in $accounts; do
+            stored="$(gh auth token --hostname "$HOST" --user "$account" 2>/dev/null)" || {
+                log "WARNING: cannot inspect account; keeping the shared-login marker for retry"
+                return 0
+            }
+            [ "$(token_hash "$stored")" = "$shared_hash" ] || continue
+            if [ -n "$token" ] && [ "$(token_hash "$token")" = "$shared_hash" ]; then retained=true; continue; fi
+            if ! gh auth logout --hostname "$HOST" --user "$account" >/dev/null 2>&1; then
                 log "WARNING: logout failed; keeping the shared-login marker for retry"
                 return 0
             fi
-            local after
-            after="$(gh auth token --hostname "$HOST" 2>/dev/null)" || after=""
-            if [ "$after" = "$current" ]; then
+            after="$(gh auth token --hostname "$HOST" --user "$account" 2>/dev/null)" || after=""
+            if [ "$(token_hash "$after")" = "$shared_hash" ]; then
                 log "WARNING: shared login remains; keeping its marker for retry"
                 return 0
             fi
-            current="$after"
-            [ -n "$current" ] || remove_rewrite
             log "logged out the earlier shared login; revoke previously exposed tokens at GitHub Settings > Applications or personal access tokens"
-        fi
-        [ "$marker" != "$legacy" ] || rm -f "$legacy"
+        done
+        current="$(gh auth token --hostname "$HOST" 2>/dev/null)" || current=""
+        [ -n "$current" ] || remove_rewrite
+        [ "$marker" != "$legacy" ] || $retained || rm -f "$legacy"
     done
     shared_hash=""
     [ ! -f "$state" ] || shared_hash="$(cat "$state")"
@@ -208,6 +229,7 @@ container() {
     fi
     mkdir -p "$(dirname "$state")"
     (umask 077 && token_hash "$token" >"$state")
+    rm -f "$legacy"
     gh auth setup-git --hostname "$HOST"
     add_rewrite
     log "gh logged in with the shared token; git uses HTTPS for ${HOST}"
