@@ -39,19 +39,28 @@ The token comes from:
 
 1. `~/.config/sailwright/devcontainer/github-token`: a one-line token you
    create for the containers (`chmod 600` it). An empty file shares no token at
-   all.
+   all. On Windows and WSL `/mnt` drives, protect the file with NTFS
+   ACLs; `chmod` alone may not restrict access.
 2. Only with `SAILWRIGHT_GH_SHARE_HOST_LOGIN=1` and no such file: `gh auth
    token` of your host login, with a warning at every start. Every process in
    the container can then use it with all of its scopes (usually `repo`,
    `workflow` and `read:org`, so every repository you can reach), without
    expiry. Set the variable in the environment `initializeCommand` runs in
-   (VS Code's, and Orca's for its workspaces). The shared token is common to
+   (VS Code's, and Orca's for its workspaces). For Orca, the gitignored
+   `scripts/orca-vm/local.env` can set it; under WSL, propagate a Windows
+   environment setting through `WSLENV`. The shared token is common to
    the devcontainer and all Orca workspaces, so a start without the variable
    removes it again for all of them.
 
 Without either, no token is shared and the start prints how to create one.
 **Behavior change:** earlier versions shared the host login without asking;
-a container that got it is logged out at its next start.
+a container that got it is logged out at its next start or Orca reattach,
+including logins marked by the older Orca hash file. Resume and reattach
+refresh the host share before running the container authentication hook.
+If untrusted code ran with an earlier shared token, revoke it at GitHub
+Settings > Applications (GitHub CLI authorization), then run `gh auth login`
+on the host again. Logging out a container does not invalidate a copied token.
+When replacing a PAT, revoke the old token at GitHub too.
 
 Recommended token: a
 [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new)
@@ -78,7 +87,7 @@ printed.
 
 `$XDG_CONFIG_HOME` is honored; under WSL the Windows profile's `.config` is
 used. A changed token is picked up at the next container start (Orca: when a
-workspace is created or resumed). When no token is shared any more, a login
+workspace is created, resumed or reattached). When no token is shared any more, a login
 made from an earlier shared token is logged out and the HTTPS rewrite
 removed; a login you made inside the container yourself is kept. With the
 opt-in, a start where no `gh` can be found on the host at all (for example

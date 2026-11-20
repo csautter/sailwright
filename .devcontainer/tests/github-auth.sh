@@ -5,9 +5,11 @@
 #   .devcontainer/tests/github-auth.sh
 set -uo pipefail
 
+bash "$(dirname "${BASH_SOURCE[0]}")/github-auth-migration.sh" || exit 1
+
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/github-auth.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/github-auth-tests.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
+# Temporary fixtures are retained for diagnosis.
 
 failures=0
 passes=0

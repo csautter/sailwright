@@ -14,12 +14,13 @@ set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORCA_VM_SRC="$(cd "${TESTS_DIR}/.." && pwd)"
+bash "${TESTS_DIR}/github-auth-regression.sh" || exit 1
 LINK_AUTH_SRC="$(cd "${ORCA_VM_SRC}/../.." && pwd)/.devcontainer/link-agent-auth.sh"
 IS_WINDOWS=false
 case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=true ;; esac
 # The library hands native tools C:/... paths on Windows; use the same form.
 TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/orca-vm-tests.XXXXXX")" && { pwd -W 2>/dev/null || pwd; })"
-trap 'rm -rf "$TMP"' EXIT
+# Temporary fixtures are retained for diagnosis.
 # PATH entries need the MSYS form (/c/...): ":" separates them.
 TMP_PATH="$TMP"
 if $IS_WINDOWS; then TMP_PATH="$(cygpath -u "$TMP")"; fi
@@ -567,16 +568,16 @@ assert_eq "github auth: rewrite kept for the own login" "2" "$(ctr_git | wc -l |
 
 rm -f "${GC}/docker.args"
 HOST_TOKEN=gho_hosttoken ORCA_DOCKER_GITHUB_AUTH=none gc 'share_github_auth c1'
-assert_true "github auth: none disables" test ! -e "${GC}/docker.args"
+assert_true "github auth: none reconciles earlier sharing" test -s "${GC}/docker.args"
 
 # --- defaults.env ----------------------------------------------------------------
 printf '# repository defaults\r\nORCA_DOCKER_GITHUB_AUTH=none\r\nORCA_DOCKER_TEST_VALUE=a b=$HOME\nnot a line\n' \
     >"${REPO}/scripts/orca-vm/defaults.env"
 assert_eq "defaults.env: default applied (CR stripped)" "none" "$(lib 'printf %s "$ORCA_DOCKER_GITHUB_AUTH"' 2>/dev/null)"
-assert_eq "defaults.env: value taken literally" 'a b=$HOME' "$(lib 'printf %s "$ORCA_DOCKER_TEST_VALUE"' 2>/dev/null)"
+assert_eq "defaults.env: unknown key ignored" unset "$(lib 'printf %s "${ORCA_DOCKER_TEST_VALUE-unset}"' 2>/dev/null)"
 assert_eq "defaults.env: environment wins" "host" "$(ORCA_DOCKER_GITHUB_AUTH=host lib 'printf %s "$ORCA_DOCKER_GITHUB_AUTH"' 2>/dev/null)"
 assert_eq "defaults.env: empty environment value wins" "" "$(ORCA_DOCKER_GITHUB_AUTH='' lib 'printf %s "$ORCA_DOCKER_GITHUB_AUTH"' 2>/dev/null)"
-assert_true "defaults.env: invalid line reported" grep -q "ignoring line 'not a line'" <<<"$(lib true 2>&1)"
+assert_true "defaults.env: invalid line reported" grep -q "ignoring unsupported setting on line 4" <<<"$(lib true 2>&1)"
 rm -f "${REPO}/scripts/orca-vm/defaults.env"
 
 assert_eq "ssh_remote_host: scp form" "github.com " "$(lib 'ssh_remote_host git@github.com:o/r.git')"

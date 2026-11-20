@@ -152,7 +152,9 @@ ensure_container() {
             | "${ORCA_VM_DIR}/docker-resume.sh")"
     else
         assert_owned "$name"
+        run_lifecycle host initializeCommand
         bring_up "$name"
+        run_lifecycle container postStartCommand "$name" || log "postStartCommand failed (continuing)"
         share_credentials "$name"
         CONTAINER_PORT="$BROUGHT_UP_PORT"
         CONTAINER_HOST_KEY="$BROUGHT_UP_HOST_KEY"

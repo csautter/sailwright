@@ -9,6 +9,9 @@ on:
     paths:
       - "*.sh"
       - "**/*.sh"
+      - ".devcontainer/**"
+      - "scripts/orca-vm/**"
+      - "Makefile"
       - ".github/workflows/shellcheck.yml"
 
 jobs:
@@ -62,3 +65,6 @@ jobs:
         if: steps.scripts.outputs.has_scripts == 'true'
         run: |
           xargs -0 shellcheck < .shellcheck-files
+
+      - name: Test devcontainer scripts
+        run: make test-devcontainer-scripts

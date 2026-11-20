@@ -66,7 +66,7 @@ token_scopes() {
     IFS= read -r token || return 1
     command -v curl >/dev/null 2>&1 || return 1
     headers="$(printf 'header = "Authorization: token %s"\n' "$token" \
-        | curl -fsS -I --max-time 5 --config - "https://api.${HOST}/" 2>/dev/null)" || return 1
+        | curl -q -fsS -I --max-time 5 --config - "https://api.${HOST}/" 2>/dev/null)" || return 1
     printf '%s\n' "$headers" | tr -d '\r' | sed -n 's/^[Xx]-[Oo][Aa]uth-[Ss]copes:[[:space:]]*//p'
 }
 
@@ -161,22 +161,39 @@ remove_rewrite() {
 container() {
     local token_file="${GITHUB_AUTH_DIR:-/run/sailwright-github}/token"
     local state="${GITHUB_AUTH_STATE:-${HOME}/.config/sailwright/github-token.sha256}"
-    local token="" current shared_hash=""
+    local legacy="${HOME}/.config/orca-docker/github-token.sha256"
+    local token="" current shared_hash="" marker
     if ! command -v gh >/dev/null 2>&1; then
         log "gh is not installed, skipped"
         return 0
     fi
-    [ -f "$state" ] && shared_hash="$(cat "$state")"
     current="$(gh auth token --hostname "$HOST" 2>/dev/null)" || current=""
     [ -r "$token_file" ] && token="$(tr -d '\r\n' <"$token_file")"
-
+    for marker in "$state" "$legacy"; do
+        [ -f "$marker" ] || continue
+        shared_hash="$(cat "$marker")"
+        if [ -n "$current" ] && [ "$(token_hash "$current")" = "$shared_hash" ] && [ "$current" != "$token" ]; then
+            if ! gh auth logout --hostname "$HOST" >/dev/null 2>&1; then
+                log "WARNING: logout failed; keeping the shared-login marker for retry"
+                return 0
+            fi
+            local after
+            after="$(gh auth token --hostname "$HOST" 2>/dev/null)" || after=""
+            if [ "$after" = "$current" ]; then
+                log "WARNING: shared login remains; keeping its marker for retry"
+                return 0
+            fi
+            current="$after"
+            [ -n "$current" ] || remove_rewrite
+            log "logged out the earlier shared login; revoke previously exposed tokens at GitHub Settings > Applications or personal access tokens"
+        fi
+        [ "$marker" != "$legacy" ] || rm -f "$legacy"
+    done
+    shared_hash=""
+    [ ! -f "$state" ] || shared_hash="$(cat "$state")"
     if [ -z "$token" ] || ! [[ "$token" =~ $TOKEN_RE ]]; then
         if [ -n "$shared_hash" ]; then
-            if [ -n "$current" ] && [ "$(token_hash "$current")" = "$shared_hash" ]; then
-                gh auth logout --hostname "$HOST" >/dev/null 2>&1 || true
-                log "logged out the earlier shared login (no shared token any more)"
-            fi
-            remove_rewrite
+            [ -n "$current" ] || remove_rewrite
             rm -f "$state"
         fi
         log "no shared token; gh and git use the container's own login, if any"

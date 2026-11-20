@@ -10,6 +10,7 @@ set -euo pipefail
 read_payload
 assert_owned "$RESOURCE_ID"
 ensure_ssh_key
+run_lifecycle host initializeCommand
 docker start "$RESOURCE_ID" >/dev/null
 
 bring_up "$RESOURCE_ID"
