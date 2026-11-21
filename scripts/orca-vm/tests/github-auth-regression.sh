@@ -116,9 +116,9 @@ EOF
                 mkdir -p "$STATE_DIR"
                 printf token >"$GITHUB_TOKEN_FILE"
                 # Stubbed functions are invoked indirectly by share_github_auth.
-                # shellcheck disable=SC2317
+                # shellcheck disable=SC2317,SC2329
                 tr() { return 1; }
-                # shellcheck disable=SC2317
+                # shellcheck disable=SC2317,SC2329
                 cexec() { cat >/dev/null; return 4; }
                 share_github_auth c1 ;;
         esac
