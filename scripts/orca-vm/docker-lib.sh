@@ -12,14 +12,16 @@
 # Mount translation (devcontainer -> Orca container), <HOME> = remoteUser's home:
 #   */.vscode-server*                    dropped (editor only)
 #   <HOME>/.codex, <HOME>/.codex/{.tmp,tmp} dropped (Codex state is container-owned)
-#   <HOME>/.claude                       -> <HOME>/.claude-host   (credentials linked, state seeded)
+#   <HOME>/.claude                       -> <HOME>/.claude-host (read-only seed)
 #   <HOME>/.local/share/opencode         -> <HOME>/.opencode-host (credentials linked)
 #   everything else                      unchanged
+# plus the per-checkout Docker volume orca-<repo>-claude at <HOME>/.claude,
+# which keeps Claude login, settings and history across workspace recreation;
 # plus a read-write bind of every worktree.sharedDirectories entry of orca.yaml
 # (git-ignored working directories) into the container's primary checkout;
 # Orca links them into each worktree it creates there.
-# .devcontainer/link-agent-auth.sh links the credential files from the *-host
-# mounts, so one login is shared without sharing caches or sqlite state.
+# .devcontainer/link-agent-auth.sh links Codex/OpenCode credential files and
+# seeds the Claude volume with .claude.json and settings.json.
 # OpenCode v2 keeps its logins in SQLite instead; share_opencode_auth copies
 # the host's (GitHub Copilot by default) with `opencode auth export | import`.
 # share_credentials logs the container's gh in with a GitHub token you created
@@ -310,14 +312,14 @@ host_mount() {
 
 # Prints the Orca form of one expanded --mount spec, or nothing to drop it.
 translate_mount() {
-    local spec="$1" target new_target="" part out=""
+    local spec="$1" target new_target="" part out="" claude_seed=false
     target="$(printf '%s\n' "$spec" | tr ',' '\n' | sed -n -E 's/^(target|destination|dst)=//p' | head -n 1)"
     case "$target" in
         # The repository is seeded from a git bundle, never bound from the host.
         "$PROJECT_ROOT_IN_CONTAINER"|"${PROJECT_ROOT_IN_CONTAINER}/") return 0 ;;
         */.vscode-server|*/.vscode-server/*) return 0 ;;
         "${CONTAINER_HOME}/.codex"|"${CONTAINER_HOME}/.codex/.tmp"|"${CONTAINER_HOME}/.codex/tmp") return 0 ;;
-        "${CONTAINER_HOME}/.claude") new_target="${CONTAINER_HOME}/.claude-host" ;;
+        "${CONTAINER_HOME}/.claude") new_target="${CONTAINER_HOME}/.claude-host"; claude_seed=true ;;
         "${CONTAINER_HOME}/.local/share/opencode") new_target="${CONTAINER_HOME}/.opencode-host" ;;
         *) printf '%s' "$spec"; return 0 ;;
     esac
@@ -325,10 +327,32 @@ translate_mount() {
     for part in $spec; do
         case "$part" in
             target=*|destination=*|dst=*) part="target=${new_target}" ;;
+            readonly|readonly=*|ro|ro=*) if $claude_seed; then continue; fi ;;
         esac
         out="${out:+${out},}${part}"
     done
+    if $claude_seed; then out="${out},readonly"; fi
     printf '%s' "$out"
+}
+
+claude_volume() {
+    local volume="${ORCA_DOCKER_CLAUDE_VOLUME:-$(sanitize_name "orca-${REPO_NAME}-claude")}"
+    [[ "$volume" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]+$ ]] || die "invalid ORCA_DOCKER_CLAUDE_VOLUME name: ${volume}"
+    printf '%s' "$volume"
+}
+
+assert_claude_volume_owned() {
+    local volume="$1" repo
+    repo="$(docker volume inspect --format "{{index .Labels \"${LABEL_REPO}\"}}" "$volume")" || return 1
+    [ "$repo" = "$REPO_ROOT" ] || die "Claude volume ${volume} belongs to another checkout or has no owner label; set ORCA_DOCKER_CLAUDE_VOLUME to a unique name"
+}
+
+ensure_claude_volume() {
+    local volume="$1"
+    docker volume inspect "$volume" >/dev/null 2>&1 \
+        || docker volume create --label "${LABEL_REPO}=${REPO_ROOT}" "$volume" >/dev/null \
+        || return 1
+    assert_claude_volume_owned "$volume"
 }
 
 # Prints the worktree.sharedDirectories entries of orca.yaml, one per line.
@@ -407,7 +431,9 @@ compose_run_args() {
 
 # Builds the `docker run` arguments from devcontainer.json into DOCKER_RUN_ARGS.
 collect_run_args() {
-    DOCKER_RUN_ARGS=()
+    local volume
+    volume="$(claude_volume)" || return 1
+    DOCKER_RUN_ARGS=(--mount "type=volume,source=${volume},target=${CONTAINER_HOME}/.claude")
     local raw spec key value dir pending=""
     if is_compose; then
         local compose_args

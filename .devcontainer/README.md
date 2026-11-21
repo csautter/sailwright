@@ -156,12 +156,23 @@ in [`orca.yaml`](../orca.yaml), scripts in [`scripts/orca-vm/`](../scripts/orca-
 The scripts read the Compose service from `docker compose config`, so the image,
 the generated mounts (including sibling repos, `~/.sailwright-gateway` and
 `mounts.local`), `local/container.env` and the lifecycle commands match the VS
-Code devcontainer. Differences: the repository is seeded from a git bundle of
-your committed branches instead of being bind-mounted, `.vscode-server` and Codex
-state stay per container, and only the agent logins (`link-agent-auth.sh`) and
-the git credentials (see below) are shared. Without VS Code there is no
-Claude Code extension, so the image installs the Claude Code CLI (pinned in
-the `Dockerfile`, self-update off) next to Codex.
+Code devcontainer. Orca seeds the repository from a git bundle of your
+committed branches. Codex state is local to each container, and the host Codex
+login is linked when present. The image installs the Claude Code and Codex
+CLIs for Orca workspaces without a VS Code server.
+
+Orca workspaces from the same checkout share a Docker volume named
+`orca-<checkout-folder>-claude`. It stores the Orca Claude login, history and
+settings across workspace recreation. The first start seeds `.claude.json`
+and `settings.json` from the read-only VS Code devcontainer state. Sign in to
+Claude once in Orca to create its login. Existing Orca containers need to be
+recreated to pick up the new mount. The workspace removal workflow fetches
+branch commits, so commit any work you want to keep before recreating.
+
+Use `ORCA_DOCKER_CLAUDE_VOLUME` in the environment or `scripts/orca-vm/local.env`
+to choose a unique name if two checkouts have the same folder name. To reset
+the Orca login, settings and history for this checkout, remove the Orca
+containers using the volume, then run `scripts/orca-vm/docker-workspace.sh claude-logout`.
 
 - Turn on **Settings → Experimental → Cloud VM** in Orca; the recipe only shows
   up under **Run on** after that, and only while `orca.yaml` is on `main`.

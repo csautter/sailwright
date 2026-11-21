@@ -43,6 +43,9 @@ cleanup() {
 on_exit cleanup
 
 log "starting container ${name}"
+# Hold the volume lock until Docker has attached it to this container.
+lock_acquire claude-volume
+ensure_claude_volume "$(claude_volume)"
 # Runs as root (the image entrypoint starts sshd); sessions and lifecycle
 # commands use remoteUser. IS_SANDBOX=1 lets Claude Code accept
 # --dangerously-skip-permissions (Orca's agent view passes it) when remoteUser
@@ -59,10 +62,14 @@ docker run -d --init --user root \
     ${DOCKER_RUN_ARGS[@]+"${DOCKER_RUN_ARGS[@]}"} \
     "$image" >/dev/null
 created=true
+lock_release claude-volume
 
 bring_up "$name"
 port="$BROUGHT_UP_PORT"
 host_key="$BROUGHT_UP_HOST_KEY"
+
+# Docker initializes new volumes as root. Claude runs as remoteUser.
+docker exec -u root "$name" chown "$CONTAINER_USER" "${CONTAINER_HOME}/.claude"
 
 # --- Seed the repository: all local branches, tags and origin/* refs of the
 # primary checkout, so Orca can create its linked worktree from any base ref.
