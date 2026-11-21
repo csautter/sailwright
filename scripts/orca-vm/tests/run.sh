@@ -12,14 +12,25 @@
 # shellcheck disable=SC2016
 set -uo pipefail
 
+# Never inherit personal credential paths or launcher configuration into fixtures.
+for test_env_name in ${!ORCA_DOCKER_@}; do unset "$test_env_name"; done
+unset XDG_CONFIG_HOME CONFIG_HOME GITHUB_AUTH_DIR GITHUB_AUTH_STATE GH_CMD GITHUB_SCOPES_CMD GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR BASH_ENV
+HOME="$(mktemp -d)/home"
+export HOME
+export XDG_CONFIG_HOME="$HOME/.config" USERPROFILE="" GIT_CONFIG_GLOBAL="$HOME/.gitconfig"
+mkdir -p "$HOME"
+
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORCA_VM_SRC="$(cd "${TESTS_DIR}/.." && pwd)"
+bash "${TESTS_DIR}/github-auth-isolation.sh" || exit 1
+bash "${TESTS_DIR}/github-auth-lifecycle.sh" || exit 1
+bash "${TESTS_DIR}/github-auth-regression.sh" || exit 1
 LINK_AUTH_SRC="$(cd "${ORCA_VM_SRC}/../.." && pwd)/.devcontainer/link-agent-auth.sh"
 IS_WINDOWS=false
 case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=true ;; esac
 # The library hands native tools C:/... paths on Windows; use the same form.
 TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/orca-vm-tests.XXXXXX")" && { pwd -W 2>/dev/null || pwd; })"
-trap 'rm -rf "$TMP"' EXIT
+# Temporary fixtures are retained for diagnosis.
 # PATH entries need the MSYS form (/c/...): ":" separates them.
 TMP_PATH="$TMP"
 if $IS_WINDOWS; then TMP_PATH="$(cygpath -u "$TMP")"; fi
@@ -455,6 +466,7 @@ cat >"${GC}/cbin/gh" <<'EOF'
 #!/bin/sh
 f="$HOME/gh-token"
 case "$1 $2" in
+    "auth status") [ ! -s "$f" ] || echo fixture ;;
     "auth token") [ -s "$f" ] && cat "$f" || exit 1 ;;
     "auth login") cat >"$f" ;;
     "auth logout") rm -f "$f" ;;
@@ -469,34 +481,115 @@ gc() { # snippet
 reset_ctr() { rm -rf "${GC}/ctr" "${GC}/log" "${GC}/docker.args"; mkdir -p "${GC}/ctr"; }
 ctr_git() { HOME="${GC}/ctr" git config --global --get-all url.https://github.com/.insteadOf 2>/dev/null; }
 
+# curl stub for the scope check: answers with SCOPES, logs its arguments.
+cat >"${GC}/bin/curl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"${GC_LOG_DIR}/curl.args"
+grep -q '^header = "Authorization: token ' || exit 22
+printf 'HTTP/2 200\r\nx-oauth-scopes: %s\r\n\r\n' "${SCOPES:-}"
+EOF
+chmod +x "${GC}/bin/curl"
+export GC_LOG_DIR="$GC"
+TOKEN_FILE="${TMP}/state/github-token"
+mkdir -p "${TMP}/state"
+host_mode() { HOST_TOKEN="$1" ORCA_DOCKER_GITHUB_AUTH="${2:-host}" gc 'share_github_auth c1'; }
+
+# Default: no token file, no token, even with a host gh login.
 reset_ctr
+rm -f "$TOKEN_FILE"
 HOST_TOKEN=gho_hosttoken gc 'share_github_auth c1'
-assert_eq "github auth: host token logged in" "gho_hosttoken" "$(cat "${GC}/ctr/gh-token" 2>/dev/null)"
+assert_true "github auth: default shares no host login" test ! -e "${GC}/ctr/gh-token"
+assert_true "github auth: default hint names the token file" grep -qF "$TOKEN_FILE" "${GC}/log"
+assert_true "github auth: default hint names the opt-in" grep -q 'ORCA_DOCKER_GITHUB_AUTH=host' "${GC}/log"
+assert_true "github auth: default without token warns about nothing" bash -c "! grep -q WARNING '${GC}/log'"
+
+# Default with a token file: shared, no warning.
+reset_ctr
+printf 'github_pat_scoped\r\n' >"$TOKEN_FILE"
+chmod 600 "$TOKEN_FILE"
+: >"${GC}/curl.args"
+HOST_TOKEN=gho_hosttoken gc 'share_github_auth c1'
+assert_eq "github auth: token file logged in (CR stripped)" "github_pat_scoped" "$(cat "${GC}/ctr/gh-token" 2>/dev/null)"
 assert_true "github auth: gh is the git credential helper" test -s "${GC}/ctr/gh-setup"
 assert_eq "github auth: SSH remotes rewritten to HTTPS" "git@github.com:|ssh://git@github.com/" "$(ctr_git | paste -sd'|' -)"
-assert_true "github auth: token not logged" bash -c "! grep -q hosttoken '${GC}/log'"
-assert_true "github auth: token not on the command line" bash -c "! grep -q hosttoken '${GC}/docker.args'"
-HOST_TOKEN=gho_hosttoken gc 'share_github_auth c1'
-assert_eq "github auth: rewrite added once" "2" "$(ctr_git | wc -l | tr -d ' ')"
-HOST_TOKEN=gho_rotated gc 'share_github_auth c1'
-assert_eq "github auth: rotated host token replaces the shared login" "gho_rotated" "$(cat "${GC}/ctr/gh-token")"
+assert_true "github auth: token file shared without a warning" bash -c "! grep -q WARNING '${GC}/log'"
+assert_true "github auth: fine-grained token not scope-checked" test ! -s "${GC}/curl.args"
+assert_true "github auth: token file not logged" bash -c "! grep -q pat_scoped '${GC}/log'"
+assert_true "github auth: token file not on the command line" bash -c "! grep -q pat_scoped '${GC}/docker.args'"
+if ! $IS_WINDOWS; then
+    chmod 644 "$TOKEN_FILE"
+    gc 'share_github_auth c1'
+    assert_true "github auth: readable token file warned about" grep -q 'open to other users' "${GC}/log"
+    chmod 600 "$TOKEN_FILE"
+fi
 gc 'share_github_auth c1'
+assert_eq "github auth: rewrite added once" "2" "$(ctr_git | wc -l | tr -d ' ')"
+printf 'ghp_classic\n' >"$TOKEN_FILE"
+SCOPES="repo, delete_repo" gc 'share_github_auth c1'
+assert_eq "github auth: rotated token file replaces the shared login" "ghp_classic" "$(cat "${GC}/ctr/gh-token")"
+assert_true "github auth: risky scope of a classic token warned about" grep -q 'scopes delete_repo;' "${GC}/log"
+assert_true "github auth: token not on the curl command line" bash -c "! grep -q ghp_classic '${GC}/curl.args'"
+printf 'bad token; x\n' >"$TOKEN_FILE"
+gc 'share_github_auth c1'
+assert_true "github auth: malformed token file removes the shared login" test ! -e "${GC}/ctr/gh-token"
+assert_true "github auth: malformed token file reported" grep -q 'unexpected characters' "${GC}/log"
+printf 'github_pat_scoped\n' >"$TOKEN_FILE"
+gc 'share_github_auth c1'
+rm -f "$TOKEN_FILE"
+gc 'share_github_auth c1'
+assert_true "github auth: removed token file removes the shared login" test ! -e "${GC}/ctr/gh-token"
+assert_eq "github auth: removed token file removes the rewrite" "" "$(ctr_git)"
+ORCA_DOCKER_GITHUB_TOKEN_FILE="${TMP}/elsewhere" gc 'share_github_auth c1'
+assert_true "github auth: ORCA_DOCKER_GITHUB_TOKEN_FILE moves the token file" grep -qF "${TMP}/elsewhere" "${GC}/log"
+
+# Opt-in: the host login, with a warning.
+reset_ctr
+SCOPES="repo, workflow, admin:org" host_mode gho_hosttoken
+assert_eq "github auth: host opt-in logs the host token in" "gho_hosttoken" "$(cat "${GC}/ctr/gh-token" 2>/dev/null)"
+assert_true "github auth: host opt-in warns" grep -q "WARNING: shared the host's gh login" "${GC}/log"
+assert_true "github auth: host opt-in names risky scopes" grep -q 'scopes workflow, admin:org;' "${GC}/log"
+assert_true "github auth: host token not logged" bash -c "! grep -q hosttoken '${GC}/log'"
+assert_true "github auth: host token not on the command line" bash -c "! grep -q hosttoken '${GC}/docker.args'"
+host_mode gho_rotated gh
+assert_eq "github auth: gh is an alias of host" "gho_rotated" "$(cat "${GC}/ctr/gh-token")"
+host_mode ""
 assert_true "github auth: host logout removes the shared login" test ! -e "${GC}/ctr/gh-token"
 assert_eq "github auth: host logout removes the rewrite" "" "$(ctr_git)"
 reset_ctr
+host_mode gho_hosttoken
+ORCA_DOCKER_GITHUB_AUTH=host gc 'host_gh() { return 1; }; share_github_auth c1'
+assert_eq "github auth: no host gh leaves the shared login alone" "gho_hosttoken" "$(cat "${GC}/ctr/gh-token")"
+gc 'share_github_auth c1'
+assert_true "github auth: dropping the opt-in removes the shared host login" test ! -e "${GC}/ctr/gh-token"
+
+# The container's own login.
+reset_ctr
 printf 'gho_own\n' >"${GC}/ctr/gh-token"
-HOST_TOKEN=gho_hosttoken gc 'share_github_auth c1'
+host_mode gho_hosttoken
 assert_eq "github auth: container's own login kept" "gho_own" "$(cat "${GC}/ctr/gh-token")"
 assert_true "github auth: own login logged" grep -q "kept the container's own gh login" "${GC}/log"
-gc 'share_github_auth c1'
+host_mode ""
 assert_eq "github auth: own login survives a host logout" "gho_own" "$(cat "${GC}/ctr/gh-token")"
 reset_ctr
-HOST_TOKEN=gho_hosttoken gc 'share_github_auth c1'
-HOST_TOKEN=gho_hosttoken gc 'host_gh() { return 1; }; share_github_auth c1'
-assert_eq "github auth: no host gh leaves the shared login alone" "gho_hosttoken" "$(cat "${GC}/ctr/gh-token")"
+host_mode gho_hosttoken
+printf 'gho_own\n' >"${GC}/ctr/gh-token"
+gc 'share_github_auth c1'
+assert_eq "github auth: own login replacing the shared one is kept" "gho_own" "$(cat "${GC}/ctr/gh-token")"
+assert_eq "github auth: rewrite kept for the own login" "2" "$(ctr_git | wc -l | tr -d ' ')"
+
 rm -f "${GC}/docker.args"
 HOST_TOKEN=gho_hosttoken ORCA_DOCKER_GITHUB_AUTH=none gc 'share_github_auth c1'
-assert_true "github auth: none disables" test ! -e "${GC}/docker.args"
+assert_true "github auth: none reconciles earlier sharing" test -s "${GC}/docker.args"
+
+# --- defaults.env ----------------------------------------------------------------
+printf '# repository defaults\r\nORCA_DOCKER_GITHUB_AUTH=none\r\nORCA_DOCKER_TEST_VALUE=a b=$HOME\nnot a line\n' \
+    >"${REPO}/scripts/orca-vm/defaults.env"
+assert_eq "defaults.env: default applied (CR stripped)" "none" "$(lib 'printf %s "$ORCA_DOCKER_GITHUB_AUTH"' 2>/dev/null)"
+assert_eq "defaults.env: unknown key ignored" unset "$(lib 'printf %s "${ORCA_DOCKER_TEST_VALUE-unset}"' 2>/dev/null)"
+assert_eq "defaults.env: environment wins" "host" "$(ORCA_DOCKER_GITHUB_AUTH=host lib 'printf %s "$ORCA_DOCKER_GITHUB_AUTH"' 2>/dev/null)"
+assert_eq "defaults.env: empty environment value wins" "" "$(ORCA_DOCKER_GITHUB_AUTH='' lib 'printf %s "$ORCA_DOCKER_GITHUB_AUTH"' 2>/dev/null)"
+assert_true "defaults.env: invalid line reported" grep -q "ignoring unsupported setting on line 4" <<<"$(lib true 2>&1)"
+rm -f "${REPO}/scripts/orca-vm/defaults.env"
 
 assert_eq "ssh_remote_host: scp form" "github.com " "$(lib 'ssh_remote_host git@github.com:o/r.git')"
 assert_eq "ssh_remote_host: ssh URL with port" "h.example 2222" "$(lib 'ssh_remote_host ssh://git@h.example:2222/o/r.git')"

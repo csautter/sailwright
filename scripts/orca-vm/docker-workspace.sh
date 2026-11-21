@@ -27,8 +27,8 @@
 # Example:
 #   docker-workspace.sh create fix-login -- --agent codex --prompt "Fix the login test"
 #
-# A container can push only with the git credentials it was given (the host's
-# gh login, see share_credentials in docker-lib.sh; never SSH keys), so `rm`
+# A container can push only with the git credentials it was given (a GitHub
+# token, see share_credentials in docker-lib.sh; never SSH keys), so `rm`
 # and `down` first fetch the container's branches to
 # refs/remotes/orca/<container>/* (docker-fetch.sh) and refuse to remove
 # anything if that fails, unless --force (or --no-fetch for rm).

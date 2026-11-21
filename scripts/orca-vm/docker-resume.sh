@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Orca environment recipe "docker-devcontainer": resume. Restarts the
-# container, re-runs postStartCommand and prints a fresh recipe result
+# container, refreshes authentication and prints a fresh recipe result
 # (the published SSH port can change on restart; the host key does not).
 set -euo pipefail
 
@@ -17,8 +17,7 @@ if [ -n "$PAYLOAD_PORT" ] && [ "$PAYLOAD_PORT" != "$BROUGHT_UP_PORT" ]; then
     forget_known_host "$PAYLOAD_PORT" "$BROUGHT_UP_HOST_KEY"
 fi
 
-log "postStartCommand"
-run_lifecycle container postStartCommand "$RESOURCE_ID" || log "postStartCommand failed (continuing)"
+run_post_start "$RESOURCE_ID"
 share_credentials "$RESOURCE_ID"
 
 image="${PAYLOAD_IMAGE:-$(docker inspect -f '{{.Config.Image}}' "$RESOURCE_ID")}"

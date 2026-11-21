@@ -276,3 +276,8 @@ test-macos-profile-shell:
 
 test-macos-profile-go:
 	bash test/macos-profile/check-go.sh
+
+.PHONY: test-devcontainer-scripts
+test-devcontainer-scripts:
+	bash .devcontainer/tests/github-auth.sh
+	bash scripts/orca-vm/tests/run.sh

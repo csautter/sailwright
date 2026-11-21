@@ -11,21 +11,27 @@
 #                             github.com and rewrites GitHub SSH remotes to
 #                             HTTPS.
 #
-# Token source on the host, first match wins:
+# Token source on the host:
 #   1. <config>/sailwright/devcontainer/github-token: a token you created for
 #      the containers, preferably a fine-grained one limited to the repositories
-#      the agents need. An empty file shares nothing.
-#   2. `gh auth token` of the host's own gh login. When no gh is found at
-#      all (e.g. WSL's bash without the Windows PATH), a token shared earlier
-#      is kept rather than removed.
+#      the agents work on (see .devcontainer/README.md). An empty file shares
+#      nothing.
+#   2. Only with SAILWRIGHT_GH_SHARE_HOST_LOGIN=1: `gh auth token` of the host's
+#      own gh login, with a warning, because every process in the containers
+#      then holds every scope and repository of that login. When no gh is
+#      found at all (e.g. WSL's bash without the Windows PATH), a token shared
+#      earlier is kept rather than removed.
+#   Otherwise no token is shared, and a token shared earlier is removed.
 # <config> is $XDG_CONFIG_HOME or ~/.config (the Windows profile's .config under
-# WSL). Everything in the containers can use the token, and with the host's own
-# login that is every repository it can reach.
+# WSL). Classic tokens (ghp_, gho_, ghu_) are checked for risky scopes through the
+# X-OAuth-Scopes header of the GitHub API; the token itself is never printed
+# or put on a command line.
 #
 # Without a shared token, a login made earlier from a shared token is logged
 # out again and the remote rewrite removed; a login of your own made inside the
 # container is left alone. Test overrides: GH_CMD (host; "none" means no gh),
-# GITHUB_AUTH_DIR and GITHUB_AUTH_STATE (container).
+# GITHUB_SCOPES_CMD (host; prints the scopes of the token on stdin, "none"
+# skips the check), GITHUB_AUTH_DIR and GITHUB_AUTH_STATE (container).
 set -uo pipefail
 
 TOKEN_RE='^[A-Za-z0-9_]+$'
@@ -52,14 +58,62 @@ host_gh() {
     return 1
 }
 
+# Prints the X-OAuth-Scopes header GitHub returns for the token on stdin (empty
+# for fine-grained tokens), or fails when GitHub cannot be asked. The token is
+# passed to curl through a config on stdin, never as an argument.
+token_scopes() {
+    local token headers
+    IFS= read -r token || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+    headers="$(printf 'header = "Authorization: token %s"\n' "$token" \
+        | curl -q -fsS -I --max-time 5 --config - "https://api.${HOST}/" 2>/dev/null)" || return 1
+    printf '%s\n' "$headers" | tr -d '\r' | sed -n 's/^[Xx]-[Oo][Aa]uth-[Ss]copes:[[:space:]]*//p'
+}
+
+# Warns about scopes of a classic token that let a stolen token do much more
+# than push branches and open pull requests. Never fails.
+warn_risky_scopes() {
+    local token="$1" scopes scope risky=""
+    case "$token" in ghp_*|gho_*|ghu_*) ;; *) return 0 ;; esac
+    case "${GITHUB_SCOPES_CMD:-}" in
+        none) return 0 ;;
+        ?*) scopes="$(printf '%s\n' "$token" | "$GITHUB_SCOPES_CMD")" || return 0 ;;
+        *) scopes="$(printf '%s\n' "$token" | token_scopes)" || return 0 ;;
+    esac
+    for scope in $(printf '%s' "$scopes" | tr ',' ' '); do
+        case "$scope" in
+            workflow|delete_repo|write:packages|admin:*) risky="${risky:+${risky}, }${scope}" ;;
+        esac
+    done
+    [ -z "$risky" ] || log "WARNING: the shared token has the scopes ${risky}; anything running in the containers can use them (prefer a fine-grained token, see .devcontainer/README.md)" >&2
+}
+
 host() {
-    local config_home="${CONFIG_HOME:?CONFIG_HOME is not set}"
+    local config_home="${CONFIG_HOME:-${XDG_CONFIG_HOME:-${HOME}/.config}}"
+    # Match initialize-host.sh when VS Code/Orca uses a Windows checkout in WSL.
+    if [ -z "${CONFIG_HOME:-}" ] && [ -n "${WSL_DISTRO_NAME:-}" ] && command -v wslpath >/dev/null 2>&1; then
+        local repo win_profile
+        repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+        case "$(wslpath -m "$repo" 2>/dev/null)" in
+            [A-Za-z]:/*)
+                win_profile="$(cmd.exe /d /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')" || return 1
+                config_home="$(wslpath -u "$win_profile")/.config" || return 1 ;;
+        esac
+    fi
     local override="${config_home}/sailwright/devcontainer/github-token"
     local share_dir="${config_home}/sailwright/devcontainer/github"
     local token="" source tmp gh
+    (umask 077 && mkdir -p "$share_dir")
     if [ -f "$override" ]; then
         token="$(tr -d '\r\n' <"$override")"
         source="$override"
+    elif [ "${SAILWRIGHT_GH_SHARE_HOST_LOGIN:-}" != 1 ]; then
+        rm -f "${share_dir}/token"
+        log "no token shared. Create a fine-grained token for the repositories the agents work on" \
+            "(https://github.com/settings/personal-access-tokens/new, see .devcontainer/README.md)" \
+            "and save it to ${override} (chmod 600), or set SAILWRIGHT_GH_SHARE_HOST_LOGIN=1" \
+            "to share the host's gh login with all of its rights"
+        return 0
     elif gh="$(host_gh)"; then
         token="$("$gh" auth token --hostname "$HOST" 2>/dev/null | tr -d '\r\n')" || token=""
         source="the host's gh login"
@@ -73,19 +127,23 @@ host() {
         fi
         return 0
     fi
-    (umask 077 && mkdir -p "$share_dir")
     if [ -n "$token" ] && ! [[ "$token" =~ $TOKEN_RE ]]; then
         log "ignoring the token from ${source} (unexpected characters)" >&2
         token=""
     fi
     if [ -z "$token" ]; then
         rm -f "${share_dir}/token"
-        log "no token shared (create ${override} or run \`gh auth login\` on the host)"
+        log "no token shared (nothing usable in ${source})"
         return 0
     fi
     tmp="$(umask 077 && mktemp "${share_dir}/token.XXXXXX")" || return 1
     printf '%s\n' "$token" >"$tmp" && mv -f "$tmp" "${share_dir}/token"
-    log "sharing the token from ${source}"
+    if [ "$source" = "$override" ]; then
+        log "sharing the token from ${source}"
+    else
+        log "WARNING: sharing the host's gh login (SAILWRIGHT_GH_SHARE_HOST_LOGIN=1): every process in the containers, coding agents and package install scripts included, can use it with all of its scopes and repositories. Prefer a fine-grained token in ${override}" >&2
+    fi
+    warn_risky_scopes "$token"
 }
 
 # --- container -------------------------------------------------------------------
@@ -113,22 +171,82 @@ remove_rewrite() {
 container() {
     local token_file="${GITHUB_AUTH_DIR:-/run/sailwright-github}/token"
     local state="${GITHUB_AUTH_STATE:-${HOME}/.config/sailwright/github-token.sha256}"
-    local token="" current shared_hash=""
+    local legacy="${HOME}/.config/orca-docker/github-token.sha256"
+    local token="" current shared_hash="" marker
     if ! command -v gh >/dev/null 2>&1; then
         log "gh is not installed, skipped"
         return 0
     fi
-    [ -f "$state" ] && shared_hash="$(cat "$state")"
     current="$(gh auth token --hostname "$HOST" 2>/dev/null)" || current=""
     [ -r "$token_file" ] && token="$(tr -d '\r\n' <"$token_file")"
-
+    for marker in "$state" "$legacy"; do
+        [ -f "$marker" ] || continue
+        shared_hash="$(cat "$marker")"
+        local accounts account stored after retained
+        retained=false
+        if accounts="$(gh auth status --hostname "$HOST" --json hosts --jq '.hosts[][] | .login' 2>/dev/null)"; then
+            for account in $accounts; do
+                stored="$(gh auth token --hostname "$HOST" --user "$account" 2>/dev/null)" || {
+                    log "WARNING: cannot inspect account; keeping the shared-login marker for retry"
+                    return 0
+                }
+                [ -n "$stored" ] || return 0
+                [ "$(token_hash "$stored")" = "$shared_hash" ] || continue
+                if [ -n "$token" ] && [ "$(token_hash "$token")" = "$shared_hash" ]; then retained=true; continue; fi
+                if ! gh auth logout --hostname "$HOST" --user "$account" >/dev/null 2>&1; then
+                    log "WARNING: logout failed; keeping the shared-login marker for retry"
+                    return 0
+                fi
+                # Re-enumerate to distinguish removal from a failed token read.
+                local remaining other
+                remaining="$(gh auth status --hostname "$HOST" --json hosts --jq '.hosts[][] | .login' 2>/dev/null)" || return 0
+                for other in $remaining; do
+                    [ "$other" = "$account" ] || continue
+                    after="$(gh auth token --hostname "$HOST" --user "$account" 2>/dev/null)" || return 0
+                    if [ "$(token_hash "$after")" = "$shared_hash" ]; then
+                        log "WARNING: shared login remains; keeping its marker for retry"
+                        return 0
+                    fi
+                done
+                log "logged out the earlier shared login; revoke previously exposed tokens at GitHub Settings > Applications or personal access tokens"
+            done
+        else
+            log "WARNING: JSON account listing unavailable; gh >= 2.81 is required for multi-account cleanup; checking active account only and keeping unverified markers for retry"
+            local status
+            if ! stored="$(gh auth token --hostname "$HOST" 2>/dev/null)" || [ -z "$stored" ]; then
+                status="$(gh auth status --hostname "$HOST" 2>&1)"
+                case "$status" in
+                    "You are not logged into any GitHub hosts."*) stored="" ;;
+                    *) return 0 ;;
+                esac
+            fi
+            [ -z "$stored" ] || [ "$(token_hash "$stored")" = "$shared_hash" ] || return 0
+            if [ -z "$stored" ]; then
+                : # Explicitly empty store, also covers a duplicate legacy marker.
+            elif [ -n "$token" ] && [ "$(token_hash "$token")" = "$shared_hash" ]; then
+                retained=true
+            else
+                gh auth logout --hostname "$HOST" >/dev/null 2>&1 || return 0
+                if after="$(gh auth token --hostname "$HOST" 2>/dev/null)" && [ -n "$after" ]; then
+                    [ "$(token_hash "$after")" != "$shared_hash" ] || return 0
+                else
+                    status="$(gh auth status --hostname "$HOST" 2>&1)"
+                    case "$status" in
+                        "You are not logged into any GitHub hosts."*) ;;
+                        *) return 0 ;;
+                    esac
+                fi
+            fi
+        fi
+        current="$(gh auth token --hostname "$HOST" 2>/dev/null)" || current=""
+        [ -n "$current" ] || remove_rewrite
+        [ "$marker" != "$legacy" ] || $retained || rm -f "$legacy"
+    done
+    shared_hash=""
+    [ ! -f "$state" ] || shared_hash="$(cat "$state")"
     if [ -z "$token" ] || ! [[ "$token" =~ $TOKEN_RE ]]; then
         if [ -n "$shared_hash" ]; then
-            if [ -n "$current" ] && [ "$(token_hash "$current")" = "$shared_hash" ]; then
-                gh auth logout --hostname "$HOST" >/dev/null 2>&1 || true
-                log "logged out the earlier shared login (no shared token any more)"
-            fi
-            remove_rewrite
+            [ -n "$current" ] || remove_rewrite
             rm -f "$state"
         fi
         log "no shared token; gh and git use the container's own login, if any"
@@ -143,6 +261,7 @@ container() {
     fi
     mkdir -p "$(dirname "$state")"
     (umask 077 && token_hash "$token" >"$state")
+    rm -f "$legacy"
     gh auth setup-git --hostname "$HOST"
     add_rewrite
     log "gh logged in with the shared token; git uses HTTPS for ${HOST}"
