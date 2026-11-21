@@ -3,7 +3,7 @@
 # container's branches to the host (unpushed work exists only there), then removes the container and its known_hosts entries. If the fetch
 # fails, the branches are saved under the state directory's rescue/ first; if
 # that fails too, nothing is removed. Shared named volumes and host mounts
-# (agent logins, skills, caches, shared directories) are kept.
+# (including the per-checkout Claude volume) survive workspace removal.
 # ORCA_DOCKER_SKIP_FETCH=1 skips the fetch and the rescue.
 set -euo pipefail
 

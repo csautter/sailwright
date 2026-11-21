@@ -129,8 +129,11 @@ assert_eq "translate_mount: codex home dropped" "" \
     "$(lib 'translate_mount "source=/h/.codex-devcontainer,target=/root/.codex,type=bind"')"
 assert_eq "translate_mount: codex skills kept" "source=/s,target=/root/.codex/skills,type=bind" \
     "$(lib 'translate_mount "source=/s,target=/root/.codex/skills,type=bind"')"
-assert_eq "translate_mount: claude home to claude-host" "source=/c,target=/root/.claude-host,type=bind" \
+assert_eq "translate_mount: claude home to read-only claude-host" "source=/c,target=/root/.claude-host,type=bind,readonly" \
     "$(lib 'translate_mount "source=/c,dst=/root/.claude,type=bind"')"
+assert_eq "translate_mount: claude seed remains read-only when already specified" \
+    "source=/c,target=/root/.claude-host,type=bind,readonly" \
+    "$(lib 'translate_mount "source=/c,target=/root/.claude,type=bind,readonly"')"
 assert_eq "translate_mount: opencode to opencode-host" "source=v,target=/root/.opencode-host,type=volume" \
     "$(lib 'translate_mount "source=v,destination=/root/.local/share/opencode,type=volume"')"
 
@@ -147,7 +150,26 @@ assert_true "collect_run_args: path escaping the repo skipped" bash -c "! grep -
 assert_true "collect_run_args: not git-ignored dir skipped" bash -c "! grep -q /tracked <<<\"\$1\"" _ "$run_args"
 assert_true "collect_run_args: vscode-server mounts dropped" bash -c "! grep -q vscode-server <<<\"\$1\"" _ "$run_args"
 assert_true "collect_run_args: codex state dropped" bash -c "! grep -q 'target=/root/.codex,' <<<\"\$1\"" _ "$run_args"
-assert_true "collect_run_args: claude home remapped" grep -q 'target=/root/.claude-host' <<<"$run_args"
+assert_true "collect_run_args: claude home remapped read-only" grep -q 'target=/root/.claude-host,.*readonly$' <<<"$run_args"
+assert_true "collect_run_args: per-checkout claude volume" \
+    grep -qxF 'type=volume,source=orca-fixture-repo-claude,target=/root/.claude' <<<"$run_args"
+assert_eq "claude_volume: override" "my-vol" "$(ORCA_DOCKER_CLAUDE_VOLUME=my-vol lib claude_volume)"
+assert_true "claude_volume: invalid override rejected" lib_fails 'ORCA_DOCKER_CLAUDE_VOLUME=bad,name claude_volume'
+assert_true "claude volume: foreign ownership rejected" lib_fails '
+    docker() { printf "%s\n" /other/checkout; }
+    assert_claude_volume_owned "$(claude_volume)"
+'
+assert_true "claude volume: missing volume created and checked for ownership" lib '
+    owner=""
+    docker() {
+        case "$1 $2 ${3:-}" in
+            "volume inspect --format") printf "%s\n" "$owner" ;;
+            "volume create --label") [ "$5" = "$(claude_volume)" ] && owner="${4#org.orca.repo=}" ;;
+            *) return 1 ;;
+        esac
+    }
+    ensure_claude_volume "$(claude_volume)"
+'
 assert_true "collect_run_args: opencode volume remapped" \
     grep -qxF 'source=fixture-repo-opencode-data,target=/root/.opencode-host,type=volume' <<<"$run_args"
 assert_true "collect_run_args: containerEnv passed" grep -qxF 'CLAUDE_CONFIG_DIR=/root/.claude' <<<"$run_args"
@@ -179,7 +201,7 @@ fi
 write_devcontainer vscode /home/vscode
 assert_eq "remoteUser: non-root user and home" "vscode /home/vscode" "$(lib 'echo "$CONTAINER_USER $CONTAINER_HOME"')"
 assert_eq "remoteUser: claude home remapped under the user's home" \
-    "source=/c,target=/home/vscode/.claude-host,type=bind" \
+    "source=/c,target=/home/vscode/.claude-host,type=bind,readonly" \
     "$(lib 'translate_mount "source=/c,target=/home/vscode/.claude,type=bind"')"
 assert_eq "remoteUser: recipe result uses it" "vscode" \
     "$(lib 'emit_result c 2222 img "ssh-ed25519 AAAA"' | jq -r .connection.target.username)"
@@ -246,8 +268,10 @@ assert_true "compose: workspace bind dropped" bash -c "! grep -qE 'target=/works
 assert_true "compose: shared directories still mounted" grep -q 'target=/workspaces/fixture-repo/shared-src$' <<<"$run_args"
 assert_true "compose: bind kept read-only" \
     grep -qxF "type=bind,source=${TMP}/home/shared-cfg,target=/etc/shared,readonly" <<<"$run_args"
-assert_true "compose: claude home remapped" \
-    grep -qxF "type=bind,source=${TMP}/home/.claude-devcontainer,target=/root/.claude-host" <<<"$run_args"
+assert_true "compose: claude home remapped read-only" \
+    grep -qxF "type=bind,source=${TMP}/home/.claude-devcontainer,target=/root/.claude-host,readonly" <<<"$run_args"
+assert_true "compose: per-checkout claude volume" \
+    grep -qxF 'type=volume,source=orca-fixture-repo-claude,target=/root/.claude' <<<"$run_args"
 assert_true "compose: missing bind source skipped" bash -c "! grep -q missing <<<\"\$1\"" _ "$run_args"
 assert_true "compose: missing bind source logged" grep -q 'skipping mount of .*missing' "${TMP}/cb/log"
 assert_true "compose: named volume keeps its name" grep -qxF 'type=volume,source=explicit-name,target=/data' <<<"$run_args"
@@ -396,9 +420,19 @@ elif [ -f "$LINK_AUTH_SRC" ]; then
     assert_true "auth: dangling link removed" test ! -e "${TMP}/auth/.codex/auth.json" -a ! -L "${TMP}/auth/.codex/auth.json"
     echo '{"a":1}' >"${TMP}/auth/.claude-host/.claude.json"
     echo creds >"${TMP}/auth/.claude-host/.credentials.json"
+    echo '{"source":"host"}' >"${TMP}/auth/.claude-host/settings.json"
+    mkdir -p "${TMP}/auth/.claude"
+    ln -s "${TMP}/auth/.claude-host/.credentials.json" "${TMP}/auth/.claude/.credentials.json"
     auth
-    assert_true "auth: claude credentials linked" test -L "${TMP}/auth/.claude/.credentials.json"
+    assert_true "auth: legacy claude credentials link removed" \
+        test ! -e "${TMP}/auth/.claude/.credentials.json" -a ! -L "${TMP}/auth/.claude/.credentials.json"
     assert_true "auth: claude state seeded as copy" test -f "${TMP}/auth/.claude/.claude.json" -a ! -L "${TMP}/auth/.claude/.claude.json"
+    assert_eq "auth: claude settings seeded" '{"source":"host"}' "$(cat "${TMP}/auth/.claude/settings.json")"
+    echo own >"${TMP}/auth/.claude/.credentials.json"
+    echo '{"source":"orca"}' >"${TMP}/auth/.claude/settings.json"
+    auth
+    assert_eq "auth: existing claude login kept" "own" "$(cat "${TMP}/auth/.claude/.credentials.json")"
+    assert_eq "auth: existing claude settings kept" '{"source":"orca"}' "$(cat "${TMP}/auth/.claude/settings.json")"
     assert_true "auth: absent opencode mount skipped" test ! -e "${TMP}/auth/.local/share/opencode"
 else
     fail "link-agent-auth.sh not found at ${LINK_AUTH_SRC}"
