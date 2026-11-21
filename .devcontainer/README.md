@@ -168,10 +168,9 @@ the `Dockerfile`, self-update off) next to Codex.
 - Works on macOS and on Windows (Orca runs `scripts/orca-vm/recipe.cmd`, which
   starts the scripts with Git Bash). Needs Docker, `jq` and Git for Windows
   (`winget install jqlang.jq` for `jq`).
-- The devcontainer feature (Python) needs the devcontainer CLI
-  (`npm install -g @devcontainers/cli`). Without it, put
-  `ORCA_DOCKER_SKIP_FEATURES=1` in the gitignored `scripts/orca-vm/local.env`;
-  the image still has Debian's Python 3.
+- The image uses no devcontainer features (Python comes from Debian's
+  `python3` packages in the `Dockerfile`), so Orca builds it with plain
+  Docker and needs no devcontainer CLI.
 - Branches made in a workspace are fetched to
   `refs/remotes/orca/<container>/*` when it is deleted
   (`scripts/orca-vm/docker-fetch.sh` fetches them on demand), so unpushed

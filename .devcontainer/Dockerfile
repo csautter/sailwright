@@ -46,6 +46,9 @@ RUN apt-get update \
         ca-certificates \
         curl \
         gpg \
+        python3 \
+        python3-pip \
+        python3-venv \
         ruby-full \
         shellcheck \
         unzip \

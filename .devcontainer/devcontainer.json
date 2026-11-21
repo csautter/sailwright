@@ -11,9 +11,6 @@
     "CLAUDE_CONFIG_DIR": "/root/.claude"
   },
   "initializeCommand": "bash .devcontainer/initialize-host.sh",
-  "features": {
-    "ghcr.io/devcontainers/features/python:1": {}
-  },
   "customizations": {
     "vscode": {
       "extensions": [
