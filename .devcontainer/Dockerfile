@@ -5,7 +5,7 @@ ENV NODE_VERSION=24.22.0
 # renovate: datasource=npm depName=renovate versioning=npm
 ENV RENOVATE_VERSION="44.168.3"
 # renovate: datasource=npm depName=@openai/codex versioning=npm
-ENV CODEX_VERSION="0.164.0"
+ENV CODEX_VERSION="0.171.0"
 # renovate: datasource=npm depName=@anthropic-ai/claude-code versioning=npm
 ENV CLAUDE_CODE_VERSION="2.1.325"
 # renovate: datasource=npm depName=azure-functions-core-tools versioning=npm
