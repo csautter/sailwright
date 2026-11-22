@@ -769,6 +769,11 @@ TART_MACOS_ANSIBLE_PASSWORD=admin
 
 `TART_MACOS_ANSIBLE_BECOME_PASSWORD` defaults to `TART_MACOS_ANSIBLE_PASSWORD` when unset.
 
+`create`, `start` and `provision` check guest DNS and HTTPS after the VM has
+an IP address. See [Tart Guest Network](./tart-guest-network.md) for the
+check settings, explicit guest DNS servers (`TART_MACOS_DNS_SERVERS`) and
+the way back to DHCP.
+
 Clean up afterwards with:
 
 ```bash

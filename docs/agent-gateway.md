@@ -653,6 +653,11 @@ address yet, Vagrant discovery is tried and its answer must pass the same
 checks. `sailwright provision` on Hyper-V uses the same discovery. Gateway jobs do not receive
 `VAGRANT_HYPERV_SWITCH` or `TART_MACOS_BRIDGED_INTERFACE`; add them to
 `env_passthrough` if the agent's VMs should use the same network as yours.
+The same applies to the Tart guest DNS and readiness settings
+(`TART_MACOS_DNS_SERVERS`, `TART_MACOS_NETWORK_CHECK*`; see
+[Tart Guest Network](./tart-guest-network.md)). Without them, gateway jobs
+run the default full check and leave guest DNS untouched; DNS servers that
+an earlier CLI run set persist in the guest either way.
 
 Call MCP `vm_info` with the same target to receive guest credentials, an
 `ssh_config` block and an Ansible inventory. These contain sensitive guest
