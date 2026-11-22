@@ -124,8 +124,9 @@ jobs:
       - name: Windows install Ansible
         if: runner.os == 'Windows'
         shell: powershell
+        # Match python39-pip; Cygwin's default python may resolve to a version without pip.
         run: |
-          & $env:CYGWIN_BASH_PATH -l -c "python -m pip install ansible pywinrm"
+          & $env:CYGWIN_BASH_PATH -l -c "python3.9 -m pip install ansible pywinrm"
 
       - name: Install Ansible
         run: |
