@@ -156,10 +156,13 @@ in [`orca.yaml`](../orca.yaml), scripts in [`scripts/orca-vm/`](../scripts/orca-
 The scripts read the Compose service from `docker compose config`, so the image,
 the generated mounts (including sibling repos, `~/.sailwright-gateway` and
 `mounts.local`), `local/container.env` and the lifecycle commands match the VS
-Code devcontainer. Orca seeds the repository from a git bundle of your
-committed branches. Codex state is local to each container, and the host Codex
-login is linked when present. The image installs the Claude Code and Codex
-CLIs for Orca workspaces without a VS Code server.
+Code devcontainer. Workspace creation and `scripts/orca-vm/docker-build.sh`
+run `initializeCommand` before resolving the base image. Orca seeds the
+repository from a git bundle of your committed branches. Codex state is local
+to each container, and the host Codex login is linked when present. The image
+installs the Claude Code and Codex CLIs for Orca workspaces without a VS Code
+server. Once Orca installs its CLI in the workspace, SSH login shells include
+it on `PATH`.
 
 Orca workspaces from the same checkout share a Docker volume named
 `orca-<checkout-folder>-claude`. It stores the Orca Claude login, history and

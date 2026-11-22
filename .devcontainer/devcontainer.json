@@ -20,7 +20,15 @@
         "ms-azuretools.vscode-azurefunctions",
         "emeraldwalk.runonsave",
         "anthropic.claude-code"
-      ]
+      ],
+      "settings": {
+        "editor.accessibilitySupport": "off",
+        "terminal.integrated.gpuAcceleration": "off",
+        "terminal.integrated.macOptionClickForcesSelection": true,
+        "terminal.integrated.copyOnSelection": true,
+        "terminal.integrated.enableMultiLinePasteWarning": "never",
+        "terminal.integrated.sendKeybindingsToShell": false
+      }
     }
   },
   "remoteUser": "root",

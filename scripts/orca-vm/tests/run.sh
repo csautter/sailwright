@@ -248,6 +248,9 @@ if [ "\$1" = compose ]; then
     project=devcontainer
     while [ \$# -gt 0 ]; do [ "\$1" = -p ] && project="\$2"; shift; done
     sed "s/__PROJECT__/\${project}/" "${TMP}/cb/config.json"
+elif [ "\$1 \$2 \$3" = 'image inspect --format' ]; then
+    cat "${TMP}/cb/base-id"
+    exit \$?
 fi
 exit 0
 EOF
@@ -292,6 +295,29 @@ assert_true "compose: image tag" grep -qE '^orca-devcontainer-fixture-repo:[0-9a
 mkdir -p "${REPO}/.devcontainer/.generated"
 echo "per start" >"${REPO}/.devcontainer/.generated/compose.local.yaml"
 assert_eq "compose: image tag ignores .generated/" "$tag1" "$(cl image_tag)"
+
+# A prebuilt image can retain its name while initializeCommand replaces it.
+jq '.services.dev |= (del(.build) + {image: "fixture-base"})' \
+    "${TMP}/cb/config.json" >"${TMP}/cb/prebuilt.json"
+mv "${TMP}/cb/prebuilt.json" "${TMP}/cb/config.json"
+printf 'sha256:first\n' >"${TMP}/cb/base-id"
+tag1="$(cl image_tag)"
+printf 'sha256:second\n' >"${TMP}/cb/base-id"
+tag2="$(cl image_tag)"
+assert_true "compose: new base ID changes the Orca tag" test "$tag1" != "$tag2"
+cat >"${REPO}/.devcontainer/initialize-fixture.sh" <<EOF
+printf 'sha256:second\n' >"${TMP}/cb/base-id"
+echo 'host hook output'
+EOF
+jq '.initializeCommand = "bash .devcontainer/initialize-fixture.sh"' \
+    "${REPO}/.devcontainer/devcontainer.json" >"${TMP}/cb/devcontainer.json"
+mv "${TMP}/cb/devcontainer.json" "${REPO}/.devcontainer/devcontainer.json"
+tag2="$(cl image_tag)"
+printf 'sha256:first\n' >"${TMP}/cb/base-id"
+assert_eq "compose: prebuild uses the base from initializeCommand and prints only its tag" "$tag2" \
+    "$(cl 'bash "$ORCA_VM_DIR/docker-build.sh"' 2>"${TMP}/cb/prebuild.log")"
+assert_true "compose: prebuild logs host hook output to stderr" grep -qxF 'host hook output' "${TMP}/cb/prebuild.log"
+rm -f "${REPO}/.devcontainer/initialize-fixture.sh"
 rm -rf "${REPO}/.devcontainer/.generated" "${REPO}/.devcontainer/compose.yaml"
 cp "${TMP}/devcontainer.json.bak" "${REPO}/.devcontainer/devcontainer.json"
 

@@ -49,6 +49,15 @@ sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
         printf 'export %s=%s\n' "$name" "$(sq "${!name}")"
     done < <(env)
     echo '[ -r "$HOME/.config/devcontainer/remote-env.sh" ] && . "$HOME/.config/devcontainer/remote-env.sh"'
+    # The image PATH above replaces the agent's PATH in login shells.
+    # Restore the directory where Orca installs its CLI for this user.
+    cat <<'EOF'
+_orca_cli_dir="${ORCA_CLI_BIN_DIR:-$HOME/.orca/cli/bin}"
+if [ -d "$_orca_cli_dir" ]; then
+    case ":$PATH:" in *":$_orca_cli_dir:"*) ;; *) export PATH="$_orca_cli_dir:$PATH" ;; esac
+fi
+unset _orca_cli_dir
+EOF
 } >"$env_file"
 chmod 644 "$env_file"
 {
