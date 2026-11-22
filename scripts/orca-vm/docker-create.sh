@@ -20,11 +20,11 @@ publish="${LOOPBACK}:${ORCA_DOCKER_SSH_PORT:-}:22"
 container_exists "$name" && die "container ${name} already exists"
 
 ensure_ssh_key
-ensure_image
-image="$IMAGE_TAG"
-
 log "initializeCommand (host)"
 run_lifecycle host initializeCommand
+
+ensure_image
+image="$IMAGE_TAG"
 
 collect_run_args
 

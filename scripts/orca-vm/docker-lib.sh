@@ -896,20 +896,30 @@ sanitize_name() {
 
 # Tag of the Orca image: a hash of the build-relevant devcontainer.json keys
 # and every file under .devcontainer/ (lifecycle scripts included, so a change
-# there produces a new, mostly cached build). Changes to a build context
-# outside .devcontainer/ need ORCA_DOCKER_REBUILD=1.
+# there produces a new, mostly cached build). Also hash the local ID of a
+# prebuilt base image so a rebuilt or pulled base gets a new Orca tag.
+# Changes to a build context outside .devcontainer/ need ORCA_DOCKER_REBUILD=1.
 image_tag() {
-    local hash
+    local hash service base
     hash="$(
         {
             dc_json -cS '{image, build, dockerFile, context, features}'
-            if is_compose; then compose_service_build_json; fi
+            if is_compose; then
+                service="$(compose_service_build_json)" || return 1
+                printf '%s\n' "$service"
+                base="$(printf '%s' "$service" | jq -r 'select(.build == null) | .image // empty')"
+            else
+                base="$(expand_vars "$(dc_json -r '.image // empty')")" || return 1
+            fi
+            if [ -n "$base" ]; then
+                docker image inspect --format '{{.Id}}' "$base" 2>/dev/null || true
+            fi
             [ "${ORCA_DOCKER_SKIP_FEATURES:-}" != 1 ] || echo "skip-features"
             # .generated/ holds per-start output of initializeCommand.
             cd "$DEVCONTAINER_DIR" && find . -type f ! -name .DS_Store ! -name devcontainer.json ! -path './.generated/*' \
                 | LC_ALL=C sort | while IFS= read -r f; do sha256 "$f"; done
         } | sha256 | cut -c1-12
-    )"
+    )" || return 1
     printf 'orca-devcontainer-%s:%s' "$(sanitize_name "$REPO_NAME")" "$hash"
 }
 
@@ -976,7 +986,7 @@ _build_base_image() {
 # tag does not exist yet. Concurrent callers wait for one build.
 ensure_image() {
     local base
-    IMAGE_TAG="$(image_tag)"
+    IMAGE_TAG="$(image_tag)" || die "cannot determine the Orca image tag"
     if [ "${ORCA_DOCKER_REBUILD:-}" != 1 ] && docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
         return 0
     fi
