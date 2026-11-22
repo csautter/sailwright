@@ -91,7 +91,7 @@ func RunTartDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 		if vmState.exists {
 			log.Printf("Tart VM %q is already reachable at %s", vmName, ip)
 		}
-		return nil
+		return ensureTartGuestNetworkAfterStart(projectDir, vmName, ip)
 	}
 
 	if vmState.running {
@@ -100,7 +100,7 @@ func RunTartDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 			return fmt.Errorf("Tart VM %q is already running but no IPv4 address became available: %w", vmName, err)
 		}
 		log.Printf("Tart VM %q is already running and reachable at %s", vmName, ip)
-		return nil
+		return ensureTartGuestNetworkAfterStart(projectDir, vmName, ip)
 	}
 
 	runState, err := startTartVMDetached(projectDir, vmName)
@@ -114,6 +114,17 @@ func RunTartDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 	}
 	log.Printf("Tart VM %q is reachable at %s", vmName, ip)
 
+	return ensureTartGuestNetworkAfterStart(projectDir, vmName, ip)
+}
+
+var ensureTartGuestNetworkFunc = EnsureTartGuestNetwork
+
+// ensureTartGuestNetworkAfterStart treats an IPv4 address as a prerequisite,
+// not as readiness: the guest must also resolve names and reach HTTPS.
+func ensureTartGuestNetworkAfterStart(projectDir string, vmName string, ip string) error {
+	if err := ensureTartGuestNetworkFunc(projectDir, vmName); err != nil {
+		return fmt.Errorf("Tart VM %q is running at %s but not network-ready; it was left running for inspection: %w", vmName, ip, err)
+	}
 	return nil
 }
 
@@ -183,7 +194,11 @@ func RunTartStartOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 	}
 	if vmState.running {
 		log.Printf("Tart VM %q is already running", vmName)
-		return nil
+		ip, err := discoverTartVMIPv4(projectDir, vmName)
+		if err != nil {
+			return fmt.Errorf("Tart VM %q is already running but no IPv4 address became available: %w", vmName, err)
+		}
+		return ensureTartGuestNetworkAfterStart(projectDir, vmName, ip)
 	}
 
 	runState, err := startTartVMDetached(projectDir, vmName)
@@ -196,7 +211,7 @@ func RunTartStartOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 		return err
 	}
 	log.Printf("Tart VM %q is reachable at %s", vmName, ip)
-	return nil
+	return ensureTartGuestNetworkAfterStart(projectDir, vmName, ip)
 }
 
 func RunTartStopOnMacOS(config alchemy_build.VirtualMachineConfig) error {
