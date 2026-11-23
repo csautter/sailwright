@@ -225,7 +225,8 @@ type tartProvisionAvailabilityOptions struct {
 }
 
 var inspectProvisionTarget = alchemy_deploy.InspectStartTarget
-var ensureTartGuestNetworkForProvision = alchemy_deploy.EnsureTartGuestNetwork
+var ensureTartGuestNetworkForProvision = alchemy_deploy.EnsureTartGuestNetworkWithOptions
+var validateTartGuestNetworkConfig = alchemy_deploy.ValidateTartGuestNetworkConfig
 var discoverTartProvisionAddress = DiscoverTartAddress
 var waitForTartProvisionSSHPort = waitForSSHPort
 var runProvisionCommandWithCombinedOutputWithEnv = runCommandWithCombinedOutputWithEnv
@@ -644,6 +645,11 @@ func runLinuxQemuUbuntuProvision(vm alchemy_build.VirtualMachineConfig, options 
 }
 
 func runTartMacOSProvision(vm alchemy_build.VirtualMachineConfig, options ProvisionOptions) error {
+	if !options.skipGuestNetworkReadiness {
+		if err := validateTartGuestNetworkConfig(); err != nil {
+			return err
+		}
+	}
 	if err := ensureProvisionTargetRunning(vm); err != nil {
 		return err
 	}
@@ -663,7 +669,9 @@ func runTartMacOSProvision(vm alchemy_build.VirtualMachineConfig, options Provis
 	if !options.skipGuestNetworkReadiness {
 		// Also covers already-running VMs, so roles never start on a guest
 		// that has an IP address but no working DNS or HTTPS.
-		if err := ensureTartGuestNetworkForProvision(projectDir, vmName); err != nil {
+		// --check is a dry run: probes still run, but guest DNS stays as is.
+		readinessOptions := alchemy_deploy.TartGuestNetworkOptions{ReadOnly: options.Check}
+		if err := ensureTartGuestNetworkForProvision(projectDir, vmName, readinessOptions); err != nil {
 			return fmt.Errorf("Tart VM %q is not network-ready; no Ansible roles were run: %w", vmName, err)
 		}
 	}

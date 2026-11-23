@@ -5,8 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
+
+	alchemy_deploy "github.com/csautter/dev-alchemy/pkg/deploy"
 )
 
 // Names of the managed directory variables understood by the sailwright CLI
@@ -142,11 +145,19 @@ func BuildChildEnv(dirs ManagedDirs, passthrough []string, getenv func(string) s
 	return env
 }
 
+// nonSecretPassthrough lists passthrough variables whose values stay visible
+// in output. The Tart guest network settings hold resolver addresses, check
+// URLs and a host interface name, which readiness diagnostics must show.
+var nonSecretPassthrough = alchemy_deploy.TartMacOSNetworkEnvVars
+
 // PassthroughSecrets returns the values of passthrough variables; they are redacted
-// from all output.
+// from all output. Variables in nonSecretPassthrough are not secrets.
 func PassthroughSecrets(passthrough []string, getenv func(string) string) []string {
 	var secrets []string
 	for _, name := range passthrough {
+		if slices.Contains(nonSecretPassthrough, name) {
+			continue
+		}
 		if value := strings.TrimSpace(getenv(name)); value != "" {
 			secrets = append(secrets, value)
 		}

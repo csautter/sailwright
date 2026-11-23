@@ -70,6 +70,10 @@ func RunTartDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 	if !isTartMacOSDeployTarget(config) {
 		return fmt.Errorf("Tart deploy is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
 	}
+	// Report configuration mistakes before cloning or booting anything.
+	if err := ValidateTartGuestNetworkConfig(); err != nil {
+		return err
+	}
 
 	projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
 	vmName := tartMacOSVMName(config)
@@ -123,7 +127,7 @@ var ensureTartGuestNetworkFunc = EnsureTartGuestNetwork
 // not as readiness: the guest must also resolve names and reach HTTPS.
 func ensureTartGuestNetworkAfterStart(projectDir string, vmName string, ip string) error {
 	if err := ensureTartGuestNetworkFunc(projectDir, vmName); err != nil {
-		return fmt.Errorf("Tart VM %q is running at %s but not network-ready; it was left running for inspection: %w", vmName, ip, err)
+		return fmt.Errorf("Tart VM %q is running at %s but not network-ready; it was left running for inspection, re-check with `sailwright start` after fixing the network: %w", vmName, ip, err)
 	}
 	return nil
 }
@@ -180,6 +184,9 @@ func RunTartStartOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 	}
 	if !isTartMacOSDeployTarget(config) {
 		return fmt.Errorf("Tart start is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
+	}
+	if err := ValidateTartGuestNetworkConfig(); err != nil {
+		return err
 	}
 
 	projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir

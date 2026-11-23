@@ -43,6 +43,9 @@ type fakeGuestProbe struct {
 	accessCalls, dnsCalls, httpsCalls, prepareCalls, diagnoseCalls int
 	diagnoseResolvers                                              []string
 	diagnoseHint                                                   string
+	dnsNames                                                       []string
+	diagnosedName                                                  string
+	diagnoseTimeout                                                time.Duration
 }
 
 func (p *fakeGuestProbe) spend() {
@@ -78,7 +81,8 @@ func (p *fakeGuestProbe) Prepare(time.Duration) (string, error) {
 	return "set DNS servers 192.0.2.53", nil
 }
 
-func (p *fakeGuestProbe) SystemDNS(string, time.Duration) error {
+func (p *fakeGuestProbe) SystemDNS(name string, _ time.Duration) error {
+	p.dnsNames = append(p.dnsNames, name)
 	p.dnsCalls++
 	p.spend()
 	return nextErr(p.dnsErrs, p.dnsCalls)
@@ -90,7 +94,12 @@ func (p *fakeGuestProbe) HTTPS(string, time.Duration) error {
 	return nextErr(p.httpsErrs, p.httpsCalls)
 }
 
-func (p *fakeGuestProbe) DiagnoseDNS(string, time.Duration) ([]string, string) {
+func (p *fakeGuestProbe) DiagnoseDNS(name string, timeout time.Duration) ([]string, string) {
+	p.diagnosedName = name
+	p.diagnoseTimeout = timeout
+	if p.clock != nil {
+		p.clock.current = p.clock.current.Add(timeout)
+	}
 	p.diagnoseCalls++
 	return p.diagnoseResolvers, p.diagnoseHint
 }
@@ -602,5 +611,233 @@ func TestEnsureTartGuestNetworkAfterStart_WrapsReadinessFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "running at 192.0.2.2 but not network-ready") {
 		t.Fatalf("expected IP reachability to be distinguished from readiness, got %q", err)
+	}
+}
+
+func TestGuestNetworkCheck_DiagnosesFailedNameWithinWindow(t *testing.T) {
+	clock := newFakeClock()
+	cfg := testCheckConfig(GuestNetworkCheckFull)
+	cfg.DNSNames = []string{"ok.example", "broken.example"}
+	probe := &fakeGuestProbe{clock: clock, probeCost: 2 * time.Second}
+	dnsProbe := &nameFailingProbe{fakeGuestProbe: probe, failName: "broken.example", err: errors.New("system resolver did not answer for broken.example")}
+
+	report := runGuestNetworkCheck("vm-a", cfg, dnsProbe, clock.clock())
+
+	if report.Status != GuestNetworkFailed || probe.diagnosedName != "broken.example" {
+		t.Fatalf("expected diagnosis of the failed name, got status=%s name=%q", report.Status, probe.diagnosedName)
+	}
+	if report.Elapsed > cfg.Timeout {
+		t.Fatalf("expected check plus diagnosis within %s, took %s", cfg.Timeout, report.Elapsed)
+	}
+	if probe.diagnoseTimeout < minGuestDNSDiagnosisTime {
+		t.Fatalf("expected a usable diagnosis budget, got %s", probe.diagnoseTimeout)
+	}
+}
+
+type nameFailingProbe struct {
+	*fakeGuestProbe
+	failName string
+	err      error
+}
+
+func (p *nameFailingProbe) SystemDNS(name string, timeout time.Duration) error {
+	_ = p.fakeGuestProbe.SystemDNS(name, timeout)
+	if name == p.failName {
+		return p.err
+	}
+	return nil
+}
+
+func TestTartGuestProbeAccess_MissingAgentFailsFast(t *testing.T) {
+	calls := 0
+	probe := &tartGuestProbe{vmName: "vm-a", run: func(_ string, timeout time.Duration, _ string, _ []string) (string, error) {
+		calls++
+		if timeout < tartGuestAgentConnectTimeout {
+			t.Errorf("expected tart exec to get at least %s to report a missing agent, got %s", tartGuestAgentConnectTimeout, timeout)
+		}
+		return "Failed to connect to the VM using its control socket: The operation couldn't be completed. (GRPC.GRPCConnectionPoolError error 1.), is the Tart Guest Agent running?", errors.New("exit status 1")
+	}}
+
+	report := runGuestNetworkCheck("vm-a", testCheckConfig(GuestNetworkCheckFull), probe, newFakeClock().clock())
+
+	if report.Status != GuestNetworkFailed || report.Stage != GuestNetworkStageAccess || calls != 1 {
+		t.Fatalf("expected one guest-access attempt, got status=%s stage=%s calls=%d", report.Status, report.Stage, calls)
+	}
+	message := report.String()
+	for _, want := range []string{"Tart guest agent is not answering", "TART_MACOS_NETWORK_CHECK=off", "TART_MACOS_NETWORK_CHECK=offline", "never downgrades"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("expected %q in %q", want, message)
+		}
+	}
+}
+
+func TestTartGuestProbeAccess_UnsupportedTartFailsFast(t *testing.T) {
+	calls := 0
+	probe := &tartGuestProbe{vmName: "vm-a", run: func(string, time.Duration, string, []string) (string, error) {
+		calls++
+		return "Error: Unexpected argument 'exec'", errors.New("exit status 64")
+	}}
+	report := runGuestNetworkCheck("vm-a", testCheckConfig(GuestNetworkCheckOffline), probe, newFakeClock().clock())
+	if report.Status != GuestNetworkFailed || calls != 1 || !strings.Contains(report.Detail, "does not support `tart exec`") {
+		t.Fatalf("expected immediate unsupported-Tart failure, got %+v calls=%d", report, calls)
+	}
+}
+
+func TestTartGuestProbeAccess_SlowBootIsRetried(t *testing.T) {
+	probe := &tartGuestProbe{vmName: "vm-a", run: func(string, time.Duration, string, []string) (string, error) {
+		return "", errors.New("connection refused")
+	}}
+	err := probe.Access(time.Second)
+	if _, permanent := probeErrorHint(err); permanent {
+		t.Fatalf("expected a generic access failure to be retried, got permanent %v", err)
+	}
+}
+
+func TestTartGuestProbe_ErrorsAreSingleLineWithoutScript(t *testing.T) {
+	probe := &tartGuestProbe{vmName: "vm-a", run: func(_ string, _ time.Duration, executable string, args []string) (string, error) {
+		return "line one\nline two\nline three", fmt.Errorf("command failed (%s %v): exit status 1", executable, args)
+	}}
+	err := probe.SystemDNS("example.com", 5*time.Second)
+	if err == nil || strings.Contains(err.Error(), "dscacheutil") || strings.Contains(err.Error(), "\n") {
+		t.Fatalf("expected a short single-line error, got %q", err)
+	}
+	report := GuestNetworkReport{Guest: "vm-a", Status: GuestNetworkFailed, Stage: GuestNetworkStageSystemDNS, Detail: "a\nb", Hint: "c\nd"}
+	if strings.Contains(report.String(), "\n") {
+		t.Fatalf("expected a single-line report, got %q", report.String())
+	}
+}
+
+func TestTartGuestProbePrepare_CheckModeDoesNotChangeGuest(t *testing.T) {
+	guest := &fakeTartGuest{service: "Ethernet"}
+	probe := &tartGuestProbe{vmName: "vm-a", readOnly: true, dns: tartDNSSetting{mode: tartDNSServers, servers: []string{"192.0.2.53"}}, run: guest.run}
+
+	summary, err := probe.Prepare(time.Second)
+	if err != nil {
+		t.Fatalf("prepare failed: %v", err)
+	}
+	if guest.setCalls != 0 || guest.marker != "" {
+		t.Fatalf("expected no guest change in check mode, got setCalls=%d marker=%q", guest.setCalls, guest.marker)
+	}
+	if !strings.Contains(summary, "check mode, guest not changed; would have set DNS servers 192.0.2.53") {
+		t.Fatalf("unexpected summary %q", summary)
+	}
+}
+
+func TestTartGuestProbePrepare_ForceReplacesUserServersAndDHCPReverts(t *testing.T) {
+	guest := &fakeTartGuest{service: "Ethernet", servers: []string{"203.0.113.9"}}
+	probe := &tartGuestProbe{vmName: "vm-a", dns: tartDNSSetting{mode: tartDNSServers, servers: []string{"192.0.2.53"}, force: true}, run: guest.run}
+
+	summary, err := probe.Prepare(time.Second)
+	if err != nil {
+		t.Fatalf("forced prepare failed: %v", err)
+	}
+	if !slices.Equal(guest.servers, []string{"192.0.2.53"}) || !strings.Contains(guest.marker, "servers=192.0.2.53") {
+		t.Fatalf("expected forced servers with marker, got servers=%v marker=%q", guest.servers, guest.marker)
+	}
+	if !strings.Contains(summary, "replaced user-managed DNS servers 203.0.113.9") {
+		t.Fatalf("unexpected summary %q", summary)
+	}
+
+	probe.dns = tartDNSSetting{mode: tartDNSDHCP}
+	if _, err := probe.Prepare(time.Second); err != nil {
+		t.Fatalf("dhcp revert failed: %v", err)
+	}
+	if len(guest.servers) != 0 || guest.marker != "" {
+		t.Fatalf("expected DHCP after revert, got servers=%v marker=%q", guest.servers, guest.marker)
+	}
+}
+
+func TestPlanTartGuestDNS_ForceAdoptsMatchingUserServers(t *testing.T) {
+	state := tartGuestDNSState{service: "Ethernet", current: []string{"192.0.2.53"}}
+	action, _ := planTartGuestDNS(tartDNSSetting{mode: tartDNSServers, servers: []string{"192.0.2.53"}, force: true}, state)
+	if action != tartDNSActionSet {
+		t.Fatalf("expected forced adoption to record a marker, got %s", action)
+	}
+}
+
+func TestTartGuestDNSApplyScript_WritesMarkerBeforeChangingDNS(t *testing.T) {
+	script := tartGuestDNSApplyScript(tartDNSActionSet, "Ethernet", []string{"192.0.2.53"})
+	marker := strings.Index(script, "/usr/bin/tee "+tartGuestDNSMarkerPath)
+	change := strings.Index(script, "-setdnsservers")
+	if marker < 0 || change < 0 || marker > change {
+		t.Fatalf("expected the marker to be written before DNS changes:\n%s", script)
+	}
+	reset := tartGuestDNSApplyScript(tartDNSActionReset, "Ethernet", nil)
+	if strings.Index(reset, "-setdnsservers") > strings.Index(reset, "rm -f "+tartGuestDNSMarkerPath) {
+		t.Fatalf("expected the marker to be removed after DNS is reset:\n%s", reset)
+	}
+}
+
+func TestTartGuestProbePrepare_MarkerFailureIsPermanent(t *testing.T) {
+	probe := &tartGuestProbe{vmName: "vm-a", dns: tartDNSSetting{mode: tartDNSServers, servers: []string{"192.0.2.53"}}, run: func(_ string, _ time.Duration, _ string, args []string) (string, error) {
+		if strings.Contains(args[4], "-setdnsservers") {
+			return "marker-failed\n", errors.New("exit status 11")
+		}
+		return "device=en0\nservice=Ethernet\ncurrent=There aren't any DNS Servers set on Ethernet.\n", nil
+	}}
+	_, err := probe.Prepare(time.Second)
+	hint, permanent := probeErrorHint(err)
+	if !permanent || !strings.Contains(hint, "did not change DNS servers") {
+		t.Fatalf("expected a permanent marker failure, got %v (hint %q)", err, hint)
+	}
+}
+
+func TestDNSServersAreNormalized(t *testing.T) {
+	setting, err := parseTartDNSSetting("2001:DB8:0:0::53, ::ffff:192.0.2.53", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !slices.Equal(setting.servers, []string{"2001:db8::53", "192.0.2.53"}) {
+		t.Fatalf("expected canonical servers, got %v", setting.servers)
+	}
+	state, err := parseTartGuestDNSState("service=Ethernet\ncurrent=2001:0db8::0053\ncurrent=192.0.2.53\n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if action, _ := planTartGuestDNS(setting, state); action != tartDNSActionNone {
+		t.Fatalf("expected equivalent IPv6 spellings to match, got %s", action)
+	}
+}
+
+func TestLoadTartGuestNetworkConfig_IPLiteralURLsNeedNoDNSCheck(t *testing.T) {
+	cfg, err := loadTartGuestNetworkConfig(envMap(map[string]string{tartMacOSNetworkCheckURLsEnvVar: "https://192.0.2.10/health, https://[2001:db8::10]/, https://example.com/"}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !slices.Equal(cfg.check.DNSNames, []string{"example.com"}) {
+		t.Fatalf("expected only host names as DNS check names, got %v", cfg.check.DNSNames)
+	}
+	cfg, err = loadTartGuestNetworkConfig(envMap(map[string]string{tartMacOSNetworkCheckURLsEnvVar: "https://192.0.2.10/"}))
+	if err != nil || len(cfg.check.DNSNames) != 0 {
+		t.Fatalf("expected no DNS names for IP-only URLs, got %v, %v", cfg.check.DNSNames, err)
+	}
+}
+
+func TestLoadTartGuestNetworkConfig_ForceOption(t *testing.T) {
+	cfg, err := loadTartGuestNetworkConfig(envMap(map[string]string{tartMacOSDNSServersEnvVar: "192.0.2.53", tartMacOSDNSServersForceEnvVar: "true"}))
+	if err != nil || !cfg.dns.force {
+		t.Fatalf("expected force to be enabled, got %+v, %v", cfg.dns, err)
+	}
+	for name, env := range map[string]map[string]string{
+		"not a bool":       {tartMacOSDNSServersEnvVar: "192.0.2.53", tartMacOSDNSServersForceEnvVar: "yes please"},
+		"without servers":  {tartMacOSDNSServersForceEnvVar: "true"},
+		"with dhcp revert": {tartMacOSDNSServersEnvVar: "dhcp", tartMacOSDNSServersForceEnvVar: "true"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := loadTartGuestNetworkConfig(envMap(env)); err == nil {
+				t.Fatal("expected configuration error")
+			}
+		})
+	}
+}
+
+func TestTartMacOSNetworkEnvVarsCoverAllSettings(t *testing.T) {
+	for _, name := range []string{tartMacOSDNSServersEnvVar, tartMacOSDNSServersForceEnvVar, tartMacOSNetworkCheckEnvVar, tartMacOSNetworkCheckURLsEnvVar, tartMacOSNetworkCheckDNSNamesEnvVar, tartMacOSNetworkCheckTimeoutEnvVar, tartMacOSBridgedInterfaceEnvVar} {
+		if !slices.Contains(TartMacOSNetworkEnvVars, name) {
+			t.Fatalf("expected %s in TartMacOSNetworkEnvVars", name)
+		}
+	}
+	if slices.ContainsFunc(TartMacOSNetworkEnvVars, func(name string) bool { return strings.Contains(name, "PASSWORD") || strings.Contains(name, "ANSIBLE") }) {
+		t.Fatal("credentials must never be exempt from redaction")
 	}
 }

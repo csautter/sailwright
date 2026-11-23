@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,9 @@ var (
 var inspectCreateTargetExists = alchemy_deploy.CreateTargetExists
 var inspectCreateArtifactExists = alchemy_build.BuildArtifactsExistQuiet
 var runDeployFunc = runDeploy
+var configureNamedGuestFunc = configureNamedGuest
+var recordInstanceFunc = alchemy_deploy.RecordInstance
+var runTartDeployFunc = alchemy_deploy.RunTartDeployOnMacOS
 
 func isCreateSupported(vm alchemy_build.VirtualMachineConfig) bool {
 	return alchemy_deploy.SupportsCreate(vm)
@@ -186,13 +190,25 @@ func runDeploy(vm alchemy_build.VirtualMachineConfig) (result error) {
 		return err
 	}
 	defer func() {
-		if result == nil {
-			if vm.VirtualizationEngine == alchemy_build.VirtualizationEngineTart || vm.VirtualizationEngine == alchemy_build.VirtualizationEngineHyperv {
-				result = configureNamedGuest(vm)
+		// A VM that failed only its network readiness check exists and keeps
+		// running, so name and record it as well; `sailwright start` re-checks
+		// it once the network is fixed.
+		var networkErr *alchemy_deploy.GuestNetworkError
+		networkNotReady := result != nil && errors.As(result, &networkErr)
+		if result != nil && !networkNotReady {
+			return
+		}
+		if vm.VirtualizationEngine == alchemy_build.VirtualizationEngineTart || vm.VirtualizationEngine == alchemy_build.VirtualizationEngineHyperv {
+			if err := configureNamedGuestFunc(vm); err != nil {
+				if !networkNotReady {
+					result = err
+					return
+				}
+				fmt.Fprintf(os.Stderr, "warning: could not configure the guest name: %v\n", err)
 			}
-			if err := alchemy_deploy.RecordInstance(vm); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not record VM metadata: %v\n", err)
-			}
+		}
+		if err := recordInstanceFunc(vm); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not record VM metadata: %v\n", err)
 		}
 	}()
 	targetExists, err := inspectCreateTargetExists(vm)
@@ -227,7 +243,7 @@ func runDeploy(vm alchemy_build.VirtualMachineConfig) (result error) {
 	case alchemy_build.VirtualizationEngineUtm:
 		return alchemy_deploy.RunUtmDeployOnMacOS(vm)
 	case alchemy_build.VirtualizationEngineTart:
-		return alchemy_deploy.RunTartDeployOnMacOS(vm)
+		return runTartDeployFunc(vm)
 	case alchemy_build.VirtualizationEngineHyperv:
 		return alchemy_deploy.RunHypervVagrantDeployOnWindows(vm)
 	case alchemy_build.VirtualizationEngineQemu:

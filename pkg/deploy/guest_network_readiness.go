@@ -70,7 +70,7 @@ func (r GuestNetworkReport) String() string {
 	case GuestNetworkFailed:
 		fmt.Fprintf(&b, " at stage %s after %d attempt(s) in %s", r.Stage, r.Attempts, r.Elapsed.Round(time.Second))
 		if r.Detail != "" {
-			fmt.Fprintf(&b, ": %s", r.Detail)
+			fmt.Fprintf(&b, ": %s", oneLine(r.Detail))
 		}
 		if len(r.Resolvers) > 0 {
 			fmt.Fprintf(&b, "; guest resolvers: %s", strings.Join(r.Resolvers, ", "))
@@ -85,10 +85,10 @@ func (r GuestNetworkReport) String() string {
 		}
 	}
 	if r.DNSConfig != "" {
-		fmt.Fprintf(&b, "; dns-config: %s", r.DNSConfig)
+		fmt.Fprintf(&b, "; dns-config: %s", oneLine(r.DNSConfig))
 	}
 	if r.Status == GuestNetworkFailed && r.Hint != "" {
-		fmt.Fprintf(&b, "; hint: %s", r.Hint)
+		fmt.Fprintf(&b, "; hint: %s", oneLine(r.Hint))
 	}
 	return b.String()
 }
@@ -123,6 +123,7 @@ type guestNetworkProbe interface {
 	HTTPS(url string, timeout time.Duration) error
 	// DiagnoseDNS probes each system resolver directly and returns a list
 	// of "<resolver> (<result>)" entries plus a hint.
+	// The timeout is the whole budget for the diagnosis.
 	DiagnoseDNS(name string, timeout time.Duration) ([]string, string)
 }
 
@@ -149,11 +150,17 @@ func probeErrorHint(err error) (string, bool) {
 	return "", false
 }
 
-const guestDNSDiagnosisTimeout = 30 * time.Second
+// guestDNSDiagnosisBudget is reserved at the end of the check window for
+// probing the guest resolvers after a DNS failure.
+const guestDNSDiagnosisBudget = 15 * time.Second
+
+// minGuestDNSDiagnosisTime is the least time worth spending on diagnosis.
+const minGuestDNSDiagnosisTime = 3 * time.Second
 
 // runGuestNetworkCheck verifies guest access, DNS configuration, system DNS
-// and HTTPS with bounded retries. It never retries past cfg.Timeout; a single
-// probe is additionally capped at cfg.ProbeTimeout and the remaining window.
+// and HTTPS with bounded retries. Retries stop early enough to leave a DNS
+// diagnosis budget inside cfg.Timeout; a single probe is additionally capped
+// at cfg.ProbeTimeout and the remaining retry window.
 func runGuestNetworkCheck(guest string, cfg guestNetworkCheckConfig, probe guestNetworkProbe, clock guestNetworkClock) GuestNetworkReport {
 	if clock.now == nil {
 		clock.now = time.Now
@@ -169,8 +176,13 @@ func runGuestNetworkCheck(guest string, cfg guestNetworkCheckConfig, probe guest
 
 	start := clock.now()
 	deadline := start.Add(cfg.Timeout)
+	diagnosisBudget := time.Duration(0)
+	if cfg.Mode == GuestNetworkCheckFull && len(cfg.DNSNames) > 0 {
+		diagnosisBudget = min(guestDNSDiagnosisBudget, cfg.Timeout/4)
+	}
+	retryDeadline := deadline.Add(-diagnosisBudget)
 	probeTimeout := func() time.Duration {
-		remaining := deadline.Sub(clock.now())
+		remaining := retryDeadline.Sub(clock.now())
 		if remaining < time.Second {
 			remaining = time.Second
 		}
@@ -184,7 +196,7 @@ func runGuestNetworkCheck(guest string, cfg guestNetworkCheckConfig, probe guest
 	for attempt := 1; ; attempt++ {
 		report.Attempts = attempt
 		report.Verified = nil
-		stage, err := runGuestNetworkAttempt(cfg, probe, probeTimeout, &prepared, &report)
+		stage, target, err := runGuestNetworkAttempt(cfg, probe, probeTimeout, &prepared, &report)
 		report.Elapsed = clock.now().Sub(start)
 		if err == nil {
 			switch cfg.Mode {
@@ -199,16 +211,18 @@ func runGuestNetworkCheck(guest string, cfg guestNetworkCheckConfig, probe guest
 		}
 
 		hint, permanent := probeErrorHint(err)
-		if permanent || !clock.now().Add(cfg.RetryInterval).Before(deadline) {
+		if permanent || !clock.now().Add(cfg.RetryInterval).Before(retryDeadline) {
 			report.Status = GuestNetworkFailed
 			report.Stage = stage
 			report.Detail = err.Error()
 			report.Hint = hint
-			if stage == GuestNetworkStageSystemDNS && len(cfg.DNSNames) > 0 {
-				resolvers, dnsHint := probe.DiagnoseDNS(cfg.DNSNames[0], guestDNSDiagnosisTimeout)
-				report.Resolvers = resolvers
-				if dnsHint != "" {
-					report.Hint = dnsHint
+			if stage == GuestNetworkStageSystemDNS {
+				if remaining := deadline.Sub(clock.now()); remaining >= minGuestDNSDiagnosisTime {
+					resolvers, dnsHint := probe.DiagnoseDNS(target, remaining)
+					report.Resolvers = resolvers
+					if dnsHint != "" {
+						report.Hint = dnsHint
+					}
 				}
 			}
 			report.Elapsed = clock.now().Sub(start)
@@ -224,36 +238,36 @@ func runGuestNetworkAttempt(
 	probeTimeout func() time.Duration,
 	prepared *bool,
 	report *GuestNetworkReport,
-) (GuestNetworkStage, error) {
+) (GuestNetworkStage, string, error) {
 	if err := probe.Access(probeTimeout()); err != nil {
-		return GuestNetworkStageAccess, err
+		return GuestNetworkStageAccess, "", err
 	}
 	report.Verified = append(report.Verified, string(GuestNetworkStageAccess)+" ok")
 
 	if !*prepared && probe.NeedsPrepare() {
 		summary, err := probe.Prepare(probeTimeout())
 		if err != nil {
-			return GuestNetworkStageDNSConfig, err
+			return GuestNetworkStageDNSConfig, "", err
 		}
 		report.DNSConfig = summary
 		*prepared = true
 	}
 
 	if cfg.Mode != GuestNetworkCheckFull {
-		return "", nil
+		return "", "", nil
 	}
 
 	for _, name := range cfg.DNSNames {
 		if err := probe.SystemDNS(name, probeTimeout()); err != nil {
-			return GuestNetworkStageSystemDNS, err
+			return GuestNetworkStageSystemDNS, name, err
 		}
 		report.Verified = append(report.Verified, fmt.Sprintf("%s %s ok", GuestNetworkStageSystemDNS, name))
 	}
 	for _, url := range cfg.HTTPSURLs {
 		if err := probe.HTTPS(url, probeTimeout()); err != nil {
-			return GuestNetworkStageHTTPS, err
+			return GuestNetworkStageHTTPS, url, err
 		}
 		report.Verified = append(report.Verified, fmt.Sprintf("%s %s ok", GuestNetworkStageHTTPS, url))
 	}
-	return "", nil
+	return "", "", nil
 }
