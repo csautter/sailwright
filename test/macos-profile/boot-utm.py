@@ -183,9 +183,13 @@ def boot(bundle, timeout, diagnostics, software_emulation=False):
             raise UTMNotResponding(
                 f'UTM did not answer the first AppleScript call within {error.timeout:g}s: '
                 + '; '.join(result['utm_state']['hints'])) from error
+        # Resolve the file inside the tell block but coerce it outside: within
+        # it, UTM receives `POSIX path of (file of ...)` as one specifier and
+        # fails with -1700 ("Can't make ... into type specifier").
         registered = applescript(['tell application "UTM"',
-                                  'return POSIX path of (file of virtual machine id (item 1 of argv))',
-                                  'end tell'], identifier)
+                                  'set vmFile to file of virtual machine id (item 1 of argv)',
+                                  'end tell',
+                                  'return POSIX path of vmFile'], identifier)
         if Path(registered).resolve() != bundle.resolve():
             raise RuntimeError('Refusing to smoke-test a UUID registered at another bundle path')
         if vm_command(identifier, 'return (status of targetVM) as text') != 'stopped':
