@@ -25,6 +25,7 @@ set -e
 #   RUNNER_SHUTDOWN_GRACE_SECONDS       - seconds to wait for cancel/deregister before preserving the VM (default: 0 = wait indefinitely)
 #   RUNNER_FORCE_CANCEL_AFTER_SECONDS   - seconds to wait before optional force-cancel (default: 30)
 #   RUNNER_SHUTDOWN_POLL_SECONDS        - seconds between runner-state polls during shutdown (default: 5, minimum: 1)
+#   PREPARE_UTM_AUTOMATION              - clear UTM quarantine and grant Automation in each VM before registration (default: true)
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
 GITHUB_SCOPE="${GITHUB_SCOPE:-repo}"
@@ -53,6 +54,9 @@ RUNNER_SHUTDOWN_POLL_SECONDS="${RUNNER_SHUTDOWN_POLL_SECONDS:-5}"
 # into each VM as /Volumes/My Shared Files/build-cache/ via VirtioFS so workflows
 # can symlink cached files instead of downloading them from Azure Blob Storage.
 BUILD_CACHE_DIR="${BUILD_CACHE_DIR:-}"
+PREPARE_UTM_AUTOMATION="${PREPARE_UTM_AUTOMATION:-true}"
+RUNNER_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+UTM_AUTOMATION_SCRIPT="${UTM_AUTOMATION_SCRIPT:-${RUNNER_SCRIPT_DIR}/prepare-utm-automation.sh}"
 # ───────────────────────────────────────────────────────────────────────────────
 
 preflight_checks() {
@@ -99,6 +103,22 @@ run_in_new_session() {
 		exec perl -MPOSIX=setsid -e 'setsid() or die "setsid: $!"; exec @ARGV or die "exec: $!"' -- "$@"
 	fi
 	exec "$@"
+}
+
+# Images built before prepare-tart-base.sh learned about UTM still carry the
+# quarantined cask and no Automation grant. Repair every clone before the runner
+# registers; the step is idempotent and does not launch UTM. A failure only warns
+# because jobs that do not use UTM must keep running.
+prepare_utm_automation() {
+	local label="$1" ip="$2"
+	if ! env_truthy "${PREPARE_UTM_AUTOMATION}"; then
+		return 0
+	fi
+	echo "[${label}] Preparing UTM for unattended AppleScript..."
+	if ! vm_ssh "$ip" /bin/bash -s <"${UTM_AUTOMATION_SCRIPT}"; then
+		echo "[${label}] WARNING: UTM preparation failed; UTM AppleScript steps may hang on GUI prompts." >&2
+	fi
+	return 0
 }
 
 # ─── GitHub Actions shutdown helpers ──────────────────────────────────────────
@@ -703,6 +723,7 @@ run_worker() {
 			continue
 		fi
 		echo "[worker-${worker_id}] SSH connection successful."
+		prepare_utm_automation "worker-${worker_id}" "$current_vm_ip"
 
 		# ── Configure and run the runner ────────────────────────────
 		# The runner binary is pre-installed in the golden image by prepare-tart-base.sh.

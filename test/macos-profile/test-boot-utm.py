@@ -177,5 +177,103 @@ class BootTest(unittest.TestCase):
         self.assertEqual(boot_utm.guest_addresses('192.168.1.2, fd00::2'), ['192.168.1.2', 'fd00::2'])
 
 
+    def test_hanging_first_call_reports_utm_state(self):
+        self.open.side_effect = subprocess.TimeoutExpired(['osascript'], 60)
+        state = {'processes': [{'pid': 7, 'state': 'T', 'path': '/Applications/UTM.app/Contents/MacOS/UTM'}],
+                 'hints': ['UTM is suspended (process state T)', 'no Automation grant']}
+        with patch.object(boot_utm, 'diagnose_utm', return_value=state):
+            with self.assertRaisesRegex(boot_utm.UTMNotResponding,
+                                        r'within 60s: UTM is suspended \(process state T\); no Automation grant'):
+                self.run_boot()
+        self.assertEqual(self.result()['utm_state'], state)
+        self.assertEqual(self.result()['status'], 'not started')
+        self.assertEqual(self.actions, [])
+
+    def test_later_timeouts_also_record_utm_state(self):
+        self.start_error = subprocess.TimeoutExpired(['osascript'], 60)
+        with patch.object(boot_utm, 'diagnose_utm', return_value={'hints': ['x']}) as diagnose:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                self.run_boot()
+        diagnose.assert_called_once()
+        self.assertEqual(self.result()['utm_state'], {'hints': ['x']})
+
+
+class DiagnoseTest(unittest.TestCase):
+    """Probe parsing for a UTM that ignores Apple Events (no Mac required)."""
+
+    def fake_run(self, outputs):
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            self.assertEqual(kwargs['timeout'], boot_utm.PROBE_TIMEOUT_SECONDS)
+            for key, value in outputs.items():
+                if command[0] == key:
+                    if isinstance(value, Exception):
+                        raise value
+                    code, out = value
+                    return subprocess.CompletedProcess(command, code, out, 'failed' if code else '')
+            raise AssertionError(f'unexpected probe {command}')
+
+        return patch.object(boot_utm.subprocess, 'run', side_effect=run), calls
+
+    def test_gatekeeper_and_missing_grant_are_named(self):
+        context, calls = self.fake_run({
+            'ps': (0, '  1 Ss /sbin/launchd\n 881 T  /Applications/UTM.app/Contents/MacOS/UTM\n'),
+            'xattr': (0, '0181;6b033a46;Homebrew Cask;\n'),
+            'osascript': (0, 'Dock\t20\nCoreServicesUIAgent\t8\nUserNotificationCenter\t8\nFinder\t0\n'),
+            'sqlite3': (0, ''),
+        })
+        with context:
+            state = boot_utm.diagnose_utm()
+        self.assertEqual(state['processes'], [{'pid': 881, 'state': 'T',
+                                               'path': '/Applications/UTM.app/Contents/MacOS/UTM'}])
+        self.assertEqual(state['quarantine'], '0181;6b033a46;Homebrew Cask;')
+        self.assertEqual([w['owner'] for w in state['prompt_windows']],
+                         ['CoreServicesUIAgent', 'UserNotificationCenter'])
+        self.assertEqual(state['automation_grants'], [])
+        hints = ' | '.join(state['hints'])
+        for expected in ('process state T', 'com.apple.quarantine', 'Gatekeeper first-launch',
+                         'privacy consent', 'no Automation'):
+            self.assertIn(expected, hints)
+        self.assertNotIn('tell application "UTM"', repr(calls))
+        self.assertIn('-readonly', calls[-1])
+
+    def test_prepared_utm_reports_no_known_blocker(self):
+        context, _ = self.fake_run({
+            'ps': (0, ' 42 S  /Applications/UTM.app/Contents/MacOS/UTM\n'),
+            'xattr': (1, ''),
+            'osascript': (0, 'Finder\t0\n'),
+            'sqlite3': (0, '/usr/libexec/sshd-keygen-wrapper\t2\n'),
+        })
+        with context:
+            state = boot_utm.diagnose_utm()
+        self.assertIsNone(state['quarantine'])
+        self.assertEqual(state['automation_grants'], [{'client': '/usr/libexec/sshd-keygen-wrapper',
+                                                       'auth_value': 2}])
+        self.assertEqual(state['hints'], ['no known blocker found; UTM may still be starting'])
+
+    def test_denied_grant_and_stopped_utm(self):
+        context, _ = self.fake_run({
+            'ps': (0, ''), 'xattr': (1, ''), 'osascript': (0, ''),
+            'sqlite3': (0, '/usr/libexec/sshd-keygen-wrapper\t0\n'),
+        })
+        with context:
+            state = boot_utm.diagnose_utm()
+        self.assertIn('UTM is not running', state['hints'])
+        self.assertIn('Automation (Apple Events) for UTM is denied in the user TCC database', state['hints'])
+
+    def test_failing_probes_are_reported_not_raised(self):
+        context, _ = self.fake_run({
+            'ps': subprocess.TimeoutExpired(['ps'], 10), 'xattr': FileNotFoundError('xattr'),
+            'osascript': (1, ''), 'sqlite3': (14, ''),
+        })
+        with context:
+            state = boot_utm.diagnose_utm()
+        for key in ('processes', 'quarantine', 'prompt_windows', 'automation_grants'):
+            self.assertTrue(state[key].startswith('unknown: '), (key, state[key]))
+        self.assertEqual(state['hints'], ['no known blocker found; UTM may still be starting'])
+
+
 if __name__ == '__main__':
     unittest.main()

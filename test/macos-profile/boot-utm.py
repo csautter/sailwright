@@ -10,6 +10,118 @@ import subprocess
 import time
 
 START_GRACE_SECONDS = 60
+PROBE_TIMEOUT_SECONDS = 10
+UTM_BUNDLE_ID = 'com.utmapp.UTM'
+DEFAULT_UTM_APP = Path('/Applications/UTM.app')
+TCC_DB = Path.home() / 'Library/Application Support/com.apple.TCC/TCC.db'
+# GUI processes that own the prompts a headless AppleScript caller waits on.
+PROMPT_OWNERS = {
+    'CoreServicesUIAgent': 'Gatekeeper first-launch confirmation',
+    'UserNotificationCenter': 'privacy consent (TCC) prompt',
+}
+WINDOW_OWNERS_JXA = '''
+ObjC.import("CoreGraphics");
+var windows = ObjC.castRefToObject($.CGWindowListCopyWindowInfo(1 | 16, 0));
+var lines = [];
+for (var i = 0; i < windows.count; i++) {
+  var w = windows.objectAtIndex(i);
+  lines.push(ObjC.unwrap(w.objectForKey("kCGWindowOwnerName")) + "\\t" +
+             ObjC.unwrap(w.objectForKey("kCGWindowLayer")));
+}
+lines.join("\\n");
+'''
+
+
+class UTMNotResponding(RuntimeError):
+    """UTM did not answer Apple Events; the message carries the observed UTM state."""
+
+
+def probe(command):
+    """Run a read-only diagnostic command; never raise."""
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True,
+                                   timeout=PROBE_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, str(error)
+    if completed.returncode != 0:
+        return completed, (completed.stderr or '').strip() or f'exit {completed.returncode}'
+    return completed, None
+
+
+def utm_processes():
+    completed, error = probe(['ps', '-axo', 'pid=,stat=,comm='])
+    if error:
+        return f'unknown: {error}'
+    processes = []
+    for line in completed.stdout.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) == 3 and fields[2].endswith('.app/Contents/MacOS/UTM'):
+            processes.append({'pid': int(fields[0]), 'state': fields[1], 'path': fields[2]})
+    return processes
+
+
+def utm_quarantine(app):
+    completed, error = probe(['xattr', '-p', 'com.apple.quarantine', str(app)])
+    if completed is None:
+        return f'unknown: {error}'
+    return completed.stdout.strip() if completed.returncode == 0 else None
+
+
+def prompt_windows():
+    completed, error = probe(['osascript', '-l', 'JavaScript', '-e', WINDOW_OWNERS_JXA])
+    if error:
+        return f'unknown: {error}'
+    windows = []
+    for line in completed.stdout.splitlines():
+        owner, _, layer = line.partition('\t')
+        if owner in PROMPT_OWNERS and layer.lstrip('-').isdigit() and int(layer) > 0:
+            windows.append({'owner': owner, 'layer': int(layer), 'meaning': PROMPT_OWNERS[owner]})
+    return windows
+
+
+def automation_grants():
+    query = ("SELECT client, auth_value FROM access WHERE service = 'kTCCServiceAppleEvents' "
+             f"AND indirect_object_identifier = '{UTM_BUNDLE_ID}'")
+    completed, error = probe(['sqlite3', '-readonly', '-separator', '\t', str(TCC_DB), query])
+    if error:
+        return f'unknown: {error}'
+    grants = []
+    for line in completed.stdout.splitlines():
+        client, _, value = line.partition('\t')
+        if value.isdigit():
+            grants.append({'client': client, 'auth_value': int(value)})
+    return grants
+
+
+def diagnose_utm():
+    """Collect why UTM may ignore Apple Events, without sending any to it."""
+    processes = utm_processes()
+    app = DEFAULT_UTM_APP
+    if isinstance(processes, list) and processes:
+        app = Path(processes[0]['path']).parents[2]
+    state = dict(processes=processes, app=str(app), quarantine=utm_quarantine(app),
+                 prompt_windows=prompt_windows(), automation_grants=automation_grants())
+    hints = []
+    if isinstance(processes, list):
+        if not processes:
+            hints.append('UTM is not running')
+        elif any(p['state'].startswith('T') for p in processes):
+            hints.append('UTM is suspended (process state T): LaunchServices holds it until '
+                         "Gatekeeper's first-launch confirmation is answered")
+    if state['quarantine'] and not state['quarantine'].startswith('unknown'):
+        hints.append(f'{app.name} carries com.apple.quarantine; first launch needs a GUI '
+                     'confirmation (clear it with .github/runners/prepare-utm-automation.sh)')
+    if isinstance(state['prompt_windows'], list):
+        hints.extend(f"{w['owner']} shows a window: {w['meaning']}" for w in state['prompt_windows'])
+    grants = state['automation_grants']
+    if isinstance(grants, list):
+        if not grants:
+            hints.append('no Automation (Apple Events) grant for UTM in the user TCC database; '
+                         'macOS waits for GUI consent')
+        elif not any(g['auth_value'] == 2 for g in grants):
+            hints.append('Automation (Apple Events) for UTM is denied in the user TCC database')
+    state['hints'] = hints or ['no known blocker found; UTM may still be starting']
+    return state
 
 
 def applescript(lines, *args):
@@ -59,7 +171,13 @@ def boot(bundle, timeout, diagnostics, software_emulation=False):
         (diagnostics / 'config.plist').write_bytes(config_path.read_bytes())
         # Unlike the optional fixture registration check, every failure here
         # fails CI. Select by UUID to avoid touching same-named user VMs.
-        applescript(['tell application "UTM" to open (POSIX file (item 1 of argv))'], str(bundle))
+        try:
+            applescript(['tell application "UTM" to open (POSIX file (item 1 of argv))'], str(bundle))
+        except subprocess.TimeoutExpired as error:
+            result['utm_state'] = diagnose_utm()
+            raise UTMNotResponding(
+                f'UTM did not answer the first AppleScript call within {error.timeout:g}s: '
+                + '; '.join(result['utm_state']['hints'])) from error
         registered = applescript(['tell application "UTM"',
                                   'return POSIX path of (file of virtual machine id (item 1 of argv))',
                                   'end tell'], identifier)
@@ -100,6 +218,8 @@ def boot(bundle, timeout, diagnostics, software_emulation=False):
         result['error'] = str(error)
         if isinstance(error, subprocess.CalledProcessError):
             result['stderr'] = error.stderr
+        if isinstance(error, subprocess.TimeoutExpired) and 'utm_state' not in result:
+            result['utm_state'] = diagnose_utm()
         raise
     finally:
         try:

@@ -9,6 +9,7 @@ self-hosted runners using [Tart](https://tart.run) virtualisation.
 |---|---|
 | `prepare-tart-base.sh` | One-time: builds the golden Tart VM image with tooling pre-installed. |
 | `create-macos-tart-runner.sh` | Ongoing: runs a pool of ephemeral runners, one job per VM clone. |
+| `prepare-utm-automation.sh` | Runs inside a VM: lets CI drive UTM with AppleScript (see [UTM automation](#utm-automation)). |
 
 ## Quick start
 
@@ -21,6 +22,22 @@ GITHUB_REPO=myorg/myrepo ./create-macos-tart-runner.sh
 ```
 
 ---
+
+## UTM automation
+
+The macOS full build checks UTM bundles with AppleScript (`test/macos-profile/boot-utm.py`).
+Jobs run below the runner's SSH session, so macOS attributes their Apple Events to
+`/usr/libexec/sshd-keygen-wrapper`. A fresh Homebrew UTM install blocks such calls on two GUI
+prompts nobody can answer in a headless VM: Gatekeeper's first-launch confirmation for the
+quarantined cask (UTM stays suspended) and the Automation consent for SSH → UTM.
+
+`prepare-utm-automation.sh` clears the quarantine attribute and stores the Automation grant in the
+user's TCC database (the Cirrus Labs base images run with SIP disabled, which allows this).
+`prepare-tart-base.sh` runs it with `--verify`, so the golden image build fails if UTM still does
+not answer. `create-macos-tart-runner.sh` also runs it in every clone before the runner registers,
+which repairs golden images built before this step existed; set `PREPARE_UTM_AUTOMATION=false` to
+skip it. When UTM still hangs, `boot-utm.py` records the UTM process state, quarantine, open prompt
+windows and TCC grants in `result.json` under `utm_state`.
 
 ## Build cache
 
@@ -183,6 +200,7 @@ done
 | `BUILD_CACHE_DIR` | _(unset)_ | Absolute path on the **host** to the build cache directory. When unset, no directory is mounted and jobs download all files normally. |
 | `VM_BASE_IMAGE` | `tahoe-runner` | Tart image used as the base for each ephemeral clone. |
 | `VM_CLONE_PER_RUN` | `true` | Clone a fresh VM for every runner cycle (recommended). |
+| `PREPARE_UTM_AUTOMATION` | `true` | Clear UTM's quarantine and grant Automation in each clone before the runner registers. |
 | `GITHUB_REPO` | `csautter/dev-alchemy` | `owner/repo` for runner registration. |
 | `GITHUB_SCOPE` | `repo` | `repo` or `org`. |
 | `RUNNER_LABELS` | `macos,tart,arm64,macos-26-tart` | Comma-separated runner labels. |

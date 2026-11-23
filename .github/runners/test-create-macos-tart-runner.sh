@@ -6,6 +6,8 @@ SCRIPT_UNDER_TEST="${SCRIPT_DIR}/create-macos-tart-runner.sh"
 ORIGINAL_PATH="${PATH}"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/macos-tart-runner-tests.XXXXXX")"
 FAKE_BIN="${TEST_ROOT}/fake-bin"
+FAKE_GUEST_BIN="${TEST_ROOT}/fake-guest-bin"
+UTM_AUTOMATION_UNDER_TEST="${SCRIPT_DIR}/prepare-utm-automation.sh"
 TEST_LOG_DIR=""
 CURRENT_PARENT_PID=""
 
@@ -266,6 +268,12 @@ mkdir -p "${log_dir}"
 } >>"${log_dir}/sshpass.log"
 
 args=" $* "
+if [[ "$args" == *" /bin/bash -s"* ]]; then
+	cat >"${log_dir}/utm-automation-stdin"
+	printf 'prepare-utm-automation\n' >>"${log_dir}/sshpass.log"
+	exit "${FAKE_SSH_UTM_EXIT:-0}"
+fi
+
 if [[ "$args" == *" true"* ]]; then
 	exit 0
 fi
@@ -337,6 +345,69 @@ EOF_SLEEP
 	chmod +x "${FAKE_BIN}/gh" "${FAKE_BIN}/tart" "${FAKE_BIN}/sshpass" "${FAKE_BIN}/date" "${FAKE_BIN}/sleep"
 }
 
+# Fakes for the guest-side prepare-utm-automation.sh. They model the macOS
+# tools it calls; TCC writes are recorded as SQL instead of touching a database.
+write_fake_guest_commands() {
+	mkdir -p "${FAKE_GUEST_BIN}"
+
+	cat >"${FAKE_GUEST_BIN}/sudo" <<'EOF_SUDO'
+#!/usr/bin/env bash
+exec "$@"
+EOF_SUDO
+
+	cat >"${FAKE_GUEST_BIN}/defaults" <<'EOF_DEFAULTS'
+#!/usr/bin/env bash
+printf '%s\n' "${FAKE_BUNDLE_ID:-com.utmapp.UTM}"
+EOF_DEFAULTS
+
+	cat >"${FAKE_GUEST_BIN}/xattr" <<'EOF_XATTR'
+#!/usr/bin/env bash
+set -euo pipefail
+state="${TEST_LOG_DIR}/quarantined"
+printf 'xattr %s\n' "$*" >>"${TEST_LOG_DIR}/guest.log"
+case "${1:-}" in
+	-dr) rm -f "$state" ;;
+	-p) [[ -e "$state" ]] && printf '0181;test;Homebrew Cask;\n' || exit 1 ;;
+esac
+EOF_XATTR
+
+	cat >"${FAKE_GUEST_BIN}/csreq" <<'EOF_CSREQ'
+#!/usr/bin/env bash
+set -euo pipefail
+out=""
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		-b) out="$2"; shift 2 ;;
+		*) shift ;;
+	esac
+done
+cat >"$out"
+EOF_CSREQ
+
+	cat >"${FAKE_GUEST_BIN}/codesign" <<'EOF_CODESIGN'
+#!/usr/bin/env bash
+printf 'Executable=/Applications/UTM.app/Contents/MacOS/UTM\n' >&2
+printf 'designated => anchor apple generic and identifier "com.utmapp.UTM"\n'
+EOF_CODESIGN
+
+	cat >"${FAKE_GUEST_BIN}/sqlite3" <<'EOF_SQLITE'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\t%s\n' "$1" "$2" >>"${TEST_LOG_DIR}/sqlite.log"
+if [[ "$2" == SELECT* ]]; then
+	printf '%s\n' "${FAKE_TCC_AUTH_VALUE:-2}"
+fi
+EOF_SQLITE
+
+	cat >"${FAKE_GUEST_BIN}/osascript" <<'EOF_OSASCRIPT'
+#!/usr/bin/env bash
+printf 'osascript %s\n' "$*" >>"${TEST_LOG_DIR}/guest.log"
+exit "${FAKE_OSASCRIPT_EXIT:-0}"
+EOF_OSASCRIPT
+
+	chmod +x "${FAKE_GUEST_BIN}"/*
+}
+
 reset_script_state() {
 	GITHUB_SCOPE="repo"
 	GITHUB_REPO="owner/repo"
@@ -355,6 +426,7 @@ reset_script_state() {
 	RUNNER_FORCE_CANCEL_AFTER_SECONDS="30"
 	RUNNER_SHUTDOWN_POLL_SECONDS="5"
 	REQUESTED_CANCEL_RUN_ID=""
+	PREPARE_UTM_AUTOMATION="true"
 	export GITHUB_SCOPE GITHUB_REPO GITHUB_ORG VM_BASE_IMAGE VM_CLONE_PER_RUN
 }
 
@@ -373,7 +445,10 @@ begin_test() {
 	unset FAKE_GH_RUN_LIST_FAIL FAKE_GH_JOB_LIST_FAIL FAKE_GH_RUNNER_LIST_FAIL
 	unset FAKE_GH_CANCEL_EXIT FAKE_GH_FORCE_CANCEL_EXIT FAKE_GH_FORCE_CANCEL_ERROR FAKE_GH_DELETE_EXIT
 	unset FAKE_DATE_SEQUENCE FAKE_DATE_VALUE FAKE_SSH_RUNNER_BLOCK FAKE_SSH_RUNNER_EXIT
-	unset FAKE_TART_IP
+	unset FAKE_TART_IP FAKE_SSH_UTM_EXIT
+	unset FAKE_BUNDLE_ID FAKE_TCC_AUTH_VALUE FAKE_OSASCRIPT_EXIT
+	: >"${TEST_LOG_DIR}/guest.log"
+	: >"${TEST_LOG_DIR}/sqlite.log"
 
 	reset_script_state
 }
@@ -420,6 +495,7 @@ run_test() {
 }
 
 write_fake_commands
+write_fake_guest_commands
 PATH="${FAKE_BIN}:${ORIGINAL_PATH}"
 export PATH
 RUNNER_NAME_BASE="test-runner"
@@ -655,6 +731,139 @@ test_parent_term_reaches_worker_and_cleanup_is_idempotent() {
 	assert_count "${TEST_LOG_DIR}/output" "Shutting down all workers" "1"
 }
 
+test_worker_prepares_utm_before_runner_registration() {
+	begin_test "prepare-utm-stdin"
+
+	prepare_utm_automation "worker-1" "10.0.0.2" >"${TEST_LOG_DIR}/output" 2>&1
+
+	assert_contains "${TEST_LOG_DIR}/output" "[worker-1] Preparing UTM for unattended AppleScript..."
+	assert_contains "${TEST_LOG_DIR}/sshpass.log" "prepare-utm-automation"
+	assert_contains "${TEST_LOG_DIR}/sshpass.log" $'admin@10.0.0.2\t/bin/bash\t-s'
+	cmp -s "${TEST_LOG_DIR}/utm-automation-stdin" "${UTM_AUTOMATION_UNDER_TEST}" ||
+		fail "the guest did not receive prepare-utm-automation.sh on stdin"
+}
+
+test_utm_preparation_failure_only_warns() {
+	begin_test "prepare-utm-failure"
+	export FAKE_SSH_UTM_EXIT="1"
+
+	prepare_utm_automation "worker-1" "10.0.0.2" >"${TEST_LOG_DIR}/output" 2>&1 ||
+		fail "a failed UTM preparation must not abort the runner cycle"
+
+	assert_contains "${TEST_LOG_DIR}/output" "WARNING: UTM preparation failed"
+}
+
+test_utm_preparation_can_be_disabled() {
+	begin_test "prepare-utm-disabled"
+	PREPARE_UTM_AUTOMATION="false"
+
+	prepare_utm_automation "worker-1" "10.0.0.2" >"${TEST_LOG_DIR}/output" 2>&1
+
+	assert_not_contains "${TEST_LOG_DIR}/sshpass.log" "prepare-utm-automation"
+}
+
+test_worker_cycle_prepares_utm_before_config() {
+	begin_test "prepare-utm-cycle"
+	export FAKE_DATE_VALUE="1700000000"
+	MAX_RUNS="1"
+
+	(run_worker 1) >"${TEST_LOG_DIR}/output" 2>&1 || true
+
+	assert_contains "${TEST_LOG_DIR}/output" "[worker-1] Preparing UTM for unattended AppleScript..."
+	local prepare_line runner_line
+	prepare_line="$(grep -n 'prepare-utm-automation' "${TEST_LOG_DIR}/sshpass.log" | head -1 | cut -d: -f1)"
+	runner_line="$(grep -n $'\tbash$' "${TEST_LOG_DIR}/sshpass.log" | head -1 | cut -d: -f1)"
+	[[ -n "$prepare_line" && -n "$runner_line" && "$prepare_line" -lt "$runner_line" ]] ||
+		fail "UTM must be prepared before the runner session starts (prepare=${prepare_line:-none}, runner=${runner_line:-none})"
+}
+
+run_guest_script() {
+	local app="${TEST_LOG_DIR}/UTM.app"
+	mkdir -p "${app}/Contents"
+	PATH="${FAKE_GUEST_BIN}:${FAKE_BIN}:${ORIGINAL_PATH}" \
+	UTM_APP="${UTM_APP_OVERRIDE:-${app}}" \
+	TCC_DB="${TEST_LOG_DIR}/TCC.db" \
+	UTM_VERIFY_TIMEOUT="5" \
+	bash "${UTM_AUTOMATION_UNDER_TEST}" "$@" >"${TEST_LOG_DIR}/output" 2>&1
+}
+
+hex_of() {
+	printf '%s\n' "$1" | od -An -tx1 -v | tr -d ' \n'
+}
+
+test_guest_clears_quarantine_and_grants_ssh_automation() {
+	begin_test "guest-grant"
+	touch "${TEST_LOG_DIR}/quarantined"
+
+	run_guest_script || fail "guest preparation failed: $(cat "${TEST_LOG_DIR}/output")"
+
+	[[ ! -e "${TEST_LOG_DIR}/quarantined" ]] || fail "quarantine was not cleared"
+	assert_contains "${TEST_LOG_DIR}/guest.log" "xattr -dr com.apple.quarantine ${TEST_LOG_DIR}/UTM.app"
+	assert_contains "${TEST_LOG_DIR}/sqlite.log" "VALUES ('kTCCServiceAppleEvents', '/usr/libexec/sshd-keygen-wrapper', 1, 2, 3, 1, X'$(hex_of 'identifier "com.apple.sshd-keygen-wrapper" and anchor apple')', NULL, 0, 'com.utmapp.UTM', X'$(hex_of 'anchor apple generic and identifier "com.utmapp.UTM"')', 0);"
+	assert_contains "${TEST_LOG_DIR}/output" "UTM: Automation granted for /usr/libexec/sshd-keygen-wrapper -> com.utmapp.UTM."
+	assert_not_contains "${TEST_LOG_DIR}/guest.log" "osascript"
+}
+
+test_guest_preparation_is_idempotent() {
+	begin_test "guest-idempotent"
+
+	run_guest_script || fail "first run failed"
+	run_guest_script || fail "second run failed: $(cat "${TEST_LOG_DIR}/output")"
+
+	assert_count "${TEST_LOG_DIR}/sqlite.log" "INSERT OR REPLACE INTO access" "2"
+}
+
+test_guest_verify_launches_and_quits_utm() {
+	begin_test "guest-verify"
+
+	run_guest_script --verify || fail "verify failed: $(cat "${TEST_LOG_DIR}/output")"
+
+	assert_contains "${TEST_LOG_DIR}/guest.log" 'osascript -e tell application id "com.utmapp.UTM" to get name of every virtual machine'
+	assert_contains "${TEST_LOG_DIR}/guest.log" 'osascript -e tell application id "com.utmapp.UTM" to quit'
+	assert_contains "${TEST_LOG_DIR}/output" "UTM: Apple Events answered."
+}
+
+test_guest_verify_failure_is_fatal() {
+	begin_test "guest-verify-failure"
+	export FAKE_OSASCRIPT_EXIT="142"
+
+	if run_guest_script --verify; then
+		fail "an unanswered Apple Event must fail the golden image build"
+	fi
+	assert_contains "${TEST_LOG_DIR}/output" "UTM did not answer Apple Events within 5s"
+}
+
+test_guest_unstored_grant_is_fatal() {
+	begin_test "guest-unstored-grant"
+	export FAKE_TCC_AUTH_VALUE="0"
+
+	if run_guest_script; then
+		fail "a grant that is not readable afterwards must fail"
+	fi
+	assert_contains "${TEST_LOG_DIR}/output" "was not stored"
+}
+
+test_guest_rejects_unsafe_bundle_identifier() {
+	begin_test "guest-unsafe-bundle-id"
+	export FAKE_BUNDLE_ID="com.utmapp.UTM'; DELETE FROM access; --"
+
+	if run_guest_script; then
+		fail "an unexpected bundle identifier must be rejected"
+	fi
+	assert_contains "${TEST_LOG_DIR}/output" "unexpected UTM bundle identifier"
+	assert_count "${TEST_LOG_DIR}/sqlite.log" "access" "0"
+}
+
+test_guest_without_utm_is_a_noop_unless_verifying() {
+	begin_test "guest-no-utm"
+
+	UTM_APP_OVERRIDE="${TEST_LOG_DIR}/missing.app" run_guest_script || fail "missing UTM must be a no-op"
+	assert_contains "${TEST_LOG_DIR}/output" "nothing to prepare"
+	if UTM_APP_OVERRIDE="${TEST_LOG_DIR}/missing.app" run_guest_script --verify; then
+		fail "missing UTM must fail with --verify"
+	fi
+}
+
 run_test test_successful_cancel_signals_runner_and_stops_vm
 run_test test_runner_list_api_failure_remains_unknown
 run_test test_no_active_job_waits_until_busy_grace_deadline
@@ -666,5 +875,16 @@ run_test test_force_cancel_failure_is_reported
 run_test test_zero_force_cancel_delay_disables_force_cancel
 run_test test_org_scope_does_not_call_repo_workflow_run_endpoints
 run_test test_parent_term_reaches_worker_and_cleanup_is_idempotent
+run_test test_worker_prepares_utm_before_runner_registration
+run_test test_utm_preparation_failure_only_warns
+run_test test_utm_preparation_can_be_disabled
+run_test test_worker_cycle_prepares_utm_before_config
+run_test test_guest_clears_quarantine_and_grants_ssh_automation
+run_test test_guest_preparation_is_idempotent
+run_test test_guest_verify_launches_and_quits_utm
+run_test test_guest_verify_failure_is_fatal
+run_test test_guest_unstored_grant_is_fatal
+run_test test_guest_rejects_unsafe_bundle_identifier
+run_test test_guest_without_utm_is_a_noop_unless_verifying
 
-printf 'All macOS Tart runner shutdown tests passed.\n'
+printf 'All macOS Tart runner tests passed.\n'
