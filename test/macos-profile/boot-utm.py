@@ -14,6 +14,9 @@ PROBE_TIMEOUT_SECONDS = 10
 UTM_BUNDLE_ID = 'com.utmapp.UTM'
 DEFAULT_UTM_APP = Path('/Applications/UTM.app')
 TCC_DB = Path.home() / 'Library/Application Support/com.apple.TCC/TCC.db'
+# CI jobs run below the runner's SSH session; macOS attributes their Apple
+# Events to this sender, so only its grant decides whether UTM answers.
+AUTOMATION_CLIENT = '/usr/libexec/sshd-keygen-wrapper'
 # GUI processes that own the prompts a headless AppleScript caller waits on.
 PROMPT_OWNERS = {
     'CoreServicesUIAgent': 'Gatekeeper first-launch confirmation',
@@ -115,11 +118,13 @@ def diagnose_utm():
         hints.extend(f"{w['owner']} shows a window: {w['meaning']}" for w in state['prompt_windows'])
     grants = state['automation_grants']
     if isinstance(grants, list):
-        if not grants:
-            hints.append('no Automation (Apple Events) grant for UTM in the user TCC database; '
-                         'macOS waits for GUI consent')
-        elif not any(g['auth_value'] == 2 for g in grants):
-            hints.append('Automation (Apple Events) for UTM is denied in the user TCC database')
+        own = [g for g in grants if g['client'] == AUTOMATION_CLIENT]
+        if not own:
+            hints.append(f'no Automation (Apple Events) grant for {AUTOMATION_CLIENT} -> UTM in the '
+                         'user TCC database; macOS waits for GUI consent')
+        elif not any(g['auth_value'] == 2 for g in own):
+            hints.append(f'Automation (Apple Events) for {AUTOMATION_CLIENT} -> UTM is denied in the '
+                         'user TCC database')
     state['hints'] = hints or ['no known blocker found; UTM may still be starting']
     return state
 

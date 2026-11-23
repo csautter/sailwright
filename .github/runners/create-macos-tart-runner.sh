@@ -115,12 +115,36 @@ ensure_base_image_exists() {
 # ─── SSH helper ────────────────────────────────────────────────────────────────
 # Usage: vm_ssh <ip> [ssh-args...]
 vm_ssh() {
+	(vm_ssh_exec "$@")
+}
+
+# Replaces the calling (sub)shell with ssh, so the PID of a background call is
+# the ssh client itself and a signal reaches it directly.
+vm_ssh_exec() {
 	local ip="$1"; shift
-	sshpass -p "${VM_SSH_PASS}" ssh \
+	# Keepalives end a session whose VM stopped answering (about one minute).
+	exec sshpass -p "${VM_SSH_PASS}" ssh \
 		-o "StrictHostKeyChecking=no" \
 		-o "UserKnownHostsFile=/dev/null" \
 		-o "ConnectTimeout=5" \
+		-o "ServerAliveInterval=15" \
+		-o "ServerAliveCountMax=4" \
 		"${VM_SSH_USER}@${ip}" "$@"
+}
+
+# Run a guest script over vm_ssh in the background and wait for it. Bash runs
+# a worker's TERM/INT trap only after a foreground command returns, so a
+# foreground SSH call would delay pool shutdown; with `wait` the trap fires at
+# once and _worker_cleanup terminates the tracked PID.
+# Usage: vm_ssh_script <script file> <ip> [ssh-args...]
+vm_ssh_script() {
+	local script="$1"; shift
+	local status=0
+	vm_ssh_exec "$@" <"$script" &
+	current_prep_ssh_pid=$!
+	wait "$current_prep_ssh_pid" || status=$?
+	current_prep_ssh_pid=""
+	return "$status"
 }
 
 run_in_new_session() {
@@ -147,7 +171,7 @@ prepare_utm_automation() {
 	# guest script is idempotent, so retry a few times.
 	local attempt
 	for attempt in 1 2 3; do
-		if vm_ssh "$ip" /bin/bash -s <"${UTM_AUTOMATION_SCRIPT}"; then
+		if vm_ssh_script "${UTM_AUTOMATION_SCRIPT}" "$ip" /bin/bash -s; then
 			return 0
 		fi
 		[[ "$attempt" -lt 3 ]] && sleep 5
@@ -298,7 +322,7 @@ prepare_guest_network() {
 		return 0
 	fi
 	echo "[${label}] Preparing guest network (DNS: ${dns})..."
-	vm_ssh "$ip" /bin/bash -s -- "$(printf '%q ' "${args[@]}")" <"${GUEST_NETWORK_SCRIPT}"
+	vm_ssh_script "${GUEST_NETWORK_SCRIPT}" "$ip" /bin/bash -s -- "$(printf '%q ' "${args[@]}")"
 }
 
 # ─── GitHub Actions shutdown helpers ──────────────────────────────────────────
@@ -725,11 +749,17 @@ run_worker() {
 	local current_vm_ip=""
 	local current_runner_ssh_pid=""
 	local current_tart_run_pid=""
+	local current_prep_ssh_pid=""
 	local shutdown_requested=false
 	local run_count=0
 
 	# shellcheck disable=SC2317 # Invoked by the EXIT trap.
 	_worker_cleanup() {
+		if [[ -n "$current_prep_ssh_pid" ]]; then
+			kill -TERM "$current_prep_ssh_pid" 2>/dev/null || true
+			wait "$current_prep_ssh_pid" 2>/dev/null || true
+			current_prep_ssh_pid=""
+		fi
 		[[ -z "$current_vm_name" ]] && return
 		local cancel_active_job=false
 		local cleanup_status=0

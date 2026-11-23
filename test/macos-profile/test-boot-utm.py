@@ -32,6 +32,8 @@ class BootTest(unittest.TestCase):
         self.open = self.enter(patch.object(boot_utm, 'applescript', return_value=str(self.bundle)))
         self.enter(patch.object(boot_utm, 'vm_command', side_effect=self.command))
         self.enter(patch.object(boot_utm.time, 'sleep'))
+        # Lifecycle tests must never probe the real host (ps, TCC.db, windows).
+        self.diagnose = self.enter(patch.object(boot_utm, 'diagnose_utm', return_value={'hints': ['stub']}))
 
     def enter(self, context):
         value = context.start()
@@ -156,6 +158,7 @@ class BootTest(unittest.TestCase):
             self.run_boot()
         self.assertIn('delete targetVM', self.actions)
         self.assertIn('error', self.result())
+        self.assertEqual(self.result()['utm_state'], {'hints': ['stub']})
 
     def test_no_ready_guest_times_out_and_cleans_up(self):
         self.addresses = '127.0.0.1, fe80::1'
@@ -261,7 +264,20 @@ class DiagnoseTest(unittest.TestCase):
         with context:
             state = boot_utm.diagnose_utm()
         self.assertIn('UTM is not running', state['hints'])
-        self.assertIn('Automation (Apple Events) for UTM is denied in the user TCC database', state['hints'])
+        self.assertIn('Automation (Apple Events) for /usr/libexec/sshd-keygen-wrapper -> UTM is denied '
+                      'in the user TCC database', state['hints'])
+
+    def grant_hints(self, rows):
+        context, _ = self.fake_run({'ps': (0, ''), 'xattr': (1, ''), 'osascript': (0, ''),
+                                    'sqlite3': (0, rows)})
+        with context:
+            return ' | '.join(boot_utm.diagnose_utm()['hints'])
+
+    def test_other_allowed_client_does_not_hide_missing_or_denied_ssh_grant(self):
+        denied = self.grant_hints('com.apple.Terminal\t2\n/usr/libexec/sshd-keygen-wrapper\t0\n')
+        self.assertIn('sshd-keygen-wrapper -> UTM is denied', denied)
+        missing = self.grant_hints('com.apple.Terminal\t2\n')
+        self.assertIn('no Automation (Apple Events) grant for /usr/libexec/sshd-keygen-wrapper', missing)
 
     def test_failing_probes_are_reported_not_raised(self):
         context, _ = self.fake_run({

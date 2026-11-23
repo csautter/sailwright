@@ -287,6 +287,13 @@ if [[ "$args" == *" /bin/bash -s"* ]]; then
 	printf '%s\n' "${script}" >>"${log_dir}/sshpass.log"
 	case "${script}" in
 		prepare-utm-automation|prepare-guest-network)
+			if [[ "${script}" == prepare-guest-network && "${FAKE_SSH_NETWORK_BLOCK:-false}" == "true" ]]; then
+				touch "${log_dir}/network_started"
+				trap 'printf "network-term\n" >>"${log_dir}/sshpass.log"; exit 143' TERM INT
+				while true; do
+					/bin/sleep 0.1
+				done
+			fi
 			if [[ "${script}" == prepare-utm-automation ]]; then
 				queue="${FAKE_SSH_UTM_EXIT_QUEUE:-}"
 				default_exit="${FAKE_SSH_UTM_EXIT:-0}"
@@ -531,7 +538,7 @@ begin_test() {
 	unset FAKE_GH_CANCEL_EXIT FAKE_GH_FORCE_CANCEL_EXIT FAKE_GH_FORCE_CANCEL_ERROR FAKE_GH_DELETE_EXIT
 	unset FAKE_DATE_SEQUENCE FAKE_DATE_VALUE FAKE_SSH_RUNNER_BLOCK FAKE_SSH_RUNNER_EXIT
 	unset FAKE_TART_IP FAKE_SSH_UTM_EXIT FAKE_SSH_UTM_EXIT_QUEUE FAKE_SSH_NETWORK_EXIT FAKE_SSH_NETWORK_EXIT_QUEUE FAKE_TART_RUNNING FAKE_ROUTER
-	unset FAKE_DNS_OK FAKE_DNS_QUEUE FAKE_HTTP_CODE FAKE_RESOLVER
+	unset FAKE_DNS_OK FAKE_DNS_QUEUE FAKE_HTTP_CODE FAKE_RESOLVER FAKE_SSH_NETWORK_BLOCK
 	rm -rf "${TART_HOME}"
 	unset FAKE_BUNDLE_ID FAKE_TCC_AUTH_VALUE FAKE_OSASCRIPT_EXIT
 	: >"${TEST_LOG_DIR}/guest.log"
@@ -1190,6 +1197,33 @@ test_guest_network_retries_until_ready() {
 	assert_contains "${TEST_LOG_DIR}/output" "Guest network ready after 3 attempt(s)"
 }
 
+test_worker_term_during_network_check_stops_promptly() {
+	begin_test "network-check-term"
+	export FAKE_DATE_VALUE="1700000000"
+	export FAKE_SSH_NETWORK_BLOCK="true"
+
+	(run_worker 1) >"${TEST_LOG_DIR}/output" 2>&1 &
+	local worker_pid=$!
+	wait_for_file "${TEST_LOG_DIR}/network_started"
+	kill -TERM "$worker_pid"
+
+	local waited=0
+	while kill -0 "$worker_pid" 2>/dev/null; do
+		waited=$((waited + 1))
+		if [[ "$waited" -gt 40 ]]; then
+			kill -KILL "$worker_pid" 2>/dev/null || true
+			fail "worker did not exit within 2s of TERM during the network check"
+		fi
+		/bin/sleep 0.05
+	done
+	wait "$worker_pid" 2>/dev/null || true
+
+	assert_contains "${TEST_LOG_DIR}/sshpass.log" "network-term"
+	assert_count "${TEST_LOG_DIR}/tart.log" $'tart\tstop\trunner-w1-1700000000' "1"
+	assert_count "${TEST_LOG_DIR}/tart.log" $'tart\tdelete\trunner-w1-1700000000' "1"
+	assert_not_contains "${TEST_LOG_DIR}/sshpass.log" "prepare-utm-automation"
+}
+
 run_test test_successful_cancel_signals_runner_and_stops_vm
 run_test test_runner_list_api_failure_remains_unknown
 run_test test_no_active_job_waits_until_busy_grace_deadline
@@ -1222,6 +1256,7 @@ run_test test_guest_network_receives_router_dns_and_check_urls
 run_test test_guest_network_is_skipped_when_bridged_without_check
 run_test test_worker_cycle_uses_nat_slot_mac_and_checks_network_first
 run_test test_worker_cycle_bridged_opt_in
+run_test test_worker_term_during_network_check_stops_promptly
 run_test test_guest_network_sets_dns_and_reports_ready
 run_test test_guest_network_dhcp_and_keep
 run_test test_guest_network_rejects_bad_input
