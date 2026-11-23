@@ -58,7 +58,7 @@ def utm_processes():
     processes = []
     for line in completed.stdout.splitlines():
         fields = line.split(None, 2)
-        if len(fields) == 3 and fields[2].endswith('.app/Contents/MacOS/UTM'):
+        if len(fields) == 3 and fields[0].isdigit() and fields[2].endswith('.app/Contents/MacOS/UTM'):
             processes.append({'pid': int(fields[0]), 'state': fields[1], 'path': fields[2]})
     return processes
 

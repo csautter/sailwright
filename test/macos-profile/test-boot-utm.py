@@ -242,6 +242,16 @@ class DiagnoseTest(unittest.TestCase):
         self.assertNotIn('tell application "UTM"', repr(calls))
         self.assertIn('-readonly', calls[-1])
 
+    def test_unexpected_ps_lines_are_ignored(self):
+        context, _ = self.fake_run({
+            'ps': (0, 'PID STAT COMM /Applications/UTM.app/Contents/MacOS/UTM\n'
+                      ' 42 S  /Applications/UTM.app/Contents/MacOS/UTM\n'),
+            'xattr': (1, ''), 'osascript': (0, ''), 'sqlite3': (0, ''),
+        })
+        with context:
+            state = boot_utm.diagnose_utm()
+        self.assertEqual([p['pid'] for p in state['processes']], [42])
+
     def test_prepared_utm_reports_no_known_blocker(self):
         context, _ = self.fake_run({
             'ps': (0, ' 42 S  /Applications/UTM.app/Contents/MacOS/UTM\n'),
