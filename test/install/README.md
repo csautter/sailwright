@@ -28,19 +28,19 @@ network access to the documented package sources, enough disk for the packages,
 and a VM snapshot. Nested virtualization is needed only for the optional
 Hyper-V test. Keep host dependency changes inside the disposable VM.
 
-1. Check out the PR branch in the VM. Record the commit SHA, Windows edition
-   and build, shell version, architecture and pre-existing software. Snapshot
-   the VM. Save user and machine PATH as raw registry values (including value
-   types), the installed-app list, `choco list` if available, existing Cygwin
-   root/data, services, and optional-feature state. Record any tooling added
-   just to run these tests so it is not mistaken for installer output.
+1. Check out the commit under test in the VM. Record the commit SHA, Windows
+   edition and build, shell version, architecture and pre-existing software.
+   Snapshot the VM. Save user and machine PATH as raw registry values (including
+   value types), the installed-app list, `choco list` if available, existing
+   Cygwin root/data, services, and optional-feature state. Record any tooling
+   added just to run these tests so it is not mistaken for installer output.
 2. From a normal, non-elevated shell, run the **checkout's** installer:
 
    ```powershell
    & .\scripts\install.ps1
    ```
 
-   It downloads the current release CLI but uses this PR's installer code.
+   The installer from the commit under test downloads the current release CLI.
    Expect the installed path, version output (or the legacy `--help` fallback)
    and the next-step hint, without
    UAC. Verify both binaries, the user PATH entry, unchanged machine PATH and
@@ -62,8 +62,8 @@ Hyper-V test. Keep host dependency changes inside the disposable VM.
    must show “version check failed” and the underlying detail. Record the
    actual native error and policy type, especially for WDAC, whose errors can
    differ. Do not change company policy to conduct this test.
-6. Revert to the unrestricted snapshot. From the PR checkout, use a CLI built
-   from that commit (with Go available: `go build -o sailwright-review.exe
+6. Revert to the unrestricted snapshot. Use a CLI built from the commit under
+   test (with Go available: `go build -o sailwright-review.exe
    ./cmd/main.go`). Run:
 
    ```powershell
@@ -87,7 +87,7 @@ Hyper-V test. Keep host dependency changes inside the disposable VM.
    ADK removal and feature/role removal after the test. Do not claim an
    unexecuted optional path as passed.
 
-Attach a short result to the PR: commit, environment, commands, pass/fail for
-CLI install, raw PATH preservation, enforced-policy diagnostic and dependency
-removal, plus exceptions or unresolved leftovers. Keep the PR in draft until
-the selected Windows acceptance checks have been reviewed.
+Record the result with the change. Include the commit, environment, commands,
+pass/fail for CLI install, raw PATH preservation, enforced-policy diagnostic
+and dependency removal, plus exceptions or unresolved leftovers. Have the
+selected Windows acceptance checks reviewed before marking them complete.
