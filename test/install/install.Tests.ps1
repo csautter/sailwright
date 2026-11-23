@@ -278,6 +278,47 @@ if ($args[0] -eq '--version') {
         Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter { "$Object" -eq 'help reached' }
     }
 
+    It 'checks help when nonzero native exits would otherwise throw' -Skip:($PSVersionTable.PSVersion -lt [version]'7.3') {
+        Mock Write-Host {}
+        if ($IsWindows) {
+            $stub = Join-Path $TestDrive 'legacy-native.cmd'
+            Set-Content -LiteralPath $stub -Encoding Ascii -Value @'
+@echo off
+if "%~1"=="--version" (
+    echo Error: unknown flag: --version 1>&2
+    exit /b 1
+)
+if "%~1"=="--help" (
+    echo help reached
+    exit /b 0
+)
+exit /b 2
+'@
+        } else {
+            $stub = Join-Path $TestDrive 'legacy-native'
+            Set-Content -LiteralPath $stub -Encoding Ascii -Value @'
+#!/bin/sh
+case "$1" in
+    --version) echo 'Error: unknown flag: --version' >&2; exit 1 ;;
+    --help) echo 'help reached'; exit 0 ;;
+esac
+exit 2
+'@
+            chmod +x $stub
+        }
+
+        $ErrorActionPreference = 'Stop'
+        $previousPreference = $global:PSNativeCommandUseErrorActionPreference
+        try {
+            $global:PSNativeCommandUseErrorActionPreference = $true
+            Invoke-InstalledCliVersion -BinaryPath $stub | Should -BeNullOrEmpty
+            $PSNativeCommandUseErrorActionPreference | Should -BeTrue
+            Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter { "$Object" -eq 'help reached' }
+        } finally {
+            $global:PSNativeCommandUseErrorActionPreference = $previousPreference
+        }
+    }
+
     It 'rejects a failed help check for a legacy release' {
         $stub = Join-Path $TestDrive 'legacy-broken.ps1'
         Set-Content -LiteralPath $stub -Value @'

@@ -104,6 +104,8 @@
     }
 
     function Invoke-InstalledCliVersion([string]$BinaryPath) {
+        # Inspect the native exit codes here, even if the caller enables native exit errors.
+        $local:PSNativeCommandUseErrorActionPreference = $false
         $legacyVersion = $false
         try {
             $output = & $BinaryPath --version 2>&1
