@@ -19,7 +19,9 @@ func stubTartProvisionPath(t *testing.T, readiness func(string, string, alchemy_
 	previousAnsible := runAnsibleProvisionCommandFunc
 	previousLookPath := lookPathProvisionCommand
 	previousValidate := validateTartGuestNetworkConfig
+	previousGOOS := runtimeGOOS
 	t.Cleanup(func() {
+		runtimeGOOS = previousGOOS
 		validateTartGuestNetworkConfig = previousValidate
 		inspectProvisionTarget = previousInspect
 		discoverTartProvisionAddress = previousDiscover
@@ -29,6 +31,10 @@ func stubTartProvisionPath(t *testing.T, readiness func(string, string, alchemy_
 		lookPathProvisionCommand = previousLookPath
 	})
 
+	// Tart provisioning only runs on macOS hosts. Pin the host OS so the
+	// sshpass preflight uses the stubbed PATH lookup instead of the Cygwin
+	// check that Windows CI runners would otherwise take.
+	runtimeGOOS = "darwin"
 	inspectProvisionTarget = func(alchemy_build.VirtualMachineConfig) (alchemy_deploy.StartTargetState, error) {
 		return alchemy_deploy.StartTargetState{Exists: true, Running: true, State: "running"}, nil
 	}
