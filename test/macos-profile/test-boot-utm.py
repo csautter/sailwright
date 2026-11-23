@@ -180,6 +180,52 @@ class BootTest(unittest.TestCase):
         self.assertEqual(boot_utm.guest_addresses('192.168.1.2, fd00::2'), ['192.168.1.2', 'fd00::2'])
 
 
+    def unknown_vm(self):
+        return subprocess.CalledProcessError(
+            1, ['osascript'], stderr='49:53: execution error: UTM got an error: '
+                                     'Can’t get virtual machine id "test-uuid". (-1728)\n')
+
+    def test_late_registration_is_awaited(self):
+        with patch.object(boot_utm, 'registered_path',
+                          side_effect=[self.unknown_vm(), self.unknown_vm(), str(self.bundle)]) as lookup:
+            self.run_boot()
+        self.assertEqual(lookup.call_count, 3)
+        self.assertEqual(self.result()['addresses'], ['192.168.64.10'])
+        self.assertNotIn('utm_vms', self.result())
+
+    def test_registration_timeout_lists_utm_vms_and_starts_nothing(self):
+        vms = [{'id': 'other-uuid', 'name': 'ubuntu', 'path': '/tmp/other.utm'}]
+        with patch.object(boot_utm, 'REGISTRATION_TIMEOUT_SECONDS', 0), \
+                patch.object(boot_utm, 'registered_path', side_effect=self.unknown_vm()), \
+                patch.object(boot_utm, 'list_utm_vms', return_value=vms):
+            with self.assertRaisesRegex(boot_utm.RegistrationTimeout, 'test-uuid within 0s'):
+                self.run_boot()
+        result = self.result()
+        self.assertEqual(result['utm_vms'], vms)
+        self.assertIn('(-1728)', result['stderr'])
+        self.assertEqual(result['status'], 'not started')
+        self.assertEqual(self.actions, [])
+
+    def test_other_lookup_errors_are_not_retried(self):
+        error = subprocess.CalledProcessError(1, ['osascript'], stderr='Not authorized (-1743)')
+        with patch.object(boot_utm, 'registered_path', side_effect=error) as lookup, \
+                patch.object(boot_utm, 'list_utm_vms') as listing:
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.run_boot()
+        lookup.assert_called_once()
+        listing.assert_not_called()
+        self.assertEqual(self.result()['stderr'], 'Not authorized (-1743)')
+
+    def test_utm_vm_listing_is_parsed_and_never_raises(self):
+        self.assertEqual(boot_utm.parse_utm_vms('a\tVM one\t/x/a.utm\n\nb\tVM\ttwo\t\n'),
+                         [{'id': 'a', 'name': 'VM one', 'path': '/x/a.utm'},
+                          {'id': 'b', 'name': 'VM', 'path': 'two\t'}])
+        self.open.return_value = 'c\tonly\t'
+        self.assertEqual(boot_utm.list_utm_vms(), [{'id': 'c', 'name': 'only', 'path': None}])
+        self.open.side_effect = subprocess.CalledProcessError(1, ['osascript'], stderr='boom')
+        self.assertEqual(boot_utm.list_utm_vms(),
+                         "unknown: Command '['osascript']' returned non-zero exit status 1.; boom")
+
     def test_hanging_first_call_reports_utm_state(self):
         self.open.side_effect = subprocess.TimeoutExpired(['osascript'], 60)
         state = {'processes': [{'pid': 7, 'state': 'T', 'path': '/Applications/UTM.app/Contents/MacOS/UTM'}],

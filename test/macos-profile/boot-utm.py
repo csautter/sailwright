@@ -10,6 +10,33 @@ import subprocess
 import time
 
 START_GRACE_SECONDS = 60
+REGISTRATION_TIMEOUT_SECONDS = 60
+REGISTRATION_POLL_SECONDS = 2
+# AppleScript "Can't get <object>" (errAENoSuchObject); the text is localized.
+UNKNOWN_OBJECT_ERROR = '(-1728)'
+# One line per VM: id, name and bundle path, tab-separated. Paths are coerced
+# outside the tell block (see registered_path) and may be missing.
+LIST_VMS_SCRIPT = [
+    'tell application "UTM"',
+    'set vmIds to id of virtual machines',
+    'set vmNames to name of virtual machines',
+    'try',
+    'set vmFiles to file of virtual machines',
+    'on error',
+    'set vmFiles to {}',
+    'end try',
+    'end tell',
+    'set out to {}',
+    'repeat with i from 1 to count of vmIds',
+    'set vmPath to ""',
+    'try',
+    'set vmPath to POSIX path of (item i of vmFiles)',
+    'end try',
+    'set end of out to (item i of vmIds) & tab & (item i of vmNames) & tab & vmPath',
+    'end repeat',
+    "set AppleScript's text item delimiters to linefeed",
+    'return out as text',
+]
 PROBE_TIMEOUT_SECONDS = 10
 UTM_BUNDLE_ID = 'com.utmapp.UTM'
 DEFAULT_UTM_APP = Path('/Applications/UTM.app')
@@ -143,6 +170,63 @@ def vm_command(identifier, action):
                         action, 'end tell'], identifier)
 
 
+class RegistrationTimeout(RuntimeError):
+    """UTM accepted `open` but never listed the bundle's UUID."""
+
+
+def registered_path(identifier):
+    # Resolve the file inside the tell block but coerce it outside: within it,
+    # UTM receives `POSIX path of (file of ...)` as one specifier and fails
+    # with -1700 ("Can't make ... into type specifier").
+    return applescript(['tell application "UTM"',
+                        'set vmFile to file of virtual machine id (item 1 of argv)',
+                        'end tell',
+                        'return POSIX path of vmFile'], identifier)
+
+
+def wait_for_registration(identifier, timeout=None):
+    """Return the bundle path UTM registered for the UUID.
+
+    `open` can return before UTM lists the VM, so an unknown UUID (-1728) is
+    retried until the deadline; any other AppleScript error is fatal at once.
+    """
+    timeout = REGISTRATION_TIMEOUT_SECONDS if timeout is None else timeout
+    deadline = None  # Set on the first miss; the usual immediate hit needs no clock.
+    while True:
+        try:
+            return registered_path(identifier)
+        except subprocess.CalledProcessError as error:
+            if UNKNOWN_OBJECT_ERROR not in (error.stderr or ''):
+                raise
+            now = time.monotonic()
+            if deadline is None:
+                deadline = now + timeout
+            if now >= deadline:
+                raise RegistrationTimeout(
+                    f'UTM did not list virtual machine id {identifier} within {timeout:g}s '
+                    f'after open; see utm_vms in result.json') from error
+        time.sleep(REGISTRATION_POLL_SECONDS)
+
+
+def parse_utm_vms(output):
+    vms = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        vm_id, _, rest = line.partition('\t')
+        name, _, path = rest.partition('\t')
+        vms.append({'id': vm_id, 'name': name, 'path': path or None})
+    return vms
+
+
+def list_utm_vms():
+    """Describe every VM UTM knows, for diagnostics; never raise."""
+    try:
+        return parse_utm_vms(applescript(LIST_VMS_SCRIPT))
+    except (OSError, subprocess.SubprocessError) as error:
+        return f'unknown: {error}; {getattr(error, "stderr", "") or ""}'.rstrip('; ')
+
+
 def guest_addresses(output):
     addresses = []
     for value in re.split(r'[,\s]+', output):
@@ -183,13 +267,12 @@ def boot(bundle, timeout, diagnostics, software_emulation=False):
             raise UTMNotResponding(
                 f'UTM did not answer the first AppleScript call within {error.timeout:g}s: '
                 + '; '.join(result['utm_state']['hints'])) from error
-        # Resolve the file inside the tell block but coerce it outside: within
-        # it, UTM receives `POSIX path of (file of ...)` as one specifier and
-        # fails with -1700 ("Can't make ... into type specifier").
-        registered = applescript(['tell application "UTM"',
-                                  'set vmFile to file of virtual machine id (item 1 of argv)',
-                                  'end tell',
-                                  'return POSIX path of vmFile'], identifier)
+        try:
+            registered = wait_for_registration(identifier)
+        except RegistrationTimeout as error:
+            result['stderr'] = error.__cause__.stderr
+            result['utm_vms'] = list_utm_vms()
+            raise
         if Path(registered).resolve() != bundle.resolve():
             raise RuntimeError('Refusing to smoke-test a UUID registered at another bundle path')
         if vm_command(identifier, 'return (status of targetVM) as text') != 'stopped':
