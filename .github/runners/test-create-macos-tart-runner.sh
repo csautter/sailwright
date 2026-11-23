@@ -1224,6 +1224,23 @@ test_worker_term_during_network_check_stops_promptly() {
 	assert_not_contains "${TEST_LOG_DIR}/sshpass.log" "prepare-utm-automation"
 }
 
+test_guest_network_retries_ssh_errors_but_not_check_failures() {
+	begin_test "guest-network-ssh-retry"
+	printf '255\n0\n' >"${TEST_LOG_DIR}/net-queue"
+	export FAKE_SSH_NETWORK_EXIT_QUEUE="${TEST_LOG_DIR}/net-queue"
+
+	prepare_guest_network "worker-1" "10.0.0.2" >"${TEST_LOG_DIR}/output" 2>&1 || fail "ssh hiccup must be retried"
+	assert_count "${TEST_LOG_DIR}/sshpass.log" "prepare-guest-network" "2"
+
+	: >"${TEST_LOG_DIR}/sshpass.log"
+	printf '1\n0\n' >"${TEST_LOG_DIR}/net-queue"
+	if prepare_guest_network "worker-1" "10.0.0.2" >"${TEST_LOG_DIR}/output" 2>&1; then
+		fail "a failed guest check must not be retried into success"
+	fi
+	assert_count "${TEST_LOG_DIR}/sshpass.log" "prepare-guest-network" "1"
+	assert_contains "${TEST_LOG_DIR}/sshpass.log" $'PubkeyAuthentication=no'
+}
+
 run_test test_successful_cancel_signals_runner_and_stops_vm
 run_test test_runner_list_api_failure_remains_unknown
 run_test test_no_active_job_waits_until_busy_grace_deadline
@@ -1257,6 +1274,7 @@ run_test test_guest_network_is_skipped_when_bridged_without_check
 run_test test_worker_cycle_uses_nat_slot_mac_and_checks_network_first
 run_test test_worker_cycle_bridged_opt_in
 run_test test_worker_term_during_network_check_stops_promptly
+run_test test_guest_network_retries_ssh_errors_but_not_check_failures
 run_test test_guest_network_sets_dns_and_reports_ready
 run_test test_guest_network_dhcp_and_keep
 run_test test_guest_network_rejects_bad_input

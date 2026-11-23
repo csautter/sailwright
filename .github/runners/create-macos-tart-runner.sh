@@ -123,10 +123,14 @@ vm_ssh() {
 vm_ssh_exec() {
 	local ip="$1"; shift
 	# Keepalives end a session whose VM stopped answering (about one minute).
+	# Password only: keys offered from an ssh-agent first can use up the
+	# guest's MaxAuthTries before sshpass gets to send the password.
 	exec sshpass -p "${VM_SSH_PASS}" ssh \
 		-o "StrictHostKeyChecking=no" \
 		-o "UserKnownHostsFile=/dev/null" \
 		-o "ConnectTimeout=5" \
+		-o "PubkeyAuthentication=no" \
+		-o "PreferredAuthentications=password,keyboard-interactive" \
 		-o "ServerAliveInterval=15" \
 		-o "ServerAliveCountMax=4" \
 		"${VM_SSH_USER}@${ip}" "$@"
@@ -322,7 +326,16 @@ prepare_guest_network() {
 		return 0
 	fi
 	echo "[${label}] Preparing guest network (DNS: ${dns})..."
-	vm_ssh_script "${GUEST_NETWORK_SCRIPT}" "$ip" /bin/bash -s -- "$(printf '%q ' "${args[@]}")"
+	# Exit 255 is ssh itself (e.g. a login hiccup right after boot); retry
+	# that. Any other failure comes from the guest check and is final.
+	local attempt status
+	for attempt in 1 2 3; do
+		status=0
+		vm_ssh_script "${GUEST_NETWORK_SCRIPT}" "$ip" /bin/bash -s -- "$(printf '%q ' "${args[@]}")" || status=$?
+		[[ "$status" -ne 255 ]] && return "$status"
+		[[ "$attempt" -lt 3 ]] && sleep 5
+	done
+	return "$status"
 }
 
 # ─── GitHub Actions shutdown helpers ──────────────────────────────────────────
