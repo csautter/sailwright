@@ -26,6 +26,15 @@ set -e
 #   RUNNER_FORCE_CANCEL_AFTER_SECONDS   - seconds to wait before optional force-cancel (default: 30)
 #   RUNNER_SHUTDOWN_POLL_SECONDS        - seconds between runner-state polls during shutdown (default: 5, minimum: 1)
 #   PREPARE_UTM_AUTOMATION              - clear UTM quarantine and grant Automation in each VM before registration (default: true)
+#   RUNNER_NETWORK                      - "nat" (default) or "bridged:<host interface>", e.g. "bridged:Wi-Fi"
+#   RUNNER_DNS_SERVERS                  - guest DNS: "router" (host's default gateway, default with NAT), "dhcp"
+#                                         (default when bridged), or space/comma-separated resolver IPs
+#   RUNNER_DNS_SERVICE                  - macOS network service inside the guest (default: Ethernet)
+#   RUNNER_FIXED_MAC                    - give each worker slot a stable MAC so DHCP leases are reused (default: true)
+#   RUNNER_MAC_ADDRESSES                - optional comma-separated MACs per worker slot (default: derived from host + slot)
+#   RUNNER_NETWORK_CHECK                - check DNS + HTTPS from the guest before registering (default: true)
+#   RUNNER_NETWORK_CHECK_URLS           - space-separated HTTPS URLs for that check (default: GitHub web and API)
+#   RUNNER_NETWORK_CHECK_TIMEOUT        - seconds the check may take (default: 90)
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
 GITHUB_SCOPE="${GITHUB_SCOPE:-repo}"
@@ -57,6 +66,18 @@ BUILD_CACHE_DIR="${BUILD_CACHE_DIR:-}"
 PREPARE_UTM_AUTOMATION="${PREPARE_UTM_AUTOMATION:-true}"
 RUNNER_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UTM_AUTOMATION_SCRIPT="${UTM_AUTOMATION_SCRIPT:-${RUNNER_SCRIPT_DIR}/prepare-utm-automation.sh}"
+# NAT keeps runner VMs off the LAN: no DHCP lease per job and no VM with the
+# default SSH password reachable from other machines.
+RUNNER_NETWORK="${RUNNER_NETWORK:-nat}"
+RUNNER_DNS_SERVERS="${RUNNER_DNS_SERVERS:-}"
+RUNNER_DNS_SERVICE="${RUNNER_DNS_SERVICE:-Ethernet}"
+RUNNER_FIXED_MAC="${RUNNER_FIXED_MAC:-true}"
+RUNNER_MAC_ADDRESSES="${RUNNER_MAC_ADDRESSES:-}"
+RUNNER_NETWORK_CHECK="${RUNNER_NETWORK_CHECK:-true}"
+RUNNER_NETWORK_CHECK_URLS="${RUNNER_NETWORK_CHECK_URLS:-https://github.com/ https://api.github.com/}"
+RUNNER_NETWORK_CHECK_TIMEOUT="${RUNNER_NETWORK_CHECK_TIMEOUT:-90}"
+GUEST_NETWORK_SCRIPT="${GUEST_NETWORK_SCRIPT:-${RUNNER_SCRIPT_DIR}/prepare-guest-network.sh}"
+TART_VMS_DIR="${TART_HOME:-${HOME}/.tart}/vms"
 # ───────────────────────────────────────────────────────────────────────────────
 
 preflight_checks() {
@@ -72,6 +93,13 @@ preflight_checks() {
 			exit 1
 		fi
 	done
+	if ! validate_runner_network; then
+		exit 1
+	fi
+	if env_truthy "${RUNNER_FIXED_MAC}" && ! command -v python3 &>/dev/null; then
+		echo "ERROR: RUNNER_FIXED_MAC needs python3 on the host to edit the clone's Tart config."
+		exit 1
+	fi
 }
 
 ensure_base_image_exists() {
@@ -115,10 +143,162 @@ prepare_utm_automation() {
 		return 0
 	fi
 	echo "[${label}] Preparing UTM for unattended AppleScript..."
-	if ! vm_ssh "$ip" /bin/bash -s <"${UTM_AUTOMATION_SCRIPT}"; then
-		echo "[${label}] WARNING: UTM preparation failed; UTM AppleScript steps may hang on GUI prompts." >&2
-	fi
+	# SSH right after boot occasionally times out in the banner exchange; the
+	# guest script is idempotent, so retry a few times.
+	local attempt
+	for attempt in 1 2 3; do
+		if vm_ssh "$ip" /bin/bash -s <"${UTM_AUTOMATION_SCRIPT}"; then
+			return 0
+		fi
+		[[ "$attempt" -lt 3 ]] && sleep 5
+	done
+	echo "[${label}] WARNING: UTM preparation failed; UTM AppleScript steps may hang on GUI prompts." >&2
 	return 0
+}
+
+# ─── Runner VM networking ──────────────────────────────────────────────────────
+validate_runner_network() {
+	case "${RUNNER_NETWORK}" in
+		nat) ;;
+		bridged:?*) ;;
+		*)
+			echo "ERROR: RUNNER_NETWORK must be 'nat' or 'bridged:<interface>', got '${RUNNER_NETWORK}'." >&2
+			return 1
+			;;
+	esac
+	if [[ ! "${RUNNER_NETWORK_CHECK_TIMEOUT}" =~ ^[0-9]+$ ]]; then
+		echo "ERROR: RUNNER_NETWORK_CHECK_TIMEOUT must be whole seconds, got '${RUNNER_NETWORK_CHECK_TIMEOUT}'." >&2
+		return 1
+	fi
+}
+
+# Prints the `tart run` network flag (none for NAT).
+tart_network_args() {
+	case "${RUNNER_NETWORK}" in
+		bridged:*) printf '%s\n' "--net-bridged=${RUNNER_NETWORK#bridged:}" ;;
+	esac
+}
+
+# Prints the `tart ip` resolver flag. ARP only sees bridged guests; NAT guests
+# are found through the host's DHCP leases (Tart's default).
+tart_ip_args() {
+	case "${RUNNER_NETWORK}" in
+		bridged:*) printf '%s\n' "--resolver=arp" ;;
+	esac
+}
+
+host_default_router() {
+	route -n get default 2>/dev/null | awk '/gateway:/ {print $2; exit}'
+}
+
+# Prints the guest DNS setting for prepare-guest-network.sh: "keep", "dhcp",
+# or space-separated resolver IPs. "router" resolves on every cycle, so a host
+# that moves between networks keeps working.
+resolve_guest_dns() {
+	local setting="${RUNNER_DNS_SERVERS}" router
+	if [[ -z "${setting}" ]]; then
+		case "${RUNNER_NETWORK}" in
+			nat) setting="router" ;;
+			*) setting="keep" ;;
+		esac
+	fi
+	case "${setting}" in
+		keep|dhcp) printf '%s\n' "${setting}" ;;
+		router)
+			router="$(host_default_router)"
+			if [[ ! "${router}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+				echo "ERROR: could not determine the host's default IPv4 router for guest DNS (got '${router}')." >&2
+				return 1
+			fi
+			printf '%s\n' "${router}"
+			;;
+		*) printf '%s\n' "${setting//,/ }" ;;
+	esac
+}
+
+# Stable, locally administered unicast MAC for a worker slot. Derived from the
+# host name so two runner hosts on one network do not collide.
+worker_mac_address() {
+	local worker_id="$1" mac="" hash
+	local -a macs
+	if [[ -n "${RUNNER_MAC_ADDRESSES}" ]]; then
+		IFS=',' read -r -a macs <<<"${RUNNER_MAC_ADDRESSES}"
+		mac="${macs[$((worker_id - 1))]:-}"
+		mac="$(printf '%s' "${mac}" | tr -d ' ' | tr 'A-F' 'a-f')"
+	else
+		hash="$(printf '%s-w%s' "$(hostname -s)" "${worker_id}" | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-8)"
+		mac="$(printf '02:%s:%s:%s:%s:%02x' "${hash:0:2}" "${hash:2:2}" "${hash:4:2}" "${hash:6:2}" "$((worker_id % 256))")"
+	fi
+	if [[ ! "${mac}" =~ ^[0-9a-f][02468ace](:[0-9a-f]{2}){5}$ ]]; then
+		echo "ERROR: no valid unicast MAC for worker ${worker_id} (got '${mac}')." >&2
+		return 1
+	fi
+	printf '%s\n' "${mac}"
+}
+
+# Name of another running local VM that already uses MAC $1, if any.
+running_vm_with_mac() {
+	local mac="$1" exclude="$2" config name
+	for config in "${TART_VMS_DIR}"/*/config.json; do
+		[[ -f "${config}" ]] || continue
+		name="$(basename "$(dirname "${config}")")"
+		[[ "${name}" == "${exclude}" ]] && continue
+		grep -qi "\"macAddress\"[[:space:]]*:[[:space:]]*\"${mac}\"" "${config}" || continue
+		if tart list | awk -v n="${name}" '$1=="local" && $2==n {print $NF}' | grep -qx running; then
+			printf '%s\n' "${name}"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# Give the fresh clone its slot's MAC so the DHCP server (LAN when bridged,
+# the host's vmnet DHCP with NAT) reuses one lease per slot instead of one per
+# job. Falls back to Tart's random MAC when the fixed one is still taken, e.g.
+# by a VM that shutdown kept alive under an active job.
+apply_worker_mac() {
+	local label="$1" vm_name="$2" worker_id="$3" mac holder config
+	env_truthy "${RUNNER_FIXED_MAC}" || return 0
+	mac="$(worker_mac_address "${worker_id}")" || return 1
+	if holder="$(running_vm_with_mac "${mac}" "${vm_name}")"; then
+		echo "[${label}] WARNING: MAC ${mac} is in use by running VM '${holder}'; keeping a random MAC for this cycle." >&2
+		return 0
+	fi
+	config="${TART_VMS_DIR}/${vm_name}/config.json"
+	if ! python3 - "${config}" "${mac}" <<'PY'
+import json, os, sys
+path, mac = sys.argv[1], sys.argv[2]
+with open(path) as handle:
+    config = json.load(handle)
+config['macAddress'] = mac
+tmp = path + '.tmp'
+with open(tmp, 'w') as handle:
+    json.dump(config, handle, indent=2)
+os.replace(tmp, path)
+PY
+	then
+		echo "[${label}] ERROR: could not set MAC ${mac} in ${config}." >&2
+		return 1
+	fi
+	echo "[${label}] Using fixed MAC ${mac} for this slot."
+}
+
+# Configure guest DNS and prove DNS + HTTPS from inside the guest before the
+# runner registers, so a broken network never takes a job.
+prepare_guest_network() {
+	local label="$1" ip="$2" dns url
+	local -a args
+	dns="$(resolve_guest_dns)" || return 1
+	args=(--dns "${dns}" --service "${RUNNER_DNS_SERVICE}" --timeout "${RUNNER_NETWORK_CHECK_TIMEOUT}")
+	if env_truthy "${RUNNER_NETWORK_CHECK}"; then
+		for url in ${RUNNER_NETWORK_CHECK_URLS}; do
+			args+=(--url "${url}")
+		done
+	elif [[ "${dns}" == "keep" ]]; then
+		return 0
+	fi
+	echo "[${label}] Preparing guest network (DNS: ${dns})..."
+	vm_ssh "$ip" /bin/bash -s -- "$(printf '%q ' "${args[@]}")" <"${GUEST_NETWORK_SCRIPT}"
 }
 
 # ─── GitHub Actions shutdown helpers ──────────────────────────────────────────
@@ -613,6 +793,14 @@ run_worker() {
 		fi
 		current_vm_name="$vm_name"
 
+		if [[ "$VM_CLONE_PER_RUN" == "true" ]] && ! apply_worker_mac "worker-${worker_id}" "${vm_name}" "${worker_id}"; then
+			echo "[worker-${worker_id}] ERROR: Could not assign the slot MAC. Cleaning up and retrying in 15s..."
+			cleanup_vm "$current_vm_name"
+			current_vm_name=""
+			sleep 15
+			continue
+		fi
+
 		# ── Apply CPU / memory overrides ─────────────────────────────
 		if [[ -n "$VM_CPU_COUNT" || -n "$VM_MEMORY_MB" ]]; then
 			local set_args=()
@@ -658,19 +846,20 @@ run_worker() {
 		echo "[worker-${worker_id}] Registration token obtained."
 
 		# ── Start VM ────────────────────────────────────────────────
-		# WARNING: exposing ssh port with bridged networking and an insecure password is
-		#          only suitable for local/testing use.
-		# NOTE: on some systems with strict firewall rules tart VMs may need --net-bridged
-		#       to reach the internet.
+		# Networking follows RUNNER_NETWORK (NAT by default). With bridged networking
+		# the VM's SSH port and its default password are reachable from the LAN.
 		echo "[worker-${worker_id}] Starting VM '${vm_name}'..."
-		local tart_dir_flag=()
+		# macOS ships Bash 3.2 (no mapfile); each helper prints at most one flag.
+		local tart_dir_flag=() tart_net_flag=() tart_ip_flag=() flag
+		flag="$(tart_network_args)"; [[ -n "$flag" ]] && tart_net_flag=("$flag")
+		flag="$(tart_ip_args)"; [[ -n "$flag" ]] && tart_ip_flag=("$flag")
 		if [[ -n "$BUILD_CACHE_DIR" ]]; then
 			echo "[worker-${worker_id}] Sharing build cache '${BUILD_CACHE_DIR}' → /Volumes/My Shared Files/build-cache/ inside VM"
 			tart_dir_flag=("--dir=build-cache:${BUILD_CACHE_DIR}")
 		fi
 		(
 			trap '' INT HUP
-			run_in_new_session tart run --no-graphics --net-bridged="Wi-Fi" "${tart_dir_flag[@]}" "${vm_name}"
+			run_in_new_session tart run --no-graphics ${tart_net_flag[@]+"${tart_net_flag[@]}"} ${tart_dir_flag[@]+"${tart_dir_flag[@]}"} "${vm_name}"
 		) &
 		current_tart_run_pid=$!
 
@@ -678,7 +867,7 @@ run_worker() {
 		current_vm_ip=""
 		local ip_attempts=0
 		while [[ -z "$current_vm_ip" ]]; do
-			current_vm_ip=$(tart ip --resolver=arp "${vm_name}" 2>/dev/null || true)
+			current_vm_ip=$(tart ip ${tart_ip_flag[@]+"${tart_ip_flag[@]}"} "${vm_name}" 2>/dev/null || true)
 			if [[ -z "$current_vm_ip" ]]; then
 				ip_attempts=$(( ip_attempts + 1 ))
 				if [[ $ip_attempts -ge 90 ]]; then
@@ -723,6 +912,19 @@ run_worker() {
 			continue
 		fi
 		echo "[worker-${worker_id}] SSH connection successful."
+		if ! prepare_guest_network "worker-${worker_id}" "$current_vm_ip"; then
+			echo "[worker-${worker_id}] ERROR: Guest network is not ready. Cleaning up and retrying in 30s..."
+			cleanup_vm "$current_vm_name" "$current_runner_name"
+			if [[ -n "$current_tart_run_pid" ]]; then
+				wait_for_local_process_exit "$current_tart_run_pid"
+			fi
+			current_vm_name=""
+			current_runner_name=""
+			current_vm_ip=""
+			current_tart_run_pid=""
+			sleep 30
+			continue
+		fi
 		prepare_utm_automation "worker-${worker_id}" "$current_vm_ip"
 
 		# ── Configure and run the runner ────────────────────────────

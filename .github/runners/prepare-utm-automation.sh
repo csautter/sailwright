@@ -1,4 +1,5 @@
 #!/bin/bash
+# runner-guest-script: prepare-utm-automation
 # Prepare UTM inside a Tart runner VM for unattended AppleScript control.
 #
 # Runs inside the guest as the SSH user, e.g.:

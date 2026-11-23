@@ -8,6 +8,8 @@ TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/macos-tart-runner-tests.XXXXXX")"
 FAKE_BIN="${TEST_ROOT}/fake-bin"
 FAKE_GUEST_BIN="${TEST_ROOT}/fake-guest-bin"
 UTM_AUTOMATION_UNDER_TEST="${SCRIPT_DIR}/prepare-utm-automation.sh"
+GUEST_NETWORK_UNDER_TEST="${SCRIPT_DIR}/prepare-guest-network.sh"
+export TART_HOME="${TEST_ROOT}/tart"
 TEST_LOG_DIR=""
 CURRENT_PARENT_PID=""
 
@@ -234,10 +236,17 @@ mkdir -p "${log_dir}"
 
 case "${1:-}" in
 	list)
-		printf 'SOURCE\tNAME\n'
-		printf 'local\t%s\n' "${VM_BASE_IMAGE:-tahoe-runner}"
+		printf 'SOURCE\tNAME\tSTATE\n'
+		printf 'local\t%s\tstopped\n' "${VM_BASE_IMAGE:-tahoe-runner}"
+		for vm in ${FAKE_TART_RUNNING:-}; do
+			printf 'local\t%s\trunning\n' "$vm"
+		done
 		;;
-	clone|set|stop|delete)
+	clone)
+		mkdir -p "${TART_HOME:?}/vms/${3}"
+		printf '{\n  "macAddress" : "8e:00:00:00:00:01",\n  "os" : "darwin"\n}\n' >"${TART_HOME}/vms/${3}/config.json"
+		;;
+	set|stop|delete)
 		exit 0
 		;;
 	run)
@@ -269,9 +278,29 @@ mkdir -p "${log_dir}"
 
 args=" $* "
 if [[ "$args" == *" /bin/bash -s"* ]]; then
-	cat >"${log_dir}/utm-automation-stdin"
-	printf 'prepare-utm-automation\n' >>"${log_dir}/sshpass.log"
-	exit "${FAKE_SSH_UTM_EXIT:-0}"
+	stdin_file="${log_dir}/guest-stdin.$$"
+	cat >"${stdin_file}"
+	script="$(sed -n 's/^# runner-guest-script: //p' "${stdin_file}")"
+	mv "${stdin_file}" "${log_dir}/${script}-stdin"
+	printf '%s\n' "${script}" >>"${log_dir}/sshpass.log"
+	case "${script}" in
+		prepare-utm-automation|prepare-guest-network)
+			if [[ "${script}" == prepare-utm-automation ]]; then
+				queue="${FAKE_SSH_UTM_EXIT_QUEUE:-}"
+				default_exit="${FAKE_SSH_UTM_EXIT:-0}"
+			else
+				queue="${FAKE_SSH_NETWORK_EXIT_QUEUE:-}"
+				default_exit="${FAKE_SSH_NETWORK_EXIT:-0}"
+			fi
+			if [[ -n "$queue" && -s "$queue" ]]; then
+				read -r code <"$queue"
+				tail -n +2 "$queue" >"${queue}.$$" && mv "${queue}.$$" "$queue"
+				exit "$code"
+			fi
+			exit "${default_exit}"
+			;;
+	esac
+	exit 97
 fi
 
 if [[ "$args" == *" true"* ]]; then
@@ -342,7 +371,16 @@ fi
 exit 0
 EOF_SLEEP
 
-	chmod +x "${FAKE_BIN}/gh" "${FAKE_BIN}/tart" "${FAKE_BIN}/sshpass" "${FAKE_BIN}/date" "${FAKE_BIN}/sleep"
+	cat >"${FAKE_BIN}/route" <<'EOF_ROUTE'
+#!/usr/bin/env bash
+printf '   route to: default\n'
+if [[ -n "${FAKE_ROUTER-192.168.1.1}" ]]; then
+	printf '    gateway: %s\n' "${FAKE_ROUTER-192.168.1.1}"
+fi
+printf '  interface: en0\n'
+EOF_ROUTE
+
+	chmod +x "${FAKE_BIN}/gh" "${FAKE_BIN}/tart" "${FAKE_BIN}/sshpass" "${FAKE_BIN}/date" "${FAKE_BIN}/sleep" "${FAKE_BIN}/route"
 }
 
 # Fakes for the guest-side prepare-utm-automation.sh. They model the macOS
@@ -399,6 +437,42 @@ if [[ "$2" == SELECT* ]]; then
 fi
 EOF_SQLITE
 
+	cat >"${FAKE_GUEST_BIN}/networksetup" <<'EOF_NETWORKSETUP'
+#!/usr/bin/env bash
+printf 'networksetup %s\n' "$*" >>"${TEST_LOG_DIR}/guest.log"
+EOF_NETWORKSETUP
+
+	cat >"${FAKE_GUEST_BIN}/dscacheutil" <<'EOF_DSCACHEUTIL'
+#!/usr/bin/env bash
+printf 'dscacheutil %s\n' "$*" >>"${TEST_LOG_DIR}/guest.log"
+[[ "${1:-}" == "-q" ]] || exit 0
+queue="${FAKE_DNS_QUEUE:-}"
+answer="${FAKE_DNS_OK:-true}"
+if [[ -n "$queue" && -s "$queue" ]]; then
+	read -r answer <"$queue"
+	tail -n +2 "$queue" >"${queue}.$$" && mv "${queue}.$$" "$queue"
+fi
+if [[ "$answer" == "true" ]]; then
+	printf 'name: %s\nip_address: 140.82.121.3\n' "${@: -1}"
+fi
+EOF_DSCACHEUTIL
+
+	cat >"${FAKE_GUEST_BIN}/curl" <<'EOF_CURL'
+#!/usr/bin/env bash
+printf 'curl %s\n' "$*" >>"${TEST_LOG_DIR}/guest.log"
+printf '%s' "${FAKE_HTTP_CODE:-200}"
+EOF_CURL
+
+	cat >"${FAKE_GUEST_BIN}/scutil" <<'EOF_SCUTIL'
+#!/usr/bin/env bash
+printf 'resolver #1\n  nameserver[0] : %s\n' "${FAKE_RESOLVER:-192.168.1.1}"
+EOF_SCUTIL
+
+	cat >"${FAKE_GUEST_BIN}/killall" <<'EOF_KILLALL'
+#!/usr/bin/env bash
+printf 'killall %s\n' "$*" >>"${TEST_LOG_DIR}/guest.log"
+EOF_KILLALL
+
 	cat >"${FAKE_GUEST_BIN}/osascript" <<'EOF_OSASCRIPT'
 #!/usr/bin/env bash
 printf 'osascript %s\n' "$*" >>"${TEST_LOG_DIR}/guest.log"
@@ -427,6 +501,15 @@ reset_script_state() {
 	RUNNER_SHUTDOWN_POLL_SECONDS="5"
 	REQUESTED_CANCEL_RUN_ID=""
 	PREPARE_UTM_AUTOMATION="true"
+	RUNNER_NETWORK="nat"
+	RUNNER_DNS_SERVERS=""
+	RUNNER_DNS_SERVICE="Ethernet"
+	RUNNER_FIXED_MAC="true"
+	RUNNER_MAC_ADDRESSES=""
+	RUNNER_NETWORK_CHECK="true"
+	RUNNER_NETWORK_CHECK_URLS="https://github.com/ https://api.github.com/"
+	RUNNER_NETWORK_CHECK_TIMEOUT="90"
+	TART_VMS_DIR="${TART_HOME}/vms"
 	export GITHUB_SCOPE GITHUB_REPO GITHUB_ORG VM_BASE_IMAGE VM_CLONE_PER_RUN
 }
 
@@ -445,7 +528,9 @@ begin_test() {
 	unset FAKE_GH_RUN_LIST_FAIL FAKE_GH_JOB_LIST_FAIL FAKE_GH_RUNNER_LIST_FAIL
 	unset FAKE_GH_CANCEL_EXIT FAKE_GH_FORCE_CANCEL_EXIT FAKE_GH_FORCE_CANCEL_ERROR FAKE_GH_DELETE_EXIT
 	unset FAKE_DATE_SEQUENCE FAKE_DATE_VALUE FAKE_SSH_RUNNER_BLOCK FAKE_SSH_RUNNER_EXIT
-	unset FAKE_TART_IP FAKE_SSH_UTM_EXIT
+	unset FAKE_TART_IP FAKE_SSH_UTM_EXIT FAKE_SSH_UTM_EXIT_QUEUE FAKE_SSH_NETWORK_EXIT FAKE_SSH_NETWORK_EXIT_QUEUE FAKE_TART_RUNNING FAKE_ROUTER
+	unset FAKE_DNS_OK FAKE_DNS_QUEUE FAKE_HTTP_CODE FAKE_RESOLVER
+	rm -rf "${TART_HOME}"
 	unset FAKE_BUNDLE_ID FAKE_TCC_AUTH_VALUE FAKE_OSASCRIPT_EXIT
 	: >"${TEST_LOG_DIR}/guest.log"
 	: >"${TEST_LOG_DIR}/sqlite.log"
@@ -739,7 +824,7 @@ test_worker_prepares_utm_before_runner_registration() {
 	assert_contains "${TEST_LOG_DIR}/output" "[worker-1] Preparing UTM for unattended AppleScript..."
 	assert_contains "${TEST_LOG_DIR}/sshpass.log" "prepare-utm-automation"
 	assert_contains "${TEST_LOG_DIR}/sshpass.log" $'admin@10.0.0.2\t/bin/bash\t-s'
-	cmp -s "${TEST_LOG_DIR}/utm-automation-stdin" "${UTM_AUTOMATION_UNDER_TEST}" ||
+	cmp -s "${TEST_LOG_DIR}/prepare-utm-automation-stdin" "${UTM_AUTOMATION_UNDER_TEST}" ||
 		fail "the guest did not receive prepare-utm-automation.sh on stdin"
 }
 
@@ -751,6 +836,19 @@ test_utm_preparation_failure_only_warns() {
 		fail "a failed UTM preparation must not abort the runner cycle"
 
 	assert_contains "${TEST_LOG_DIR}/output" "WARNING: UTM preparation failed"
+	assert_count "${TEST_LOG_DIR}/sshpass.log" "prepare-utm-automation" "3"
+}
+
+test_utm_preparation_retries_transient_ssh_failure() {
+	begin_test "prepare-utm-retry"
+	printf '255\n0\n' >"${TEST_LOG_DIR}/utm-exit-queue"
+	export FAKE_SSH_UTM_EXIT_QUEUE="${TEST_LOG_DIR}/utm-exit-queue"
+
+	prepare_utm_automation "worker-1" "10.0.0.2" >"${TEST_LOG_DIR}/output" 2>&1
+
+	assert_count "${TEST_LOG_DIR}/sshpass.log" "prepare-utm-automation" "2"
+	assert_not_contains "${TEST_LOG_DIR}/output" "WARNING"
+	assert_contains "${TEST_LOG_DIR}/sleep.log" $'sleep\t5'
 }
 
 test_utm_preparation_can_be_disabled() {
@@ -864,6 +962,232 @@ test_guest_without_utm_is_a_noop_unless_verifying() {
 	fi
 }
 
+test_nat_is_default_and_bridged_is_opt_in() {
+	begin_test "network-mode"
+
+	[[ -z "$(tart_network_args)" && -z "$(tart_ip_args)" ]] || fail "NAT must not pass bridged or ARP flags"
+	RUNNER_NETWORK="bridged:Wi-Fi"
+	[[ "$(tart_network_args)" == "--net-bridged=Wi-Fi" ]] || fail "bridged flag missing"
+	[[ "$(tart_ip_args)" == "--resolver=arp" ]] || fail "bridged VMs need the ARP resolver"
+	validate_runner_network 2>/dev/null || fail "bridged:Wi-Fi must be valid"
+	for invalid in "bridged" "bridged:" "host" ""; do
+		RUNNER_NETWORK="$invalid"
+		if validate_runner_network 2>/dev/null; then
+			fail "RUNNER_NETWORK='${invalid}' must be rejected"
+		fi
+	done
+	RUNNER_NETWORK="nat"
+	RUNNER_NETWORK_CHECK_TIMEOUT="soon"
+	if validate_runner_network 2>/dev/null; then
+		fail "a non-numeric check timeout must be rejected"
+	fi
+}
+
+test_guest_dns_defaults_to_host_router_with_nat() {
+	begin_test "guest-dns-resolution"
+
+	[[ "$(resolve_guest_dns)" == "192.168.1.1" ]] || fail "NAT must default to the host's router"
+	RUNNER_DNS_SERVERS="10.0.0.53, 10.0.0.54"
+	[[ "$(resolve_guest_dns)" == "10.0.0.53  10.0.0.54" || "$(resolve_guest_dns)" == "10.0.0.53 10.0.0.54" ]] ||
+		fail "comma-separated servers must become a list, got '$(resolve_guest_dns)'"
+	RUNNER_DNS_SERVERS="dhcp"
+	[[ "$(resolve_guest_dns)" == "dhcp" ]] || fail "dhcp must pass through"
+	RUNNER_DNS_SERVERS=""
+	RUNNER_NETWORK="bridged:Wi-Fi"
+	[[ "$(resolve_guest_dns)" == "keep" ]] || fail "bridged must keep the LAN DHCP DNS by default"
+	RUNNER_NETWORK="nat"
+	export FAKE_ROUTER=""
+	if resolve_guest_dns >/dev/null 2>"${TEST_LOG_DIR}/output"; then
+		fail "a missing default router must fail"
+	fi
+	assert_contains "${TEST_LOG_DIR}/output" "could not determine the host's default IPv4 router"
+}
+
+test_worker_mac_is_stable_unicast_and_per_slot() {
+	begin_test "worker-mac"
+
+	local first second again
+	first="$(worker_mac_address 1)"
+	again="$(worker_mac_address 1)"
+	second="$(worker_mac_address 2)"
+	[[ "$first" == "$again" ]] || fail "slot MAC must be stable"
+	[[ "$first" != "$second" ]] || fail "slots must not share a MAC"
+	[[ "$first" =~ ^02(:[0-9a-f]{2}){4}:01$ ]] || fail "unexpected derived MAC ${first}"
+	RUNNER_MAC_ADDRESSES="0a:00:00:00:00:0A, 0a:00:00:00:00:0b"
+	[[ "$(worker_mac_address 2)" == "0a:00:00:00:00:0b" ]] || fail "configured MAC not used"
+	[[ "$(worker_mac_address 1)" == "0a:00:00:00:00:0a" ]] || fail "configured MAC not normalized"
+	if worker_mac_address 3 >/dev/null 2>&1; then
+		fail "a slot without a configured MAC must fail"
+	fi
+	RUNNER_MAC_ADDRESSES="01:00:5e:00:00:01"
+	if worker_mac_address 1 >/dev/null 2>&1; then
+		fail "a multicast MAC must be rejected"
+	fi
+}
+
+test_fixed_mac_is_written_to_clone_config() {
+	begin_test "apply-mac"
+	tart clone tahoe-runner runner-w1-1
+
+	apply_worker_mac "worker-1" "runner-w1-1" 1 >"${TEST_LOG_DIR}/output" 2>&1 || fail "apply failed"
+
+	assert_contains "${TART_VMS_DIR}/runner-w1-1/config.json" "\"macAddress\": \"$(worker_mac_address 1)\""
+	assert_contains "${TART_VMS_DIR}/runner-w1-1/config.json" '"os": "darwin"'
+	assert_contains "${TEST_LOG_DIR}/output" "Using fixed MAC"
+}
+
+test_fixed_mac_taken_by_running_vm_keeps_random_mac() {
+	begin_test "apply-mac-in-use"
+	local mac
+	mac="$(worker_mac_address 1)"
+	tart clone tahoe-runner runner-w1-old
+	printf '{"macAddress" : "%s"}\n' "$mac" >"${TART_VMS_DIR}/runner-w1-old/config.json"
+	tart clone tahoe-runner runner-w1-new
+	export FAKE_TART_RUNNING="runner-w1-old"
+
+	apply_worker_mac "worker-1" "runner-w1-new" 1 >"${TEST_LOG_DIR}/output" 2>&1 || fail "fallback must not fail"
+
+	assert_contains "${TEST_LOG_DIR}/output" "is in use by running VM 'runner-w1-old'"
+	assert_contains "${TART_VMS_DIR}/runner-w1-new/config.json" "8e:00:00:00:00:01"
+
+	export FAKE_TART_RUNNING=""
+	apply_worker_mac "worker-1" "runner-w1-new" 1 >"${TEST_LOG_DIR}/output" 2>&1 || fail "apply failed"
+	assert_contains "${TART_VMS_DIR}/runner-w1-new/config.json" "$mac"
+}
+
+test_guest_network_receives_router_dns_and_check_urls() {
+	begin_test "guest-network-args"
+
+	prepare_guest_network "worker-1" "10.0.0.2" >"${TEST_LOG_DIR}/output" 2>&1 || fail "network preparation failed"
+
+	assert_contains "${TEST_LOG_DIR}/output" "Preparing guest network (DNS: 192.168.1.1)"
+	assert_contains "${TEST_LOG_DIR}/sshpass.log" $'/bin/bash\t-s\t--\t--dns 192.168.1.1 --service Ethernet --timeout 90 --url https://github.com/ --url https://api.github.com/ '
+	cmp -s "${TEST_LOG_DIR}/prepare-guest-network-stdin" "${GUEST_NETWORK_UNDER_TEST}" ||
+		fail "the guest did not receive prepare-guest-network.sh on stdin"
+}
+
+test_guest_network_is_skipped_when_bridged_without_check() {
+	begin_test "guest-network-skip"
+	RUNNER_NETWORK="bridged:Wi-Fi"
+	RUNNER_NETWORK_CHECK="false"
+
+	prepare_guest_network "worker-1" "10.0.0.2" >"${TEST_LOG_DIR}/output" 2>&1 || fail "skip must succeed"
+
+	assert_not_contains "${TEST_LOG_DIR}/sshpass.log" "prepare-guest-network"
+}
+
+test_worker_cycle_uses_nat_slot_mac_and_checks_network_first() {
+	begin_test "worker-cycle-network"
+	export FAKE_DATE_VALUE="1700000000"
+	local queue="${TEST_LOG_DIR}/network-exit-queue"
+	printf '1\n0\n' >"$queue"
+	export FAKE_SSH_NETWORK_EXIT_QUEUE="$queue"
+	MAX_RUNS="2"
+
+	(run_worker 1) >"${TEST_LOG_DIR}/output" 2>&1 || true
+
+	assert_contains "${TEST_LOG_DIR}/output" "[worker-1] Using fixed MAC $(worker_mac_address 1) for this slot."
+	assert_contains "${TEST_LOG_DIR}/output" "[worker-1] ERROR: Guest network is not ready. Cleaning up and retrying in 30s..."
+	assert_contains "${TEST_LOG_DIR}/tart.log" $'tart\trun\t--no-graphics\trunner-w1-1700000000'
+	assert_not_contains "${TEST_LOG_DIR}/tart.log" "--net-bridged"
+	assert_contains "${TEST_LOG_DIR}/tart.log" $'tart\tip\trunner-w1-1700000000'
+	assert_not_contains "${TEST_LOG_DIR}/tart.log" "--resolver=arp"
+	assert_count "${TEST_LOG_DIR}/sshpass.log" "prepare-guest-network" "2"
+	# The failed cycle must not register a runner; the second one does.
+	assert_count "${TEST_LOG_DIR}/sshpass.log" "prepare-utm-automation" "1"
+	local network_line runner_line
+	network_line="$(grep -n 'prepare-guest-network' "${TEST_LOG_DIR}/sshpass.log" | tail -1 | cut -d: -f1)"
+	runner_line="$(grep -n $'\tbash$' "${TEST_LOG_DIR}/sshpass.log" | head -1 | cut -d: -f1)"
+	[[ -n "$network_line" && -n "$runner_line" && "$network_line" -lt "$runner_line" ]] ||
+		fail "the network check must pass before the runner session starts"
+	assert_contains "${TEST_LOG_DIR}/sleep.log" $'sleep\t30'
+}
+
+test_worker_cycle_bridged_opt_in() {
+	begin_test "worker-cycle-bridged"
+	export FAKE_DATE_VALUE="1700000000"
+	RUNNER_NETWORK="bridged:Wi-Fi"
+	MAX_RUNS="1"
+
+	(run_worker 1) >"${TEST_LOG_DIR}/output" 2>&1 || true
+
+	assert_contains "${TEST_LOG_DIR}/tart.log" $'tart\trun\t--no-graphics\t--net-bridged=Wi-Fi\trunner-w1-1700000000'
+	assert_contains "${TEST_LOG_DIR}/tart.log" $'tart\tip\t--resolver=arp\trunner-w1-1700000000'
+	assert_contains "${TEST_LOG_DIR}/sshpass.log" $'--dns keep --service Ethernet'
+}
+
+run_network_script() {
+	PATH="${FAKE_GUEST_BIN}:${FAKE_BIN}:${ORIGINAL_PATH}" \
+	bash "${GUEST_NETWORK_UNDER_TEST}" "$@" >"${TEST_LOG_DIR}/output" 2>&1
+}
+
+test_guest_network_sets_dns_and_reports_ready() {
+	begin_test "guest-net-ready"
+
+	run_network_script --dns "192.168.1.1 192.168.1.2" --url https://github.com/ --url https://api.github.com:443/x ||
+		fail "network script failed: $(cat "${TEST_LOG_DIR}/output")"
+
+	assert_contains "${TEST_LOG_DIR}/guest.log" "networksetup -setdnsservers Ethernet 192.168.1.1 192.168.1.2"
+	assert_contains "${TEST_LOG_DIR}/guest.log" "killall -HUP mDNSResponder"
+	assert_contains "${TEST_LOG_DIR}/guest.log" "dscacheutil -q host -a name api.github.com"
+	assert_contains "${TEST_LOG_DIR}/output" "Guest network ready after 1 attempt(s) (resolvers: 192.168.1.1)."
+}
+
+test_guest_network_dhcp_and_keep() {
+	begin_test "guest-net-dhcp-keep"
+
+	run_network_script --dns dhcp --service "Ethernet 2" || fail "dhcp failed"
+	assert_contains "${TEST_LOG_DIR}/guest.log" "networksetup -setdnsservers Ethernet 2 Empty"
+	: >"${TEST_LOG_DIR}/guest.log"
+	run_network_script --url https://github.com/ || fail "keep failed"
+	assert_not_contains "${TEST_LOG_DIR}/guest.log" "networksetup"
+}
+
+test_guest_network_rejects_bad_input() {
+	begin_test "guest-net-bad-input"
+
+	if run_network_script --dns "192.168.1.1; reboot"; then
+		fail "a non-IP DNS server must be rejected"
+	fi
+	assert_contains "${TEST_LOG_DIR}/output" "not an IP address"
+	assert_not_contains "${TEST_LOG_DIR}/guest.log" "networksetup"
+	if run_network_script --timeout soon; then
+		fail "a non-numeric timeout must be rejected"
+	fi
+}
+
+test_guest_network_dns_failure_names_stage_and_resolver() {
+	begin_test "guest-net-dns-failure"
+	export FAKE_DNS_OK="false" FAKE_RESOLVER="192.168.64.1"
+
+	if run_network_script --url https://github.com/ --timeout 0; then
+		fail "a broken DNS path must fail"
+	fi
+	assert_contains "${TEST_LOG_DIR}/output" "guest network not ready after 0s (1 attempt(s)): system DNS cannot resolve github.com; resolvers: 192.168.64.1."
+	assert_not_contains "${TEST_LOG_DIR}/guest.log" "curl"
+}
+
+test_guest_network_https_failure_is_reported() {
+	begin_test "guest-net-https-failure"
+	export FAKE_HTTP_CODE="000"
+
+	if run_network_script --url https://github.com/ --timeout 0; then
+		fail "an unreachable HTTPS endpoint must fail"
+	fi
+	assert_contains "${TEST_LOG_DIR}/output" "HTTPS to https://github.com/ failed"
+}
+
+test_guest_network_retries_until_ready() {
+	begin_test "guest-net-retry"
+	local queue="${TEST_LOG_DIR}/dns-queue"
+	printf 'false\nfalse\ntrue\n' >"$queue"
+	export FAKE_DNS_QUEUE="$queue"
+
+	run_network_script --url https://github.com/ --timeout 30 --interval 0 ||
+		fail "retry failed: $(cat "${TEST_LOG_DIR}/output")"
+	assert_contains "${TEST_LOG_DIR}/output" "Guest network ready after 3 attempt(s)"
+}
+
 run_test test_successful_cancel_signals_runner_and_stops_vm
 run_test test_runner_list_api_failure_remains_unknown
 run_test test_no_active_job_waits_until_busy_grace_deadline
@@ -877,6 +1201,7 @@ run_test test_org_scope_does_not_call_repo_workflow_run_endpoints
 run_test test_parent_term_reaches_worker_and_cleanup_is_idempotent
 run_test test_worker_prepares_utm_before_runner_registration
 run_test test_utm_preparation_failure_only_warns
+run_test test_utm_preparation_retries_transient_ssh_failure
 run_test test_utm_preparation_can_be_disabled
 run_test test_worker_cycle_prepares_utm_before_config
 run_test test_guest_clears_quarantine_and_grants_ssh_automation
@@ -886,5 +1211,20 @@ run_test test_guest_verify_failure_is_fatal
 run_test test_guest_unstored_grant_is_fatal
 run_test test_guest_rejects_unsafe_bundle_identifier
 run_test test_guest_without_utm_is_a_noop_unless_verifying
+run_test test_nat_is_default_and_bridged_is_opt_in
+run_test test_guest_dns_defaults_to_host_router_with_nat
+run_test test_worker_mac_is_stable_unicast_and_per_slot
+run_test test_fixed_mac_is_written_to_clone_config
+run_test test_fixed_mac_taken_by_running_vm_keeps_random_mac
+run_test test_guest_network_receives_router_dns_and_check_urls
+run_test test_guest_network_is_skipped_when_bridged_without_check
+run_test test_worker_cycle_uses_nat_slot_mac_and_checks_network_first
+run_test test_worker_cycle_bridged_opt_in
+run_test test_guest_network_sets_dns_and_reports_ready
+run_test test_guest_network_dhcp_and_keep
+run_test test_guest_network_rejects_bad_input
+run_test test_guest_network_dns_failure_names_stage_and_resolver
+run_test test_guest_network_https_failure_is_reported
+run_test test_guest_network_retries_until_ready
 
 printf 'All macOS Tart runner tests passed.\n'
