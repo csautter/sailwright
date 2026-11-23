@@ -251,10 +251,27 @@ if ($args[0] -eq '--version') {
     Write-Output 'Error: unknown flag: --version'
     $global:LASTEXITCODE = 1
 } elseif ($args[0] -eq '--help') {
+    Write-Output 'help reached'
     $global:LASTEXITCODE = 0
 } else { throw 'unexpected argument' }
 '@
-        Invoke-InstalledCliVersion -BinaryPath $stub
+        Invoke-InstalledCliVersion -BinaryPath $stub | Should -Be 'help reached'
+    }
+
+    It 'checks help when PowerShell surfaces the unknown flag as a native stderr error' {
+        $stub = Join-Path $TestDrive 'legacy-native-error.ps1'
+        Set-Content -LiteralPath $stub -Value @'
+if ($args[0] -eq '--version') {
+    $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+        [System.Exception]::new('Error: unknown flag: --version'),
+        'NativeCommandError', [System.Management.Automation.ErrorCategory]::NotSpecified, $null)
+    throw $errorRecord
+} elseif ($args[0] -eq '--help') {
+    Write-Output 'help reached'
+    $global:LASTEXITCODE = 0
+} else { throw 'unexpected argument' }
+'@
+        Invoke-InstalledCliVersion -BinaryPath $stub | Should -Be 'help reached'
     }
 
     It 'rejects a failed help check for a legacy release' {
