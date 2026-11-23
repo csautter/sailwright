@@ -157,6 +157,9 @@ const guestDNSDiagnosisBudget = 15 * time.Second
 // minGuestDNSDiagnosisTime is the least time worth spending on diagnosis.
 const minGuestDNSDiagnosisTime = 3 * time.Second
 
+// minUsefulProbeTime is the least time a retry attempt should get.
+const minUsefulProbeTime = 3 * time.Second
+
 // runGuestNetworkCheck verifies guest access, DNS configuration, system DNS
 // and HTTPS with bounded retries. Retries stop early enough to leave a DNS
 // diagnosis budget inside cfg.Timeout; a single probe is additionally capped
@@ -211,7 +214,8 @@ func runGuestNetworkCheck(guest string, cfg guestNetworkCheckConfig, probe guest
 		}
 
 		hint, permanent := probeErrorHint(err)
-		if permanent || !clock.now().Add(cfg.RetryInterval).Before(retryDeadline) {
+		// Do not start an attempt that would only get a few seconds.
+		if permanent || !clock.now().Add(cfg.RetryInterval+minUsefulProbeTime).Before(retryDeadline) {
 			report.Status = GuestNetworkFailed
 			report.Stage = stage
 			report.Detail = err.Error()

@@ -554,6 +554,13 @@ func TestTartDNSFailureHint(t *testing.T) {
 		t.Fatalf("expected configured-resolver hint, got %q", configured)
 	}
 
+	// Configured servers that the guest does not use (check mode, kept user
+	// servers) must not be blamed; the DHCP forwarder is the failing one.
+	unapplied := tartDNSFailureHint(tartDNSSetting{mode: tartDNSServers, servers: []string{"198.51.100.53"}}, router, resolvers)
+	if !strings.Contains(unapplied, "Tart NAT (vmnet) DNS forwarder") {
+		t.Fatalf("expected NAT forwarder hint for unapplied servers, got %q", unapplied)
+	}
+
 	answered := tartDNSFailureHint(tartDNSSetting{}, router, []tartResolverProbe{{address: "192.0.2.1", result: "answered"}})
 	if !strings.Contains(answered, "answers direct queries") {
 		t.Fatalf("expected system-resolution hint, got %q", answered)
@@ -648,6 +655,16 @@ func (p *nameFailingProbe) SystemDNS(name string, timeout time.Duration) error {
 	return nil
 }
 
+func TestTartGuestProbeSystemDNS_PrefersProbeOutputOverTransportError(t *testing.T) {
+	probe := &tartGuestProbe{vmName: "vm-a", run: func(string, time.Duration, string, []string) (string, error) {
+		return "dns_status=timeout\nError: StreamClosed\n", errors.New("exit status 1")
+	}}
+	err := probe.SystemDNS("example.com", 5*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "did not answer") {
+		t.Fatalf("expected the probe's timeout result, got %v", err)
+	}
+}
+
 func TestTartGuestProbeAccess_MissingAgentFailsFast(t *testing.T) {
 	calls := 0
 	probe := &tartGuestProbe{vmName: "vm-a", run: func(_ string, timeout time.Duration, _ string, _ []string) (string, error) {
@@ -680,6 +697,24 @@ func TestTartGuestProbeAccess_UnsupportedTartFailsFast(t *testing.T) {
 	report := runGuestNetworkCheck("vm-a", testCheckConfig(GuestNetworkCheckOffline), probe, newFakeClock().clock())
 	if report.Status != GuestNetworkFailed || calls != 1 || !strings.Contains(report.Detail, "does not support `tart exec`") {
 		t.Fatalf("expected immediate unsupported-Tart failure, got %+v calls=%d", report, calls)
+	}
+}
+
+func TestTartGuestProbeAccess_NotYetRunningIsRetried(t *testing.T) {
+	calls := 0
+	probe := &tartGuestProbe{vmName: "vm-a", run: func(string, time.Duration, string, []string) (string, error) {
+		calls++
+		if calls < 3 {
+			return `VM "vm-a" is not running`, errors.New("exit status 2")
+		}
+		return tartGuestAccessToken + "\n", nil
+	}}
+	cfg := testCheckConfig(GuestNetworkCheckOffline)
+
+	report := runGuestNetworkCheck("vm-a", cfg, probe, newFakeClock().clock())
+
+	if report.Status != GuestNetworkOffline || calls != 3 {
+		t.Fatalf("expected the boot race to be retried until the VM runs, got status=%s calls=%d", report.Status, calls)
 	}
 }
 

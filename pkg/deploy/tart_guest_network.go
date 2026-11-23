@@ -388,7 +388,10 @@ func (p *tartGuestProbe) Access(timeout time.Duration) error {
 			permanent: true,
 		}
 	case strings.Contains(lower, "is not running"):
-		return &guestProbeError{err: errTartGuestNotRunning, hint: "start it with `sailwright start`", permanent: true}
+		// Right after `tart run`, `tart ip` can already report the previous
+		// DHCP lease while `tart exec` still says the VM is not running, so
+		// this is retried within the window.
+		return &guestProbeError{err: errTartGuestNotRunning, hint: "the Tart VM process did not come up; check the tart run log in .dev-alchemy/tart"}
 	}
 	if err == nil {
 		err = errors.New("unexpected output")
@@ -556,7 +559,9 @@ echo "dns_status=done"
 
 func (p *tartGuestProbe) SystemDNS(name string, timeout time.Duration) error {
 	output, err := p.exec(tartGuestSystemDNSScript(name, timeout), timeout+tartGuestExecGracePeriod)
-	if err != nil {
+	// Trust the probe's own result when it got that far; `tart exec` can
+	// report a transport error after the guest command finished.
+	if err != nil && !strings.Contains(output, "dns_status=") {
 		return fmt.Errorf("system DNS probe for %s could not run: %v (%s)", name, err, lastLines(output, 2))
 	}
 	switch {
@@ -582,7 +587,7 @@ var curlTLSExitCodes = []int{35, 51, 53, 54, 58, 59, 60, 64, 66, 77, 80, 82, 83,
 
 func (p *tartGuestProbe) HTTPS(target string, timeout time.Duration) error {
 	output, err := p.exec(tartGuestHTTPSScript(target, timeout), timeout+tartGuestExecGracePeriod)
-	if err != nil {
+	if err != nil && !strings.Contains(output, "curl_exit=") {
 		return fmt.Errorf("HTTPS probe for %s could not run: %v (%s)", target, err, lastLines(output, 2))
 	}
 	return classifyCurlProbe(target, output)
@@ -697,7 +702,12 @@ func tartDNSFailureHint(setting tartDNSSetting, router string, resolvers []tartR
 			routerFails = true
 		}
 	}
-	if setting.mode == tartDNSServers {
+	// Blame TART_MACOS_DNS_SERVERS only when the guest actually uses those
+	// resolvers; in check mode or with kept user servers it may not.
+	if setting.mode == tartDNSServers && slices.ContainsFunc(failing, func(address string) bool {
+		normalized, _ := normalizeDNSServer(address)
+		return slices.Contains(setting.servers, normalized)
+	}) {
 		return fmt.Sprintf("the resolvers from %s (%s) do not answer from inside the guest; choose resolvers the guest can reach (%s)", tartMacOSDNSServersEnvVar, strings.Join(failing, ", "), tartGuestNetworkDocsHint)
 	}
 	if routerFails {
