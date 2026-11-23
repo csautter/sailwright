@@ -125,7 +125,7 @@
         }
         if ($legacyVersion) {
             Write-Host 'This release does not support --version; checking --help instead.'
-            & $BinaryPath --help
+            & $BinaryPath --help | ForEach-Object { Write-Host $_ }
             if ($LASTEXITCODE -ne 0) {
                 throw "sailwright --help exited with code $LASTEXITCODE."
             }

@@ -245,6 +245,7 @@ Describe 'Installed CLI start check' {
     }
 
     It 'checks help for a legacy release without the version flag' {
+        Mock Write-Host {}
         $stub = Join-Path $TestDrive 'legacy.ps1'
         Set-Content -LiteralPath $stub -Value @'
 if ($args[0] -eq '--version') {
@@ -255,10 +256,12 @@ if ($args[0] -eq '--version') {
     $global:LASTEXITCODE = 0
 } else { throw 'unexpected argument' }
 '@
-        Invoke-InstalledCliVersion -BinaryPath $stub | Should -Be 'help reached'
+        Invoke-InstalledCliVersion -BinaryPath $stub | Should -BeNullOrEmpty
+        Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter { "$Object" -eq 'help reached' }
     }
 
     It 'checks help when PowerShell surfaces the unknown flag as a native stderr error' {
+        Mock Write-Host {}
         $stub = Join-Path $TestDrive 'legacy-native-error.ps1'
         Set-Content -LiteralPath $stub -Value @'
 if ($args[0] -eq '--version') {
@@ -271,7 +274,8 @@ if ($args[0] -eq '--version') {
     $global:LASTEXITCODE = 0
 } else { throw 'unexpected argument' }
 '@
-        Invoke-InstalledCliVersion -BinaryPath $stub | Should -Be 'help reached'
+        Invoke-InstalledCliVersion -BinaryPath $stub | Should -BeNullOrEmpty
+        Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter { "$Object" -eq 'help reached' }
     }
 
     It 'rejects a failed help check for a legacy release' {
