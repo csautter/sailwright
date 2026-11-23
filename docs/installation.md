@@ -96,14 +96,12 @@ Sigstore services to verify the signature.
 On Windows this writes the raw registry value `HKCU\Environment\Path` as
 `REG_EXPAND_SZ`, preserving environment-variable references such as `%USERPROFILE%`.
 It also updates the current shell PATH and checks the installed CLI with
-`--version`; a blocked launch reports a diagnostic and documentation link.
+`--version`. If the executable reports `unknown flag: --version`, the
+installer retries with `--help`. A failed check reports a diagnostic and
+documentation link.
 
 Use `sailwright update` to update to the latest release. Older installations
 without this command need the install command above once more.
-
-
-For older CLI releases that reject `--version`, the Windows installer checks
-`--help` instead to confirm that the installed executable can start.
 
 ### Options
 
@@ -135,14 +133,9 @@ sh install.sh --install-dir "$HOME/.local/bin"
 
 ### Uninstall
 
-See [What gets installed → removal instructions](./what-gets-installed.md)
+See [What gets installed → Remove the CLI](./what-gets-installed.md#remove-the-cli)
 for step-by-step CLI and host-dependency removal on each OS, including
 Chocolatey/Cygwin, apt packages, the HashiCorp repository and Homebrew pins.
-
-
-Delete the two binaries from the install directory. On Windows, stop
-`sailwright-gateway.exe` first, and also remove the directory from your user `PATH` (Settings → System → About → Advanced
-system settings → Environment Variables).
 
 ## Manual install
 

@@ -11,11 +11,12 @@ The default `%LOCALAPPDATA%\Programs\sailwright` directory is also user-writable
 A successful download and checksum check does not imply permission to execute.
 
 If `install.ps1` reports that Sailwright is installed but Windows policy blocks
-running it, the files and user PATH entry remain installed; host dependency
-setup has not run. Other failed version checks include the underlying error
-because architecture, permissions or signature validation can also prevent a
-launch. A policy that blocks PowerShell or the installer itself prevents the
-script from producing this diagnostic.
+running it, the files and user PATH entry remain in place. Host dependency
+setup is a separate step. For other start failures, the installer's
+“version check failed” message includes the underlying error from the
+`--version` probe or its `--help` fallback. Architecture, permissions or
+signature validation can also prevent a launch. A policy that blocks PowerShell
+or the installer itself prevents the script from producing this diagnostic.
 
 Give IT the executable path, release version, SHA-256, the complete error and
 the time of the failed launch. Ask them to check application-control event

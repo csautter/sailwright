@@ -23,18 +23,15 @@ a failed recovery may leave backups for manual restoration. Windows can retain
 | Privileges | current user, no sudo | current user, no elevation |
 | Persistent PATH | prints a shell-profile hint; does not edit the profile | appends the directory to the raw `Path` value in `HKCU\Environment` as `REG_EXPAND_SZ`, preserving `%VAR%` references |
 | Current shell PATH | unchanged | appends the directory |
-| Other settings | none | briefly sets and removes the user variable `SAILWRIGHT_INSTALL_REFRESH` to notify Explorer of environment changes |
+| Other settings | none | when user PATH changes, briefly sets and removes `SAILWRIGHT_INSTALL_REFRESH` to notify Explorer. Windows PowerShell 5.1 also enables TLS 1.2 in the current process |
 
 Neither script registers services, scheduled tasks or shell integrations, nor
 installs host dependencies. Installing the gateway binary does not start it.
-The Windows script runs the installed `sailwright.exe --version`; a failed
-start is reported after the files and PATH have been installed. See
-[Managed / company machines](./troubleshooting.md#managed--company-machines).
-The CLI may initialize its own application data when executed; see [User data](#user-data).
-
-
-For older CLI releases that reject `--version`, the Windows installer checks
-`--help` instead to confirm that the installed executable can start.
+The Windows script checks the installed executable with `sailwright.exe
+--version`. If the release reports `unknown flag: --version`, as v0.26.0
+does, it retries with `--help`. Both probes check that the installed
+executable can start. A failed check is reported after the files and PATH
+have been installed. See [Managed / company machines](./troubleshooting.md#managed--company-machines).
 
 ### Remove the CLI
 
@@ -82,22 +79,25 @@ its configured package sources. The bootstrap sets execution policy to
 | --- | --- |
 | Chocolatey, default | `git`, `make`, `packer`, `azure-cli`, `python313`, `cygwin`, `cyg-get` |
 | Cygwin setup and its configured mirror | `python312`, `python312-pip`, `python312-cryptography`, `openssh`, `git`, `make`, `gcc-core`, `gcc-g++`, `libffi-devel`, `libssl-devel`, `sshpass` |
-| pip inside Cygwin | `ansible`, `pywinrm` and their dependencies |
+| pip inside Cygwin | pinned `ansible` and `pywinrm`, plus their dependencies |
 | `--with-go` | Chocolatey `golang` |
 | `--virtualbox` | Chocolatey `virtualbox`, including its drivers |
 | `--vagrant` | Chocolatey `vagrant` |
-| `--hyperv` | Windows Hyper-V features / Server role with management tools, and Microsoft Windows ADK Deployment Tools (`oscdimg`) if absent |
+| `--hyperv` | `Microsoft-Hyper-V-All` on Windows client editions or the Hyper-V role with management tools on Windows Server. Microsoft Windows ADK Deployment Tools if `oscdimg` is absent |
 
-Interactive `sailwright install` can ask whether to add Hyper-V and Vagrant.
+Interactive `sailwright install` offers Hyper-V and Vagrant separately and
+defaults to skipping both. Non-interactive runs skip both unless requested.
 Pass `--hyperv=false --vagrant=false` to explicitly skip them. See
 [Windows host dependencies](./installation.md#windows-host-dependencies).
 Versions are defined in the script. Most Chocolatey packages enforce the pin,
-including downgrades; sufficiently new native Git, Azure CLI and Python
-installations are retained. Existing Cygwin may be stopped, removed and
-reinstalled at `C:\tools\cygwin` or a versioned sibling; its HKLM Cygwin setup
-registry entries are cleared during replacement. Back up existing Cygwin home
-directories first. `--with-go` can remove an existing `C:\Program Files\Go`
-tree before installing a clean toolchain.
+including downgrades. Setup keeps sufficiently new native Git, Azure CLI and
+Python installations. The Python check requires the pinned major and minor
+version. Existing Cygwin may be stopped, removed and
+reinstalled at `C:\tools\cygwin` or a versioned sibling. Setup clears the HKLM
+Cygwin setup registry keys during replacement and stores Cygwin package
+downloads in the selected root's `packages` directory. Back up existing
+Cygwin home directories first. `--with-go` can remove an existing
+`C:\Program Files\Go` tree before installing a clean toolchain.
 
 Chocolatey normally stores packages, shims and logs under `C:\ProgramData\chocolatey`;
 vendor installers create their own files and uninstall registry entries.
@@ -106,8 +106,11 @@ Python and its `Scripts` directory first, and adds VirtualBox, Vagrant and
 `oscdimg` directories when selected. Package installers can also edit PATH.
 This is separate from the CLI installer's user PATH. In GitHub Actions,
 Python's directory is also appended to `GITHUB_PATH`.
-Hyper-V installs Windows services and can require a restart; the script does
-not restart automatically. Other package installers may require a restart too.
+Hyper-V installs Windows services and can require a restart. After restarting,
+rerun `sailwright install --hyperv` to verify the setup. If the ADK is needed,
+setup verifies the Microsoft Authenticode signature of its installer, runs it
+with only Deployment Tools selected, and removes the temporary installer
+directory. Setup leaves restarts to the user.
 
 ### Remove Windows dependencies
 
@@ -190,11 +193,13 @@ add users to groups, configure a virtual network, or edit shell profiles.
 
 The [Ansible helper](../scripts/linux/sailwright-install-ansible.sh) uses pipx
 to install/refresh `ansible` with dependency command links and inject `pywinrm`,
-under `/opt/sailwright/pipx`, linking commands into `/usr/local/bin`.
+under `/opt/sailwright/pipx`, linking commands into `/usr/local/bin`. It then
+checks that the `ansible-playbook` on PATH starts and meets Sailwright's
+minimum ansible-core version.
 With `--with-go`, the [Go helper](../scripts/linux/install-go-from-go-dev.sh)
-downloads the `go.mod` version from go.dev, checks its SHA-256, replaces
-`/usr/local/go`, and replaces `/usr/local/bin/go` and `/usr/local/bin/gofmt`
-with symlinks. No persistent PATH edit is made.
+keeps an exact match on PATH. Otherwise it downloads the `go.mod` version
+from go.dev, checks its SHA-256, replaces `/usr/local/go`, and replaces
+`/usr/local/bin/go` and `/usr/local/bin/gofmt` with symlinks.
 
 ### Remove Linux dependencies
 
@@ -243,9 +248,11 @@ installs or upgrades `hashicorp/tap/packer`, `qemu`, `xz`, `ffmpeg`,
 Formulae live under Homebrew's prefix (`brew --prefix`), with links into its
 `bin` directory. The script accepts sufficiently new versions, unpins older
 formulae to upgrade them, then pins satisfying formulae. `python@3.13` is
-explicitly left unpinned. It does not install Homebrew, start brew services or
-edit PATH/profiles. Brew/cask installers may request elevated rights for their
-own installation steps; normal formula operations run as the current user.
+explicitly left unpinned. The script checks that `ansible-playbook` starts and
+meets Sailwright's minimum ansible-core version. It leaves Homebrew setup,
+service startup and any PATH changes to the user. Brew/cask installers may
+request elevated rights for their own steps. Normal formula operations run
+as the current user.
 
 ### Remove macOS dependencies
 
@@ -283,11 +290,15 @@ Installation does not require an Azure login or create cloud resources.
 
 ## User data
 
-The CLI install scripts do not remove data from earlier use. Running Sailwright
-can create configuration, caches, downloaded images and a working checkout
-under the application data directory (historically named `dev-alchemy`):
+The CLI install scripts preserve data from earlier use. Commands such as
+`sailwright install` use scripts from the current Sailwright checkout when
+run inside one. Otherwise they extract bundled scripts and other assets into
+the `project` subdirectory of the application data directory. The application
+data directory also contains caches, downloaded images and VM state. Its defaults are
 `~/.local/share/dev-alchemy` on Linux, `~/Library/Application Support/dev-alchemy`
-on macOS, and `%LOCALAPPDATA%\dev-alchemy` on Windows. Overrides may move these.
+on macOS, and `%LOCALAPPDATA%\dev-alchemy` on Windows. Environment overrides can
+move these paths. VM builds can also cache versioned virtio-win ISOs, ARM64
+firmware packages and UTM Guest Tools. See [Build cache details](./windows-iso-cache.md#virtio-win-iso).
 The gateway keeps separate state; see [Agent Gateway](./agent-gateway.md#disk-usage).
 
 Destroy unwanted VMs using the CLI before removing tools, and preserve VM disks,
