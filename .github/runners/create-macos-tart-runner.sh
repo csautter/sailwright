@@ -171,8 +171,10 @@ prepare_utm_automation() {
 		return 0
 	fi
 	echo "[${label}] Preparing UTM for unattended AppleScript..."
-	# SSH right after boot occasionally times out in the banner exchange; the
-	# guest script is idempotent, so retry a few times.
+	# SSH right after boot occasionally times out in the banner exchange or
+	# rejects the correct password for a few seconds, even though the guest
+	# network check just logged in; the guest script is idempotent, so retry a
+	# few times.
 	local attempt
 	for attempt in 1 2 3; do
 		if vm_ssh_script "${UTM_AUTOMATION_SCRIPT}" "$ip" /bin/bash -s; then
