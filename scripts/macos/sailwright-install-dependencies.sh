@@ -31,7 +31,7 @@ PYTHON_VERSION="3.13.18"
 
 script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 project_root="$(cd "${script_dir}/../.." && pwd -P)"
-# shellcheck source=scripts/common/ansible-core.sh
+# shellcheck source=scripts/common/ansible-core.sh disable=SC1091 # CI runs ShellCheck without -x
 source "${project_root}/scripts/common/ansible-core.sh"
 
 install_go="false"
