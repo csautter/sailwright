@@ -12,6 +12,11 @@ import time
 START_GRACE_SECONDS = 60
 REGISTRATION_TIMEOUT_SECONDS = 60
 REGISTRATION_POLL_SECONDS = 2
+# When UTM lists no VM after `open`, it rejected the bundle without an
+# AppleScript error; its log and windows say why.
+UTM_LOG_SECONDS = 300
+UTM_LOG_LINES = 200
+UTM_LOG_TIMEOUT_SECONDS = 60
 # AppleScript "Can't get <object>" (errAENoSuchObject); the text is localized.
 UNKNOWN_OBJECT_ERROR = '(-1728)'
 # One line per VM: id, name and bundle path, tab-separated. Paths are coerced
@@ -56,7 +61,8 @@ var lines = [];
 for (var i = 0; i < windows.count; i++) {
   var w = windows.objectAtIndex(i);
   lines.push(ObjC.unwrap(w.objectForKey("kCGWindowOwnerName")) + "\\t" +
-             ObjC.unwrap(w.objectForKey("kCGWindowLayer")));
+             ObjC.unwrap(w.objectForKey("kCGWindowLayer")) + "\\t" +
+             (ObjC.unwrap(w.objectForKey("kCGWindowName")) || ""));
 }
 lines.join("\\n");
 '''
@@ -66,11 +72,11 @@ class UTMNotResponding(RuntimeError):
     """UTM did not answer Apple Events; the message carries the observed UTM state."""
 
 
-def probe(command):
+def probe(command, timeout=PROBE_TIMEOUT_SECONDS):
     """Run a read-only diagnostic command; never raise."""
     try:
         completed = subprocess.run(command, capture_output=True, text=True,
-                                   timeout=PROBE_TIMEOUT_SECONDS)
+                                   timeout=timeout)
     except (OSError, subprocess.SubprocessError) as error:
         return None, str(error)
     if completed.returncode != 0:
@@ -103,10 +109,33 @@ def prompt_windows():
         return f'unknown: {error}'
     windows = []
     for line in completed.stdout.splitlines():
-        owner, _, layer = line.partition('\t')
+        owner, _, rest = line.partition('\t')
+        layer = rest.partition('\t')[0]
         if owner in PROMPT_OWNERS and layer.lstrip('-').isdigit() and int(layer) > 0:
             windows.append({'owner': owner, 'layer': int(layer), 'meaning': PROMPT_OWNERS[owner]})
     return windows
+
+
+def utm_windows():
+    """UTM's own on-screen windows; an import error shows up as an alert."""
+    completed, error = probe(['osascript', '-l', 'JavaScript', '-e', WINDOW_OWNERS_JXA])
+    if error:
+        return f'unknown: {error}'
+    windows = []
+    for line in completed.stdout.splitlines():
+        fields = line.split('\t', 2)
+        if fields[0] == 'UTM' and len(fields) >= 2 and fields[1].lstrip('-').isdigit():
+            windows.append({'layer': int(fields[1]), 'title': fields[2] if len(fields) > 2 else ''})
+    return windows
+
+
+def utm_log():
+    """Recent UTM log lines (unified log), newest last; never raise."""
+    completed, error = probe(['log', 'show', '--last', f'{UTM_LOG_SECONDS}s', '--style', 'compact',
+                              '--predicate', 'process == "UTM"'], timeout=UTM_LOG_TIMEOUT_SECONDS)
+    if error:
+        return [f'unknown: {error}']
+    return completed.stdout.splitlines()[-UTM_LOG_LINES:]
 
 
 def automation_grants():
@@ -272,6 +301,9 @@ def boot(bundle, timeout, diagnostics, software_emulation=False):
         except RegistrationTimeout as error:
             result['stderr'] = error.__cause__.stderr
             result['utm_vms'] = list_utm_vms()
+            if result['utm_vms'] == []:
+                result['utm_windows'] = utm_windows()
+                result['utm_log'] = utm_log()
             raise
         if Path(registered).resolve() != bundle.resolve():
             raise RuntimeError('Refusing to smoke-test a UUID registered at another bundle path')

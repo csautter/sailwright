@@ -206,6 +206,29 @@ class BootTest(unittest.TestCase):
         self.assertEqual(result['status'], 'not started')
         self.assertEqual(self.actions, [])
 
+    def test_empty_vm_list_captures_utm_log_and_windows(self):
+        with patch.object(boot_utm, 'REGISTRATION_TIMEOUT_SECONDS', 0), \
+                patch.object(boot_utm, 'registered_path', side_effect=self.unknown_vm()), \
+                patch.object(boot_utm, 'list_utm_vms', return_value=[]), \
+                patch.object(boot_utm, 'utm_windows', return_value=[{'layer': 0, 'title': ''}]), \
+                patch.object(boot_utm, 'utm_log', return_value=['UTM: failed to load config']):
+            with self.assertRaises(boot_utm.RegistrationTimeout):
+                self.run_boot()
+        result = self.result()
+        self.assertEqual(result['utm_vms'], [])
+        self.assertEqual(result['utm_windows'], [{'layer': 0, 'title': ''}])
+        self.assertEqual(result['utm_log'], ['UTM: failed to load config'])
+
+    def test_listed_vms_skip_log_capture(self):
+        with patch.object(boot_utm, 'REGISTRATION_TIMEOUT_SECONDS', 0), \
+                patch.object(boot_utm, 'registered_path', side_effect=self.unknown_vm()), \
+                patch.object(boot_utm, 'list_utm_vms', return_value=[{'id': 'x', 'name': 'x', 'path': None}]), \
+                patch.object(boot_utm, 'utm_log') as log:
+            with self.assertRaises(boot_utm.RegistrationTimeout):
+                self.run_boot()
+        log.assert_not_called()
+        self.assertNotIn('utm_log', self.result())
+
     def test_other_lookup_errors_are_not_retried(self):
         error = subprocess.CalledProcessError(1, ['osascript'], stderr='Not authorized (-1743)')
         with patch.object(boot_utm, 'registered_path', side_effect=error) as lookup, \
@@ -345,6 +368,44 @@ class DiagnoseTest(unittest.TestCase):
         for key in ('processes', 'quarantine', 'prompt_windows', 'automation_grants'):
             self.assertTrue(state[key].startswith('unknown: '), (key, state[key]))
         self.assertEqual(state['hints'], ['no known blocker found; UTM may still be starting'])
+
+
+class RejectedBundleProbeTest(unittest.TestCase):
+    """Window and log capture when UTM lists no VM after `open` (no Mac required)."""
+
+    def run_with(self, code, out, error=None):
+        def run(command, **kwargs):
+            self.calls.append((command, kwargs['timeout']))
+            if error:
+                raise error
+            return subprocess.CompletedProcess(command, code, out, 'failed' if code else '')
+        self.calls = []
+        return patch.object(boot_utm.subprocess, 'run', side_effect=run)
+
+    def test_only_utm_windows_are_reported_with_titles(self):
+        with self.run_with(0, 'UTM\t0\tThe virtual machine is invalid.\nUTM\t8\t\nDock\t20\t\nUTM\tx\t\n'):
+            self.assertEqual(boot_utm.utm_windows(), [{'layer': 0, 'title': 'The virtual machine is invalid.'},
+                                                      {'layer': 8, 'title': ''}])
+
+    def test_prompt_windows_ignore_the_title_field(self):
+        with self.run_with(0, 'CoreServicesUIAgent\t8\tOpen “UTM”?\n'):
+            self.assertEqual(boot_utm.prompt_windows()[0]['layer'], 8)
+
+    def test_utm_log_keeps_the_newest_lines_with_its_own_timeout(self):
+        lines = '\n'.join(f'line {i}' for i in range(boot_utm.UTM_LOG_LINES + 5))
+        with self.run_with(0, lines):
+            log = boot_utm.utm_log()
+        self.assertEqual(len(log), boot_utm.UTM_LOG_LINES)
+        self.assertEqual(log[-1], f'line {boot_utm.UTM_LOG_LINES + 4}')
+        command, timeout = self.calls[0]
+        self.assertEqual(command[:2], ['log', 'show'])
+        self.assertIn('process == "UTM"', command)
+        self.assertEqual(timeout, boot_utm.UTM_LOG_TIMEOUT_SECONDS)
+
+    def test_failing_capture_is_reported_not_raised(self):
+        with self.run_with(0, '', error=subprocess.TimeoutExpired(['log'], 60)):
+            self.assertTrue(boot_utm.utm_log()[0].startswith('unknown: '))
+            self.assertTrue(boot_utm.utm_windows().startswith('unknown: '))
 
 
 if __name__ == '__main__':
