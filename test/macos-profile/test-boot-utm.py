@@ -12,6 +12,8 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('boot_utm', Path(__file__).with_name('boot-utm.py'))
 boot_utm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(boot_utm)
+# BootTest stubs registration; keep the real one for its own test.
+REAL_REGISTER_BUNDLE = boot_utm.register_bundle
 
 
 class BootTest(unittest.TestCase):
@@ -30,6 +32,7 @@ class BootTest(unittest.TestCase):
         self.start_error = None
         self.stop_error = None
         self.open = self.enter(patch.object(boot_utm, 'applescript', return_value=str(self.bundle)))
+        self.register = self.enter(patch.object(boot_utm, 'register_bundle'))
         self.enter(patch.object(boot_utm, 'vm_command', side_effect=self.command))
         self.enter(patch.object(boot_utm.time, 'sleep'))
         # Lifecycle tests must never probe the real host (ps, TCC.db, windows).
@@ -68,7 +71,10 @@ class BootTest(unittest.TestCase):
         self.assertEqual(self.result()['addresses'], ['192.168.64.10'])
         self.assertEqual(self.actions[-2:], ['return (status of targetVM) as text', 'delete targetVM'])
         self.assertFalse(self.running)
-        self.assertEqual(self.open.call_args_list[0].args[-1], str(self.bundle))
+        # Ping first (read-only), then register through LaunchServices.
+        self.assertEqual(self.open.call_args_list[0].args,
+                         (['tell application "UTM" to get id of virtual machines'],))
+        self.register.assert_called_once_with(self.bundle)
 
     def test_software_emulation_changes_only_disposable_configuration(self):
         self.run_boot(software_emulation=True)
@@ -85,6 +91,19 @@ class BootTest(unittest.TestCase):
         self.assertEqual(self.result()['stderr'], 'TCC denied')
         self.assertNotIn('stop targetVM by force', self.actions)
 
+    def test_launchservices_failure_is_fatal_and_recorded(self):
+        self.register.side_effect = subprocess.CalledProcessError(1, ['open'], stderr='LSOpenURLs -10814')
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_boot()
+        self.assertEqual(self.result()['stderr'], 'LSOpenURLs -10814')
+        self.assertEqual(self.actions, [])
+
+    def test_register_bundle_uses_launchservices_not_applescript_open(self):
+        with patch.object(boot_utm.subprocess, 'run') as run:
+            REAL_REGISTER_BUNDLE(self.bundle)
+        self.assertEqual(run.call_args.args[0], ['open', '-b', 'com.utmapp.UTM', str(self.bundle)])
+        self.assertTrue(run.call_args.kwargs['check'])
+
     def test_copied_uuid_at_another_path_is_not_started_or_deleted(self):
         self.open.return_value = str(self.bundle.parent / 'unrelated.utm')
         with self.assertRaisesRegex(RuntimeError, 'another bundle path'):
@@ -98,6 +117,7 @@ class BootTest(unittest.TestCase):
             self.run_boot()
         self.assertIn('error', self.result())
         self.open.assert_not_called()
+        self.register.assert_not_called()
 
     def test_guest_agent_unavailable_is_retried(self):
         normal = self.command
@@ -399,8 +419,16 @@ class RejectedBundleProbeTest(unittest.TestCase):
         self.assertEqual(log[-1], f'line {boot_utm.UTM_LOG_LINES + 4}')
         command, timeout = self.calls[0]
         self.assertEqual(command[:2], ['log', 'show'])
-        self.assertIn('process == "UTM"', command)
+        self.assertIn('process == "UTM"', command[-1])
+        self.assertIn('com.apple.TCC', command[-1])
         self.assertEqual(timeout, boot_utm.UTM_LOG_TIMEOUT_SECONDS)
+
+    def test_utm_log_drops_multiline_entry_bodies(self):
+        out = ('Timestamp  Ty Process\n2026 Df UTM[1] opened\n    kTCCCodeIdentity = 1;\n}\n'
+               '2026 E  UTM[1] failed\n')
+        with self.run_with(0, out):
+            self.assertEqual(boot_utm.utm_log(), ['Timestamp  Ty Process', '2026 Df UTM[1] opened',
+                                                  '2026 E  UTM[1] failed'])
 
     def test_failing_capture_is_reported_not_raised(self):
         with self.run_with(0, '', error=subprocess.TimeoutExpired(['log'], 60)):

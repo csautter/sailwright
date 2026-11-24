@@ -17,6 +17,9 @@ REGISTRATION_POLL_SECONDS = 2
 UTM_LOG_SECONDS = 300
 UTM_LOG_LINES = 200
 UTM_LOG_TIMEOUT_SECONDS = 60
+# Every AppleScript poll makes UTM log a TCC access check; drop that noise.
+UTM_LOG_PREDICATE = ('process == "UTM" AND NOT (subsystem IN {"com.apple.TCC", "com.apple.xpc", '
+                     '"com.apple.FrontBoard", "com.apple.AppKit"})')
 # AppleScript "Can't get <object>" (errAENoSuchObject); the text is localized.
 UNKNOWN_OBJECT_ERROR = '(-1728)'
 # One line per VM: id, name and bundle path, tab-separated. Paths are coerced
@@ -132,10 +135,13 @@ def utm_windows():
 def utm_log():
     """Recent UTM log lines (unified log), newest last; never raise."""
     completed, error = probe(['log', 'show', '--last', f'{UTM_LOG_SECONDS}s', '--style', 'compact',
-                              '--predicate', 'process == "UTM"'], timeout=UTM_LOG_TIMEOUT_SECONDS)
+                              '--predicate', UTM_LOG_PREDICATE], timeout=UTM_LOG_TIMEOUT_SECONDS)
     if error:
         return [f'unknown: {error}']
-    return completed.stdout.splitlines()[-UTM_LOG_LINES:]
+    # Multi-line entries (indented continuation lines, closing braces) are noise.
+    lines = [line for line in completed.stdout.splitlines()
+             if line.strip() and not line[0].isspace() and line != '}']
+    return lines[-UTM_LOG_LINES:]
 
 
 def automation_grants():
@@ -211,6 +217,18 @@ def registered_path(identifier):
                         'set vmFile to file of virtual machine id (item 1 of argv)',
                         'end tell',
                         'return POSIX path of vmFile'], identifier)
+
+
+def register_bundle(bundle):
+    """Register the bundle in place, as a double-click in Finder does.
+
+    UTM's scripting dictionary has no `open` command: AppleScript
+    `open (POSIX file ...)` returns missing value and registers nothing, and
+    `import` copies the whole bundle into UTM's container. LaunchServices
+    keeps the bundle where it is.
+    """
+    subprocess.run(['open', '-b', UTM_BUNDLE_ID, str(bundle)], check=True,
+                   capture_output=True, text=True, timeout=60)
 
 
 def wait_for_registration(identifier, timeout=None):
@@ -290,12 +308,15 @@ def boot(bundle, timeout, diagnostics, software_emulation=False):
         # Unlike the optional fixture registration check, every failure here
         # fails CI. Select by UUID to avoid touching same-named user VMs.
         try:
-            applescript(['tell application "UTM" to open (POSIX file (item 1 of argv))'], str(bundle))
+            # Read-only first call: launches UTM and proves it answers Apple
+            # Events before anything is registered.
+            applescript(['tell application "UTM" to get id of virtual machines'])
         except subprocess.TimeoutExpired as error:
             result['utm_state'] = diagnose_utm()
             raise UTMNotResponding(
                 f'UTM did not answer the first AppleScript call within {error.timeout:g}s: '
                 + '; '.join(result['utm_state']['hints'])) from error
+        register_bundle(bundle)
         try:
             registered = wait_for_registration(identifier)
         except RegistrationTimeout as error:
