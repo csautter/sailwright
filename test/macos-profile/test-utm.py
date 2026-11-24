@@ -2,6 +2,7 @@
 """Create all six UTM bundles using disposable disk fixtures."""
 import argparse
 import difflib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,38 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
+
+_spec = importlib.util.spec_from_file_location('boot_utm', HERE / 'boot-utm.py')
+boot_utm = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(boot_utm)
+
+
+class UTMUnavailable(Exception):
+    """UTM does not answer Apple Events here, so registration cannot be checked."""
+
+
+def utm_answers():
+    """Raise UTMUnavailable unless UTM answers a read-only Apple Event."""
+    try:
+        boot_utm.applescript(['tell application "UTM" to get id of virtual machines'])
+    except subprocess.TimeoutExpired as error:
+        raise UTMUnavailable(f'UTM did not answer Apple Events within {error.timeout:g}s') from error
+    except (OSError, subprocess.CalledProcessError) as error:
+        detail = (getattr(error, 'stderr', '') or '').strip() or str(error)
+        raise UTMUnavailable(f'UTM does not answer Apple Events: {detail}') from error
+
+
+def verify_registration(bundle, identifier):
+    """Register the bundle and require UTM to list its UUID at this path, then unregister it."""
+    boot_utm.register_bundle(bundle)
+    try:
+        registered = boot_utm.wait_for_registration(identifier)
+    except boot_utm.RegistrationTimeout as error:
+        raise AssertionError(f'{error}; UTM lists: {boot_utm.list_utm_vms()}') from error
+    if Path(registered).resolve() != bundle.resolve():
+        raise AssertionError(f'UTM lists {identifier} at {registered}, expected {bundle}')
+    # Only the disposable fixture is deleted: its UUID is fresh and its path matched.
+    boot_utm.vm_command(identifier, 'delete targetVM')
 
 
 def normalize(value):
@@ -30,6 +63,7 @@ def main():
     parser.add_argument('--update', action='store_true')
     parser.add_argument('--register', action='store_true', help='Try UTM registration on a real Mac, never boot a guest')
     args = parser.parse_args()
+    utm_skip = None
     with tempfile.TemporaryDirectory(prefix='sw-utm-') as directory:
         work = Path(directory)
         cache = work / 'Application Support/cache'
@@ -56,16 +90,16 @@ def main():
                 original = (bundle / 'config.plist').read_bytes()
                 subprocess.run(['bash', str(ROOT / 'deployments/utm/create-utm-vm.sh'), '--arch', arch, '--os', system], env=env, check=True, stdout=subprocess.DEVNULL)
                 assert original == (bundle / 'config.plist').read_bytes()
-                if args.register:
+                if args.register and utm_skip is None:
                     try:
-                        # argv avoids quoting paths into AppleScript source.
-                        result = subprocess.run(['osascript', '-e', 'on run argv', '-e', 'tell application "UTM" to open (POSIX file (item 1 of argv))', '-e', 'end run', str(bundle)], capture_output=True, text=True, timeout=30)
-                        if result.returncode:
-                            print(f'UTM registration unavailable: {result.stderr.strip()}; bundle validation passed.')
-                        else:
-                            print(f'UTM registration passed: {system}/{arch}')
-                    except subprocess.TimeoutExpired:
-                        print('UTM registration timed out; bundle validation passed.')
+                        utm_answers()
+                    except UTMUnavailable as error:
+                        # Hosted runners cannot drive UTM; say so instead of passing.
+                        utm_skip = str(error)
+                        print(f'UTM registration SKIPPED for all bundles: {utm_skip}')
+                    else:
+                        verify_registration(bundle, config['Information']['UUID'])
+                        print(f'UTM registration passed: {system}/{arch} listed at its bundle path')
                 print(f'OK: UTM {system}/{arch}')
 
 
