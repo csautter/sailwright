@@ -28,10 +28,11 @@ class UTMAnswersTest(unittest.TestCase):
             with self.assertRaisesRegex(test_utm.UTMUnavailable, r'Not authorized \(-1743\)'):
                 test_utm.utm_answers()
 
-    def test_answer_is_read_only(self):
+    def test_answer_is_read_only_and_shared_with_boot(self):
         with patch.object(boot_utm, 'applescript', return_value='') as script:
             test_utm.utm_answers()
-        self.assertEqual(script.call_args.args, (['tell application "UTM" to get id of virtual machines'],))
+        self.assertEqual(script.call_args.args, (boot_utm.PING_SCRIPT,))
+        self.assertEqual(boot_utm.PING_SCRIPT, ['tell application "UTM" to get id of virtual machines'])
 
 
 class VerifyRegistrationTest(unittest.TestCase):
@@ -46,24 +47,60 @@ class VerifyRegistrationTest(unittest.TestCase):
             setattr(self, name, context.start())
             self.addCleanup(context.stop)
 
+    def lookups(self, *results):
+        """registered_path answers: wait_for_registration first, then the cleanup lookup."""
+        return patch.object(boot_utm, 'registered_path', side_effect=list(results))
+
+    def unknown(self):
+        return subprocess.CalledProcessError(1, ['osascript'], stderr="Can't get virtual machine id (-1728)")
+
+    def verify(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            test_utm.verify_registration(self.bundle, 'uuid', 'ubuntu/arm64')
+        return err.getvalue()
+
     def test_listed_at_bundle_path_passes_and_unregisters(self):
-        with patch.object(boot_utm, 'wait_for_registration', return_value=str(self.bundle) + '/'):
-            test_utm.verify_registration(self.bundle, 'uuid')
+        listed = str(self.bundle) + '/'
+        with self.lookups(listed, listed):
+            self.assertEqual(self.verify(), '')
         self.register_bundle.assert_called_once_with(self.bundle)
         self.vm_command.assert_called_once_with('uuid', 'delete targetVM')
 
     def test_uuid_never_listed_fails_loudly(self):
-        timeout = boot_utm.RegistrationTimeout('UTM did not list virtual machine id uuid within 60s')
+        timeout = boot_utm.RegistrationTimeout('UTM did not list virtual machine id uuid within 60s after open')
         self.list_utm_vms.return_value = [{'id': 'other', 'name': 'x', 'path': None}]
-        with patch.object(boot_utm, 'wait_for_registration', side_effect=timeout):
-            with self.assertRaisesRegex(AssertionError, r"within 60s; UTM lists: \[\{'id': 'other'"):
-                test_utm.verify_registration(self.bundle, 'uuid')
+        with patch.object(boot_utm, 'wait_for_registration', side_effect=timeout), \
+                self.lookups(self.unknown()):
+            with self.assertRaisesRegex(AssertionError, r"FAILED for ubuntu/arm64: .*within 60s after open; "
+                                                        r"UTM lists: \[\{'id': 'other'"):
+                self.verify()
         self.vm_command.assert_not_called()
 
+    def test_late_registration_after_timeout_is_still_cleaned_up(self):
+        timeout = boot_utm.RegistrationTimeout('not listed')
+        with patch.object(boot_utm, 'wait_for_registration', side_effect=timeout), \
+                self.lookups(str(self.bundle)):
+            with self.assertRaises(AssertionError):
+                self.verify()
+        self.vm_command.assert_called_once_with('uuid', 'delete targetVM')
+
     def test_uuid_at_another_path_fails_and_is_not_deleted(self):
-        with patch.object(boot_utm, 'wait_for_registration', return_value='/elsewhere/fixture.utm'):
-            with self.assertRaisesRegex(AssertionError, 'expected'):
-                test_utm.verify_registration(self.bundle, 'uuid')
+        with self.lookups('/elsewhere/fixture.utm', '/elsewhere/fixture.utm'):
+            with self.assertRaisesRegex(AssertionError, 'FAILED for ubuntu/arm64: .*expected'):
+                self.verify()
+        self.vm_command.assert_not_called()
+
+    def test_failed_cleanup_warns_without_hiding_the_result(self):
+        self.vm_command.side_effect = subprocess.CalledProcessError(1, ['osascript'], stderr='busy')
+        with self.lookups(str(self.bundle), str(self.bundle)):
+            self.assertIn('WARNING: could not unregister ubuntu/arm64', self.verify())
+
+    def test_launchservices_failure_fails_and_needs_no_cleanup(self):
+        self.register_bundle.side_effect = subprocess.CalledProcessError(1, ['open'])
+        with self.lookups(self.unknown()):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.verify()
         self.vm_command.assert_not_called()
 
 
@@ -83,16 +120,20 @@ class MainRegisterTest(unittest.TestCase):
         answers.assert_called_once()
         verify.assert_not_called()
         self.assertEqual(output.count('UTM registration SKIPPED for all bundles: no events'), 1)
+        # Pinged once, before any bundle: the SKIPPED line comes first.
+        self.assertTrue(output.startswith('UTM registration SKIPPED'), output)
         self.assertNotIn('registration passed', output)
+        self.assertEqual(output.count('OK: UTM '), 6)
 
     def test_every_bundle_is_verified_when_utm_answers(self):
         with patch.object(test_utm, 'utm_answers'), \
                 patch.object(test_utm, 'verify_registration') as verify:
             output = self.run_main()
         self.assertEqual(verify.call_count, 6)
-        for bundle, identifier in (call.args for call in verify.call_args_list):
+        for bundle, identifier, label in (call.args for call in verify.call_args_list):
             self.assertTrue(bundle.name.endswith('-dev-alchemy.utm'), bundle)
             self.assertRegex(identifier, r'^[0-9A-F]{8}-')
+            self.assertTrue(bundle.name.startswith(label.replace('/', '-')), (bundle, label))
         self.assertEqual(output.count('listed at its bundle path'), 6)
 
     def test_registration_failure_fails_the_run(self):

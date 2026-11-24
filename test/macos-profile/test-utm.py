@@ -9,6 +9,7 @@ from pathlib import Path
 import plistlib
 import re
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,7 +27,7 @@ class UTMUnavailable(Exception):
 def utm_answers():
     """Raise UTMUnavailable unless UTM answers a read-only Apple Event."""
     try:
-        boot_utm.applescript(['tell application "UTM" to get id of virtual machines'])
+        boot_utm.ping_utm()
     except subprocess.TimeoutExpired as error:
         raise UTMUnavailable(f'UTM did not answer Apple Events within {error.timeout:g}s') from error
     except (OSError, subprocess.CalledProcessError) as error:
@@ -34,17 +35,22 @@ def utm_answers():
         raise UTMUnavailable(f'UTM does not answer Apple Events: {detail}') from error
 
 
-def verify_registration(bundle, identifier):
+def verify_registration(bundle, identifier, label):
     """Register the bundle and require UTM to list its UUID at this path, then unregister it."""
-    boot_utm.register_bundle(bundle)
     try:
-        registered = boot_utm.wait_for_registration(identifier)
+        boot_utm.register_in_place(bundle, identifier)
     except boot_utm.RegistrationTimeout as error:
-        raise AssertionError(f'{error}; UTM lists: {boot_utm.list_utm_vms()}') from error
-    if Path(registered).resolve() != bundle.resolve():
-        raise AssertionError(f'UTM lists {identifier} at {registered}, expected {bundle}')
-    # Only the disposable fixture is deleted: its UUID is fresh and its path matched.
-    boot_utm.vm_command(identifier, 'delete targetVM')
+        raise AssertionError(f'UTM registration FAILED for {label}: {error}; '
+                             f'UTM lists: {boot_utm.list_utm_vms()}') from error
+    except boot_utm.RegisteredElsewhere as error:
+        raise AssertionError(f'UTM registration FAILED for {label}: {error}') from error
+    finally:
+        # Best effort, also after a failure or a registration that appeared
+        # late. Only a UUID listed at the disposable fixture path is deleted;
+        # if register_bundle failed, the lookup finds nothing to delete.
+        problem = boot_utm.unregister_in_place(bundle, identifier)
+        if problem:
+            print(f'WARNING: could not unregister {label} from UTM: {problem}', file=sys.stderr)
 
 
 def normalize(value):
@@ -63,7 +69,14 @@ def main():
     parser.add_argument('--update', action='store_true')
     parser.add_argument('--register', action='store_true', help='Try UTM registration on a real Mac, never boot a guest')
     args = parser.parse_args()
-    utm_skip = None
+    register = args.register
+    if register:
+        try:
+            utm_answers()
+        except UTMUnavailable as error:
+            # Hosted runners cannot drive UTM; say so instead of passing.
+            print(f'UTM registration SKIPPED for all bundles: {error}')
+            register = False
     with tempfile.TemporaryDirectory(prefix='sw-utm-') as directory:
         work = Path(directory)
         cache = work / 'Application Support/cache'
@@ -90,16 +103,10 @@ def main():
                 original = (bundle / 'config.plist').read_bytes()
                 subprocess.run(['bash', str(ROOT / 'deployments/utm/create-utm-vm.sh'), '--arch', arch, '--os', system], env=env, check=True, stdout=subprocess.DEVNULL)
                 assert original == (bundle / 'config.plist').read_bytes()
-                if args.register and utm_skip is None:
-                    try:
-                        utm_answers()
-                    except UTMUnavailable as error:
-                        # Hosted runners cannot drive UTM; say so instead of passing.
-                        utm_skip = str(error)
-                        print(f'UTM registration SKIPPED for all bundles: {utm_skip}')
-                    else:
-                        verify_registration(bundle, config['Information']['UUID'])
-                        print(f'UTM registration passed: {system}/{arch} listed at its bundle path')
+                if register:
+                    # Once UTM answers, any registration failure fails the run.
+                    verify_registration(bundle, config['Information']['UUID'], f'{system}/{arch}')
+                    print(f'UTM registration passed: {system}/{arch} listed at its bundle path')
                 print(f'OK: UTM {system}/{arch}')
 
 

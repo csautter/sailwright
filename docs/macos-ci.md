@@ -93,10 +93,12 @@ configurations and verify disk copies and repeatable bundle creation. Set
 start/stop inspection, destroy and provisioning all use that destination; see
 [UTM bundle location](./managed-application-data.md#utm-bundle-location).
 Without the override, the existing destination is retained. The tier B check
-attempts AppleScript registration without starting guests. If GUI automation
-is unavailable or times out, it reports that limitation and retains bundle
-validation as coverage; confirm registration on a Mac when reviewing such a
-run. A successful open request alone does not prove the guest will boot.
+(`test-utm.py --register`) opens each bundle in UTM through LaunchServices
+without starting guests and fails unless UTM lists its UUID at the bundle path.
+If UTM does not answer Apple Events (GitHub-hosted runners), it prints
+`UTM registration SKIPPED` once and retains bundle validation as coverage;
+confirm registration on a Mac when reviewing such a run. Registration alone
+does not prove the guest will boot.
 
 The shell tests extract production functions without running installers or
 builds, then supply command stubs. Native mode (`--native`) keeps real `uname`

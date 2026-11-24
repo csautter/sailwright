@@ -37,6 +37,8 @@ class BootTest(unittest.TestCase):
         self.enter(patch.object(boot_utm.time, 'sleep'))
         # Lifecycle tests must never probe the real host (ps, TCC.db, windows).
         self.diagnose = self.enter(patch.object(boot_utm, 'diagnose_utm', return_value={'hints': ['stub']}))
+        self.windows = self.enter(patch.object(boot_utm, 'utm_windows', return_value=[]))
+        self.log = self.enter(patch.object(boot_utm, 'utm_log', return_value=['stub log']))
 
     def enter(self, context):
         value = context.start()
@@ -106,7 +108,7 @@ class BootTest(unittest.TestCase):
 
     def test_copied_uuid_at_another_path_is_not_started_or_deleted(self):
         self.open.return_value = str(self.bundle.parent / 'unrelated.utm')
-        with self.assertRaisesRegex(RuntimeError, 'another bundle path'):
+        with self.assertRaisesRegex(boot_utm.RegisteredElsewhere, 'another bundle path.*unrelated.utm'):
             self.run_boot()
         self.assertEqual(self.actions, [])
         self.assertIn('error', self.result())
@@ -218,10 +220,14 @@ class BootTest(unittest.TestCase):
         with patch.object(boot_utm, 'REGISTRATION_TIMEOUT_SECONDS', 0), \
                 patch.object(boot_utm, 'registered_path', side_effect=self.unknown_vm()), \
                 patch.object(boot_utm, 'list_utm_vms', return_value=vms):
-            with self.assertRaisesRegex(boot_utm.RegistrationTimeout, 'test-uuid within 0s'):
+            with self.assertRaisesRegex(boot_utm.RegistrationTimeout,
+                                        'test-uuid within 0s after open; see utm_vms'):
                 self.run_boot()
         result = self.result()
         self.assertEqual(result['utm_vms'], vms)
+        # Our UUID is missing although UTM lists others: capture why.
+        self.assertEqual(result['utm_log'], ['stub log'])
+        self.assertEqual(result['utm_windows'], [])
         self.assertIn('(-1728)', result['stderr'])
         self.assertEqual(result['status'], 'not started')
         self.assertEqual(self.actions, [])
@@ -229,25 +235,34 @@ class BootTest(unittest.TestCase):
     def test_empty_vm_list_captures_utm_log_and_windows(self):
         with patch.object(boot_utm, 'REGISTRATION_TIMEOUT_SECONDS', 0), \
                 patch.object(boot_utm, 'registered_path', side_effect=self.unknown_vm()), \
-                patch.object(boot_utm, 'list_utm_vms', return_value=[]), \
-                patch.object(boot_utm, 'utm_windows', return_value=[{'layer': 0, 'title': ''}]), \
-                patch.object(boot_utm, 'utm_log', return_value=['UTM: failed to load config']):
+                patch.object(boot_utm, 'list_utm_vms', return_value=[]):
+            self.windows.return_value = [{'layer': 0}]
+            self.log.return_value = ['UTM: failed to load config']
             with self.assertRaises(boot_utm.RegistrationTimeout):
                 self.run_boot()
         result = self.result()
         self.assertEqual(result['utm_vms'], [])
-        self.assertEqual(result['utm_windows'], [{'layer': 0, 'title': ''}])
+        self.assertEqual(result['utm_windows'], [{'layer': 0}])
         self.assertEqual(result['utm_log'], ['UTM: failed to load config'])
 
-    def test_listed_vms_skip_log_capture(self):
+    def test_listed_own_uuid_skips_log_capture(self):
+        listed = [{'id': 'x', 'name': 'x', 'path': None}, {'id': 'test-uuid', 'name': 'y', 'path': None}]
         with patch.object(boot_utm, 'REGISTRATION_TIMEOUT_SECONDS', 0), \
                 patch.object(boot_utm, 'registered_path', side_effect=self.unknown_vm()), \
-                patch.object(boot_utm, 'list_utm_vms', return_value=[{'id': 'x', 'name': 'x', 'path': None}]), \
-                patch.object(boot_utm, 'utm_log') as log:
+                patch.object(boot_utm, 'list_utm_vms', return_value=listed):
             with self.assertRaises(boot_utm.RegistrationTimeout):
                 self.run_boot()
-        log.assert_not_called()
+        self.log.assert_not_called()
+        self.windows.assert_not_called()
         self.assertNotIn('utm_log', self.result())
+
+    def test_unknown_vm_list_still_captures_log(self):
+        with patch.object(boot_utm, 'REGISTRATION_TIMEOUT_SECONDS', 0), \
+                patch.object(boot_utm, 'registered_path', side_effect=self.unknown_vm()), \
+                patch.object(boot_utm, 'list_utm_vms', return_value='unknown: timed out'):
+            with self.assertRaises(boot_utm.RegistrationTimeout):
+                self.run_boot()
+        self.assertEqual(self.result()['utm_log'], ['stub log'])
 
     def test_other_lookup_errors_are_not_retried(self):
         error = subprocess.CalledProcessError(1, ['osascript'], stderr='Not authorized (-1743)')
@@ -402,14 +417,20 @@ class RejectedBundleProbeTest(unittest.TestCase):
         self.calls = []
         return patch.object(boot_utm.subprocess, 'run', side_effect=run)
 
-    def test_only_utm_windows_are_reported_with_titles(self):
-        with self.run_with(0, 'UTM\t0\tThe virtual machine is invalid.\nUTM\t8\t\nDock\t20\t\nUTM\tx\t\n'):
-            self.assertEqual(boot_utm.utm_windows(), [{'layer': 0, 'title': 'The virtual machine is invalid.'},
-                                                      {'layer': 8, 'title': ''}])
+    def test_only_utm_window_layers_are_reported(self):
+        with self.run_with(0, 'UTM\t0\nUTM\t8\nDock\t20\nUTM\tx\nUTM\n'):
+            self.assertEqual(boot_utm.utm_windows(), [{'layer': 0}, {'layer': 8}])
 
-    def test_prompt_windows_ignore_the_title_field(self):
-        with self.run_with(0, 'CoreServicesUIAgent\t8\tOpen “UTM”?\n'):
-            self.assertEqual(boot_utm.prompt_windows()[0]['layer'], 8)
+    def test_window_query_asks_for_owner_and_layer_only(self):
+        # Titles need Screen Recording and alerts have none; do not imply otherwise.
+        self.assertNotIn('kCGWindowName', boot_utm.WINDOW_OWNERS_JXA)
+        self.assertEqual(boot_utm.parse_windows('UTM\t3\nbad\nFinder\t-1\n'), [('UTM', 3), ('Finder', -1)])
+
+    def test_prompt_and_utm_windows_share_the_parser(self):
+        with self.run_with(0, 'CoreServicesUIAgent\t8\nUTM\t0\nUserNotificationCenter\t0\n'):
+            self.assertEqual(boot_utm.prompt_windows(), [{'owner': 'CoreServicesUIAgent', 'layer': 8,
+                                                          'meaning': 'Gatekeeper first-launch confirmation'}])
+            self.assertEqual(boot_utm.utm_windows(), [{'layer': 0}])
 
     def test_utm_log_keeps_the_newest_lines_with_its_own_timeout(self):
         lines = '\n'.join(f'line {i}' for i in range(boot_utm.UTM_LOG_LINES + 5))
@@ -434,6 +455,51 @@ class RejectedBundleProbeTest(unittest.TestCase):
         with self.run_with(0, '', error=subprocess.TimeoutExpired(['log'], 60)):
             self.assertTrue(boot_utm.utm_log()[0].startswith('unknown: '))
             self.assertTrue(boot_utm.utm_windows().startswith('unknown: '))
+            self.assertTrue(boot_utm.prompt_windows().startswith('unknown: '))
+
+
+class UnregisterTest(unittest.TestCase):
+    """Best-effort fixture cleanup: delete only a UUID listed at our path."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.bundle = Path(self.temp.name) / 'fixture.utm'
+        self.bundle.mkdir()
+        context = patch.object(boot_utm, 'vm_command')
+        self.vm_command = context.start()
+        self.addCleanup(context.stop)
+
+    def lookup(self, **kwargs):
+        return patch.object(boot_utm, 'registered_path', **kwargs)
+
+    def test_own_registration_is_deleted(self):
+        with self.lookup(return_value=str(self.bundle) + '/'):
+            self.assertIsNone(boot_utm.unregister_in_place(self.bundle, 'uuid'))
+        self.vm_command.assert_called_once_with('uuid', 'delete targetVM')
+
+    def test_unregistered_uuid_needs_nothing(self):
+        error = subprocess.CalledProcessError(1, ['osascript'], stderr="Can't get virtual machine (-1728)")
+        with self.lookup(side_effect=error):
+            self.assertIsNone(boot_utm.unregister_in_place(self.bundle, 'uuid'))
+        self.vm_command.assert_not_called()
+
+    def test_registration_elsewhere_is_never_deleted(self):
+        with self.lookup(return_value='/Users/me/real.utm'):
+            self.assertIn('not deleting', boot_utm.unregister_in_place(self.bundle, 'uuid'))
+        self.vm_command.assert_not_called()
+
+    def test_failures_are_returned_not_raised(self):
+        with self.lookup(side_effect=subprocess.TimeoutExpired(['osascript'], 60)):
+            self.assertIn('timed out', boot_utm.unregister_in_place(self.bundle, 'uuid'))
+        self.vm_command.side_effect = subprocess.CalledProcessError(1, ['osascript'], stderr='busy')
+        with self.lookup(return_value=str(self.bundle)):
+            self.assertIn('busy', boot_utm.unregister_in_place(self.bundle, 'uuid'))
+
+    def test_private_alias_counts_as_the_same_bundle(self):
+        self.assertTrue(boot_utm.same_bundle(str(self.bundle.resolve()), self.bundle))
+        if Path('/private/tmp').is_dir() and Path('/tmp').resolve() == Path('/private/tmp'):
+            self.assertTrue(boot_utm.same_bundle('/private/tmp/x.utm', '/tmp/x.utm'))
 
 
 if __name__ == '__main__':

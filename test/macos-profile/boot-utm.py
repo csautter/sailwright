@@ -12,8 +12,8 @@ import time
 START_GRACE_SECONDS = 60
 REGISTRATION_TIMEOUT_SECONDS = 60
 REGISTRATION_POLL_SECONDS = 2
-# When UTM lists no VM after `open`, it rejected the bundle without an
-# AppleScript error; its log and windows say why.
+# When UTM does not list the bundle after `open`, it rejected it without an
+# AppleScript error; its log says why.
 UTM_LOG_SECONDS = 300
 UTM_LOG_LINES = 200
 UTM_LOG_TIMEOUT_SECONDS = 60
@@ -45,6 +45,8 @@ LIST_VMS_SCRIPT = [
     "set AppleScript's text item delimiters to linefeed",
     'return out as text',
 ]
+# Read-only first call: launches UTM and proves it answers Apple Events.
+PING_SCRIPT = ['tell application "UTM" to get id of virtual machines']
 PROBE_TIMEOUT_SECONDS = 10
 UTM_BUNDLE_ID = 'com.utmapp.UTM'
 DEFAULT_UTM_APP = Path('/Applications/UTM.app')
@@ -57,6 +59,8 @@ PROMPT_OWNERS = {
     'CoreServicesUIAgent': 'Gatekeeper first-launch confirmation',
     'UserNotificationCenter': 'privacy consent (TCC) prompt',
 }
+# Owner and layer only: window titles need a Screen Recording grant, and
+# alerts carry none, so the text of a UTM error alert is not visible here.
 WINDOW_OWNERS_JXA = '''
 ObjC.import("CoreGraphics");
 var windows = ObjC.castRefToObject($.CGWindowListCopyWindowInfo(1 | 16, 0));
@@ -64,8 +68,7 @@ var lines = [];
 for (var i = 0; i < windows.count; i++) {
   var w = windows.objectAtIndex(i);
   lines.push(ObjC.unwrap(w.objectForKey("kCGWindowOwnerName")) + "\\t" +
-             ObjC.unwrap(w.objectForKey("kCGWindowLayer")) + "\\t" +
-             (ObjC.unwrap(w.objectForKey("kCGWindowName")) || ""));
+             ObjC.unwrap(w.objectForKey("kCGWindowLayer")));
 }
 lines.join("\\n");
 '''
@@ -106,30 +109,39 @@ def utm_quarantine(app):
     return completed.stdout.strip() if completed.returncode == 0 else None
 
 
-def prompt_windows():
+def parse_windows(output):
+    """(owner, layer) per on-screen window; malformed lines are skipped."""
+    windows = []
+    for line in output.splitlines():
+        owner, _, rest = line.partition('\t')
+        layer = rest.partition('\t')[0]
+        if layer.lstrip('-').isdigit():
+            windows.append((owner, int(layer)))
+    return windows
+
+
+def on_screen_windows():
     completed, error = probe(['osascript', '-l', 'JavaScript', '-e', WINDOW_OWNERS_JXA])
     if error:
         return f'unknown: {error}'
-    windows = []
-    for line in completed.stdout.splitlines():
-        owner, _, rest = line.partition('\t')
-        layer = rest.partition('\t')[0]
-        if owner in PROMPT_OWNERS and layer.lstrip('-').isdigit() and int(layer) > 0:
-            windows.append({'owner': owner, 'layer': int(layer), 'meaning': PROMPT_OWNERS[owner]})
-    return windows
+    return parse_windows(completed.stdout)
+
+
+def prompt_windows():
+    windows = on_screen_windows()
+    if isinstance(windows, str):
+        return windows
+    return [{'owner': owner, 'layer': layer, 'meaning': PROMPT_OWNERS[owner]}
+            for owner, layer in windows if owner in PROMPT_OWNERS and layer > 0]
 
 
 def utm_windows():
-    """UTM's own on-screen windows; an import error shows up as an alert."""
-    completed, error = probe(['osascript', '-l', 'JavaScript', '-e', WINDOW_OWNERS_JXA])
-    if error:
-        return f'unknown: {error}'
-    windows = []
-    for line in completed.stdout.splitlines():
-        fields = line.split('\t', 2)
-        if fields[0] == 'UTM' and len(fields) >= 2 and fields[1].lstrip('-').isdigit():
-            windows.append({'layer': int(fields[1]), 'title': fields[2] if len(fields) > 2 else ''})
-    return windows
+    """Layers of UTM's on-screen windows: shows whether UTM has a window or
+    alert open, not its text (see WINDOW_OWNERS_JXA)."""
+    windows = on_screen_windows()
+    if isinstance(windows, str):
+        return windows
+    return [{'layer': layer} for owner, layer in windows if owner == 'UTM']
 
 
 def utm_log():
@@ -209,6 +221,14 @@ class RegistrationTimeout(RuntimeError):
     """UTM accepted `open` but never listed the bundle's UUID."""
 
 
+class RegisteredElsewhere(RuntimeError):
+    """UTM lists the bundle's UUID at another bundle path."""
+
+
+def ping_utm():
+    return applescript(PING_SCRIPT)
+
+
 def registered_path(identifier):
     # Resolve the file inside the tell block but coerce it outside: within it,
     # UTM receives `POSIX path of (file of ...)` as one specifier and fails
@@ -251,8 +271,48 @@ def wait_for_registration(identifier, timeout=None):
             if now >= deadline:
                 raise RegistrationTimeout(
                     f'UTM did not list virtual machine id {identifier} within {timeout:g}s '
-                    f'after open; see utm_vms in result.json') from error
+                    'after open') from error
         time.sleep(REGISTRATION_POLL_SECONDS)
+
+
+def same_bundle(registered, bundle):
+    # resolve() maps /var and /tmp aliases to /private, as UTM reports them.
+    return Path(registered).resolve() == Path(bundle).resolve()
+
+
+def register_in_place(bundle, identifier):
+    """Register the bundle and require UTM to list its UUID at this path.
+
+    Raises RegistrationTimeout or RegisteredElsewhere; returns the listed path.
+    """
+    register_bundle(bundle)
+    registered = wait_for_registration(identifier)
+    if not same_bundle(registered, bundle):
+        raise RegisteredElsewhere(f'UTM lists {identifier} at {registered}, expected {bundle}')
+    return registered
+
+
+def unregister_in_place(bundle, identifier):
+    """Delete the UUID from UTM only if UTM lists it at this bundle path.
+
+    Never raises; returns None when nothing of ours is left registered,
+    otherwise why the registration may remain.
+    """
+    try:
+        registered = registered_path(identifier)
+    except subprocess.CalledProcessError as error:
+        if UNKNOWN_OBJECT_ERROR in (error.stderr or ''):
+            return None
+        return f'{error}; {(error.stderr or "").strip()}'
+    except (OSError, subprocess.SubprocessError) as error:
+        return str(error)
+    if not same_bundle(registered, bundle):
+        return f'not deleting {identifier}: UTM lists it at {registered}, not {bundle}'
+    try:
+        vm_command(identifier, 'delete targetVM')
+    except (OSError, subprocess.SubprocessError) as error:
+        return f'{error}; {(getattr(error, "stderr", "") or "").strip()}'
+    return None
 
 
 def parse_utm_vms(output):
@@ -305,29 +365,28 @@ def boot(bundle, timeout, diagnostics, software_emulation=False):
                 network['Mode'] = 'Emulated'
             config_path.write_bytes(plistlib.dumps(config))
         (diagnostics / 'config.plist').write_bytes(config_path.read_bytes())
-        # Unlike the optional fixture registration check, every failure here
-        # fails CI. Select by UUID to avoid touching same-named user VMs.
+        # Every failure here fails CI. Select by UUID to avoid touching
+        # same-named user VMs.
         try:
-            # Read-only first call: launches UTM and proves it answers Apple
-            # Events before anything is registered.
-            applescript(['tell application "UTM" to get id of virtual machines'])
+            ping_utm()
         except subprocess.TimeoutExpired as error:
             result['utm_state'] = diagnose_utm()
             raise UTMNotResponding(
                 f'UTM did not answer the first AppleScript call within {error.timeout:g}s: '
                 + '; '.join(result['utm_state']['hints'])) from error
-        register_bundle(bundle)
         try:
-            registered = wait_for_registration(identifier)
+            register_in_place(bundle, identifier)
         except RegistrationTimeout as error:
             result['stderr'] = error.__cause__.stderr
             result['utm_vms'] = list_utm_vms()
-            if result['utm_vms'] == []:
+            listed = result['utm_vms']
+            if not isinstance(listed, list) or identifier not in {vm['id'] for vm in listed}:
                 result['utm_windows'] = utm_windows()
                 result['utm_log'] = utm_log()
-            raise
-        if Path(registered).resolve() != bundle.resolve():
-            raise RuntimeError('Refusing to smoke-test a UUID registered at another bundle path')
+            raise RegistrationTimeout(f'{error}; see utm_vms and utm_log in result.json') from error
+        except RegisteredElsewhere as error:
+            raise RegisteredElsewhere(f'Refusing to smoke-test a UUID registered at another '
+                                      f'bundle path: {error}') from error
         if vm_command(identifier, 'return (status of targetVM) as text') != 'stopped':
             raise RuntimeError('Refusing to smoke-test an already running VM')
         started = True  # A failing/timed-out start may still have launched QEMU.
