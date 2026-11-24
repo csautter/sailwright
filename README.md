@@ -324,6 +324,8 @@ next level of detail:
   manual install and uninstall
 - [Homebrew Tap](./docs/homebrew-tap.md) for how release formulae are
   generated and published
+- [Tart Guest Network](./docs/tart-guest-network.md) for the Tart guest DNS
+  and HTTPS readiness check and explicit guest DNS servers
 - [Troubleshooting Guide](./docs/troubleshooting.md) for rare host-specific
   issues
 - [Licensing FAQ](./docs/licensing.md) for free and commercial use under the

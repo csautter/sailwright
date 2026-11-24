@@ -365,7 +365,7 @@ data_dir: /home/me/.local/share/sailwright-gateway   # ISOs, images, build cache
 agent_dir: /home/me/.sailwright-gateway     # socket + token copy, mounted into containers
 state_isolation: shared           # isolated keeps VM state and caches gateway-owned; see Disk usage for the default
 # shared_cache_dir: /home/me/.local/share/dev-alchemy/cache   # reuse your CLI cache, see Disk usage
-env_passthrough:                   # values are redacted from output and logs
+env_passthrough:                   # values are redacted from output and logs (except Tart network settings)
   - LIBVIRT_UBUNTU_ANSIBLE_PASSWORD
 pull_allowlist:                    # registry/namespace prefixes for artifact_pull
   - ghcr.io/csautter/sailwright
@@ -653,6 +653,14 @@ address yet, Vagrant discovery is tried and its answer must pass the same
 checks. `sailwright provision` on Hyper-V uses the same discovery. Gateway jobs do not receive
 `VAGRANT_HYPERV_SWITCH` or `TART_MACOS_BRIDGED_INTERFACE`; add them to
 `env_passthrough` if the agent's VMs should use the same network as yours.
+The same applies to the Tart guest DNS and readiness settings
+(`TART_MACOS_DNS_SERVERS*`, `TART_MACOS_NETWORK_CHECK*`; see
+[Tart Guest Network](./tart-guest-network.md)). Without them, gateway jobs
+run the default full check and leave guest DNS untouched; DNS servers that
+an earlier CLI run set persist in the guest either way. The gateway does not
+redact these Tart network variables or `TART_MACOS_BRIDGED_INTERFACE`, so
+resolver addresses show in readiness diagnostics; all other passthrough
+values stay redacted.
 
 Call MCP `vm_info` with the same target to receive guest credentials, an
 `ssh_config` block and an Ansible inventory. These contain sensitive guest

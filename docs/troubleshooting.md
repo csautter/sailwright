@@ -61,6 +61,15 @@ Work around it by setting this environment variable before running Ansible:
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 ```
 
+## macOS: Tart VM Has an IP Address but No DNS
+
+If `sailwright start` or `provision` for a Tart VM fails at stage
+`system-dns` or `https`, the guest network readiness check found a guest
+that is reachable but cannot resolve names or reach HTTPS. The error names
+the guest's resolvers and a hint. See
+[Tart Guest Network](./tart-guest-network.md#diagnosing-the-nat-dns-path)
+for host-side checks and `TART_MACOS_DNS_SERVERS`.
+
 ## Linux: `virsh domifaddr` Returns No IP
 
 Linux libvirt provisioning waits for `virsh domifaddr` to report a guest IPv4

@@ -140,6 +140,9 @@ type ProvisionOptions struct {
 	LocalWindowsProtocol            LocalWindowsProvisionProtocol
 	LocalWindowsForceWinRMUninstall bool
 	LocalWindowsForceSSHUninstall   bool
+	// skipGuestNetworkReadiness skips the Tart guest network check for
+	// internal plays that need no network, such as setting the hostname.
+	skipGuestNetworkReadiness bool
 }
 
 type windowsAnsibleConnectionConfig struct {
@@ -222,6 +225,10 @@ type tartProvisionAvailabilityOptions struct {
 }
 
 var inspectProvisionTarget = alchemy_deploy.InspectStartTarget
+var ensureTartGuestNetworkForProvision = alchemy_deploy.EnsureTartGuestNetworkWithOptions
+var validateTartGuestNetworkConfig = alchemy_deploy.ValidateTartGuestNetworkConfig
+var discoverTartProvisionAddress = DiscoverTartAddress
+var waitForTartProvisionSSHPort = waitForSSHPort
 var runProvisionCommandWithCombinedOutputWithEnv = runCommandWithCombinedOutputWithEnv
 var runAnsibleProvisionCommandFunc = runAnsibleProvisionCommand
 var lookPathProvisionCommand = exec.LookPath
@@ -638,6 +645,11 @@ func runLinuxQemuUbuntuProvision(vm alchemy_build.VirtualMachineConfig, options 
 }
 
 func runTartMacOSProvision(vm alchemy_build.VirtualMachineConfig, options ProvisionOptions) error {
+	if !options.skipGuestNetworkReadiness {
+		if err := validateTartGuestNetworkConfig(); err != nil {
+			return err
+		}
+	}
 	if err := ensureProvisionTargetRunning(vm); err != nil {
 		return err
 	}
@@ -645,13 +657,23 @@ func runTartMacOSProvision(vm alchemy_build.VirtualMachineConfig, options Provis
 	projectDir := alchemy_build.GetDirectoriesInstance().ProjectDir
 	vmName := tartMacOSVMName(vm)
 
-	ip, err := DiscoverTartAddress(projectDir, vm)
+	ip, err := discoverTartProvisionAddress(projectDir, vm)
 	if err != nil {
 		return err
 	}
 
-	if err := waitForSSHPort(ip); err != nil {
+	if err := waitForTartProvisionSSHPort(ip); err != nil {
 		return fmt.Errorf("Tart VM %q is not ready for SSH: %w", vmName, err)
+	}
+
+	if !options.skipGuestNetworkReadiness {
+		// Also covers already-running VMs, so roles never start on a guest
+		// that has an IP address but no working DNS or HTTPS.
+		// --check is a dry run: probes still run, but guest DNS stays as is.
+		readinessOptions := alchemy_deploy.TartGuestNetworkOptions{ReadOnly: options.Check}
+		if err := ensureTartGuestNetworkForProvision(projectDir, vmName, readinessOptions); err != nil {
+			return fmt.Errorf("Tart VM %q is not network-ready; no Ansible roles were run: %w", vmName, err)
+		}
 	}
 
 	connectionConfig, err := loadMacOSTartAnsibleConnectionConfig(projectDir)
@@ -667,7 +689,7 @@ func runTartMacOSProvision(vm alchemy_build.VirtualMachineConfig, options Provis
 		return fmt.Errorf("failed to build ansible arguments for discovered host %q: %w", ip, err)
 	}
 
-	runErr := runAnsibleProvisionCommand(
+	runErr := runAnsibleProvisionCommandFunc(
 		projectDir,
 		args,
 		90*time.Minute,

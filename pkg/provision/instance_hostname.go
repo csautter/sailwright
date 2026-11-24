@@ -41,5 +41,8 @@ func ConfigureTartInstanceHostname(vm build.VirtualMachineConfig) error {
 	options := ProvisionOptions{Verbosity: defaultAnsibleVerbosity}
 	options.PlaybookPath = file.Name()
 	options.PlaybookPathExplicit = true
+	// The deploy step that created and started the VM already checked its
+	// network; setting the hostname needs none.
+	options.skipGuestNetworkReadiness = true
 	return runTartMacOSProvision(vm, options)
 }
