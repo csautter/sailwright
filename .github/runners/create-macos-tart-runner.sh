@@ -768,7 +768,7 @@ run_worker() {
 	local shutdown_requested=false
 	local run_count=0
 
-	# shellcheck disable=SC2317 # Invoked by the EXIT trap.
+	# shellcheck disable=SC2317,SC2329 # Invoked by the EXIT trap.
 	_worker_cleanup() {
 		if [[ -n "$current_prep_ssh_pid" ]]; then
 			kill -TERM "$current_prep_ssh_pid" 2>/dev/null || true
