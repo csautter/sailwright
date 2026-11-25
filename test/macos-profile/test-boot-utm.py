@@ -86,6 +86,37 @@ class BootTest(unittest.TestCase):
         self.assertEqual(config['System']['MemorySize'], 4096)
         self.assertEqual(config['Information']['UUID'], 'test-uuid')
 
+    def test_software_emulation_records_its_changes(self):
+        self.run_boot(software_emulation=True)
+        settings = [change['setting'] for change in self.result()['software_emulation_changes']]
+        self.assertEqual(settings, ['QEMU.Hypervisor', 'System.MemorySize', 'Network[0].Mode'])
+
+    def test_aarch64_software_emulation_uses_packer_cpu_without_tpm(self):
+        self.config['System'].update(Architecture='aarch64', CPU='default')
+        self.config['QEMU'].update(TPMDevice=True, AdditionalArguments=['-name', 'kept'])
+        (self.bundle / 'config.plist').write_bytes(plistlib.dumps(self.config))
+        self.run_boot(software_emulation=True)
+        config = plistlib.loads((self.bundle / 'config.plist').read_bytes())
+        self.assertFalse(config['QEMU']['TPMDevice'])
+        self.assertTrue(config['System']['ForceMulticore'])
+        self.assertEqual(config['System']['CPU'], 'default')
+        # QEMU applies the last -cpu, after the cortex-a72 UTM emits for "default".
+        self.assertEqual(config['QEMU']['AdditionalArguments'],
+                         ['-name', 'kept', '-cpu', boot_utm.TCG_AARCH64_CPU])
+        self.assertEqual(plistlib.loads((self.diagnostics / 'config.plist').read_bytes()), config)
+        settings = {change['setting'] for change in self.result()['software_emulation_changes']}
+        self.assertTrue({'QEMU.TPMDevice', 'QEMU.AdditionalArguments',
+                         'System.ForceMulticore'} <= settings)
+
+    def test_native_boot_leaves_aarch64_template_settings(self):
+        self.config['System'].update(Architecture='aarch64', CPU='default')
+        self.config['QEMU']['TPMDevice'] = True
+        (self.bundle / 'config.plist').write_bytes(plistlib.dumps(self.config))
+        self.run_boot()
+        config = plistlib.loads((self.bundle / 'config.plist').read_bytes())
+        self.assertEqual(config, self.config)
+        self.assertNotIn('software_emulation_changes', self.result())
+
     def test_registration_failure_is_fatal(self):
         self.open.side_effect = subprocess.CalledProcessError(1, ['osascript'], stderr='TCC denied')
         with self.assertRaises(subprocess.CalledProcessError):
@@ -303,6 +334,62 @@ class BootTest(unittest.TestCase):
                 self.run_boot()
         diagnose.assert_called_once()
         self.assertEqual(self.result()['utm_state'], {'hints': ['x']})
+
+
+class SoftwareEmulationTemplateTest(unittest.TestCase):
+    """The shipped UTM templates under the CI software-emulation transform."""
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def template(self, name):
+        return plistlib.loads((self.ROOT / 'deployments/utm' / name / 'config.plist').read_bytes())
+
+    def test_windows_arm64_template_boots_without_tpm_on_packer_cpu(self):
+        config = self.template('windows11-arm64')
+        self.assertEqual(config['System']['CPU'], 'default')
+        self.assertTrue(config['QEMU']['TPMDevice'])
+        boot_utm.apply_software_emulation(config)
+        self.assertFalse(config['QEMU']['Hypervisor'])
+        self.assertFalse(config['QEMU']['TPMDevice'])
+        self.assertTrue(config['System']['ForceMulticore'])
+        self.assertEqual(config['QEMU']['AdditionalArguments'][-2:], ['-cpu', boot_utm.TCG_AARCH64_CPU])
+        # Plain ramfb as in Packer: no virtio-gpu device for viogpudo.sys.
+        self.assertEqual([d['Hardware'] for d in config['Display']], ['ramfb'])
+
+    def test_ubuntu_arm64_template_gets_the_same_cpu_and_keeps_its_display(self):
+        config = self.template('ubuntu-arm64')
+        changes = boot_utm.apply_software_emulation(config)
+        self.assertEqual(config['QEMU']['AdditionalArguments'][-2:], ['-cpu', boot_utm.TCG_AARCH64_CPU])
+        self.assertEqual([d['Hardware'] for d in config['Display']], ['virtio-gpu-pci'])
+        settings = {change['setting'] for change in changes}
+        self.assertNotIn('QEMU.TPMDevice', settings)
+        self.assertNotIn('Display[0].Hardware', settings)
+
+    def test_amd64_templates_keep_cpu_and_tpm(self):
+        for name in ('windows11-amd64', 'ubuntu-amd64'):
+            with self.subTest(name):
+                config = self.template(name)
+                before = (config['System'].get('CPU'), config['System'].get('ForceMulticore'),
+                          config['QEMU'].get('TPMDevice'), list(config['QEMU'].get('AdditionalArguments', [])),
+                          [d['Hardware'] for d in config['Display']])
+                boot_utm.apply_software_emulation(config)
+                self.assertEqual((config['System'].get('CPU'), config['System'].get('ForceMulticore'),
+                                  config['QEMU'].get('TPMDevice'), config['QEMU'].get('AdditionalArguments', []),
+                                  [d['Hardware'] for d in config['Display']]), before)
+
+    def test_explicit_aarch64_cpu_is_kept(self):
+        config = self.template('windows11-arm64')
+        config['System']['CPU'] = 'cortex-a76'
+        boot_utm.apply_software_emulation(config)
+        self.assertNotIn('-cpu', config['QEMU']['AdditionalArguments'])
+
+    def test_transform_is_idempotent(self):
+        config = self.template('windows11-arm64')
+        boot_utm.apply_software_emulation(config)
+        self.assertEqual(boot_utm.apply_software_emulation(config), [])
+
+    def test_cpu_matches_the_packer_tcg_build(self):
+        hcl = (self.ROOT / 'build/packer/windows/windows11-qemu.pkr.hcl').read_text()
+        self.assertIn(f': "{boot_utm.TCG_AARCH64_CPU}"', hcl)
 
 
 class DiagnoseTest(unittest.TestCase):

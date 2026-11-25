@@ -126,7 +126,14 @@ This is a boot smoke, not the full provision/idempotency E2E scenario.
 Hardware acceleration through HVF and bridged networking are outside these CI
 checks. The existing `is_ci` setting keeps Packer on TCG. The disposable tier C
 bundle likewise disables its hypervisor, caps memory at 4 GiB and uses emulated
-networking, because Tart cannot provide nested HVF/vmnet. Production templates
+networking, because Tart cannot provide nested HVF/vmnet. For arm64 bundles it
+also enables multi-threaded TCG, runs the CPU model Packer uses under TCG
+(UTM would otherwise emulate a cortex-a72, on which Windows 11 does not boot and
+x64 programs such as the QEMU Guest Agent do not run), drops the TPM (with a
+TPM, UTM uses a secure-boot UEFI firmware that halts under TCG; the arm64 image
+is installed without one) and replaces a ramfb-plus-virtio-gpu display with
+plain ramfb, as in the Packer build (Windows' VirtIO GPU driver intermittently
+crashes under TCG). `result.json` lists each change. Production templates
 and their snapshots retain their native settings. A guest-agent IP confirms
 the installed OS is running; it does not prove host-to-guest SSH/WinRM or native
 bridged networking. Verify those on a physical Mac when changing VM hardware

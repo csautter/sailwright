@@ -10,6 +10,16 @@ import subprocess
 import time
 
 START_GRACE_SECONDS = 60
+# Without a hypervisor UTM runs an aarch64 guest with the CPU model "default"
+# as cortex-a72 (ARMv8.0); the Windows 11 kernel parks the boot CPU on it.
+# With neoverse-n1 Windows boots, but x64 programs such as the x64-only QEMU
+# guest agent from UTM Guest Tools never start under its x64 emulation. The CPU
+# Packer installs the image with under TCG runs both. UTM's CPU setting cannot
+# carry QEMU CPU properties, so the model goes into AdditionalArguments; QEMU
+# applies the last -cpu option. Keep in sync with arm64_cpu_model in
+# build/packer/windows/windows11-qemu.pkr.hcl (checked by test-boot-utm.py).
+TCG_AARCH64_CPU = 'max,sve=off,sme=off,pauth-impdef=on'
+RAMFB_WITH_VIRTIO_GPU = ('virtio-ramfb', 'virtio-ramfb-gl')
 REGISTRATION_TIMEOUT_SECONDS = 60
 REGISTRATION_POLL_SECONDS = 2
 # When UTM does not list the bundle after `open`, it rejected it without an
@@ -346,6 +356,54 @@ def guest_addresses(output):
     return addresses
 
 
+def apply_software_emulation(config):
+    """Adapt a disposable bundle config to TCG; return what changed and why.
+
+    Nested HVF/vmnet is unavailable on Tart; production templates stay native.
+    """
+    changes = []
+
+    def change(section, key, value, reason):
+        old = config[section].get(key)
+        if old != value:
+            config[section][key] = value
+            changes.append({'setting': f'{section}.{key}', 'from': old, 'to': value, 'reason': reason})
+
+    change('QEMU', 'Hypervisor', False, 'nested HVF is unavailable')
+    change('System', 'MemorySize', min(config['System']['MemorySize'], 4096), 'runner memory')
+    for index, network in enumerate(config.get('Network', [])):
+        if network.get('Mode') != 'Emulated':
+            changes.append({'setting': f'Network[{index}].Mode', 'from': network.get('Mode'),
+                            'to': 'Emulated', 'reason': 'nested vmnet is unavailable'})
+            network['Mode'] = 'Emulated'
+    if config['System'].get('Architecture') == 'aarch64':
+        arguments = list(config['QEMU'].get('AdditionalArguments', []))
+        if config['System'].get('CPU', 'default') == 'default' and '-cpu' not in arguments:
+            change('QEMU', 'AdditionalArguments', arguments + ['-cpu', TCG_AARCH64_CPU],
+                   'UTM runs "default" as cortex-a72 without a hypervisor; use the CPU '
+                   'Packer installs the image with under TCG')
+        # Packer's TCG build uses multi-threaded TCG as well; single-threaded
+        # TCG runs all vCPUs on one host thread.
+        change('System', 'ForceMulticore', True, 'multi-threaded TCG')
+        for index, display in enumerate(config.get('Display', [])):
+            # virtio-ramfb[-gl] pairs ramfb with a virtio-gpu device. Under TCG
+            # Windows' VirtIO GPU driver (viogpudo.sys from UTM Guest Tools)
+            # intermittently bugchecks (0x50) while first-boot device setup
+            # starts it. Packer installs and boots the image on plain ramfb.
+            if display.get('Hardware') in RAMFB_WITH_VIRTIO_GPU:
+                changes.append({'setting': f'Display[{index}].Hardware', 'from': display['Hardware'],
+                                'to': 'ramfb', 'reason': "Windows' VirtIO GPU driver bugchecks under TCG"})
+                display['Hardware'] = 'ramfb'
+        if config['QEMU'].get('TPMDevice'):
+            # With a TPM, UTM boots edk2-aarch64-secure-code.fd, which halts in
+            # a dead loop under TCG before it reads any disk (UTM 5.0.9). The
+            # arm64 image is installed without a TPM (Packer's arm64 VM has
+            # none; the installer bypasses the check), so it boots without one.
+            change('QEMU', 'TPMDevice', False,
+                   'the secure-boot UEFI firmware UTM uses with a TPM halts under TCG')
+    return changes
+
+
 def boot(bundle, timeout, diagnostics, software_emulation=False):
     diagnostics.mkdir(parents=True, exist_ok=True)
     result = dict(bundle=str(bundle), status='not started',
@@ -357,12 +415,8 @@ def boot(bundle, timeout, diagnostics, software_emulation=False):
         identifier = config['Information']['UUID']
         result['uuid'] = identifier
         if software_emulation:
-            # Only the disposable CI bundle changes. Nested HVF/vmnet is
-            # unavailable on Tart; production templates stay native.
-            config['QEMU']['Hypervisor'] = False
-            config['System']['MemorySize'] = min(config['System']['MemorySize'], 4096)
-            for network in config.get('Network', []):
-                network['Mode'] = 'Emulated'
+            # Only the disposable CI bundle changes.
+            result['software_emulation_changes'] = apply_software_emulation(config)
             config_path.write_bytes(plistlib.dumps(config))
         (diagnostics / 'config.plist').write_bytes(config_path.read_bytes())
         # Every failure here fails CI. Select by UUID to avoid touching
