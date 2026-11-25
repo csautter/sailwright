@@ -3,6 +3,8 @@
   "extends": [
     "config:recommended"
   ],
+  "prHourlyLimit": 2,
+  "prConcurrentLimit": 4,
   "enabledManagers": [
     "custom.regex"
   ],
