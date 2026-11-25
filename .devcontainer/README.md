@@ -195,7 +195,11 @@ containers using the volume, then run `scripts/orca-vm/docker-workspace.sh claud
   [GitHub CLI and git credentials](#github-cli-and-git-credentials)). The
   template's own `share_credentials` GitHub sharing is turned off in
   `scripts/orca-vm/defaults.env` (`ORCA_DOCKER_GITHUB_AUTH=none`), so there is
-  one token file and one opt-in.
+  one token file and one opt-in. Until push credentials are available, `[remote
+  "origin"]` is withheld in the container's checkout (`orca.originUrl` and
+  `refs/remotes/origin/*` stay intact) so Orca's environment doctor treats the
+  missing remote as a warning instead of failing workspace creation; `origin` is
+  restored automatically once push access works.
   SSH keys are never copied into workspaces: agents run as root there and
   could read or use them, and a personal key opens much more than `origin`.
 - `scripts/orca-vm/docker-workspace.sh doctor` checks Docker, Orca and the Cloud
@@ -216,7 +220,7 @@ if it exists:
 |---|---|---|
 | `~/.config/sailwright/devcontainer/initialize-host.sh` (`$XDG_CONFIG_HOME` is honored) | On the host, before each start, from `initialize-host.sh` | Export files the container needs. `REPO_ROOT`, `REPO_NAME` and `USER_HOME` are set. The workspace is mounted, so files written below `REPO_ROOT` show up at `/workspaces/$REPO_NAME`. A failing hook only prints a warning. |
 | `.devcontainer/local/container.env` (gitignored) | Loaded as a Compose `env_file` | `KEY=value` lines for the container environment. Applied when the container is created, so rebuild after a change. The host hook may write it. |
-| `.devcontainer/local/post-start.sh` (gitignored) | In the container, first in `postStartCommand` | Container setup that has to happen before `go mod vendor` and the other start commands reach the network. |
+| `.devcontainer/local/post-start.sh` (gitignored, mounted read-only into containers) | In the container, first in `postStartCommand` | Container setup that has to happen before `go mod vendor` and the other start commands reach the network. |
 
 The host hook is deliberately kept outside the workspace. The container mounts
 the workspace read-write, so a host hook stored there could be created or

@@ -295,11 +295,13 @@ assert_true "compose: image tag" grep -qE '^orca-devcontainer-fixture-repo:[0-9a
 mkdir -p "${REPO}/.devcontainer/.generated"
 echo "per start" >"${REPO}/.devcontainer/.generated/compose.local.yaml"
 assert_eq "compose: image tag ignores .generated/" "$tag1" "$(cl image_tag)"
+assert_eq "compose: built service has no prebuilt base" "" "$(cl prebuilt_base_image)"
 
 # A prebuilt image can retain its name while initializeCommand replaces it.
 jq '.services.dev |= (del(.build) + {image: "fixture-base"})' \
     "${TMP}/cb/config.json" >"${TMP}/cb/prebuilt.json"
 mv "${TMP}/cb/prebuilt.json" "${TMP}/cb/config.json"
+assert_eq "compose: image-only service is a prebuilt base" "fixture-base" "$(cl prebuilt_base_image)"
 printf 'sha256:first\n' >"${TMP}/cb/base-id"
 tag1="$(cl image_tag)"
 printf 'sha256:second\n' >"${TMP}/cb/base-id"
@@ -637,9 +639,50 @@ gc 'share_github_auth c1'
 assert_eq "github auth: own login replacing the shared one is kept" "gho_own" "$(cat "${GC}/ctr/gh-token")"
 assert_eq "github auth: rewrite kept for the own login" "2" "$(ctr_git | wc -l | tr -d ' ')"
 
-rm -f "${GC}/docker.args"
+rm -f "${GC}/docker.args" "${GC}/log"
 HOST_TOKEN=gho_hosttoken ORCA_DOCKER_GITHUB_AUTH=none gc 'share_github_auth c1'
 assert_true "github auth: none reconciles earlier sharing" test -s "${GC}/docker.args"
+assert_true "github auth: none logs no missing token file message" test ! -s "${GC}/log"
+
+# --- reconcile_origin_remote -----------------------------------------------------
+RO="${TMP}/ro"
+mkdir -p "${RO}/bin" "${RO}/cbin" "${RO}/home"
+RO_PATH="${TMP_PATH}/ro"
+git init -q --bare "${RO}/upstream.git"
+git init -q -b main "${RO}/work"
+git -C "${RO}/work" config user.name test
+git -C "${RO}/work" config user.email test@example.com
+git -C "${RO}/work" commit --allow-empty -q -m init
+git -C "${RO}/work" remote add origin "https://github.com/org/repo.git"
+git -C "${RO}/work" config --local orca.originUrl "https://github.com/org/repo.git"
+git -C "${RO}/work" update-ref refs/remotes/origin/main HEAD
+cat >"${RO}/bin/docker" <<EOF
+#!/bin/sh
+[ "\$1" = exec ] || exit 1
+shift 5 # exec -u <user> -i <name>
+HOME="${RO}/home" PATH="${RO_PATH}/cbin:\$PATH" exec "\$@"
+EOF
+cat >"${RO}/cbin/gh" <<'EOF'
+#!/bin/sh
+[ "$1 $2" = "auth token" ] && [ -n "${RO_GH_TOKEN:-}" ] && { echo "$RO_GH_TOKEN"; exit 0; }
+exit 1
+EOF
+chmod +x "${RO}/bin/docker" "${RO}/cbin/gh"
+ro() { lib "PROJECT_ROOT_IN_CONTAINER='${RO}/work'; PATH='${RO_PATH}/bin':\$PATH; reconcile_origin_remote c1" 2>"${RO}/log"; }
+ro
+assert_eq "origin reconcile: unauthenticated github origin withheld" "" \
+    "$(git -C "${RO}/work" remote)"
+assert_eq "origin reconcile: saved originUrl preserved" "https://github.com/org/repo.git" \
+    "$(git -C "${RO}/work" config --local --get orca.originUrl)"
+assert_true "origin reconcile: origin/* refs preserved when origin withheld" \
+    git -C "${RO}/work" show-ref --verify --quiet refs/remotes/origin/main
+# Point saved URL at the local bare repo via url.insteadOf to simulate authorized HTTPS push.
+git -C "${RO}/work" config --local "url.${RO}/upstream.git.insteadOf" "https://github.com/org/repo.git"
+RO_GH_TOKEN=pat_ok ro
+assert_eq "origin reconcile: restored once push succeeds" "origin" \
+    "$(git -C "${RO}/work" remote)"
+assert_eq "origin reconcile: restored URL matches saved URL" "https://github.com/org/repo.git" \
+    "$(git -C "${RO}/work" config --local --get remote.origin.url)"
 
 # --- defaults.env ----------------------------------------------------------------
 printf '# repository defaults\r\nORCA_DOCKER_GITHUB_AUTH=none\r\nORCA_DOCKER_TEST_VALUE=a b=$HOME\nnot a line\n' \

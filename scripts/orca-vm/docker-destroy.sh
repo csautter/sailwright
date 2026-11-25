@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Orca environment recipe "docker-devcontainer": destroy. Fetches the
-# container's branches to the host (unpushed work exists only there), then removes the container and its known_hosts entries. If the fetch
+# container's branches to the host (unpushed work exists only there), then
+# removes the container and its known_hosts entries. If the fetch
 # fails, the branches are saved under the state directory's rescue/ first; if
 # that fails too, nothing is removed. Shared named volumes and host mounts
-# (including the per-checkout Claude volume) survive workspace removal.
+# (agent logins, including the orca-<repo>-claude volume, skills, caches,
+# shared directories) are kept.
 # ORCA_DOCKER_SKIP_FETCH=1 skips the fetch and the rescue.
 set -euo pipefail
 

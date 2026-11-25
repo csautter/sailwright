@@ -9,6 +9,9 @@
 # The colors go into the container's remote "Machine" settings instead of
 # .vscode/settings.json, so the tracked workspace settings stay untouched.
 # Only workbench.colorCustomizations and window.title are managed here.
+# The Machine directory must be a per-clone volume: .vscode-server/data is
+# shared by every clone, so one clone's color would otherwise show up in all
+# windows.
 #
 # Usage: clone-color.sh [workspace-folder]   (default: the repo root)
 # Env:   VSCODE_MACHINE_SETTINGS overrides the settings file path.

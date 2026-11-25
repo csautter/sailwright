@@ -68,8 +68,8 @@ bring_up "$name"
 port="$BROUGHT_UP_PORT"
 host_key="$BROUGHT_UP_HOST_KEY"
 
-# Docker initializes new volumes as root. Claude runs as remoteUser.
-docker exec -u root "$name" chown "$CONTAINER_USER" "${CONTAINER_HOME}/.claude"
+# A new volume is root-owned; the Claude home must belong to remoteUser.
+docker exec -u root "$name" sh -c 'chown "$2" "$1"' _ "${CONTAINER_HOME}/.claude" "$CONTAINER_USER"
 
 # --- Seed the repository: all local branches, tags and origin/* refs of the
 # primary checkout, so Orca can create its linked worktree from any base ref.
@@ -109,7 +109,10 @@ set -euo pipefail
 [ ! -e "$ROOT/.git" ] || { echo "$ROOT already contains a repository" >&2; exit 1; }
 git init -q -b "${HEAD_BRANCH:-main}" "$ROOT"
 cd "$ROOT"
-[ -z "$ORIGIN_URL" ] || git remote add origin "$ORIGIN_URL"
+[ -z "$ORIGIN_URL" ] || {
+    git config --local orca.originUrl "$ORIGIN_URL"
+    git remote add origin "$ORIGIN_URL"
+}
 git fetch -q --update-head-ok /tmp/repo.bundle \
     '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' \
     '+refs/remotes/origin/*:refs/remotes/origin/*'

@@ -153,6 +153,9 @@ add_mount "$USER_HOME/.claude-devcontainer" /root/.claude
 add_mount "$USER_HOME/.codex-devcontainer" /root/.codex
 mkdir -p "$GITHUB_SHARE_DIR"
 add_mount "$GITHUB_SHARE_DIR" /run/sailwright-github ro
+if [ -d "$LOCAL_HOOK_DIR" ]; then
+  add_mount "$LOCAL_HOOK_DIR" "/workspaces/$REPO_NAME/.devcontainer/local" ro
+fi
 
 # VS Code's remote Machine settings (clone-color.sh writes the window color
 # there) get a volume per clone; the rest of .vscode-server/data stays shared.
