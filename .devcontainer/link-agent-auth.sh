@@ -1,22 +1,21 @@
 #!/usr/bin/env bash
-# Links Codex and OpenCode credentials from host-backed mounts into their
-# container-owned agent homes and seeds the Orca Claude configuration.
+# Seeds Orca Claude/Codex configuration from read-only devcontainer mounts,
+# removes legacy shared credential links, and links OpenCode credentials.
 #
-#   Codex     ~/.codex-host/auth.json          (host ~/.codex)
 #   OpenCode  ~/.opencode-host/auth.json       (devcontainer OpenCode volume, Orca only)
 #
-# Orca keeps its Claude login on a per-checkout volume. Claude Code replaces
-# the credentials file on refresh, so a symlink would leave the source stale.
-# Only onboarding state and settings come from the read-only Claude seed mount.
+# Containers sign in to Claude Code and Codex separately from the host so
+# container-specific accounts can be used. Orca keeps its Claude and Codex
+# logins on per-checkout volumes (orca-<repo>-claude, orca-<repo>-codex); only
+# non-credential config files (.claude.json, settings.json, config.toml) are
+# seeded once from the read-only *-host mounts.
 #
-# A credential is linked only when the shared file exists. Without one, the
-# container keeps its own login and nothing is created on the host side; a
-# link left from an earlier shared login is removed so a new login cannot
-# write through it. Token refreshes of a linked login do update the shared
-# file, so rotated refresh tokens stay valid everywhere.
+# For OpenCode, a credential is linked only when the shared file exists.
+# Without one, the container keeps its own login and nothing is created on the
+# host side; a link left from an earlier shared login is removed.
 #
 # A mount that is absent is skipped, so the same script works in the
-# devcontainer (Claude/OpenCode homes are mounted directly) and in Orca
+# devcontainer (Claude/Codex/OpenCode homes are mounted directly) and in Orca
 # containers (scripts/orca-vm). AGENT_AUTH_HOME (default $HOME) exists for tests.
 set -uo pipefail
 
@@ -55,7 +54,15 @@ seed_copy() (
     fi
 )
 
-link_credential "${home}/.codex-host/auth.json" "${home}/.codex/auth.json"
+codex_dir="${CODEX_HOME:-${home}/.codex}"
+legacy_codex_link="${codex_dir}/auth.json"
+case "$(readlink "$legacy_codex_link" 2>/dev/null || true)" in
+    "${home}/.codex-host/auth.json"|"${home}/.codex-auth.json")
+        rm -f "$legacy_codex_link"
+        echo ">>> agent auth: removed the shared Codex login link; log in to Codex in the container"
+        ;;
+esac
+seed_copy "${home}/.codex-host/config.toml" "${codex_dir}/config.toml"
 
 claude_dir="${CLAUDE_CONFIG_DIR:-${home}/.claude}"
 legacy_claude_link="${claude_dir}/.credentials.json"

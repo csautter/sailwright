@@ -11,17 +11,20 @@
 #
 # Mount translation (devcontainer -> Orca container), <HOME> = remoteUser's home:
 #   */.vscode-server*                    dropped (editor only)
-#   <HOME>/.codex, <HOME>/.codex/{.tmp,tmp} dropped (Codex state is container-owned)
+#   <HOME>/.codex/{.tmp,tmp}             dropped (kept inside the Codex volume)
+#   <HOME>/.codex-host, .codex-auth.json dropped (host Codex login is never shared)
+#   <HOME>/.codex                        -> <HOME>/.codex-host (read-only seed)
 #   <HOME>/.claude                       -> <HOME>/.claude-host (read-only seed)
 #   <HOME>/.local/share/opencode         -> <HOME>/.opencode-host (credentials linked)
 #   everything else                      unchanged
-# plus the per-checkout Docker volume orca-<repo>-claude at <HOME>/.claude,
-# which keeps Claude login, settings and history across workspace recreation;
+# plus the per-checkout Docker volumes orca-<repo>-claude at <HOME>/.claude and
+# orca-<repo>-codex at <HOME>/.codex, which keep Claude and Codex logins,
+# settings and history across workspace recreation;
 # plus a read-write bind of every worktree.sharedDirectories entry of orca.yaml
 # (git-ignored working directories) into the container's primary checkout;
 # Orca links them into each worktree it creates there.
-# .devcontainer/link-agent-auth.sh links Codex/OpenCode credential files and
-# seeds the Claude volume with .claude.json and settings.json.
+# .devcontainer/link-agent-auth.sh links the OpenCode credential file and
+# seeds the Claude/Codex volumes with .claude.json, settings.json and config.toml.
 # OpenCode v2 keeps its logins in SQLite instead; share_opencode_auth copies
 # the host's (GitHub Copilot by default) with `opencode auth export | import`.
 # share_credentials logs the container's gh in with a GitHub token you created
@@ -312,14 +315,16 @@ host_mount() {
 
 # Prints the Orca form of one expanded --mount spec, or nothing to drop it.
 translate_mount() {
-    local spec="$1" target new_target="" part out="" claude_seed=false
+    local spec="$1" target new_target="" part out="" seed_ro=false
     target="$(printf '%s\n' "$spec" | tr ',' '\n' | sed -n -E 's/^(target|destination|dst)=//p' | head -n 1)"
     case "$target" in
         # The repository is seeded from a git bundle, never bound from the host.
         "$PROJECT_ROOT_IN_CONTAINER"|"${PROJECT_ROOT_IN_CONTAINER}/") return 0 ;;
         */.vscode-server|*/.vscode-server/*) return 0 ;;
-        "${CONTAINER_HOME}/.codex"|"${CONTAINER_HOME}/.codex/.tmp"|"${CONTAINER_HOME}/.codex/tmp") return 0 ;;
-        "${CONTAINER_HOME}/.claude") new_target="${CONTAINER_HOME}/.claude-host"; claude_seed=true ;;
+        "${CONTAINER_HOME}/.codex/.tmp"|"${CONTAINER_HOME}/.codex/tmp") return 0 ;;
+        "${CONTAINER_HOME}/.codex-host"|"${CONTAINER_HOME}/.codex-auth.json") return 0 ;;
+        "${CONTAINER_HOME}/.codex") new_target="${CONTAINER_HOME}/.codex-host"; seed_ro=true ;;
+        "${CONTAINER_HOME}/.claude") new_target="${CONTAINER_HOME}/.claude-host"; seed_ro=true ;;
         "${CONTAINER_HOME}/.local/share/opencode") new_target="${CONTAINER_HOME}/.opencode-host" ;;
         *) printf '%s' "$spec"; return 0 ;;
     esac
@@ -327,11 +332,11 @@ translate_mount() {
     for part in $spec; do
         case "$part" in
             target=*|destination=*|dst=*) part="target=${new_target}" ;;
-            readonly|readonly=*|ro|ro=*) if $claude_seed; then continue; fi ;;
+            readonly|readonly=*|ro|ro=*) if $seed_ro; then continue; fi ;;
         esac
         out="${out:+${out},}${part}"
     done
-    if $claude_seed; then out="${out},readonly"; fi
+    if $seed_ro; then out="${out},readonly"; fi
     printf '%s' "$out"
 }
 
@@ -353,6 +358,26 @@ ensure_claude_volume() {
         || docker volume create --label "${LABEL_REPO}=${REPO_ROOT}" "$volume" >/dev/null \
         || return 1
     assert_claude_volume_owned "$volume"
+}
+
+codex_volume() {
+    local volume="${ORCA_DOCKER_CODEX_VOLUME:-$(sanitize_name "orca-${REPO_NAME}-codex")}"
+    [[ "$volume" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]+$ ]] || die "invalid ORCA_DOCKER_CODEX_VOLUME name: ${volume}"
+    printf '%s' "$volume"
+}
+
+assert_codex_volume_owned() {
+    local volume="$1" repo
+    repo="$(docker volume inspect --format "{{index .Labels \"${LABEL_REPO}\"}}" "$volume")" || return 1
+    [ "$repo" = "$REPO_ROOT" ] || die "Codex volume ${volume} belongs to another checkout or has no owner label; set ORCA_DOCKER_CODEX_VOLUME to a unique name"
+}
+
+ensure_codex_volume() {
+    local volume="$1"
+    docker volume inspect "$volume" >/dev/null 2>&1 \
+        || docker volume create --label "${LABEL_REPO}=${REPO_ROOT}" "$volume" >/dev/null \
+        || return 1
+    assert_codex_volume_owned "$volume"
 }
 
 # Prints the worktree.sharedDirectories entries of orca.yaml, one per line.
@@ -431,9 +456,13 @@ compose_run_args() {
 
 # Builds the `docker run` arguments from devcontainer.json into DOCKER_RUN_ARGS.
 collect_run_args() {
-    local volume
-    volume="$(claude_volume)" || return 1
-    DOCKER_RUN_ARGS=(--mount "type=volume,source=${volume},target=${CONTAINER_HOME}/.claude")
+    local claude_vol codex_vol
+    claude_vol="$(claude_volume)" || return 1
+    codex_vol="$(codex_volume)" || return 1
+    DOCKER_RUN_ARGS=(
+        --mount "type=volume,source=${claude_vol},target=${CONTAINER_HOME}/.claude"
+        --mount "type=volume,source=${codex_vol},target=${CONTAINER_HOME}/.codex"
+    )
     local raw spec key value dir pending=""
     if is_compose; then
         local compose_args
@@ -753,6 +782,7 @@ share_github_auth() {
             *) log "github auth: removing the earlier shared login failed (continuing)" ;;
         esac
         case "$source" in
+            disabled) ;;
             none) log "github auth: no token shared. Create a fine-grained token for the repositories the agents work on (https://github.com/settings/personal-access-tokens/new) and save it to ${GITHUB_TOKEN_FILE} (chmod 600), or set ORCA_DOCKER_GITHUB_AUTH=host to share the host's gh login with all of its rights" ;;
             host) log "github auth: no gh login on the host (run 'gh auth login' there), not shared" ;;
             *) log "github auth: no usable token in ${GITHUB_TOKEN_FILE}, not shared" ;;
@@ -767,7 +797,7 @@ share_github_auth() {
            fi
            warn_github_token_scopes "$token" ;;
         3) log "github auth: kept the container's own gh login" ;;
-        127) log "github auth: no gh in the container, login not shared" ;;
+        127) log "github auth: no gh in the container, token not shared; install gh in the devcontainer image" ;;
         *) log "github auth: gh auth login in the container failed (offline, expired or missing scopes?)" ;;
     esac
     token=""
@@ -828,10 +858,88 @@ run_post_start() {
     fi
 }
 
+# Keeps [remote "origin"] configured in the container's seeded checkout only
+# while git push dry-run access works. Orca's pre-workspace environment doctor
+# treats an absent remote as a non-blocking warning (branches still sync back to
+# the host via docker-fetch.sh), whereas a configured remote without working push
+# credentials fails git.fetch / git.push and blocks workspace creation.
+# Removing only the config section preserves refs/remotes/origin/* and
+# orca.originUrl so origin is restored automatically once credentials exist.
+# shellcheck disable=SC2016
+_RECONCILE_ORIGIN_SCRIPT='
+root=$1
+host=$2
+[ -d "$root/.git" ] || exit 0
+[ -r "$HOME/.config/devcontainer/remote-env.sh" ] && . "$HOME/.config/devcontainer/remote-env.sh"
+saved="$(git -C "$root" config --local --get orca.originUrl 2>/dev/null || true)"
+current="$(git -C "$root" config --local --get remote.origin.url 2>/dev/null || true)"
+url="${saved:-$current}"
+[ -n "$url" ] || exit 0
+[ -n "$saved" ] || git -C "$root" config --local orca.originUrl "$url"
+
+can_try=true
+case "$url" in
+    *"${host}:"*|*"${host}/"*)
+        if ! { command -v gh >/dev/null 2>&1 && gh auth token --hostname "$host" >/dev/null 2>&1; }; then
+            has_key=false
+            for k in "$HOME"/.ssh/id_*; do
+                case "$k" in *.pub) continue ;; esac
+                [ -f "$k" ] && { has_key=true; break; }
+            done
+            $has_key || can_try=false
+        fi
+        ;;
+esac
+
+if [ -z "$current" ]; then
+    git -C "$root" config --local remote.origin.url "$url"
+    git -C "$root" config --local remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+fi
+
+run_probe() {
+    if command -v timeout >/dev/null 2>&1; then
+        GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+            timeout 15 "$@"
+    else
+        GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+            "$@"
+    fi
+}
+
+if $can_try && run_probe git -C "$root" \
+    -c http.lowSpeedLimit=1 -c http.lowSpeedTime=10 \
+    push --dry-run --no-verify --porcelain origin +HEAD:refs/heads/orca-env-doctor-push-probe >/dev/null 2>&1; then
+    [ -n "$current" ] || exit 2
+    exit 0
+fi
+
+git -C "$root" config --local --remove-section remote.origin >/dev/null 2>&1 || true
+git -C "$root" config --local --unset-all remote.pushDefault "^origin$" >/dev/null 2>&1 || true
+git -C "$root" config --local --name-only --get-regexp "^branch\\..*\\.(push)?remote$" "^origin$" 2>/dev/null |
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        git -C "$root" config --local --unset-all "$key" "^origin$" >/dev/null 2>&1 || true
+    done
+$can_try && exit 3
+exit 4
+'
+
+reconcile_origin_remote() {
+    local name="$1" rc=0
+    cexec "$name" sh -c "$_RECONCILE_ORIGIN_SCRIPT" _ "$PROJECT_ROOT_IN_CONTAINER" "$GITHUB_HOST" </dev/null >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+        0) ;;
+        2) log "git origin: restored remote origin (push credentials verified)" ;;
+        3) log "git origin: withheld remote origin in ${PROJECT_ROOT_IN_CONTAINER} because dry-run push failed; branches still fetch back to the host via docker-fetch.sh" ;;
+        4) log "git origin: withheld remote origin in ${PROJECT_ROOT_IN_CONTAINER} until GitHub credentials are shared; branches still fetch back to the host via docker-fetch.sh" ;;
+    esac
+}
+
 # Shares the host's git credentials and agent logins with a running container.
 share_credentials() {
-    refresh_github_auth "$1" || { log "github auth: refresh failed; keeping retry markers"; return 0; }
+    refresh_github_auth "$1" || { log "github auth: refresh failed; keeping retry markers"; reconcile_origin_remote "$1"; return 0; }
     share_github_auth "$1"
+    reconcile_origin_remote "$1"
     share_opencode_auth "$1"
 }
 
@@ -894,23 +1002,36 @@ sanitize_name() {
     printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-' | sed -E 's/^[^a-z0-9]+//' | cut -c1-63
 }
 
-# Tag of the Orca image: a hash of the build-relevant devcontainer.json keys
-# and every file under .devcontainer/ (lifecycle scripts included, so a change
-# there produces a new, mostly cached build). Also hash the local ID of a
-# prebuilt base image so a rebuilt or pulled base gets a new Orca tag.
-# Changes to a build context outside .devcontainer/ need ORCA_DOCKER_REBUILD=1.
+# Prints the prebuilt image the devcontainer starts from (devcontainer.json
+# `image`, or a compose service with `image` but no `build`, e.g. one that
+# initializeCommand builds), or nothing when it is built from a Dockerfile.
+prebuilt_base_image() {
+    local svc
+    if is_compose; then
+        svc="$(compose_service_build_json 2>/dev/null)" || return 0
+        printf '%s' "$svc" | jq -r 'select(.build == null) | .image // empty'
+        return 0
+    fi
+    if dc_json -e '(.build.dockerfile // .dockerFile // null) == null' >/dev/null; then
+        expand_vars "$(dc_json -r '.image // empty')"
+    fi
+}
+
+# Tag of the Orca image: a hash of the build-relevant devcontainer.json keys,
+# every file under .devcontainer/ (lifecycle scripts included, so a change
+# there produces a new, mostly cached build) and the local ID of a prebuilt
+# base image (so rebuilding or pulling it, e.g. by initializeCommand, yields a
+# new Orca image instead of reusing one on the stale base). Changes to a build
+# context outside .devcontainer/ need ORCA_DOCKER_REBUILD=1.
 image_tag() {
-    local hash service base
+    local hash base
     hash="$(
         {
             dc_json -cS '{image, build, dockerFile, context, features}'
             if is_compose; then
-                service="$(compose_service_build_json)" || return 1
-                printf '%s\n' "$service"
-                base="$(printf '%s' "$service" | jq -r 'select(.build == null) | .image // empty')"
-            else
-                base="$(expand_vars "$(dc_json -r '.image // empty')")" || return 1
+                compose_service_build_json || return 1
             fi
+            base="$(prebuilt_base_image)" || return 1
             if [ -n "$base" ]; then
                 docker image inspect --format '{{.Id}}' "$base" 2>/dev/null || true
             fi

@@ -153,6 +153,9 @@ add_mount "$USER_HOME/.claude-devcontainer" /root/.claude
 add_mount "$USER_HOME/.codex-devcontainer" /root/.codex
 mkdir -p "$GITHUB_SHARE_DIR"
 add_mount "$GITHUB_SHARE_DIR" /run/sailwright-github ro
+if [ -d "$LOCAL_HOOK_DIR" ]; then
+  add_mount "$LOCAL_HOOK_DIR" "/workspaces/$REPO_NAME/.devcontainer/local" ro
+fi
 
 # VS Code's remote Machine settings (clone-color.sh writes the window color
 # there) get a volume per clone; the rest of .vscode-server/data stays shared.
@@ -166,9 +169,6 @@ MOUNTED+=("volume $MACHINE_VOLUME -> /root/.vscode-server/data/Machine")
 add_if_exists "$USER_HOME/.agents/skills" /root/.agents/skills
 add_if_exists "$USER_HOME/.agents/agents" /root/.agents/agents
 add_if_exists "$USER_HOME/.agents/skills" /root/.claude/skills
-# The host Codex login is shared through its auth.json only (postStartCommand
-# symlinks it into /root/.codex); the host state itself stays untouched.
-add_if_exists "$USER_HOME/.codex" /root/.codex-host
 if [ -d "$USER_HOME/.gemini" ]; then
   add_mount "$USER_HOME/.gemini" /root/.gemini
   if [ -d "$USER_HOME/.agents/skills" ]; then

@@ -14,6 +14,7 @@
 #   docker-workspace.sh up                  start the shared container and its Orca server
 #   docker-workspace.sh down [--force]      fetch branches, then remove the shared container
 #   docker-workspace.sh claude-logout       delete this checkout's Orca Claude login, settings and history
+#   docker-workspace.sh codex-logout        delete this checkout's Orca Codex login, settings and history
 #   docker-workspace.sh doctor              check Docker, Orca and the RPC methods used here
 #
 # Modes:
@@ -454,6 +455,22 @@ cmd_claude_logout() {
     log "removed ${volume}; the next Orca workspace starts without a Claude login"
 }
 
+cmd_codex_logout() {
+    [ "$#" -eq 0 ] || die "codex-logout takes no arguments"
+    local volume matches
+    volume="$(codex_volume)"
+    lock_acquire codex-volume
+    matches="$(docker volume ls --quiet --filter "name=${volume}")"
+    if ! grep -Fxq "$volume" <<<"$matches"; then
+        log "Codex volume ${volume} does not exist"
+        return 0
+    fi
+    assert_codex_volume_owned "$volume"
+    docker volume rm "$volume" >/dev/null \
+        || die "could not remove ${volume}; check for containers using it with docker ps -a --filter volume=${volume}"
+    log "removed ${volume}; the next Orca workspace starts without a Codex login"
+}
+
 # Prints the Cloud VM setting of the Orca app (true/false), or nothing. Reads
 # the settings database read-only, with sqlite3 or Orca's own Node.js.
 orca_cloud_vm_setting() {
@@ -525,6 +542,7 @@ case "$cmd" in
     up) cmd_up ;;
     down) cmd_down "$@" ;;
     claude-logout) cmd_claude_logout "$@" ;;
+    codex-logout) cmd_codex_logout "$@" ;;
     doctor) cmd_doctor ;;
     -h|--help|help) usage 0 ;;
     *) usage ;;

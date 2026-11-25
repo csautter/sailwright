@@ -49,14 +49,17 @@ sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
         printf 'export %s=%s\n' "$name" "$(sq "${!name}")"
     done < <(env)
     echo '[ -r "$HOME/.config/devcontainer/remote-env.sh" ] && . "$HOME/.config/devcontainer/remote-env.sh"'
-    # The image PATH above replaces the agent's PATH in login shells.
-    # Restore the directory where Orca installs its CLI for this user.
+    # Orca installs its CLI in ~/.orca/cli/bin and puts that on the PATH of
+    # the agents it starts (ORCA_CLI_BIN_DIR). The image PATH exported above
+    # would drop it in every shell that loads this file: login shells (Codex
+    # runs its commands through bash -l) and ~/.bashrc. Put it back in front.
     cat <<'EOF'
-_orca_cli_dir="${ORCA_CLI_BIN_DIR:-$HOME/.orca/cli/bin}"
-if [ -d "$_orca_cli_dir" ]; then
-    case ":$PATH:" in *":$_orca_cli_dir:"*) ;; *) export PATH="$_orca_cli_dir:$PATH" ;; esac
-fi
-unset _orca_cli_dir
+for _orca_dir in "${ORCA_CLI_BIN_DIR:-}" "$HOME/.orca/cli/bin"; do
+    [ -n "$_orca_dir" ] && [ -d "$_orca_dir" ] || continue
+    case ":$PATH:" in *":$_orca_dir:"*) ;; *) PATH="$_orca_dir:$PATH" ;; esac
+done
+unset _orca_dir
+export PATH
 EOF
 } >"$env_file"
 chmod 644 "$env_file"

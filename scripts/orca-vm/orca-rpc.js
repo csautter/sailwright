@@ -7,13 +7,24 @@
 // Undocumented interface: re-check after Orca updates (scripts/orca-vm/docker-workspace.sh doctor).
 'use strict'
 
+const fs = require('node:fs')
+const path = require('node:path')
+
 const [cliDir, method, paramsJson] = process.argv.slice(2)
 if (!cliDir || !method) {
   console.error('usage: orca-rpc.js <orca-cli-dir> <method> [params-json]')
   process.exit(2)
 }
 
-const { RuntimeClient } = require(`${cliDir}/runtime-client.js`)
+const clientModule = [
+  path.join(cliDir, 'runtime', 'client.js'),
+  path.join(cliDir, 'runtime-client.js'),
+].find((candidate) => fs.existsSync(candidate))
+if (!clientModule) {
+  console.error(`orca-rpc: RuntimeClient module not found under ${cliDir}`)
+  process.exit(1)
+}
+const { RuntimeClient } = require(clientModule)
 
 ;(async () => {
   const client = new RuntimeClient()

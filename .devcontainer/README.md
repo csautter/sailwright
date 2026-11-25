@@ -125,11 +125,11 @@ so sessions, history, settings and logins survive a container rebuild:
 
 - `~/.claude-devcontainer` is `/root/.claude`. `CLAUDE_CONFIG_DIR` points there,
   so `.claude.json` (onboarding, project trust, MCP servers) is kept as well.
-- `~/.codex-devcontainer` is `/root/.codex` (`sessions/`, `history.jsonl`,
-  `config.toml`). A host `~/.codex/auth.json` (mounted at
-  `/root/.codex-host`) is linked in on every start so the login is shared with
-  the host. Its `.tmp/` plugin cache and `tmp/` runtime helpers live in the
-  `sailwright-codex-tmp` and `sailwright-codex-runtime-tmp` Docker volumes
+- `~/.codex-devcontainer` is `/root/.codex` (`auth.json`, `sessions/`,
+  `history.jsonl`, `config.toml`). The host `~/.codex` login is not shared, so
+  you sign in to Codex separately inside the container and can use a different
+  account there. Its `.tmp/` plugin cache and `tmp/` runtime helpers live in
+  the `sailwright-codex-tmp` and `sailwright-codex-runtime-tmp` Docker volumes
   instead: Codex rewrites thousands of files in `.tmp/` on every start, and a
   Windows host mount cannot delete the locked helper dirs in `tmp/`.
 
@@ -158,24 +158,27 @@ the generated mounts (including sibling repos, `~/.sailwright-gateway` and
 `mounts.local`), `local/container.env` and the lifecycle commands match the VS
 Code devcontainer. Workspace creation and `scripts/orca-vm/docker-build.sh`
 run `initializeCommand` before resolving the base image. Orca seeds the
-repository from a git bundle of your committed branches. Codex state is local
-to each container, and the host Codex login is linked when present. The image
-installs the Claude Code and Codex CLIs for Orca workspaces without a VS Code
-server. Once Orca installs its CLI in the workspace, SSH login shells include
-it on `PATH`.
+repository from a git bundle of your committed branches. The image installs the
+Claude Code and Codex CLIs for Orca workspaces without a VS Code server. Once
+Orca installs its CLI in the workspace, SSH login shells include it on `PATH`.
 
-Orca workspaces from the same checkout share a Docker volume named
-`orca-<checkout-folder>-claude`. It stores the Orca Claude login, history and
-settings across workspace recreation. The first start seeds `.claude.json`
-and `settings.json` from the read-only VS Code devcontainer state. Sign in to
-Claude once in Orca to create its login. Existing Orca containers need to be
-recreated to pick up the new mount. The workspace removal workflow fetches
-branch commits, so commit any work you want to keep before recreating.
+Orca workspaces from the same checkout share per-checkout Docker volumes named
+`orca-<checkout-folder>-claude` and `orca-<checkout-folder>-codex`. They store
+the Orca Claude and Codex logins, history and settings across workspace
+recreation, separate from the host and the VS Code devcontainer so you can use
+different accounts. The first start seeds `.claude.json`, `settings.json` and
+`config.toml` from the read-only VS Code devcontainer state (never credentials).
+Sign in to Claude and Codex once in Orca to create their logins. Existing Orca
+containers need to be recreated to pick up the new mounts. The workspace removal
+workflow fetches branch commits, so commit any work you want to keep before
+recreating.
 
-Use `ORCA_DOCKER_CLAUDE_VOLUME` in the environment or `scripts/orca-vm/local.env`
-to choose a unique name if two checkouts have the same folder name. To reset
-the Orca login, settings and history for this checkout, remove the Orca
-containers using the volume, then run `scripts/orca-vm/docker-workspace.sh claude-logout`.
+Use `ORCA_DOCKER_CLAUDE_VOLUME` / `ORCA_DOCKER_CODEX_VOLUME` in the environment
+or `scripts/orca-vm/local.env` to choose unique names if two checkouts have the
+same folder name. To reset an Orca agent login, settings and history for this
+checkout, remove the Orca containers using the volume, then run
+`scripts/orca-vm/docker-workspace.sh claude-logout` or
+`scripts/orca-vm/docker-workspace.sh codex-logout`.
 
 - Turn on **Settings → Experimental → Cloud VM** in Orca; the recipe only shows
   up under **Run on** after that, and only while `orca.yaml` is on `main`.
@@ -195,7 +198,11 @@ containers using the volume, then run `scripts/orca-vm/docker-workspace.sh claud
   [GitHub CLI and git credentials](#github-cli-and-git-credentials)). The
   template's own `share_credentials` GitHub sharing is turned off in
   `scripts/orca-vm/defaults.env` (`ORCA_DOCKER_GITHUB_AUTH=none`), so there is
-  one token file and one opt-in.
+  one token file and one opt-in. Until push credentials are available, `[remote
+  "origin"]` is withheld in the container's checkout (`orca.originUrl` and
+  `refs/remotes/origin/*` stay intact) so Orca's environment doctor treats the
+  missing remote as a warning instead of failing workspace creation; `origin` is
+  restored automatically once push access works.
   SSH keys are never copied into workspaces: agents run as root there and
   could read or use them, and a personal key opens much more than `origin`.
 - `scripts/orca-vm/docker-workspace.sh doctor` checks Docker, Orca and the Cloud
@@ -216,7 +223,7 @@ if it exists:
 |---|---|---|
 | `~/.config/sailwright/devcontainer/initialize-host.sh` (`$XDG_CONFIG_HOME` is honored) | On the host, before each start, from `initialize-host.sh` | Export files the container needs. `REPO_ROOT`, `REPO_NAME` and `USER_HOME` are set. The workspace is mounted, so files written below `REPO_ROOT` show up at `/workspaces/$REPO_NAME`. A failing hook only prints a warning. |
 | `.devcontainer/local/container.env` (gitignored) | Loaded as a Compose `env_file` | `KEY=value` lines for the container environment. Applied when the container is created, so rebuild after a change. The host hook may write it. |
-| `.devcontainer/local/post-start.sh` (gitignored) | In the container, first in `postStartCommand` | Container setup that has to happen before `go mod vendor` and the other start commands reach the network. |
+| `.devcontainer/local/post-start.sh` (gitignored, mounted read-only into containers) | In the container, first in `postStartCommand` | Container setup that has to happen before `go mod vendor` and the other start commands reach the network. |
 
 The host hook is deliberately kept outside the workspace. The container mounts
 the workspace read-write, so a host hook stored there could be created or
