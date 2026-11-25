@@ -133,7 +133,10 @@ x64 programs such as the QEMU Guest Agent do not run), drops the TPM (with a
 TPM, UTM uses a secure-boot UEFI firmware that halts under TCG; the arm64 image
 is installed without one) and replaces a ramfb-plus-virtio-gpu display with
 plain ramfb, as in the Packer build (Windows' VirtIO GPU driver intermittently
-crashes under TCG). `result.json` lists each change. Production templates
+crashes under TCG). `result.json` lists each change. A bundle that sets its
+own CPU model or `-cpu` argument keeps it. A bundle with UTM CPU flags keeps
+UTM's CPU, because a second `-cpu` would drop the flags; `result.json` records
+this under `software_emulation_notes`. Production templates
 and their snapshots retain their native settings. A guest-agent IP confirms
 the installed OS is running; it does not prove host-to-guest SSH/WinRM or native
 bridged networking. Verify those on a physical Mac when changing VM hardware

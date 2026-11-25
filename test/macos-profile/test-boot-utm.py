@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import plistlib
+import re
 import subprocess
 import tempfile
 import unittest
@@ -88,8 +89,26 @@ class BootTest(unittest.TestCase):
 
     def test_software_emulation_records_its_changes(self):
         self.run_boot(software_emulation=True)
-        settings = [change['setting'] for change in self.result()['software_emulation_changes']]
-        self.assertEqual(settings, ['QEMU.Hypervisor', 'System.MemorySize', 'Network[0].Mode'])
+        changes = {change['setting']: (change['from'], change['to'])
+                   for change in self.result()['software_emulation_changes']}
+        self.assertEqual(changes, {
+            'QEMU.Hypervisor': (self.config['QEMU']['Hypervisor'], False),
+            'System.MemorySize': (self.config['System']['MemorySize'], 4096),
+            'Network[0].Mode': (self.config['Network'][0]['Mode'], 'Emulated'),
+        })
+        self.assertNotIn('software_emulation_notes', self.result())
+
+    def test_aarch64_cpu_flags_keep_utm_cpu_and_are_reported(self):
+        self.config['System'].update(Architecture='aarch64', CPU='default', CPUFlagsAdd=['pauth'])
+        (self.bundle / 'config.plist').write_bytes(plistlib.dumps(self.config))
+        self.run_boot(software_emulation=True)
+        config = plistlib.loads((self.bundle / 'config.plist').read_bytes())
+        self.assertFalse(boot_utm.has_explicit_cpu(config['QEMU'].get('AdditionalArguments', [])))
+        notes = self.result()['software_emulation_notes']
+        self.assertEqual([note['setting'] for note in notes], ['QEMU.AdditionalArguments'])
+        self.assertIn('System.CPUFlagsAdd', notes[0]['note'])
+        settings = {change['setting'] for change in self.result()['software_emulation_changes']}
+        self.assertNotIn('QEMU.AdditionalArguments', settings)
 
     def test_aarch64_software_emulation_uses_packer_cpu_without_tpm(self):
         self.config['System'].update(Architecture='aarch64', CPU='default')
@@ -382,6 +401,47 @@ class SoftwareEmulationTemplateTest(unittest.TestCase):
         boot_utm.apply_software_emulation(config)
         self.assertNotIn('-cpu', config['QEMU']['AdditionalArguments'])
 
+    def test_explicit_cpu_argument_is_kept(self):
+        for arguments in (['-cpu', 'cortex-a76'], ['--cpu', 'cortex-a76'], ['-cpu=cortex-a76'],
+                          ['--cpu=cortex-a76'], ['-cpu cortex-a76'], ['--cpu cortex-a76']):
+            with self.subTest(arguments):
+                config = self.template('windows11-arm64')
+                config['QEMU']['AdditionalArguments'] = list(arguments)
+                changes = boot_utm.apply_software_emulation(config)
+                self.assertEqual(config['QEMU']['AdditionalArguments'], arguments)
+                self.assertNotIn('QEMU.AdditionalArguments', {change['setting'] for change in changes})
+
+    def test_other_arguments_starting_with_cpu_do_not_count(self):
+        for argument in ('-cpus', '-cpu-model', '--cpux=1'):
+            with self.subTest(argument):
+                self.assertFalse(boot_utm.has_explicit_cpu([argument]))
+
+    def test_cpu_flags_keep_utm_cpu(self):
+        for key in ('CPUFlagsAdd', 'CPUFlagsRemove'):
+            with self.subTest(key):
+                config = self.template('windows11-arm64')
+                config['System'][key] = ['pauth']
+                notes = []
+                boot_utm.apply_software_emulation(config, notes)
+                self.assertNotIn('-cpu', config['QEMU'].get('AdditionalArguments', []))
+                self.assertEqual(len(notes), 1)
+                self.assertIn(f'System.{key}', notes[0]['note'])
+
+    def test_empty_cpu_flags_still_get_packer_cpu(self):
+        config = self.template('windows11-arm64')
+        config['System'].update(CPUFlagsAdd=[], CPUFlagsRemove=[])
+        notes = []
+        boot_utm.apply_software_emulation(config, notes)
+        self.assertEqual(config['QEMU']['AdditionalArguments'][-2:], ['-cpu', boot_utm.TCG_AARCH64_CPU])
+        self.assertEqual(notes, [])
+
+    def test_missing_tpm_key_is_not_written(self):
+        config = self.template('windows11-arm64')
+        del config['QEMU']['TPMDevice']
+        changes = boot_utm.apply_software_emulation(config)
+        self.assertNotIn('TPMDevice', config['QEMU'])
+        self.assertNotIn('QEMU.TPMDevice', {change['setting'] for change in changes})
+
     def test_transform_is_idempotent(self):
         config = self.template('windows11-arm64')
         boot_utm.apply_software_emulation(config)
@@ -389,7 +449,10 @@ class SoftwareEmulationTemplateTest(unittest.TestCase):
 
     def test_cpu_matches_the_packer_tcg_build(self):
         hcl = (self.ROOT / 'build/packer/windows/windows11-qemu.pkr.hcl').read_text()
-        self.assertIn(f': "{boot_utm.TCG_AARCH64_CPU}"', hcl)
+        # The TCG (non-native) branch of the arm64_cpu_model assignment.
+        models = re.findall(r'^\s*arm64_cpu_model\s*=\s*[^\n?]*\?\s*"[^"]*"\s*:\s*"([^"]*)"\s*$',
+                            hcl, re.MULTILINE)
+        self.assertEqual(models, [boot_utm.TCG_AARCH64_CPU])
 
 
 class DiagnoseTest(unittest.TestCase):
