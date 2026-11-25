@@ -676,13 +676,31 @@ assert_eq "origin reconcile: saved originUrl preserved" "https://github.com/org/
     "$(git -C "${RO}/work" config --local --get orca.originUrl)"
 assert_true "origin reconcile: origin/* refs preserved when origin withheld" \
     git -C "${RO}/work" show-ref --verify --quiet refs/remotes/origin/main
-# Point saved URL at the local bare repo via url.insteadOf to simulate authorized HTTPS push.
+# Point saved URL at the local bare repo via url.insteadOf to simulate authorized HTTPS push,
+# with token supplied via remote-env.sh as in container runtime.
+mkdir -p "${RO}/home/.config/devcontainer"
+printf 'export RO_GH_TOKEN=pat_ok\n' >"${RO}/home/.config/devcontainer/remote-env.sh"
 git -C "${RO}/work" config --local "url.${RO}/upstream.git.insteadOf" "https://github.com/org/repo.git"
-RO_GH_TOKEN=pat_ok ro
+ro
 assert_eq "origin reconcile: restored once push succeeds" "origin" \
     "$(git -C "${RO}/work" remote)"
 assert_eq "origin reconcile: restored URL matches saved URL" "https://github.com/org/repo.git" \
     "$(git -C "${RO}/work" config --local --get remote.origin.url)"
+
+# Simulate later token revocation/expiry after branch tracking was set to origin.
+git -C "${RO}/work" config --local branch.main.remote origin
+git -C "${RO}/work" config --local branch.main.pushRemote origin
+git -C "${RO}/work" config --local remote.pushDefault origin
+rm -f "${RO}/home/.config/devcontainer/remote-env.sh"
+ro
+assert_eq "origin reconcile: revoked token withholds origin again" "" \
+    "$(git -C "${RO}/work" remote)"
+assert_eq "origin reconcile: revoked token clears branch.main.remote" "" \
+    "$(git -C "${RO}/work" config --local --get branch.main.remote || true)"
+assert_eq "origin reconcile: revoked token clears branch.main.pushRemote" "" \
+    "$(git -C "${RO}/work" config --local --get branch.main.pushRemote || true)"
+assert_eq "origin reconcile: revoked token clears remote.pushDefault" "" \
+    "$(git -C "${RO}/work" config --local --get remote.pushDefault || true)"
 
 # --- defaults.env ----------------------------------------------------------------
 printf '# repository defaults\r\nORCA_DOCKER_GITHUB_AUTH=none\r\nORCA_DOCKER_TEST_VALUE=a b=$HOME\nnot a line\n' \

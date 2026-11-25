@@ -841,6 +841,7 @@ _RECONCILE_ORIGIN_SCRIPT='
 root=$1
 host=$2
 [ -d "$root/.git" ] || exit 0
+[ -r "$HOME/.config/devcontainer/remote-env.sh" ] && . "$HOME/.config/devcontainer/remote-env.sh"
 saved="$(git -C "$root" config --local --get orca.originUrl 2>/dev/null || true)"
 current="$(git -C "$root" config --local --get remote.origin.url 2>/dev/null || true)"
 url="${saved:-$current}"
@@ -866,13 +867,30 @@ if [ -z "$current" ]; then
     git -C "$root" config --local remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
 fi
 
-if $can_try && GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-    git -C "$root" push --dry-run --no-verify --porcelain origin HEAD:refs/heads/orca-env-doctor-push-probe >/dev/null 2>&1; then
+run_probe() {
+    if command -v timeout >/dev/null 2>&1; then
+        GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+            timeout 15 "$@"
+    else
+        GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+            "$@"
+    fi
+}
+
+if $can_try && run_probe git -C "$root" \
+    -c http.lowSpeedLimit=1 -c http.lowSpeedTime=10 \
+    push --dry-run --no-verify --porcelain origin +HEAD:refs/heads/orca-env-doctor-push-probe >/dev/null 2>&1; then
     [ -n "$current" ] || exit 2
     exit 0
 fi
 
 git -C "$root" config --local --remove-section remote.origin >/dev/null 2>&1 || true
+git -C "$root" config --local --unset-all remote.pushDefault "^origin$" >/dev/null 2>&1 || true
+git -C "$root" config --local --name-only --get-regexp "^branch\\..*\\.(push)?remote$" "^origin$" 2>/dev/null |
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        git -C "$root" config --local --unset-all "$key" "^origin$" >/dev/null 2>&1 || true
+    done
 $can_try && exit 3
 exit 4
 '
