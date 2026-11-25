@@ -9,6 +9,8 @@ self-hosted runners using [Tart](https://tart.run) virtualisation.
 |---|---|
 | `prepare-tart-base.sh` | One-time: builds the golden Tart VM image with tooling pre-installed. |
 | `create-macos-tart-runner.sh` | Ongoing: runs a pool of ephemeral runners, one job per VM clone. |
+| `prepare-guest-network.sh` | Runs inside a VM: sets guest DNS and checks DNS + HTTPS before the runner registers (see [Networking](#networking)). |
+| `prepare-utm-automation.sh` | Runs inside a VM: lets CI drive UTM with AppleScript (see [UTM automation](#utm-automation)). |
 
 ## Quick start
 
@@ -21,6 +23,50 @@ GITHUB_REPO=myorg/myrepo ./create-macos-tart-runner.sh
 ```
 
 ---
+
+## Networking
+
+Runner VMs use Tart's NAT networking by default (`RUNNER_NETWORK=nat`). They stay off the LAN:
+no DHCP lease from the LAN router per job, and no VM with the default SSH password reachable from
+other machines. Jobs only need outgoing HTTPS; the host build cache is shared through VirtioFS and
+works in both modes.
+
+- **DNS.** The vmnet DNS forwarder (`192.168.64.1`) does not answer on some hosts. With NAT the
+  script therefore sets the guest's DNS to the host's current default router
+  (`RUNNER_DNS_SERVERS=router`, looked up on every cycle, so a laptop that changes networks keeps
+  working). Set explicit resolvers (`RUNNER_DNS_SERVERS="192.168.1.1,192.168.1.2"`) or `dhcp` to use
+  the VM's DHCP DNS instead.
+- **Readiness check.** Before the runner registers, the guest must resolve and reach
+  `RUNNER_NETWORK_CHECK_URLS` over HTTPS with certificate verification. If it does not within
+  `RUNNER_NETWORK_CHECK_TIMEOUT` seconds (checked between attempts, so one slow attempt can run
+  over), the clone is deleted and the cycle starts again, so a VM with broken networking never
+  takes a job.
+- **Stable MAC per slot.** Every `tart clone` gets a random MAC, which costs one DHCP lease per job
+  (on the LAN when bridged, in the host's vmnet DHCP with NAT). `RUNNER_FIXED_MAC=true` gives each
+  worker slot a stable, locally administered MAC derived from the host name and slot, or the
+  addresses in `RUNNER_MAC_ADDRESSES`. If a VM that shutdown kept alive still uses the slot's MAC,
+  the new clone keeps its random MAC for that cycle.
+- **Bridged.** `RUNNER_NETWORK=bridged:Wi-Fi` restores the previous behavior. DNS then stays as the
+  LAN's DHCP provides it unless `RUNNER_DNS_SERVERS` is set.
+
+`prepare-tart-base.sh` still builds the golden image on a bridged interface (`NET_INTERFACE`);
+that is one VM per image build.
+
+## UTM automation
+
+The macOS full build checks UTM bundles with AppleScript (`test/macos-profile/boot-utm.py`).
+Jobs run below the runner's SSH session, so macOS attributes their Apple Events to
+`/usr/libexec/sshd-keygen-wrapper`. A fresh Homebrew UTM install blocks such calls on two GUI
+prompts nobody can answer in a headless VM: Gatekeeper's first-launch confirmation for the
+quarantined cask (UTM stays suspended) and the Automation consent for SSH → UTM.
+
+`prepare-utm-automation.sh` clears the quarantine attribute and stores the Automation grant in the
+user's TCC database (the Cirrus Labs base images run with SIP disabled, which allows this).
+`prepare-tart-base.sh` runs it with `--verify`, so the golden image build fails if UTM still does
+not answer. `create-macos-tart-runner.sh` also runs it in every clone before the runner registers,
+which repairs golden images built before this step existed; set `PREPARE_UTM_AUTOMATION=false` to
+skip it. When UTM still hangs, `boot-utm.py` records the UTM process state, quarantine, open prompt
+windows and TCC grants in `result.json` under `utm_state`.
 
 ## Build cache
 
@@ -183,6 +229,15 @@ done
 | `BUILD_CACHE_DIR` | _(unset)_ | Absolute path on the **host** to the build cache directory. When unset, no directory is mounted and jobs download all files normally. |
 | `VM_BASE_IMAGE` | `tahoe-runner` | Tart image used as the base for each ephemeral clone. |
 | `VM_CLONE_PER_RUN` | `true` | Clone a fresh VM for every runner cycle (recommended). |
+| `RUNNER_NETWORK` | `nat` | `nat` or `bridged:<host interface>` (e.g. `bridged:Wi-Fi`). |
+| `RUNNER_DNS_SERVERS` | `router` with NAT, unchanged when bridged | Guest DNS: `router` (host's default gateway), `dhcp`, or comma/space-separated resolver IPs. |
+| `RUNNER_DNS_SERVICE` | `Ethernet` | macOS network service inside the guest that receives the DNS servers. |
+| `RUNNER_FIXED_MAC` | `true` | Stable MAC per worker slot so DHCP leases are reused. |
+| `RUNNER_MAC_ADDRESSES` | _(derived)_ | Comma-separated MACs for slots 1..n; unicast, lowercase or uppercase hex. |
+| `RUNNER_NETWORK_CHECK` | `true` | Check DNS + HTTPS from the guest before registering the runner. |
+| `RUNNER_NETWORK_CHECK_URLS` | `https://github.com/ https://api.github.com/` | Space-separated HTTPS URLs for that check. |
+| `RUNNER_NETWORK_CHECK_TIMEOUT` | `90` | Seconds for the check before the clone is recycled. |
+| `PREPARE_UTM_AUTOMATION` | `true` | Clear UTM's quarantine and grant Automation in each clone before the runner registers. |
 | `GITHUB_REPO` | `csautter/dev-alchemy` | `owner/repo` for runner registration. |
 | `GITHUB_SCOPE` | `repo` | `repo` or `org`. |
 | `RUNNER_LABELS` | `macos,tart,arm64,macos-26-tart` | Comma-separated runner labels. |

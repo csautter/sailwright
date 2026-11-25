@@ -26,6 +26,7 @@ VM_SSH_PASS="${VM_SSH_PASS:-admin}"
 NET_INTERFACE="${NET_INTERFACE:-Wi-Fi}"
 RUNNER_DIR="${RUNNER_DIR:-/Users/admin/actions-runner}"
 BUILD_VM="build-${TART_GOLDEN_IMAGE}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ─── Renovate-managed version pins ────────────────────────────────────────────
 # renovate: datasource=github-releases depName=actions/runner versioning=loose
@@ -424,6 +425,13 @@ brew_install "vncsnapshot" vncsnapshot               vncsnapshot           "${VN
 brew_install "xorriso"     xorriso                   xorriso               "${XORRISO_VERSION}"
 brew_install "Ansible"     ansible                   ansible               "${ANSIBLE_VERSION}"
 brew_install "Python 3"    python3                   python@3.13           "${PYTHON_3_13_VERSION}"
+
+# ── UTM automation ────────────────────────────────────────────────────────────
+# CI drives UTM with AppleScript from the runner's SSH session. Clear the cask's
+# Gatekeeper quarantine and grant Automation up front, then prove that UTM
+# answers; otherwise every job waits on GUI prompts that nobody can confirm.
+echo "── UTM automation ─────────────────────────────────────────────────────"
+vm_ssh /bin/bash -s -- --verify <"${SCRIPT_DIR}/prepare-utm-automation.sh"
 
 # ─── Download and install GitHub Actions runner ───────────────────────────────
 echo "Installing GitHub Actions runner ${RUNNER_VERSION} into golden image..."

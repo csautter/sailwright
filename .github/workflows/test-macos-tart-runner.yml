@@ -31,6 +31,8 @@ jobs:
           set -euo pipefail
           bash -n .github/runners/create-macos-tart-runner.sh
           bash -n .github/runners/test-create-macos-tart-runner.sh
+          bash -n .github/runners/prepare-guest-network.sh
+          bash -n .github/runners/prepare-utm-automation.sh
 
       - name: Run shutdown behavior tests
         shell: bash
