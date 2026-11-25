@@ -2,8 +2,8 @@ name: Renovate
 
 on:
   schedule:
-    # Run Monday through Friday at 07:00 UTC
-    - cron: "0 7 * * 1-5"
+    # Run daily at 07:00 UTC
+    - cron: "0 7 * * *"
   workflow_dispatch:
 
 concurrency:
