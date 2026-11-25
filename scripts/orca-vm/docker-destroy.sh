@@ -4,8 +4,8 @@
 # removes the container and its known_hosts entries. If the fetch
 # fails, the branches are saved under the state directory's rescue/ first; if
 # that fails too, nothing is removed. Shared named volumes and host mounts
-# (agent logins, including the orca-<repo>-claude volume, skills, caches,
-# shared directories) are kept.
+# (agent logins, including the orca-<repo>-claude and orca-<repo>-codex
+# volumes, skills, caches, shared directories) are kept.
 # ORCA_DOCKER_SKIP_FETCH=1 skips the fetch and the rescue.
 set -euo pipefail
 

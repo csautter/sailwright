@@ -125,11 +125,11 @@ so sessions, history, settings and logins survive a container rebuild:
 
 - `~/.claude-devcontainer` is `/root/.claude`. `CLAUDE_CONFIG_DIR` points there,
   so `.claude.json` (onboarding, project trust, MCP servers) is kept as well.
-- `~/.codex-devcontainer` is `/root/.codex` (`sessions/`, `history.jsonl`,
-  `config.toml`). A host `~/.codex/auth.json` (mounted at
-  `/root/.codex-host`) is linked in on every start so the login is shared with
-  the host. Its `.tmp/` plugin cache and `tmp/` runtime helpers live in the
-  `sailwright-codex-tmp` and `sailwright-codex-runtime-tmp` Docker volumes
+- `~/.codex-devcontainer` is `/root/.codex` (`auth.json`, `sessions/`,
+  `history.jsonl`, `config.toml`). The host `~/.codex` login is not shared, so
+  you sign in to Codex separately inside the container and can use a different
+  account there. Its `.tmp/` plugin cache and `tmp/` runtime helpers live in
+  the `sailwright-codex-tmp` and `sailwright-codex-runtime-tmp` Docker volumes
   instead: Codex rewrites thousands of files in `.tmp/` on every start, and a
   Windows host mount cannot delete the locked helper dirs in `tmp/`.
 
@@ -158,24 +158,27 @@ the generated mounts (including sibling repos, `~/.sailwright-gateway` and
 `mounts.local`), `local/container.env` and the lifecycle commands match the VS
 Code devcontainer. Workspace creation and `scripts/orca-vm/docker-build.sh`
 run `initializeCommand` before resolving the base image. Orca seeds the
-repository from a git bundle of your committed branches. Codex state is local
-to each container, and the host Codex login is linked when present. The image
-installs the Claude Code and Codex CLIs for Orca workspaces without a VS Code
-server. Once Orca installs its CLI in the workspace, SSH login shells include
-it on `PATH`.
+repository from a git bundle of your committed branches. The image installs the
+Claude Code and Codex CLIs for Orca workspaces without a VS Code server. Once
+Orca installs its CLI in the workspace, SSH login shells include it on `PATH`.
 
-Orca workspaces from the same checkout share a Docker volume named
-`orca-<checkout-folder>-claude`. It stores the Orca Claude login, history and
-settings across workspace recreation. The first start seeds `.claude.json`
-and `settings.json` from the read-only VS Code devcontainer state. Sign in to
-Claude once in Orca to create its login. Existing Orca containers need to be
-recreated to pick up the new mount. The workspace removal workflow fetches
-branch commits, so commit any work you want to keep before recreating.
+Orca workspaces from the same checkout share per-checkout Docker volumes named
+`orca-<checkout-folder>-claude` and `orca-<checkout-folder>-codex`. They store
+the Orca Claude and Codex logins, history and settings across workspace
+recreation, separate from the host and the VS Code devcontainer so you can use
+different accounts. The first start seeds `.claude.json`, `settings.json` and
+`config.toml` from the read-only VS Code devcontainer state (never credentials).
+Sign in to Claude and Codex once in Orca to create their logins. Existing Orca
+containers need to be recreated to pick up the new mounts. The workspace removal
+workflow fetches branch commits, so commit any work you want to keep before
+recreating.
 
-Use `ORCA_DOCKER_CLAUDE_VOLUME` in the environment or `scripts/orca-vm/local.env`
-to choose a unique name if two checkouts have the same folder name. To reset
-the Orca login, settings and history for this checkout, remove the Orca
-containers using the volume, then run `scripts/orca-vm/docker-workspace.sh claude-logout`.
+Use `ORCA_DOCKER_CLAUDE_VOLUME` / `ORCA_DOCKER_CODEX_VOLUME` in the environment
+or `scripts/orca-vm/local.env` to choose unique names if two checkouts have the
+same folder name. To reset an Orca agent login, settings and history for this
+checkout, remove the Orca containers using the volume, then run
+`scripts/orca-vm/docker-workspace.sh claude-logout` or
+`scripts/orca-vm/docker-workspace.sh codex-logout`.
 
 - Turn on **Settings → Experimental → Cloud VM** in Orca; the recipe only shows
   up under **Run on** after that, and only while `orca.yaml` is on `main`.

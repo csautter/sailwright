@@ -11,17 +11,20 @@
 #
 # Mount translation (devcontainer -> Orca container), <HOME> = remoteUser's home:
 #   */.vscode-server*                    dropped (editor only)
-#   <HOME>/.codex, <HOME>/.codex/{.tmp,tmp} dropped (Codex state is container-owned)
+#   <HOME>/.codex/{.tmp,tmp}             dropped (kept inside the Codex volume)
+#   <HOME>/.codex-host, .codex-auth.json dropped (host Codex login is never shared)
+#   <HOME>/.codex                        -> <HOME>/.codex-host (read-only seed)
 #   <HOME>/.claude                       -> <HOME>/.claude-host (read-only seed)
 #   <HOME>/.local/share/opencode         -> <HOME>/.opencode-host (credentials linked)
 #   everything else                      unchanged
-# plus the per-checkout Docker volume orca-<repo>-claude at <HOME>/.claude,
-# which keeps Claude login, settings and history across workspace recreation;
+# plus the per-checkout Docker volumes orca-<repo>-claude at <HOME>/.claude and
+# orca-<repo>-codex at <HOME>/.codex, which keep Claude and Codex logins,
+# settings and history across workspace recreation;
 # plus a read-write bind of every worktree.sharedDirectories entry of orca.yaml
 # (git-ignored working directories) into the container's primary checkout;
 # Orca links them into each worktree it creates there.
-# .devcontainer/link-agent-auth.sh links Codex/OpenCode credential files and
-# seeds the Claude volume with .claude.json and settings.json.
+# .devcontainer/link-agent-auth.sh links the OpenCode credential file and
+# seeds the Claude/Codex volumes with .claude.json, settings.json and config.toml.
 # OpenCode v2 keeps its logins in SQLite instead; share_opencode_auth copies
 # the host's (GitHub Copilot by default) with `opencode auth export | import`.
 # share_credentials logs the container's gh in with a GitHub token you created
@@ -312,14 +315,16 @@ host_mount() {
 
 # Prints the Orca form of one expanded --mount spec, or nothing to drop it.
 translate_mount() {
-    local spec="$1" target new_target="" part out="" claude_seed=false
+    local spec="$1" target new_target="" part out="" seed_ro=false
     target="$(printf '%s\n' "$spec" | tr ',' '\n' | sed -n -E 's/^(target|destination|dst)=//p' | head -n 1)"
     case "$target" in
         # The repository is seeded from a git bundle, never bound from the host.
         "$PROJECT_ROOT_IN_CONTAINER"|"${PROJECT_ROOT_IN_CONTAINER}/") return 0 ;;
         */.vscode-server|*/.vscode-server/*) return 0 ;;
-        "${CONTAINER_HOME}/.codex"|"${CONTAINER_HOME}/.codex/.tmp"|"${CONTAINER_HOME}/.codex/tmp") return 0 ;;
-        "${CONTAINER_HOME}/.claude") new_target="${CONTAINER_HOME}/.claude-host"; claude_seed=true ;;
+        "${CONTAINER_HOME}/.codex/.tmp"|"${CONTAINER_HOME}/.codex/tmp") return 0 ;;
+        "${CONTAINER_HOME}/.codex-host"|"${CONTAINER_HOME}/.codex-auth.json") return 0 ;;
+        "${CONTAINER_HOME}/.codex") new_target="${CONTAINER_HOME}/.codex-host"; seed_ro=true ;;
+        "${CONTAINER_HOME}/.claude") new_target="${CONTAINER_HOME}/.claude-host"; seed_ro=true ;;
         "${CONTAINER_HOME}/.local/share/opencode") new_target="${CONTAINER_HOME}/.opencode-host" ;;
         *) printf '%s' "$spec"; return 0 ;;
     esac
@@ -327,11 +332,11 @@ translate_mount() {
     for part in $spec; do
         case "$part" in
             target=*|destination=*|dst=*) part="target=${new_target}" ;;
-            readonly|readonly=*|ro|ro=*) if $claude_seed; then continue; fi ;;
+            readonly|readonly=*|ro|ro=*) if $seed_ro; then continue; fi ;;
         esac
         out="${out:+${out},}${part}"
     done
-    if $claude_seed; then out="${out},readonly"; fi
+    if $seed_ro; then out="${out},readonly"; fi
     printf '%s' "$out"
 }
 
@@ -353,6 +358,26 @@ ensure_claude_volume() {
         || docker volume create --label "${LABEL_REPO}=${REPO_ROOT}" "$volume" >/dev/null \
         || return 1
     assert_claude_volume_owned "$volume"
+}
+
+codex_volume() {
+    local volume="${ORCA_DOCKER_CODEX_VOLUME:-$(sanitize_name "orca-${REPO_NAME}-codex")}"
+    [[ "$volume" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]+$ ]] || die "invalid ORCA_DOCKER_CODEX_VOLUME name: ${volume}"
+    printf '%s' "$volume"
+}
+
+assert_codex_volume_owned() {
+    local volume="$1" repo
+    repo="$(docker volume inspect --format "{{index .Labels \"${LABEL_REPO}\"}}" "$volume")" || return 1
+    [ "$repo" = "$REPO_ROOT" ] || die "Codex volume ${volume} belongs to another checkout or has no owner label; set ORCA_DOCKER_CODEX_VOLUME to a unique name"
+}
+
+ensure_codex_volume() {
+    local volume="$1"
+    docker volume inspect "$volume" >/dev/null 2>&1 \
+        || docker volume create --label "${LABEL_REPO}=${REPO_ROOT}" "$volume" >/dev/null \
+        || return 1
+    assert_codex_volume_owned "$volume"
 }
 
 # Prints the worktree.sharedDirectories entries of orca.yaml, one per line.
@@ -431,9 +456,13 @@ compose_run_args() {
 
 # Builds the `docker run` arguments from devcontainer.json into DOCKER_RUN_ARGS.
 collect_run_args() {
-    local volume
-    volume="$(claude_volume)" || return 1
-    DOCKER_RUN_ARGS=(--mount "type=volume,source=${volume},target=${CONTAINER_HOME}/.claude")
+    local claude_vol codex_vol
+    claude_vol="$(claude_volume)" || return 1
+    codex_vol="$(codex_volume)" || return 1
+    DOCKER_RUN_ARGS=(
+        --mount "type=volume,source=${claude_vol},target=${CONTAINER_HOME}/.claude"
+        --mount "type=volume,source=${codex_vol},target=${CONTAINER_HOME}/.codex"
+    )
     local raw spec key value dir pending=""
     if is_compose; then
         local compose_args
@@ -897,7 +926,7 @@ exit 4
 
 reconcile_origin_remote() {
     local name="$1" rc=0
-    cexec -i "$name" sh -c "$_RECONCILE_ORIGIN_SCRIPT" _ "$PROJECT_ROOT_IN_CONTAINER" "$GITHUB_HOST" >/dev/null 2>&1 || rc=$?
+    cexec "$name" sh -c "$_RECONCILE_ORIGIN_SCRIPT" _ "$PROJECT_ROOT_IN_CONTAINER" "$GITHUB_HOST" </dev/null >/dev/null 2>&1 || rc=$?
     case "$rc" in
         0) ;;
         2) log "git origin: restored remote origin (push credentials verified)" ;;

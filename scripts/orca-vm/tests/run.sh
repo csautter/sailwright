@@ -125,8 +125,10 @@ assert_true "expand_vars: invalid name fails" lib_fails 'expand_vars "\${localEn
 # --- translate_mount -------------------------------------------------------------
 assert_eq "translate_mount: vscode-server dropped" "" \
     "$(lib 'translate_mount "source=v,target=/root/.vscode-server/data,type=volume"')"
-assert_eq "translate_mount: codex home dropped" "" \
+assert_eq "translate_mount: codex home to read-only codex-host" "source=/h/.codex-devcontainer,target=/root/.codex-host,type=bind,readonly" \
     "$(lib 'translate_mount "source=/h/.codex-devcontainer,target=/root/.codex,type=bind"')"
+assert_eq "translate_mount: legacy codex-host dropped" "" \
+    "$(lib 'translate_mount "source=/h/.codex,target=/root/.codex-host,type=bind"')"
 assert_eq "translate_mount: codex skills kept" "source=/s,target=/root/.codex/skills,type=bind" \
     "$(lib 'translate_mount "source=/s,target=/root/.codex/skills,type=bind"')"
 assert_eq "translate_mount: claude home to read-only claude-host" "source=/c,target=/root/.claude-host,type=bind,readonly" \
@@ -149,15 +151,24 @@ assert_true "collect_run_args: shared dir created on the host" test -d "${REPO}/
 assert_true "collect_run_args: path escaping the repo skipped" bash -c "! grep -q escape <<<\"\$1\"" _ "$run_args"
 assert_true "collect_run_args: not git-ignored dir skipped" bash -c "! grep -q /tracked <<<\"\$1\"" _ "$run_args"
 assert_true "collect_run_args: vscode-server mounts dropped" bash -c "! grep -q vscode-server <<<\"\$1\"" _ "$run_args"
-assert_true "collect_run_args: codex state dropped" bash -c "! grep -q 'target=/root/.codex,' <<<\"\$1\"" _ "$run_args"
+assert_true "collect_run_args: codex home remapped read-only" grep -q 'source=.*/\.codex-devcontainer,target=/root/\.codex-host,.*readonly$' <<<"$run_args"
+assert_true "collect_run_args: legacy host codex mount dropped" bash -c "! grep -q '/\.codex,target=/root/\.codex-host' <<<\"\$1\"" _ "$run_args"
+assert_true "collect_run_args: per-checkout codex volume" \
+    grep -qxF 'type=volume,source=orca-fixture-repo-codex,target=/root/.codex' <<<"$run_args"
 assert_true "collect_run_args: claude home remapped read-only" grep -q 'target=/root/.claude-host,.*readonly$' <<<"$run_args"
 assert_true "collect_run_args: per-checkout claude volume" \
     grep -qxF 'type=volume,source=orca-fixture-repo-claude,target=/root/.claude' <<<"$run_args"
 assert_eq "claude_volume: override" "my-vol" "$(ORCA_DOCKER_CLAUDE_VOLUME=my-vol lib claude_volume)"
 assert_true "claude_volume: invalid override rejected" lib_fails 'ORCA_DOCKER_CLAUDE_VOLUME=bad,name claude_volume'
+assert_eq "codex_volume: override" "my-codex-vol" "$(ORCA_DOCKER_CODEX_VOLUME=my-codex-vol lib codex_volume)"
+assert_true "codex_volume: invalid override rejected" lib_fails 'ORCA_DOCKER_CODEX_VOLUME=bad,name codex_volume'
 assert_true "claude volume: foreign ownership rejected" lib_fails '
     docker() { printf "%s\n" /other/checkout; }
     assert_claude_volume_owned "$(claude_volume)"
+'
+assert_true "codex volume: foreign ownership rejected" lib_fails '
+    docker() { printf "%s\n" /other/checkout; }
+    assert_codex_volume_owned "$(codex_volume)"
 '
 assert_true "claude volume: missing volume created and checked for ownership" lib '
     owner=""
@@ -169,6 +180,17 @@ assert_true "claude volume: missing volume created and checked for ownership" li
         esac
     }
     ensure_claude_volume "$(claude_volume)"
+'
+assert_true "codex volume: missing volume created and checked for ownership" lib '
+    owner=""
+    docker() {
+        case "$1 $2 ${3:-}" in
+            "volume inspect --format") printf "%s\n" "$owner" ;;
+            "volume create --label") [ "$5" = "$(codex_volume)" ] && owner="${4#org.orca.repo=}" ;;
+            *) return 1 ;;
+        esac
+    }
+    ensure_codex_volume "$(codex_volume)"
 '
 assert_true "collect_run_args: opencode volume remapped" \
     grep -qxF 'source=fixture-repo-opencode-data,target=/root/.opencode-host,type=volume' <<<"$run_args"
@@ -434,18 +456,21 @@ if $IS_WINDOWS; then
     echo "skipped: link-agent-auth.sh (needs real symlinks; runs in the Linux containers)"
 elif [ -f "$LINK_AUTH_SRC" ]; then
     auth() { AGENT_AUTH_HOME="${TMP}/auth" CLAUDE_CONFIG_DIR="${TMP}/auth/.claude" bash "$LINK_AUTH_SRC" >/dev/null; }
-    mkdir -p "${TMP}/auth/.codex-host" "${TMP}/auth/.codex" "${TMP}/auth/.claude-host"
-    echo local >"${TMP}/auth/.codex/auth.json"
-    auth
-    assert_eq "auth: container login kept without shared login" "local" "$(cat "${TMP}/auth/.codex/auth.json")"
-    assert_true "auth: nothing written to the host side" test ! -e "${TMP}/auth/.codex-host/auth.json"
+    mkdir -p "${TMP}/auth/.codex-host" "${TMP}/auth/.codex" "${TMP}/auth/.claude-host" "${TMP}/auth/.opencode-host"
     echo shared >"${TMP}/auth/.codex-host/auth.json"
+    echo 'model = "o3"' >"${TMP}/auth/.codex-host/config.toml"
+    ln -s "${TMP}/auth/.codex-host/auth.json" "${TMP}/auth/.codex/auth.json"
     auth
-    assert_true "auth: shared login linked" test -L "${TMP}/auth/.codex/auth.json"
-    assert_eq "auth: link resolves to shared login" "shared" "$(cat "${TMP}/auth/.codex/auth.json")"
-    rm "${TMP}/auth/.codex-host/auth.json"
+    assert_true "auth: legacy codex shared link removed" \
+        test ! -e "${TMP}/auth/.codex/auth.json" -a ! -L "${TMP}/auth/.codex/auth.json"
+    assert_true "auth: codex config seeded as copy" \
+        test -f "${TMP}/auth/.codex/config.toml" -a ! -L "${TMP}/auth/.codex/config.toml"
+    assert_eq "auth: codex config content seeded" 'model = "o3"' "$(cat "${TMP}/auth/.codex/config.toml")"
+    echo local >"${TMP}/auth/.codex/auth.json"
+    echo 'model = "local"' >"${TMP}/auth/.codex/config.toml"
     auth
-    assert_true "auth: dangling link removed" test ! -e "${TMP}/auth/.codex/auth.json" -a ! -L "${TMP}/auth/.codex/auth.json"
+    assert_eq "auth: container codex login kept" "local" "$(cat "${TMP}/auth/.codex/auth.json")"
+    assert_eq "auth: existing codex config kept" 'model = "local"' "$(cat "${TMP}/auth/.codex/config.toml")"
     echo '{"a":1}' >"${TMP}/auth/.claude-host/.claude.json"
     echo creds >"${TMP}/auth/.claude-host/.credentials.json"
     echo '{"source":"host"}' >"${TMP}/auth/.claude-host/settings.json"
@@ -461,7 +486,14 @@ elif [ -f "$LINK_AUTH_SRC" ]; then
     auth
     assert_eq "auth: existing claude login kept" "own" "$(cat "${TMP}/auth/.claude/.credentials.json")"
     assert_eq "auth: existing claude settings kept" '{"source":"orca"}' "$(cat "${TMP}/auth/.claude/settings.json")"
-    assert_true "auth: absent opencode mount skipped" test ! -e "${TMP}/auth/.local/share/opencode"
+    assert_true "auth: absent opencode login skipped" test ! -e "${TMP}/auth/.local/share/opencode"
+    echo oc_shared >"${TMP}/auth/.opencode-host/auth.json"
+    auth
+    assert_true "auth: opencode login linked" test -L "${TMP}/auth/.local/share/opencode/auth.json"
+    rm "${TMP}/auth/.opencode-host/auth.json"
+    auth
+    assert_true "auth: dangling opencode link removed" \
+        test ! -e "${TMP}/auth/.local/share/opencode/auth.json" -a ! -L "${TMP}/auth/.local/share/opencode/auth.json"
 else
     fail "link-agent-auth.sh not found at ${LINK_AUTH_SRC}"
 fi
@@ -659,7 +691,7 @@ git -C "${RO}/work" update-ref refs/remotes/origin/main HEAD
 cat >"${RO}/bin/docker" <<EOF
 #!/bin/sh
 [ "\$1" = exec ] || exit 1
-shift 5 # exec -u <user> -i <name>
+shift 4 # exec -u <user> <name>
 HOME="${RO}/home" PATH="${RO_PATH}/cbin:\$PATH" exec "\$@"
 EOF
 cat >"${RO}/cbin/gh" <<'EOF'
