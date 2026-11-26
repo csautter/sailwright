@@ -73,6 +73,7 @@ if SDKS_INSTALLED:
             self.responses = iter(responses)
             self.requests = []
             self.headers = []
+            self.bodies = []
             self.sleeps = []
 
         def sleep(self, duration):
@@ -93,6 +94,7 @@ if SDKS_INSTALLED:
         def send(self, request, **kwargs):
             self.requests.append((request.method, request.url, kwargs))
             self.headers.append(request.headers)
+            self.bodies.append(request.body)
             item = next(self.responses)
             if isinstance(item, Exception):
                 raise item
@@ -371,6 +373,46 @@ class RequestRunnerWireFormatTest(unittest.TestCase):
         self.assertEqual(transport.requests[0][1], transport.requests[1][1])
         self.assertEqual([headers["If-None-Match"] for headers in transport.headers[:2]], ["*", "*"])
         function_app.requests.post.assert_called_once()
+
+    def _assert_keyed_spot_fallback(self, arm_code):
+        self._enable_storage()
+        transport = _Transport([
+            (400, {"error": {"code": arm_code, "message": "Spot unavailable"}}, {}),
+            (201, {"properties": {"provisioningState": "Creating"}}, {}),
+        ])
+        credential = mock.Mock(spec=["get_token"])
+        credential.get_token.return_value = AccessToken("fake-token", 9999999999)
+        compute = ComputeManagementClient(
+            credential, "sub", transport=transport, **function_app._arm_options()
+        )
+        self.addCleanup(compute.close)
+
+        with (
+            mock.patch.dict(os.environ, {"VM_USE_SPOT": "true"}),
+            mock.patch.object(function_app, "ComputeManagementClient", return_value=compute),
+        ):
+            response = self._request_runner({"Idempotency-Key": "spot-rejection"})
+        self.assertEqual(response.status_code, 202)
+        vm_name = json.loads(response.get_body())["resources"]["vm"]
+        self.assertEqual([item[0] for item in transport.requests], ["PUT", "PUT"])
+        spot_url, regular_url = [item[1] for item in transport.requests]
+        self.assertEqual(regular_url, spot_url)
+        self.assertIn(f"/virtualMachines/{vm_name}?", regular_url)
+        self.assertEqual([headers["If-None-Match"] for headers in transport.headers], ["*", "*"])
+        spot, regular = map(json.loads, transport.bodies)
+        spot_properties = spot["properties"]
+        self.assertEqual(spot_properties.pop("priority"), "Spot")
+        self.assertEqual(spot_properties.pop("evictionPolicy"), "Deallocate")
+        self.assertEqual(spot_properties.pop("billingProfile"), {"maxPrice": -1})
+        self.assertEqual(regular, spot)
+        self.assertEqual(regular["properties"]["storageProfile"]["osDisk"]["name"], f"{vm_name}-os")
+        function_app.requests.post.assert_called_once()
+
+    def test_keyed_spot_subscription_rejection_falls_back(self):
+        self._assert_keyed_spot_fallback("AzureSpotFeatureNotEnabledForSubscription")
+
+    def test_keyed_spot_vm_size_rejection_falls_back(self):
+        self._assert_keyed_spot_fallback("AzureSpotIsNotSupportedForThisVMSize")
 
     def test_spot_vm_and_fallback_bodies(self):
         self.compute.virtual_machines.begin_create_or_update.side_effect = [

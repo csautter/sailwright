@@ -1031,7 +1031,11 @@ def _submit_vm(compute, resource_group, vm_name, vm_params, context, keyed, befo
             if keyed and (
                 spot_error.status_code not in (400, 409)
                 or _arm_code(spot_error) not in (
-                    "SkuNotAvailable", "AllocationFailed", "ZonalAllocationFailed"
+                    "SkuNotAvailable",
+                    "AllocationFailed",
+                    "ZonalAllocationFailed",
+                    "AzureSpotFeatureNotEnabledForSubscription",
+                    "AzureSpotIsNotSupportedForThisVMSize",
                 )
             ):
                 raise

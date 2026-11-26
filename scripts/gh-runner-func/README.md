@@ -123,7 +123,11 @@ before submitting again, or retry with the same `Idempotency-Key`.
 5. Loads `runner-setup.ps1` with the token, repo URL, and virtualization flavor
    and base64-encodes it as VM `custom_data`.
 6. Creates the VM using the image referenced by `CUSTOM_IMAGE_ID` + `-` + `virtualization-flavor`.
-7. If `VM_USE_SPOT=true`, first attempts a spot VM; an ARM error on the initial submission triggers an on-demand fallback. Failures after acceptance are reported by `runner_status`.
+7. If `VM_USE_SPOT=true`, submits a Spot VM first. For keyed requests, an
+   explicit ARM capacity or Spot eligibility rejection triggers an on-demand
+   attempt with the same name and create-only protection. Ambiguous submissions
+   use idempotent recovery. For requests without a key, an initial ARM error
+   triggers the fallback. Poll `runner_status` for failures after acceptance.
 8. The image's `AzureProvisioning` startup task runs the injected PowerShell
    script as `C:\AzureData\CustomData.ps1`. For Hyper-V, setup enables the role as
    needed and schedules the same script to continue after any required reboot.
@@ -396,7 +400,7 @@ These must be present in the Function App's **Application Settings** (set by Ter
 
 | Setting          | Default            | Description |
 |------------------|--------------------|-------------|
-| `VM_USE_SPOT`    | `false`            | Set to `true` to use Azure Spot VMs with on-demand fallback for initial submission errors. Poll `runner_status` for late failures. |
+| `VM_USE_SPOT`    | `false`            | Set to `true` to try Azure Spot first. Keyed requests fall back on explicit capacity or Spot eligibility rejections. Poll `runner_status` for late failures. |
 | `VNET_NAME`      | `gh-runner-vnet`   | Virtual network name prefix within the runner resource group. |
 | `SUBNET_NAME`    | `default`          | Subnet name. |
 | `IP_NAME`        | `gh-runner-ip`     | Public IP resource name prefix. |
