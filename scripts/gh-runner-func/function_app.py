@@ -370,6 +370,14 @@ class _IdempotencyRecord:
             not isinstance(record, dict)
             or not isinstance(record.get("fingerprint"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", record["fingerprint"])
+            or (
+                # Legacy records have neither field. A partial binding is invalid.
+                ("resource_group" in record or "resource_group_defaulted" in record)
+                and (
+                    not _valid_resource_group(record.get("resource_group"))
+                    or not isinstance(record.get("resource_group_defaulted"), bool)
+                )
+            )
             or not isinstance(record.get("subnet"), str)
             or not record["subnet"]
             or not isinstance(record.get("accepted"), bool)
@@ -825,10 +833,11 @@ def handle_request_runner(req: func.HttpRequest, context=None) -> func.HttpRespo
 
 
 def _parse_runner_request(req, config):
-    """Return validated (repo, runner_name, resource_group, flavor) or raise."""
+    """Return the validated request fields and whether the group was omitted."""
     body = req.get_json()
     repo = body["repo"]
     runner_name = body.get("runner-name", "gh-runner-vm")
+    group_defaulted = "resource-group" not in body
     resource_group = body.get("resource-group", config["RESOURCE_GROUP"])
     virtualization_flavor = body.get("virtualization-flavor", "hyperv")
     if not _valid_repo(repo):
@@ -843,7 +852,23 @@ def _parse_runner_request(req, config):
         raise ValueError("runner-name")
     if virtualization_flavor not in _ALLOWED_FLAVORS:
         raise ValueError("virtualization-flavor")
-    return repo, runner_name, resource_group, virtualization_flavor
+    return (repo, runner_name, resource_group, virtualization_flavor), group_defaulted
+
+
+def _match_runner_request(record, runner_request, group_defaulted):
+    repo, runner_name, resource_group, flavor = runner_request
+    # Legacy fingerprints can only match the resolved group, since they do
+    # not reveal the original group or whether the caller omitted it.
+    bound_group = record.get("resource_group", resource_group)
+    if group_defaulted and record.get("resource_group_defaulted"):
+        resource_group = bound_group
+    matched_request = (repo, runner_name, resource_group, flavor)
+    if (
+        resource_group != bound_group
+        or _request_fingerprint(*matched_request) != record["fingerprint"]
+    ):
+        raise _BrokerFailure(409, "Idempotency-Key was already used for a different request")
+    return matched_request
 
 
 def _existing_runner(resource_client, compute, resource_group, vm_name, fingerprint):
@@ -1052,7 +1077,7 @@ def _provision_runner(req, context, config, progress):
             context, 400, "Invalid Idempotency-Key header: use 1-128 of [A-Za-z0-9._:-]"
         )
     try:
-        runner_request = _parse_runner_request(req, config)
+        runner_request, group_defaulted = _parse_runner_request(req, config)
     except (ValueError, KeyError, TypeError, AttributeError):
         return _runner_response(
             context,
@@ -1066,9 +1091,8 @@ def _provision_runner(req, context, config, progress):
         return _runner_response(context, 403, "Repository is not allowed")
     names = _resource_names(config, idempotency_key)
     context["resource-group"] = resource_group
-    _log_stage(
-        context, "validated", resources=names, idempotent=idempotency_key is not None
-    )
+    if idempotency_key is None:
+        _log_stage(context, "validated", resources=names, idempotent=False)
 
     subnet_name = os.environ.get("SUBNET_NAME") or "default"
     storage_url = config["IDEMPOTENCY_STORAGE_URL"]
@@ -1086,34 +1110,33 @@ def _provision_runner(req, context, config, progress):
 
     context["stage"] = "idempotency"
     progress["idempotent"] = True
-    fingerprint = _request_fingerprint(*runner_request)
     reservation = _IdempotencyRecord(credential, storage_url, idempotency_key)
     record = reservation.reserve({
-        "fingerprint": fingerprint,
+        "fingerprint": _request_fingerprint(*runner_request),
+        "resource_group": resource_group,
+        "resource_group_defaulted": group_defaulted,
         "resources": names,
         "subnet": subnet_name,
         "accepted": False,
         "busy_until": 0,
     })
-    if record["fingerprint"] != fingerprint:
-        raise _BrokerFailure(
-            409, "Idempotency-Key was already used for a different request"
-        )
-    context["vm"] = record["resources"]["vm"]
+    bound_request = _match_runner_request(record, runner_request, group_defaulted)
+    names = record["resources"]
+    context.update({"resource-group": bound_request[2], "vm": names["vm"]})
+    _log_stage({**context, "stage": "input"}, "validated", resources=names, idempotent=True)
     if record["accepted"]:
         _log_stage(context, "replayed")
-        return _accepted_response(context, record["resources"], replayed=True)
+        return _accepted_response(context, names, replayed=True)
 
     with reservation.lease(context):
         # Another worker may have finished or the storage policy may have
         # expired an old record between the read and the lease acquisition.
         record = reservation.read()
-        if record["fingerprint"] != fingerprint:
-            raise _BrokerFailure(
-                409, "Idempotency-Key was already used for a different request"
-            )
+        bound_request = _match_runner_request(record, runner_request, group_defaulted)
+        resource_group = bound_request[2]
+        fingerprint = record["fingerprint"]
         names = record["resources"]
-        context["vm"] = names["vm"]
+        context.update({"resource-group": resource_group, "vm": names["vm"]})
         if record["accepted"]:
             _log_stage(context, "replayed")
             return _accepted_response(context, names, replayed=True)
@@ -1137,7 +1160,7 @@ def _provision_runner(req, context, config, progress):
             reservation.write(record, busy_until=int(now) + _IN_PROGRESS_SECONDS)
             try:
                 _create_runner(
-                    credential, config, runner_request, names, record["subnet"],
+                    credential, config, bound_request, names, record["subnet"],
                     deadline, context, progress, reservation, fingerprint,
                 )
             except Exception as error:
