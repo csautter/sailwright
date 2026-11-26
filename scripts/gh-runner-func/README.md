@@ -174,13 +174,18 @@ Upstream bodies and exception messages are omitted to keep credentials out of lo
 
 The broker checks required settings on first use and caches the result per
 worker. Restart the Function App after correcting settings. Resource settings
-`VM_NAME`, `VNET_NAME`, `IP_NAME`, `NIC_NAME` and `NSG_NAME` are prefixes: each
-request gets a UUID suffix within Azure name limits. The `resources` response
-field and input-stage log contain the actual generated names.
+`VM_NAME`, `VNET_NAME`, `IP_NAME`, `NIC_NAME` and `NSG_NAME` are prefixes. The
+broker appends a UUID suffix for requests without an `Idempotency-Key` and a
+key-derived suffix for keyed requests, within Azure name limits. The `resources`
+response field and input-stage log contain the actual generated names.
 
 Key Vault transport failures and transient HTTP failures, plus GitHub network
 errors and `5xx` responses, get at most three attempts with 0.5 s and 1 s backoff.
-GitHub `429` is returned immediately with `Retry-After` (60 s if unavailable).
+The broker returns GitHub `429` immediately as `503`. Before an ARM write, the
+response includes `Retry-After` (60 s if GitHub gives no hint). This includes
+requests without a key, which fetch the token first. For a keyed rate-limit
+failure after an ARM write, the response includes `cleanup-required` and
+`resources` and omits `Retry-After`.
 ARM calls (including LRO status polls) get at most three attempts from the
 Azure SDK with backoff of at most 2 s; a server `Retry-After` is capped at 2 s
 and no new attempt starts after 15 s. ARM PUTs use fixed resource names, so a
