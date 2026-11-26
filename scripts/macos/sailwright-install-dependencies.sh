@@ -10,7 +10,7 @@ fi
 # renovate: datasource=custom.hashicorp depName=packer packageName=packer versioning=semver
 PACKER_VERSION="1.16.1"
 # renovate: datasource=custom.homebrew-formula depName=go packageName=go versioning=loose
-GO_VERSION="1.27.3"
+GO_VERSION="1.27.4"
 # renovate: datasource=custom.homebrew-cask depName=utm packageName=utm versioning=loose
 UTM_VERSION="4.7.5"
 # renovate: datasource=custom.homebrew-formula depName=qemu packageName=qemu versioning=loose
@@ -31,7 +31,7 @@ PYTHON_VERSION="3.13.18"
 
 script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 project_root="$(cd "${script_dir}/../.." && pwd -P)"
-# shellcheck source=scripts/common/ansible-core.sh
+# shellcheck source=scripts/common/ansible-core.sh disable=SC1091 # CI runs ShellCheck without -x
 source "${project_root}/scripts/common/ansible-core.sh"
 
 install_go="false"
