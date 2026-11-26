@@ -470,9 +470,25 @@ Activate the Key Vault Crypto Officer role for the deploying identity before
 planning the storage encryption key. For an existing deployment, scope it to
 the broker vault. The reviewed Terraform plan should update the storage account
 in place, add the key and its storage identity, and remove the CI role on the
-Function App. Apply the reviewed plan to set `ALLOWED_REPOS` and
-`IDEMPOTENCY_STORAGE_URL`. Allow the container role assignment to propagate
-before publishing the Function App code.
+Function App. Apply the reviewed plan to set `ALLOWED_REPOS`,
+`IDEMPOTENCY_STORAGE_ACCOUNT` and `IDEMPOTENCY_STORAGE_URL`.
+
+The customer-managed key protects the Function host's existing Blob and Azure
+Files data as well as the runner request records. Loss of key access can
+prevent the host from serving provisioning, status and cleanup requests.
+Terraform creates the storage identity's key-scoped role assignment before
+enabling the key on the account. Azure can still be propagating that access
+when Storage tries to use the key.
+
+If the storage update reports a key-access failure, verify that the key is
+enabled and that the storage account's user-assigned identity has effective
+`Key Vault Crypto Service Encryption User` access at the key scope. Wait for
+that access to propagate, then generate a fresh saved plan with
+`make deploy-plan-terraform-azure-gh-runner` and review it locally before
+any further authorized apply or Function App publication. Once storage is
+working, also allow the Function App identity's separate container-scoped
+`Storage Blob Data Contributor` assignment to propagate before publishing
+the Function App code.
 
 ```bash
 make deploy-az-func-app FUNCTION_APP_NAME=gh-runner-func-app-<suffix>
