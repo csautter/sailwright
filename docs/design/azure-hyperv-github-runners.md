@@ -99,9 +99,11 @@ base64 `custom_data`. Sequence:
 3. Ensure the internal `Default Switch` exists and wait for usable `192.168.0.1/24`
    on its management OS adapter. [Switch setup](../../scripts/gh-runner-func/runner-setup.ps1#L269).
 4. Configure NAT and bind the DHCP server to the identified switch adapter.
-   [DHCP setup](../../scripts/gh-runner-func/runner-setup.ps1#L293).
-5. Grant the runner account Hyper-V rights, verify IPv4 readiness again, and
-   register the runner with `--ephemeral`. [Registration](../../scripts/gh-runner-func/runner-setup.ps1#L361).
+   [DHCP setup](../../scripts/gh-runner-func/runner-setup.ps1#L305).
+5. Verify IPv4 readiness again before setting up the runner credentials.
+   [Final IPv4 check](../../scripts/gh-runner-func/runner-setup.ps1#L345).
+6. Set up the runner account, grant it Hyper-V rights, and register the runner
+   with `--ephemeral`. [Registration](../../scripts/gh-runner-func/runner-setup.ps1#L376).
 
 See the runner broker guide for readiness deadlines, failure logs, and
 offline registration tests. [Hyper-V runner readiness](../../scripts/gh-runner-func/README.md#hyper-v-runner-readiness).

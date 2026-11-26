@@ -128,11 +128,13 @@ it with prefix `/24` and waits to read it back from the active store in
 its existing address.
 
 After NAT and DHCP setup, a second read-only check allows up to 60 seconds
-before `config.cmd` can register the runner and start its service. If the
-adapter or a usable address is still unavailable, the script exits with an error.
-Adapter discovery, IP read, and IP assignment errors also stop setup.
+for the adapter and its usable address to be ready before setup creates the
+runner account, saves its password, or registers the runner with `config.cmd`.
+If readiness cannot be established, setup exits with an error. Switch lookup,
+adapter discovery, IP read, and IP assignment errors also stop setup.
 Look in `C:\ProgramData\dev-alchemy\logs\runner-setup.log` for the switch,
-adapter, expected address, failing stage, and the last observation or error.
+failing operation, and provider error or last readiness observation. Adapter
+and address failures also include the available interface details and expected IP.
 The broker's ARM provisioning status is separate from script readiness.
 
 Run the offline registration-path tests from the repository root with Pester

@@ -268,13 +268,25 @@ if($VirtualizationFlavor -eq "hyperv") {
 
     # Create the internal switch if it doesn't already exist.
     $switchName = "Default Switch"
-    if (-not (Get-VMSwitch -ErrorAction Stop | Where-Object Name -eq $switchName)) {
+    try {
+        $existingSwitch = Get-VMSwitch -ErrorAction Stop | Where-Object Name -eq $switchName
+    } catch {
+        Write-SetupLog "Failed to look up Hyper-V switch '$switchName' during initial enumeration: $($_.Exception.Message)"
+        throw
+    }
+    if (-not $existingSwitch) {
         Write-SetupLog "Creating Hyper-V switch '$switchName'..."
         try {
             New-VMSwitch -Name $switchName -SwitchType Internal -ErrorAction Stop | Out-Null
         } catch {
             Write-SetupLog "Failed to create Hyper-V switch '$switchName': $($_.Exception.Message)"
-            if (-not (Get-VMSwitch -ErrorAction Stop | Where-Object Name -eq $switchName)) {
+            try {
+                $existingSwitch = Get-VMSwitch -ErrorAction Stop | Where-Object Name -eq $switchName
+            } catch {
+                Write-SetupLog "Failed to recheck Hyper-V switch '$switchName' after creation failed: $($_.Exception.Message)"
+                throw
+            }
+            if (-not $existingSwitch) {
                 throw
             }
         }
@@ -328,6 +340,9 @@ if($VirtualizationFlavor -eq "hyperv") {
     }
 
     Write-HyperVNetworkSnapshot -Label "after-dhcp-setup"
+
+    # Verify IPv4 before persisting credentials or registering the runner.
+    Wait-HyperVHostIPv4 -SwitchName $switchName | Out-Null
 }
 
 $RunnerToken = "__RUNNER_TOKEN__"
@@ -357,11 +372,6 @@ if (-not (Get-LocalUser -Name $RunnerUser -ErrorAction SilentlyContinue)) {
 # Add user to Administrators and Hyper-V Administrators groups
 Add-LocalGroupMember -Group "Administrators" -Member $RunnerUser -ErrorAction SilentlyContinue
 Add-LocalGroupMember -Group "Hyper-V Administrators" -Member $RunnerUser -ErrorAction SilentlyContinue
-
-if ($VirtualizationFlavor -eq "hyperv") {
-    # Check again after DHCP setup, before config.cmd registers and starts the service.
-    Wait-HyperVHostIPv4 -SwitchName $switchName | Out-Null
-}
 
 .\config.cmd `
   --url $RepoUrl `

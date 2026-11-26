@@ -30,8 +30,18 @@ BeforeAll {
         # These functions shadow host commands only for the provisioner invocation.
         function Join-Path { param($Path, $ChildPath) "$Path\$ChildPath" }
         function New-Item {}
-        function Add-Content {}
-        function Set-Content {}
+        function Add-Content {
+            param($Path, $Value)
+
+            if ($Path -like '*\runner-setup.log') {
+                $Fixture.SetupLog += $Value
+            }
+        }
+        function Set-Content {
+            param($Value)
+
+            $Fixture.SavedPassword = $Value
+        }
         function Test-Path { $true }
         function Set-Location {}
         function Set-Acl {}
@@ -44,13 +54,39 @@ BeforeAll {
             }
         }
         function Get-WindowsFeature { [pscustomobject]@{ Installed = $true } }
-        function Get-VMSwitch { [pscustomobject]@{ Name = "Default Switch" } }
+        function Get-VMSwitch {
+            [CmdletBinding()]
+            param()
+
+            if ($PSBoundParameters.ErrorAction -eq 'Stop') {
+                $Fixture.SwitchReads++
+                $readError = $Fixture.SwitchReadErrors[$Fixture.SwitchReads]
+                if ($readError) {
+                    Write-Error $readError
+                }
+            }
+            if ($Fixture.SwitchExists) {
+                [pscustomobject]@{ Name = "Default Switch" }
+            }
+        }
+        function New-VMSwitch { throw "switch creation failed" }
         function Get-NetNat { $true }
         function Get-DhcpServerv4Scope { $true }
         function Get-DhcpServerv4Binding {}
         function Set-DhcpServerv4Binding {}
         function Add-Type {}
-        function Get-LocalUser { $true }
+        function Get-LocalUser {
+            param($Name)
+
+            if ($Fixture.LocalAccount.UserName -eq $Name) {
+                $Fixture.LocalAccount
+            }
+        }
+        function New-LocalUser {
+            param($Name, [securestring]$Password)
+
+            $Fixture.LocalAccount = [pscredential]::new($Name, $Password)
+        }
         function Add-LocalGroupMember {}
         function Get-Service {}
         function Start-Sleep {
@@ -97,7 +133,16 @@ BeforeAll {
             # A successful cmdlet result still requires a separate readback.
             New-TestIPv4
         }
-        function .\config.cmd { $Fixture.Registrations++ }
+        function .\config.cmd {
+            $Fixture.Registrations++
+            $account = $args[([array]::IndexOf($args, '--windowslogonaccount') + 1)]
+            $password = $args[([array]::IndexOf($args, '--windowslogonpassword') + 1)]
+            # Track only match results so a failed assertion never displays passwords.
+            $Fixture.RegistrationMatchesAccount = $null -ne $Fixture.LocalAccount -and
+                $account -eq $Fixture.LocalAccount.UserName -and
+                $password -ceq $Fixture.LocalAccount.GetNetworkCredential().Password
+            $Fixture.RegistrationMatchesSavedPassword = $password -ceq $Fixture.SavedPassword
+        }
 
         & $payloadPath 3>$null 6>$null
     }
@@ -106,6 +151,10 @@ BeforeAll {
 Describe "Hyper-V runner setup IPv4 gate" {
     BeforeEach {
         $script:fixture = @{
+            SetupLog = @()
+            SwitchExists = $true
+            SwitchReads = 0
+            SwitchReadErrors = @{}
             AdapterReadyAfterPolls = 0
             Polls = 0
             AddressReads = 0
@@ -113,6 +162,8 @@ Describe "Hyper-V runner setup IPv4 gate" {
             ReadError = $null
             AssignmentError = $null
             Assignments = @()
+            LocalAccount = $null
+            SavedPassword = $null
             Registrations = 0
         }
     }
@@ -125,6 +176,29 @@ Describe "Hyper-V runner setup IPv4 gate" {
         $fixture.AddressReads | Should -Be 4
         $fixture.Polls | Should -Be 0
         $fixture.Assignments | Should -BeNullOrEmpty
+    }
+
+    It "logs a failure to enumerate switches before creating the Default Switch" {
+        $fixture.SwitchReadErrors[1] = "initial switch provider unavailable"
+
+        { Invoke-TestRunnerSetup $fixture } | Should -Throw "*initial switch provider unavailable*"
+        $fixture.SetupLog -join "`n" |
+            Should -Match "Hyper-V switch 'Default Switch' during initial enumeration: initial switch provider unavailable"
+        $fixture.SwitchReads | Should -Be 1
+        $fixture.Registrations | Should -Be 0
+    }
+
+    It "logs a switch provider failure while rechecking after creation fails" {
+        $fixture.SwitchExists = $false
+        $fixture.SwitchReadErrors[2] = "recheck switch provider unavailable"
+
+        { Invoke-TestRunnerSetup $fixture } | Should -Throw "*recheck switch provider unavailable*"
+        $fixture.SetupLog -join "`n" |
+            Should -Match "Failed to create Hyper-V switch 'Default Switch': switch creation failed"
+        $fixture.SetupLog -join "`n" |
+            Should -Match "Hyper-V switch 'Default Switch' after creation failed: recheck switch provider unavailable"
+        $fixture.SwitchReads | Should -Be 2
+        $fixture.Registrations | Should -Be 0
     }
 
     It "waits for the Windows adapter to appear" {
@@ -203,7 +277,7 @@ Describe "Hyper-V runner setup IPv4 gate" {
         $fixture.Registrations | Should -Be 0
     }
 
-    It "checks again before registration when the initially ready address disappears" {
+    It "registers with matching credentials on retry after losing IPv4 before registration" {
         $fixture.ReadAddresses = {
             if ($Fixture.AddressReads -eq 1) {
                 New-TestIPv4
@@ -215,5 +289,17 @@ Describe "Hyper-V runner setup IPv4 gate" {
         $fixture.AddressReads | Should -Be 31
         $fixture.Assignments | Should -BeNullOrEmpty
         $fixture.Registrations | Should -Be 0
+        $accountCreatedBeforeRetry = $null -ne $fixture.LocalAccount
+        $passwordSavedBeforeRetry = $null -ne $fixture.SavedPassword
+
+        $fixture.ReadAddresses = { New-TestIPv4 }
+        Invoke-TestRunnerSetup $fixture
+
+        $fixture.Registrations | Should -Be 1
+        $fixture.RegistrationMatchesAccount | Should -BeTrue
+        $fixture.RegistrationMatchesSavedPassword | Should -BeTrue
+        $accountCreatedBeforeRetry | Should -BeFalse
+        $passwordSavedBeforeRetry | Should -BeFalse
+        $fixture.Assignments | Should -BeNullOrEmpty
     }
 }
