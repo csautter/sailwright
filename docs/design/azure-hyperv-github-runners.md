@@ -92,21 +92,23 @@ with no public webhook surface.
 The broker injects [runner-setup.ps1](../../scripts/gh-runner-func/runner-setup.ps1) as
 base64 `custom_data`. Sequence:
 
-1. Install the Hyper-V role (Server vs. client editions differ) —
-   [:94](../../scripts/gh-runner-func/runner-setup.ps1#L94).
-2. Survive the reboot: register a `ContinueRunnerSetup` startup task, reboot, resume —
-   [:160](../../scripts/gh-runner-func/runner-setup.ps1#L160).
-3. Create an internal NAT switch for nested guests (`Default Switch`) —
-   [:184](../../scripts/gh-runner-func/runner-setup.ps1#L184).
-4. Scope a DHCP server to that switch, bound to the switch adapter (not the Azure NIC) —
-   [:218](../../scripts/gh-runner-func/runner-setup.ps1#L218).
-5. Grant the runner account Hyper-V rights and register `--ephemeral` —
-   [:285](../../scripts/gh-runner-func/runner-setup.ps1#L285).
+1. Enable the Hyper-V role using the commands for the host's Windows edition.
+   [Hyper-V setup](../../scripts/gh-runner-func/runner-setup.ps1#L179).
+2. If the role installation requires a reboot, register `ContinueRunnerSetup`
+   to run the same script at startup. [Reboot continuation](../../scripts/gh-runner-func/runner-setup.ps1#L245).
+3. Ensure the internal `Default Switch` exists and wait for usable `192.168.0.1/24`
+   on its management OS adapter. [Switch setup](../../scripts/gh-runner-func/runner-setup.ps1#L269).
+4. Configure NAT and bind the DHCP server to the identified switch adapter.
+   [DHCP setup](../../scripts/gh-runner-func/runner-setup.ps1#L305).
+5. Verify IPv4 readiness again before setting up the runner credentials.
+   [Final IPv4 check](../../scripts/gh-runner-func/runner-setup.ps1#L345).
+6. Set up the runner account, grant it Hyper-V rights, and register the runner
+   with `--ephemeral`. [Registration](../../scripts/gh-runner-func/runner-setup.ps1#L376).
 
-Steps 2–4 are the non-obvious ones; an earlier bootstrap
-([scripts/gh_actions/cloud-init.ps1](../../scripts/gh_actions/cloud-init.ps1)) only did
-step 1 and was not reliable for CI. The runner agent and toolchain are baked into a
-Packer golden image
+See the runner broker guide for readiness deadlines, failure logs, and
+offline registration tests. [Hyper-V runner readiness](../../scripts/gh-runner-func/README.md#hyper-v-runner-readiness).
+
+The runner agent and toolchain are baked into a Packer golden image
 ([windows-azure-gh-runner.pkr.hcl](../../build/gh_actions/windows-azure-gh-runner.pkr.hcl))
 so first boot is mostly "enable Hyper-V + register," keeping paid runtime short.
 

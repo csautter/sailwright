@@ -42,6 +42,91 @@ function Protect-SecretFile {
     }
 }
 
+function Get-HyperVSwitchHostAdapter {
+    param([string]$SwitchName)
+
+    $vmAdapters = @(Get-VMNetworkAdapter -ManagementOS -ErrorAction Stop | Where-Object SwitchName -eq $SwitchName)
+    if ($vmAdapters.Count -gt 1) {
+        throw "Found $($vmAdapters.Count) management OS adapters attached to the switch."
+    }
+
+    # Match the same device ID that Packer uses. Interface aliases can be renamed.
+    $deviceId = $vmAdapters.DeviceId
+    if ($deviceId) {
+        Get-NetAdapter -IncludeHidden -ErrorAction Stop | Where-Object {
+            $_.DeviceId -eq $deviceId -and $_.InterfaceIndex -gt 0
+        }
+    }
+}
+
+function Wait-HyperVHostIPv4 {
+    param([string]$SwitchName, [switch]$AssignAddress)
+
+    $ipAddress = "192.168.0.1"
+    $prefixLength = 24
+    $timeoutMs = 60000
+    $pollIntervalMs = 2000
+    $maxAttempts = $timeoutMs / $pollIntervalMs
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $assignmentAttempted = $false
+
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $stage = "discover host adapter"
+        $adapterDescription = "management OS adapter"
+        $observation = "No matching Windows network interface is visible."
+        try {
+            $adapters = @(Get-HyperVSwitchHostAdapter -SwitchName $SwitchName)
+            if ($adapters.Count -gt 1) {
+                throw "The switch device ID matches multiple interfaces (indexes $($adapters.InterfaceIndex -join ', '))."
+            }
+            if ($adapters.Count -eq 1) {
+                $adapter = $adapters[0]
+                $adapterDescription = "'$($adapter.Name)' (index $($adapter.InterfaceIndex))"
+                $stage = "read active IPv4"
+                # Enumerate IPv4 then match by index so an interface without an IPv4 row is an empty result.
+                $addresses = @(Get-NetIPAddress -AddressFamily IPv4 -PolicyStore ActiveStore -ErrorAction Stop |
+                    Where-Object { $_.InterfaceIndex -eq $adapter.InterfaceIndex -and $_.IPAddress -eq $ipAddress })
+                if ($addresses.Count -gt 1) {
+                    throw "Found multiple active entries for $ipAddress on this interface."
+                }
+                if ($addresses.Count -eq 1) {
+                    $address = $addresses[0]
+                    $observation = "Found $ipAddress/$($address.PrefixLength) (state $($address.AddressState), SkipAsSource $($address.SkipAsSource))."
+                    if ($address.PrefixLength -eq $prefixLength -and $address.AddressState -eq 'Preferred' -and
+                        $address.SkipAsSource -eq $false -and $timer.ElapsedMilliseconds -lt $timeoutMs) {
+                        Write-SetupLog "Verified Hyper-V switch '$SwitchName' adapter $adapterDescription with $ipAddress/$prefixLength."
+                        return $adapter
+                    }
+                } else {
+                    $observation = "The expected IPv4 address is absent on this interface."
+                    if ($AssignAddress -and -not $assignmentAttempted -and $timer.ElapsedMilliseconds -lt $timeoutMs) {
+                        $stage = "assign IPv4"
+                        New-NetIPAddress -IPAddress $ipAddress -PrefixLength $prefixLength -InterfaceIndex $adapter.InterfaceIndex -ErrorAction Stop | Out-Null
+                        $assignmentAttempted = $true
+                    }
+                }
+            }
+        } catch {
+            $failure = "Hyper-V switch '$SwitchName', adapter $adapterDescription, expected $ipAddress/$($prefixLength): failed to $($stage): $($_.Exception.Message)"
+            Write-SetupLog $failure
+            throw $failure
+        }
+
+        $remainingMs = $timeoutMs - $timer.ElapsedMilliseconds
+        if ($remainingMs -le 0 -or $attempt -eq $maxAttempts) {
+            break
+        }
+        Start-Sleep -Milliseconds ([Math]::Min($pollIntervalMs, $remainingMs))
+        if ($timer.ElapsedMilliseconds -ge $timeoutMs) {
+            break
+        }
+    }
+
+    $failure = "Hyper-V switch '$SwitchName', adapter $adapterDescription, expected $ipAddress/$($prefixLength): timed out during $stage. $observation"
+    Write-SetupLog $failure
+    throw $failure
+}
+
 function Write-HyperVNetworkSnapshot {
     param([string]$Label)
 
@@ -181,41 +266,43 @@ if($VirtualizationFlavor -eq "hyperv") {
     Import-Module Hyper-V -ErrorAction Stop
     Write-HyperVNetworkSnapshot -Label "before-switch-setup"
 
-    # Create default virtual switch with NAT network (required for nested virtualization)
-    $existingSwitch = Get-VMSwitch -Name "Default Switch" -ErrorAction SilentlyContinue
+    # Create the internal switch if it doesn't already exist.
+    $switchName = "Default Switch"
+    try {
+        $existingSwitch = Get-VMSwitch -ErrorAction Stop | Where-Object Name -eq $switchName
+    } catch {
+        Write-SetupLog "Failed to look up Hyper-V switch '$switchName' during initial enumeration: $($_.Exception.Message)"
+        throw
+    }
     if (-not $existingSwitch) {
-        Write-SetupLog "Creating Default Switch..."
+        Write-SetupLog "Creating Hyper-V switch '$switchName'..."
         try {
-            New-VMSwitch -Name "Default Switch" -SwitchType Internal -ErrorAction Stop
+            New-VMSwitch -Name $switchName -SwitchType Internal -ErrorAction Stop | Out-Null
         } catch {
-            Write-SetupLog "Warning: Failed to create Default Switch. It may already exist. Error: $($_.Exception.Message)"
-            # Re-check if switch now exists
-            $existingSwitch = Get-VMSwitch -Name "Default Switch" -ErrorAction SilentlyContinue
+            Write-SetupLog "Failed to create Hyper-V switch '$switchName': $($_.Exception.Message)"
+            try {
+                $existingSwitch = Get-VMSwitch -ErrorAction Stop | Where-Object Name -eq $switchName
+            } catch {
+                Write-SetupLog "Failed to recheck Hyper-V switch '$switchName' after creation failed: $($_.Exception.Message)"
+                throw
+            }
+            if (-not $existingSwitch) {
+                throw
+            }
         }
     }
 
-    if ($existingSwitch -or (Get-VMSwitch -Name "Default Switch" -ErrorAction SilentlyContinue)) {
-        Write-SetupLog "Default Switch exists, configuring network..."
-        $netAdapter = Get-NetAdapter | Where-Object { $_.Name -like "vEthernet (Default Switch)" }
-        if ($netAdapter) {
-            # Check if IP is already configured
-            $existingIP = Get-NetIPAddress -InterfaceIndex $netAdapter.ifIndex -IPAddress "192.168.0.1" -ErrorAction SilentlyContinue
-            if (-not $existingIP) {
-                New-NetIPAddress -IPAddress "192.168.0.1" -PrefixLength 24 -InterfaceIndex $netAdapter.ifIndex -ErrorAction SilentlyContinue
-            }
-            
-            # Check if NAT already exists
-            $existingNat = Get-NetNat -Name "DefaultSwitchNAT" -ErrorAction SilentlyContinue
-            if (-not $existingNat) {
-                New-NetNat -Name "DefaultSwitchNAT" -InternalIPInterfaceAddressPrefix "192.168.0.0/24" -ErrorAction SilentlyContinue
-            }
-        }
+    $switchAdapter = Wait-HyperVHostIPv4 -SwitchName $switchName -AssignAddress
+
+    $existingNat = Get-NetNat -Name "DefaultSwitchNAT" -ErrorAction SilentlyContinue
+    if (-not $existingNat) {
+        New-NetNat -Name "DefaultSwitchNAT" -InternalIPInterfaceAddressPrefix "192.168.0.0/24" -ErrorAction SilentlyContinue
     }
 
     Write-HyperVNetworkSnapshot -Label "after-switch-setup"
 
 
-    # Configure DHCP Server (outside the switch creation block)
+    # Configure DHCP Server
     Write-SetupLog "Configuring DHCP Server..."
     if (-not (Get-WindowsFeature -Name DHCP -ErrorAction SilentlyContinue).Installed) {
         Write-SetupLog "Installing DHCP Server feature..."
@@ -239,23 +326,23 @@ if($VirtualizationFlavor -eq "hyperv") {
     }
 
     # Bind DHCP server only to the Default Switch adapter
-    $switchAdapter = Get-NetAdapter | Where-Object { $_.Name -like "vEthernet (Default Switch)" }
-    if ($switchAdapter) {
-        Write-SetupLog "Binding DHCP to Default Switch adapter..."
-        Set-DhcpServerv4Binding -InterfaceAlias $switchAdapter.Name -BindingState $true -ErrorAction SilentlyContinue
-        
-        # Unbind from all other interfaces to avoid conflicts with Azure VNet DHCP
-        Get-DhcpServerv4Binding | Where-Object { $_.InterfaceAlias -ne $switchAdapter.Name } | 
-            ForEach-Object { Set-DhcpServerv4Binding -InterfaceAlias $_.InterfaceAlias -BindingState $false -ErrorAction SilentlyContinue }
-    }
+    Write-SetupLog "Binding DHCP to Default Switch adapter..."
+    Set-DhcpServerv4Binding -InterfaceAlias $switchAdapter.Name -BindingState $true -ErrorAction SilentlyContinue
+
+    # Unbind from all other interfaces to avoid conflicts with Azure VNet DHCP
+    Get-DhcpServerv4Binding | Where-Object { $_.InterfaceAlias -ne $switchAdapter.Name } |
+        ForEach-Object { Set-DhcpServerv4Binding -InterfaceAlias $_.InterfaceAlias -BindingState $false -ErrorAction SilentlyContinue }
 
     # Authorize DHCP server (only if domain-joined)
-    if ((Get-WmiObject Win32_ComputerSystem).PartOfDomain) {
+    if ((Get-CimInstance Win32_ComputerSystem).PartOfDomain) {
         Write-SetupLog "Authorizing DHCP server in Active Directory..."
         Add-DhcpServerInDC -DnsName $env:COMPUTERNAME -ErrorAction SilentlyContinue
     }
 
     Write-HyperVNetworkSnapshot -Label "after-dhcp-setup"
+
+    # Verify IPv4 before persisting credentials or registering the runner.
+    Wait-HyperVHostIPv4 -SwitchName $switchName | Out-Null
 }
 
 $RunnerToken = "__RUNNER_TOKEN__"
@@ -271,7 +358,7 @@ Set-Location $RunnerDir
 
 
 Add-Type -AssemblyName System.Web
-$Password = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 20 | % {[char]$_})
+$Password = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 20 | ForEach-Object { [char]$_ })
 $SecurePassword = ConvertTo-SecureString $Password -AsPlainText -Force
 Set-Content -Path $RunnerPasswordFile -Value $Password -NoNewline -Force
 Protect-SecretFile -Path $RunnerPasswordFile
@@ -302,8 +389,8 @@ Start-Sleep -Seconds 5
 
 # Configure automatic service recovery on failure.
 # For ephemeral runners we intentionally leave failureflag at its default (0) so that
-# a clean exit after completing a job does NOT trigger a restart — only crashes /
-# non-zero exits will. Restart delays: 30 s → 60 s → 120 s; reset counter after 1 h.
+# only a crash or nonzero exit triggers a restart. Restart delays are 30 s, 60 s,
+# then 120 s. The counter resets after 1 h.
 Write-SetupLog "Configuring GitHub Actions Runner service auto-recovery..."
 
 # Derive the service name from the repo URL (https://github.com/<owner>/<repo>)
@@ -322,8 +409,8 @@ if (-not $svc) {
 
 if ($svc) {
     Write-SetupLog "Applying recovery policy to service: $($svc.Name)"
-    # reset=3600  → reset failure count after 3600 s (1 h) of stable operation
-    # actions     → restart after 30 s on 1st failure, 60 s on 2nd, 120 s on all subsequent
+    # reset=3600 resets the failure count after 3600 s (1 h) of stable operation.
+    # actions sets restart delays of 30 s, 60 s, and 120 s for subsequent failures.
     sc.exe failure "$($svc.Name)" reset=3600 actions=restart/30000/restart/60000/restart/120000
     Write-SetupLog "Service auto-recovery configured successfully."
 } else {

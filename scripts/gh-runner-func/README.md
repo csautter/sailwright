@@ -112,7 +112,39 @@ before submitting again.
 6. Provisions a VNet (`10.0.0.0/16`), subnet, public IP, NSG (no inbound rules), and NIC.
 7. Creates the VM using the image referenced by `CUSTOM_IMAGE_ID` + `-` + `virtualization-flavor`.
 8. If `VM_USE_SPOT=true`, first attempts a spot VM; an ARM error on the initial submission triggers an on-demand fallback. Failures after acceptance are reported by `runner_status`.
-9. The VM boots, runs `runner-setup.ps1` via `custom_data`, installs Hyper-V or VirtualBox, and registers itself as a GitHub Actions runner.
+9. The image's `AzureProvisioning` startup task runs the injected PowerShell
+   script as `C:\AzureData\CustomData.ps1`. For Hyper-V, setup enables the role as
+   needed and schedules the same script to continue after any required reboot.
+   It configures Hyper-V networking before registering the runner.
+
+#### Hyper-V runner readiness
+
+Setup allows up to 60 seconds for the Default Switch management OS adapter to
+appear in Windows and for its IPv4 address to become usable. It matches the
+Hyper-V adapter to the Windows interface by device ID and checks the IP by
+interface index. If `192.168.0.1` is absent on that interface, setup requests
+it with prefix `/24` and waits to read it back from the active store in
+`Preferred` state with `SkipAsSource` disabled. A healthy interface keeps
+its existing address.
+
+After NAT and DHCP setup, a second read-only check allows up to 60 seconds
+for the adapter and its usable address to be ready before setup creates the
+runner account, saves its password, or registers the runner with `config.cmd`.
+If readiness cannot be established, setup exits with an error. Switch lookup,
+adapter discovery, IP read, and IP assignment errors also stop setup.
+Look in `C:\ProgramData\dev-alchemy\logs\runner-setup.log` for the switch,
+failing operation, and provider error or last readiness observation. Adapter
+and address failures also include the available interface details and expected IP.
+The broker's ARM provisioning status is separate from script readiness.
+
+Run the offline registration-path tests from the repository root with Pester
+5.5 or newer. They run the injected script with simulated Windows commands
+and require no Azure credentials or Hyper-V host.
+
+```powershell
+Import-Module Pester -MinimumVersion 5.5.0
+Invoke-Pester -Path test/runner-provisioning/runner-setup.Tests.ps1 -Output Detailed -CI
+```
 
 **Diagnostics and retries**
 
