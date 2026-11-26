@@ -9,8 +9,10 @@ on:
     paths:
       - "scripts/windows/*.ps1"
       - "scripts/windows/**/*.ps1"
+      - "scripts/gh-runner-func/runner-setup.ps1"
       - "scripts/install.ps1"
       - "test/install/*.ps1"
+      - "test/runner-provisioning/*.ps1"
       - "cmd/main.go"
       - "cmd/cmd/install.go"
       - "cmd/cmd/provision*.go"
@@ -45,8 +47,10 @@ jobs:
 
           $scripts = @(
               @(Get-ChildItem -Path "scripts/windows" -Filter "*.ps1" -Recurse) +
+              @(Get-Item -Path "scripts/gh-runner-func/runner-setup.ps1") +
               @(Get-Item -Path "scripts/install.ps1") +
-              @(Get-ChildItem -Path "test/install" -Filter "*.ps1") |
+              @(Get-ChildItem -Path "test/install" -Filter "*.ps1") +
+              @(Get-ChildItem -Path "test/runner-provisioning" -Filter "*.ps1") |
                   Sort-Object FullName
           )
           if ($scripts.Count -eq 0) {
@@ -94,7 +98,7 @@ jobs:
 
           Import-Module Pester -MinimumVersion 5.5.0
           $config = New-PesterConfiguration
-          $config.Run.Path = "scripts/windows"
+          $config.Run.Path = @("scripts/windows", "test/runner-provisioning")
           $config.Run.PassThru = $true
           $config.Output.Verbosity = "Detailed"
           $config.TestResult.Enabled = $true
