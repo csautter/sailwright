@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0](https://github.com/csautter/sailwright/compare/v0.28.0...v0.29.0) (2026-11-26)
+
+
+### Added
+
+* **devcontainer:** separate container Codex logins from the host ([dd53473](https://github.com/csautter/sailwright/commit/dd534732baaad77e986e11007764bb18be7708e8))
+* **runners:** run Tart runner VMs on NAT with stable MACs and a network check ([3ce5206](https://github.com/csautter/sailwright/commit/3ce5206f70fd8e3ef23a690b02083da2b35374ff))
+
+
+### Fixed
+
+* **ci:** use explicit Cygwin Python for Ansible installation ([#363](https://github.com/csautter/sailwright/issues/363)) ([8e62a00](https://github.com/csautter/sailwright/commit/8e62a00dc1dd580e35ee29b135459d1a4266cf57))
+* **devcontainer:** fix Orca 1.4.271 startup and separate container Codex logins ([022950c](https://github.com/csautter/sailwright/commit/022950cd28618c6c8b7e2c18ab9a094d4981a366))
+* **devcontainer:** fix Orca 1.4.271 startup and sync devcontainer skill ([5fd7271](https://github.com/csautter/sailwright/commit/5fd727143502129cc56f1a40d05bf8fe11da5147))
+* **devcontainer:** harden origin reconciliation on token expiry and hangs ([294623c](https://github.com/csautter/sailwright/commit/294623ca1dd25ad6e1a8dc61e76385bcd32c31f8))
+* **installer:** explain Windows policy blocks after installation ([c8c8c49](https://github.com/csautter/sailwright/commit/c8c8c4920ee6e48cbfe54f238853d223d5829ac2))
+* **installer:** preserve legacy fallback under native exit errors ([14a484b](https://github.com/csautter/sailwright/commit/14a484b69300c79ebe26148bbe7fb4c5a90d55e8))
+* **installer:** send legacy help output to the host ([dc9e9d3](https://github.com/csautter/sailwright/commit/dc9e9d346a6338f3bb94b7b6dc8f81cefd0a4067))
+* **installer:** support release binaries without a version flag ([6297670](https://github.com/csautter/sailwright/commit/6297670a3196f5a55775353d92e7403a3d3a2f1c))
+* **macos-profile:** boot Windows arm64 UTM bundles under TCG ([589566d](https://github.com/csautter/sailwright/commit/589566d98da434376a915dba23930efdccd07a1c))
+* **macos-profile:** boot Windows arm64 UTM bundles under TCG ([e2c8ae4](https://github.com/csautter/sailwright/commit/e2c8ae4beb728c8a759ccb59bf0b4db151d1d4ad))
+* **macos-profile:** capture UTM log and windows when UTM lists no VM ([717e177](https://github.com/csautter/sailwright/commit/717e1772084c09e07a9b71f2e6ef7ba81ad494a3))
+* **macos-profile:** coerce the UTM bundle path outside the tell block ([43ecf14](https://github.com/csautter/sailwright/commit/43ecf149637b872846fedf8e21b8eb9e2f4fdca0))
+* **macos-profile:** ignore unexpected ps lines in UTM diagnostics ([c74afab](https://github.com/csautter/sailwright/commit/c74afab999aee04ff26d493cc3f2c8b15bca41ff))
+* **macos-profile:** register the UTM bundle through LaunchServices ([5c3da61](https://github.com/csautter/sailwright/commit/5c3da61517a6aa85bcbb1b22f3a7fdf575c04e04))
+* **macos-profile:** respect explicit CPUs and CPU flags under TCG ([4eba784](https://github.com/csautter/sailwright/commit/4eba784d9eff871c4f96c4073a53d9ae8cc450ae))
+* **macos-profile:** verify UTM registration in the bundle check ([47718d3](https://github.com/csautter/sailwright/commit/47718d314961404febfc4d4dfd7cb094dbd2d62c))
+* **macos-profile:** wait for UTM to register the opened bundle ([b8dfc79](https://github.com/csautter/sailwright/commit/b8dfc793f4f11cedce7dd27ce15e9655820703dd))
+* **runners:** keep shutdown prompt during guest preparation and sharpen UTM hints ([1eb49f6](https://github.com/csautter/sailwright/commit/1eb49f60b4692c4f1b38c4c7499183bb4b5b65d3))
+* **runners:** let CI drive UTM in Tart runner VMs and run them on NAT ([cd18a9c](https://github.com/csautter/sailwright/commit/cd18a9cc3e3a9d927521e9e9e38c1e3709ad8fc0))
+* **runners:** let CI drive UTM with AppleScript in Tart VMs ([710f5eb](https://github.com/csautter/sailwright/commit/710f5ebdcafd01da56275e71a6319d54e72fa028))
+* **runners:** retry guest network preparation on ssh login hiccups after boot ([a709668](https://github.com/csautter/sailwright/commit/a709668dce1eb2fb7f350973ab2b13cb967ba125))
+* **tart:** address readiness review findings and add DNS force option ([7a12cec](https://github.com/csautter/sailwright/commit/7a12cec8cfa76c5a9311c988ccbe5349a1fee107))
+* **tart:** retry the tart run start-up race and tighten readiness hints ([a829979](https://github.com/csautter/sailwright/commit/a8299795d32e9fa43f193deb85a3481ec45483b7))
+* **tart:** verify guest network readiness and support explicit guest DNS ([4bcdbec](https://github.com/csautter/sailwright/commit/4bcdbec00fc680b967dd0ab4f00e5f5a66f4921f))
+* **tart:** verify guest network readiness and support explicit guest DNS ([4dc9a5e](https://github.com/csautter/sailwright/commit/4dc9a5ed25fb5d30a9cfa222f1362dd43971a08e))
+
+
+### Changed
+
+* **macos-profile:** share UTM registration helpers and clean up fixtures ([420d47b](https://github.com/csautter/sailwright/commit/420d47b81c6f58cf5999edc52f41ffeed4e4b234))
+
+
+### CI
+
+* **renovate:** run daily at 07:00 UTC ([4233a29](https://github.com/csautter/sailwright/commit/4233a29a7c24e42826dd2fe889fbb60bff54c0b7))
+* **renovate:** run daily at 07:00 UTC and limit open PRs ([c545aa7](https://github.com/csautter/sailwright/commit/c545aa73845b05b94caa03f9d61453e5d7aa3559))
+* **renovate:** run on weekdays and limit PR creation ([f466d8c](https://github.com/csautter/sailwright/commit/f466d8cfe3722960a125237bb112d59cc9b9ff5d))
+* **runners:** syntax-check the guest-side runner scripts ([edf8160](https://github.com/csautter/sailwright/commit/edf8160a7b8468a8c6c243f14ccd0c077eb28085))
+
 ## [0.28.0](https://github.com/csautter/sailwright/compare/v0.27.0...v0.28.0) (2026-11-22)
 
 
