@@ -10,7 +10,6 @@ from email.utils import formatdate
 from functools import lru_cache
 from pathlib import Path
 from time import monotonic, sleep, time
-from urllib.parse import urlparse
 from uuid import uuid4
 
 import azure.functions as func
@@ -245,20 +244,14 @@ _REQUIRED_SETTINGS = (
 )
 
 
-def _valid_storage_url(value):
-    try:
-        parsed = urlparse(value)
-        port = parsed.port
-    except ValueError:
-        return False
-    return (
-        parsed.scheme == "https"
-        and bool(re.fullmatch(r"[a-zA-Z0-9.-]+", parsed.hostname or ""))
-        and not parsed.username
-        and parsed.password is None
-        and port in (None, 443)
-        and bool(re.fullmatch(r"/[a-z0-9-]{3,63}/?", parsed.path))
-        and not any(char in value for char in "?#@ \t\r\n")
+def _valid_storage_url(value, account):
+    # The deployment uses the public Azure Blob endpoint for this account.
+    return bool(
+        re.fullmatch(r"[a-z0-9]{3,24}", account)
+        and re.fullmatch(
+            rf"(?ai:https://{account}\.blob\.core\.windows\.net)(?::443)?/[a-z0-9-]{{3,63}}/?",
+            value,
+        )
     )
 
 
@@ -271,8 +264,9 @@ def _runner_config():
     )
     missing = sorted(key for key, value in values.items() if not value)
     storage_url = os.environ.get("IDEMPOTENCY_STORAGE_URL", "").strip()
+    storage_account = os.environ.get("IDEMPOTENCY_STORAGE_ACCOUNT", "").strip()
     values["IDEMPOTENCY_STORAGE_URL"] = (
-        storage_url if _valid_storage_url(storage_url) else ""
+        storage_url if _valid_storage_url(storage_url, storage_account) else ""
     )
     return values, missing
 
@@ -1080,7 +1074,8 @@ def _provision_runner(req, context, config, progress):
     storage_url = config["IDEMPOTENCY_STORAGE_URL"]
     if idempotency_key is not None and not storage_url:
         return _runner_response(
-            context, 503, "Missing required app settings", missing=["IDEMPOTENCY_STORAGE_URL"]
+            context, 503, "IDEMPOTENCY_STORAGE_URL must match IDEMPOTENCY_STORAGE_ACCOUNT",
+            missing=["IDEMPOTENCY_STORAGE_URL"],
         )
     credential = _credential()
     if idempotency_key is None:

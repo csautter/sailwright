@@ -207,8 +207,9 @@ resource "azurerm_linux_function_app" "gh_runner_func_app" {
     ALLOWED_USER_OBJECT_IDS  = length(var.allowed_user_object_ids) > 0 ? join(",", var.allowed_user_object_ids) : data.azurerm_client_config.current.object_id
     # Repositories the broker may request runner registration tokens for with
     # the GitHub PAT. The broker refuses every request while this is empty.
-    ALLOWED_REPOS           = var.github_repository
-    IDEMPOTENCY_STORAGE_URL = "${trimsuffix(azurerm_storage_account.gh_runner_storage.primary_blob_endpoint, "/")}/${azurerm_storage_container.runner_requests.name}"
+    ALLOWED_REPOS               = var.github_repository
+    IDEMPOTENCY_STORAGE_ACCOUNT = azurerm_storage_account.gh_runner_storage.name
+    IDEMPOTENCY_STORAGE_URL     = "${trimsuffix(azurerm_storage_account.gh_runner_storage.primary_blob_endpoint, "/")}/${azurerm_storage_container.runner_requests.name}"
   }
 
   identity {

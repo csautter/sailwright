@@ -385,7 +385,8 @@ These must be present in the Function App's **Application Settings** (set by Ter
 | `ALLOWED_AUDIENCE`       | Expected token audience, e.g. `api://<app-client-id>`. |
 | `ALLOWED_CLIENT_IDS`     | Comma-separated list of allowed application (client) IDs. |
 | `ALLOWED_REPOS`          | Comma-separated `owner/repo` list the broker may request runner registration tokens for (case-insensitive). The GitHub PAT may reach more repositories; requests for others get `403`. Terraform sets it to `github_repository`. |
-| `IDEMPOTENCY_STORAGE_URL` | HTTPS URL of the private runner request container. Required for requests that supply `Idempotency-Key`. Terraform creates the container and gives the Function App identity access. |
+| `IDEMPOTENCY_STORAGE_ACCOUNT` | Name of the Terraform-managed storage account for keyed requests. The broker uses it to verify the Blob destination before requesting a storage token. |
+| `IDEMPOTENCY_STORAGE_URL` | HTTPS URL of the private runner request container on `<account>.blob.core.windows.net`. Required for requests that supply `Idempotency-Key`. Terraform creates the container and gives the Function App identity access. |
 
 ### Required — VM provisioning will fail without these
 
@@ -567,6 +568,7 @@ Copy `local.settings.json.example` to `local.settings.json` and fill in the requ
         "ALLOWED_AUDIENCE": "api://<app-client-id>",
         "ALLOWED_CLIENT_IDS": "<app-client-id>",
         "ALLOWED_REPOS": "<owner>/<repo>",
+        "IDEMPOTENCY_STORAGE_ACCOUNT": "<account>",
         "IDEMPOTENCY_STORAGE_URL": "https://<account>.blob.core.windows.net/runner-requests",
         "ALLOWED_USER_OBJECT_IDS": "<your-object-id>"
     }

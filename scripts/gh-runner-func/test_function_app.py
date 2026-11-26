@@ -269,7 +269,8 @@ REQUEST_RUNNER_ENV = {
     "ADMIN_USERNAME": "runneradmin",
     "CUSTOM_IMAGE_ID": "/images/gh-runner",
     "ALLOWED_REPOS": "owner/repo",
-    "IDEMPOTENCY_STORAGE_URL": "https://test.blob.core.windows.net/runner-requests",
+    "IDEMPOTENCY_STORAGE_ACCOUNT": "ghrunnerstorage12345",
+    "IDEMPOTENCY_STORAGE_URL": "https://ghrunnerstorage12345.blob.core.windows.net/runner-requests",
     "RESOURCE_GROUP": "unused",
 }
 
@@ -865,13 +866,46 @@ class RequestRunnerTest(unittest.TestCase):
         function_app.requests.request.assert_not_called()
 
     def test_keyed_requests_fail_closed_without_valid_storage_url(self):
-        for url in ("", "https://[invalid/runner-requests", "https://host/", "http://host/container"):
+        for url in (
+            "",
+            "https://[invalid/runner-requests",
+            "https://host/",
+            "http://host/container",
+            "https://example.com/runner-requests",
+            "https://ghrunnerstorage12345.blob.core.windows.net.example.com/runner-requests",
+            "https://ghrunnerstorage12345.blob.core-windows.net/runner-requests",
+            "https://ghrunnerſtorage12345.blob.core.windows.net/runner-requests",
+            "https://otheraccount.blob.core.windows.net/runner-requests",
+        ):
             with self.subTest(url=url), mock.patch.dict(os.environ, {"IDEMPOTENCY_STORAGE_URL": url}):
                 function_app._runner_config.cache_clear()
                 response = self._request_runner({"Idempotency-Key": "k"})
                 self.assertEqual(response.status_code, 503)
                 self.assertEqual(json.loads(response.body)["missing"], ["IDEMPOTENCY_STORAGE_URL"])
         function_app.DefaultAzureCredential.assert_not_called()
+        function_app.requests.request.assert_not_called()
+        function_app.requests.post.assert_not_called()
+
+    def test_keyed_requests_fail_closed_without_a_configured_storage_account(self):
+        for account in ("", "invalid.account"):
+            with self.subTest(account=account), mock.patch.dict(
+                os.environ, {"IDEMPOTENCY_STORAGE_ACCOUNT": account}
+            ):
+                function_app._runner_config.cache_clear()
+                response = self._request_runner({"Idempotency-Key": "k"})
+                self.assertEqual(response.status_code, 503)
+        function_app.DefaultAzureCredential.assert_not_called()
+        function_app.requests.request.assert_not_called()
+        function_app.requests.post.assert_not_called()
+
+    def test_keyed_requests_accept_the_terraform_storage_endpoint(self):
+        response = self._request_runner({"Idempotency-Key": "k"})
+        self.assertEqual(response.status_code, 202)
+        get, *_ = function_app.requests.request.call_args_list
+        self.assertEqual(get.args[0], "GET")
+        container_url, _ = get.args[1].rsplit("/", 1)
+        self.assertEqual(container_url, REQUEST_RUNNER_ENV["IDEMPOTENCY_STORAGE_URL"])
+        self.assertFalse(get.kwargs["allow_redirects"])
 
     def test_invalid_or_unavailable_records_stop_before_provisioning(self):
         for upstream_status, record, expected_status in (

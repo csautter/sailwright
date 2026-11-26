@@ -123,7 +123,8 @@ NETWORK_OPERATIONS = (
     "network_security_groups",
     "network_interfaces",
 )
-STORAGE_URL = "https://test.blob.core.windows.net/runner-requests"
+STORAGE_ACCOUNT = "ghrunnerstorage12345"
+STORAGE_URL = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net/runner-requests"
 
 REGULAR_VM_PROPERTIES = {
     "hardwareProfile": {"vmSize": "Standard_D4s_v5"},
@@ -238,7 +239,10 @@ class RequestRunnerWireFormatTest(unittest.TestCase):
 
         function_app.DefaultAzureCredential.return_value.get_token.return_value.token = "blob-token"
         for patch in (
-            mock.patch.dict(os.environ, {"IDEMPOTENCY_STORAGE_URL": STORAGE_URL}),
+            mock.patch.dict(os.environ, {
+                "IDEMPOTENCY_STORAGE_ACCOUNT": STORAGE_ACCOUNT,
+                "IDEMPOTENCY_STORAGE_URL": STORAGE_URL,
+            }),
             mock.patch.object(requests.Session, "send", side_effect=send),
         ):
             patch.start()
