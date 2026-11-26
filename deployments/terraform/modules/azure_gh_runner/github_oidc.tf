@@ -37,13 +37,9 @@ resource "azuread_service_principal" "gh_actions_runner_broker" {
   client_id = azuread_application.gh_actions_runner_broker.client_id
 }
 
-# The broker identity deliberately has no Azure RBAC role on the Function App
-# (or anywhere else in the subscription). Workflows only need a token for the
-# api://<client-id> audience to call the broker over HTTPS; `azure/login` uses
-# `allow-no-subscriptions: true`. A Contributor assignment here would let any
-# pull request workflow redeploy the Function App and act as its managed
-# identity, which can manage VMs and networks across the subscription and read
-# the GitHub PAT from Key Vault.
+# The CI principal has no role on the Function App or its parent scopes. Its
+# optional legacy cache roles in cache.tf apply to a separate resource group.
+# Broker callers only need an API token, so azure/login permits no subscription.
 
 resource "azuread_application_federated_identity_credential" "gh_actions_github_actions" {
   application_id = azuread_application.gh_actions_runner_broker.id

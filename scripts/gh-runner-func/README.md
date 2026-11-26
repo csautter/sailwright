@@ -92,19 +92,19 @@ Registers a GitHub Actions runner token, creates a resource group, and provision
 
 | Status | Meaning |
 |--------|---------|
-| `202` | VM creation accepted. The existing `message` and `vm` fields remain; `resource-group`, `resources`, `status: "provisioning"` and `status-url: "/api/runner_status"` identify the resources and how to monitor them. A retry with the same `Idempotency-Key` that finds the VM returns the same body plus `"replayed": true`. |
+| `202` | VM creation accepted. `resource-group`, `vm`, `resources`, `status: "provisioning"` and `status-url: "/api/runner_status"` identify the resources and how to monitor them. Replays return the original resource names and `"replayed": true`. |
 | `400` | Invalid input or `Idempotency-Key`, or GitHub returned `404` for the repository. |
 | `401` | Authentication/authorization check failed. |
 | `403` | `repo` is not listed in `ALLOWED_REPOS`. |
 | `409` | Azure resource conflict, `resource-group` already exists without the broker's ownership tag or is being deleted, or the `Idempotency-Key` was already used with a different request body. |
-| `502` | Key Vault/Azure request rejected, GitHub authentication/authorization failed (`401`/`403`), GitHub redirected the request (renamed repository), invalid GitHub token response, or GitHub request failed after retries. |
-| `503` | Missing app settings (names in `missing`; authorization settings are only logged), Azure unavailable, or GitHub rate limited (`429`). |
-| `504` | GitHub request or network provisioning timed out, or the request budget ran out before provisioning started. |
+| `502` | Key Vault/Azure request rejected, invalid idempotency record, GitHub authentication/authorization failed (`401`/`403`), GitHub redirected the request (renamed repository), invalid GitHub token response, or GitHub request failed after retries. |
+| `503` | Missing or invalid broker settings, Azure unavailable, GitHub rate limited (`429`), or a matching request or Azure network operation is in progress. When `Retry-After` is present, retry with the same key after that many seconds. |
+| `504` | GitHub request or network provisioning timed out, or the request budget ran out before an Azure write. |
 | `500` | Unexpected internal error. |
 
-Failures **before** the first Azure write (input, Key Vault, GitHub, budget
-check) create nothing; transient ones carry a `Retry-After` header and are safe
-to retry. Failures **after** the first write (resource group, network, VM)
+Failures **before** provisioning starts can leave a key reservation in storage.
+Transient failures at that stage can carry a `Retry-After` header. Failures
+**after** the first provisioning write (resource group, network, VM)
 return `"cleanup-required": true` and the generated `resources`, and never carry
 `Retry-After`: Azure may already hold resources, including a VM that was
 accepted before a client timeout. Delete the group (or the listed resources)
@@ -194,26 +194,30 @@ dedicated group per request when cleanup must not affect other runners.
 
 #### Idempotent retries
 
-With an `Idempotency-Key` header, the resource-name suffix is the first 32 hex
-characters of the key's SHA-256 instead of a random UUID, and the VM is tagged
-`broker-request` with a SHA-256 fingerprint of `repo`, `runner-name`,
-`resource-group` and `virtualization-flavor`. A request with a key first looks
-for that VM in the (broker-owned) resource group:
+Use a new case-sensitive `Idempotency-Key` for each intended runner. The Windows
+workflow uses `<run_id>-<run_attempt>-<flavor>`. The broker reserves the key in
+Azure Blob Storage before retrieving the GitHub PAT or provisioning. The
+reservation binds the key to the validated repository, runner name, resource
+group and virtualization flavor. Repository case is ignored. A changed field,
+including a different resource group, returns `409`.
 
-- **VM found, same fingerprint:** returns `202` with the same `resources` and
-  `"replayed": true`. Nothing is written and no new registration token is
-  fetched.
-- **VM found, different or missing fingerprint:** returns `409`; nothing is
-  written.
-- **VM not found:** provisions as usual. Because the names are the same, a
-  retry after a timeout re-PUTs the resources the first attempt may have
-  created, and ARM treats those PUTs as updates of the same resources.
+A renewable blob lease allows one request to provision for the key across
+Function App instances. The record also protects the request window if a
+worker loses its lease while an Azure call is in flight. Concurrent matching
+requests get `503` with `Retry-After` while provisioning is in progress.
+A retry after acceptance returns `202` with the original `resources` and
+`"replayed": true` without fetching a new registration token. Use `runner_status`
+to check the VM's current state, including after a deletion.
 
-Use a new key for each runner you want (the Windows workflow uses
-`<run_id>-<run_attempt>-<flavor>`). A key is bound to its resource group:
-reusing it with another `resource-group` is not detected and creates a
-separate runner there. Two concurrent requests with the same key can both
-pass the lookup; the second VM PUT then fails with `409`, leaving one VM.
+For an uncertain Azure response, the broker looks up the VM using the saved
+name and verifies its `broker-request` fingerprint tag. If the VM has yet to
+appear, the broker waits for any in-progress attempt, then resumes with the
+saved names. It reuses successful network resources and waits for pending
+network writes. The VM PUT uses `If-None-Match: *` and a stable OS disk name
+to protect against a late acceptance from an earlier submission. Use a new
+key for each new runner, including after cleanup. Retry the same runner within
+seven days of the last reservation write. Azure's background lifecycle policy
+can remove the record after that window, and replay reads do not extend it.
 
 An existing `resource-group` is reused only when it carries the broker's
 `managed-by: gh-runner-broker` tag and is not being deleted; it is never
@@ -341,15 +345,13 @@ Terraform builds these subjects from the `github_repository` module variable.
 
 The workflow must request the OIDC token with `permissions: id-token: write` and exchange it for an Azure AD token scoped to `api://<client-id>`.
 
-The `gh-actions-runner-broker` identity has **no Azure RBAC role**. Any workflow
-that can obtain its token (every pull request from a branch of this repository)
-can only call the broker's endpoints. In particular it must never be
-Contributor on the Function App: that would allow redeploying the Function App
-code and acting as its managed identity. Workflows therefore log in with
-`allow-no-subscriptions: true` and grant `id-token: write` only to the jobs
-that call the broker, never to build jobs that run pull request code on the
-runner VM. [`test/workflowcheck`](../../test/workflowcheck/windows_build_workflow_test.go)
-enforces both rules for the Windows workflow.
+The `gh-actions-runner-broker` service principal authenticates API calls.
+Terraform grants it no role on the Function App or its parents. If the optional
+legacy build cache is enabled, the principal has roles only on the cache
+resource group and storage account. Windows CI uses FTP for its build cache.
+Provisioning, queue watching and cleanup use `allow-no-subscriptions: true`
+for Azure login and receive `id-token: write`. Build jobs run pull request code
+with `contents: read`. [Windows workflow permission checks](../../test/workflowcheck/windows_build_workflow_test.go).
 
 The golden image build ([build-azure-runner-image.yml](../../.github/workflows/build-azure-runner-image.yml)) uses a separate app, `gh-actions-image-builder`, whose only federated credential (`github-actions-main`) trusts `repo:csautter/sailwright:ref:refs/heads/main`. Pull request workflows therefore cannot replace the image. Its client ID (Terraform output `image_builder_client_id`) is stored as the repository secret `AZURE_IMAGE_BUILDER_CLIENT_ID`.
 
@@ -372,6 +374,7 @@ These must be present in the Function App's **Application Settings** (set by Ter
 | `ALLOWED_AUDIENCE`       | Expected token audience, e.g. `api://<app-client-id>`. |
 | `ALLOWED_CLIENT_IDS`     | Comma-separated list of allowed application (client) IDs. |
 | `ALLOWED_REPOS`          | Comma-separated `owner/repo` list the broker may request runner registration tokens for (case-insensitive). The GitHub PAT may reach more repositories; requests for others get `403`. Terraform sets it to `github_repository`. |
+| `IDEMPOTENCY_STORAGE_URL` | HTTPS URL of the private runner request container. Required for requests that supply `Idempotency-Key`. Terraform creates the container and gives the Function App identity access. |
 
 ### Required — VM provisioning will fail without these
 
@@ -420,6 +423,7 @@ The full infrastructure is managed by Terraform in `deployments/terraform/module
 | Resource group (manager) | `gh-runner-manager` | Holds all persistent resources. `prevent_destroy = true` |
 | Key Vault | `gh-runner-kv-b-<suffix>` | RBAC-enabled; soft-delete 7 days. `prevent_destroy = true` |
 | Storage Account | `ghrunnerstorage<suffix>` | Function App backing storage. `prevent_destroy = true` |
+| Blob container | `runner-requests` | Private request reservations and leases. Its lifecycle rule deletes blobs more than seven days after their last write. |
 | Function App | `gh-runner-func-app-<suffix>` | Linux, Python 3.11, Consumption (Y1) plan. |
 | App Insights | `gh-runner-func-app-<suffix>` | Linked to Function App. |
 | Entra app registration | `gh-actions-runner-broker` | API audience; pre-authorises Azure CLI client. |
@@ -448,10 +452,15 @@ apply the reviewed plan locally or include the value-free summary in the PR.
 See the [Terraform deployment guide](../../deployments/terraform/README.md) for
 permissions, safeguards and local checks.
 
-Apply Terraform **before** publishing Function App code that needs a new app
-setting (for example `ALLOWED_REPOS`): `func azure functionapp publish` only
-uploads code, and `request_runner` answers `503` while a required setting is
-missing. Publish the code with:
+Use the updated workflow with `allow-no-subscriptions: true` before removing
+the CI role assignment, or pause broker workflow runs through the cutover.
+Activate the Key Vault Crypto Officer role for the deploying identity before
+planning the storage encryption key. For an existing deployment, scope it to
+the broker vault. The reviewed Terraform plan should update the storage account
+in place, add the key and its storage identity, and remove the CI role on the
+Function App. Apply the reviewed plan to set `ALLOWED_REPOS` and
+`IDEMPOTENCY_STORAGE_URL`. Allow the container role assignment to propagate
+before publishing the Function App code.
 
 ```bash
 make deploy-az-func-app FUNCTION_APP_NAME=gh-runner-func-app-<suffix>
@@ -472,13 +481,20 @@ make deploy-az-func-app FUNCTION_APP_NAME=gh-runner-func-app-<suffix>
 | Principal | Scope | Role | Purpose |
 |-----------|-------|------|---------|
 | Function App managed identity | Key Vault | Key Vault Secrets User | Read `github-runner-pat` and `github-runner-vm-admin-pw` |
-| Function App managed identity | Subscription | `gh-runner-broker` (custom) | Create/delete runner resource groups and their VM/network resources — no data-plane or IAM access |
+| Function App managed identity | Subscription | `gh-runner-broker` (custom) | Create/delete resource groups and write runner VM/network resource types |
+| Function App managed identity | `runner-requests` blob container | Storage Blob Data Contributor | Read, write and lease request records |
+| Storage account user-assigned identity | `github-runner-storage` vault key | Key Vault Crypto Service Encryption User | Wrap and unwrap the storage encryption key |
 | Deploying identity | Key Vault | Key Vault Secrets Officer | Seed secrets via Terraform/CLI |
 | `gh-actions-image-builder` service principal | Image and image-build resource groups | Contributor | Build and replace the golden image with Packer |
+| `gh-actions-runner-broker` service principal | Legacy cache resource group and storage account, if enabled | Reader on the group, Storage Blob Data Contributor on the account | Access the optional Azure Blob build cache |
 
-> The Function App identity uses a least-privilege custom role (`gh-runner-broker`, defined in [`manager.tf`](../../deployments/terraform/modules/azure_gh_runner/manager.tf)): resource-group create/delete, reads on `Microsoft.Compute` and `Microsoft.Network`, and write/delete/join only for the VM, managed disk, VNet, subnet, public IP, NSG and NIC types the broker creates. It has no run command, VM extension, disk export, image or gallery write access, no data-plane access and no role assignment permissions. The role still applies to the whole subscription; a runner-only subscription would contain it further.
->
-> The `gh-actions-runner-broker` service principal (the CI identity) has no Azure role at all; see [GitHub Actions OIDC](#github-actions-oidc-ci-callers).
+The custom role grants resource-group creation and deletion, Compute and Network
+reads, and write or join operations for the resource types used by the runner.
+The subscription scope applies those rights to all matching resources, and a
+resource-group deletion can remove its contents. The broker endpoints check the
+temporary group prefix and broker ownership tag. The managed identity gets data
+access from its separate Key Vault and storage container assignments.
+[`manager.tf`](../../deployments/terraform/modules/azure_gh_runner/manager.tf).
 
 ---
 
@@ -540,6 +556,7 @@ Copy `local.settings.json.example` to `local.settings.json` and fill in the requ
         "ALLOWED_AUDIENCE": "api://<app-client-id>",
         "ALLOWED_CLIENT_IDS": "<app-client-id>",
         "ALLOWED_REPOS": "<owner>/<repo>",
+        "IDEMPOTENCY_STORAGE_URL": "https://<account>.blob.core.windows.net/runner-requests",
         "ALLOWED_USER_OBJECT_IDS": "<your-object-id>"
     }
 }
@@ -570,9 +587,10 @@ python3 -m unittest discover -s scripts/gh-runner-func
 ```
 
 Contract tests check the JSON request bodies the real, pinned Azure SDKs send to
-ARM, exercise accepted-then-failed provisioning through a fake SDK transport,
-and verify transport timeouts and the bounded ARM retry policy (capped
-`Retry-After`, PUT resent after a lost response), so SDK changes show up before deployment. Run them in a separate virtual environment with the lock installed.
+ARM and the headers sent to Blob Storage and Compute. They exercise accepted
+provisioning followed by failure, transport timeouts, and replay when a
+create-only retry finds a VM created by an earlier submission. Run them in a
+separate virtual environment with the lock installed.
 The stub-based tests above must not run in the same process:
 
 ```bash

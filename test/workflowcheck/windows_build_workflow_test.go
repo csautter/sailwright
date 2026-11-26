@@ -113,9 +113,8 @@ func TestWindowsBuildWorkflowGrantsIDTokenOnlyToBrokerJobs(t *testing.T) {
 	}
 }
 
-// The broker identity has no Azure RBAC role, so its logins must not select a
-// subscription. A subscription-scoped login would only work again if someone
-// re-added a role assignment for the identity.
+// The broker API does not require Azure RBAC. Its logins must work even when
+// the optional legacy cache is disabled and the CI identity has no roles.
 func TestWindowsBuildWorkflowLogsInWithoutSubscription(t *testing.T) {
 	t.Parallel()
 
@@ -134,5 +133,22 @@ func TestWindowsBuildWorkflowLogsInWithoutSubscription(t *testing.T) {
 	}
 	if logins == 0 {
 		t.Fatal("expected azure/login steps in the Windows build workflow")
+	}
+}
+
+func TestWindowsBuildWorkflowUsesIdempotencyKeyForRunnerRequests(t *testing.T) {
+	t.Parallel()
+
+	wf := loadWorkflow(t, windowsBuildWorkflow)
+	for jobID, flavor := range map[string]string{
+		"provision-hyperv-runner":     "hv",
+		"provision-virtualbox-runner": "vb",
+	} {
+		job := wf.job(t, jobID)
+		request := job.stepByID(t, jobID, "request")
+		want := `"Idempotency-Key=${{ github.run_id }}-${{ github.run_attempt }}-` + flavor + `"`
+		if !strings.Contains(request.Run, "/api/request_runner") || !strings.Contains(request.Run, want) {
+			t.Errorf("job %q: runner request must include %s", jobID, want)
+		}
 	}
 }

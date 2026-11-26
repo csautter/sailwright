@@ -5,13 +5,17 @@ import logging
 import os
 import re
 import traceback
+from contextlib import contextmanager
+from email.utils import formatdate
 from functools import lru_cache
 from pathlib import Path
-from time import monotonic, sleep
+from time import monotonic, sleep, time
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import azure.functions as func
 import requests
+from azure.core import MatchConditions
 from azure.core.exceptions import (
     AzureError,
     HttpResponseError,
@@ -39,8 +43,8 @@ app = func.FunctionApp()
 # Allowed virtualization flavors — must match the image naming convention
 _ALLOWED_FLAVORS: frozenset[str] = frozenset({"hyperv", "virtualbox"})
 
-# GitHub repo: only allow "owner/repo" with safe characters, no path traversal
-_REPO_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+# GitHub repo: allow names such as .github while rejecting URL dot segments.
+_REPO_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9._-]+")
 
 # Broker resource groups: the gh-runner-tmp prefix plus the ARM resource group
 # character set, up to 90 characters and not ending in a period.
@@ -219,6 +223,10 @@ _REQUEST_BUDGET_SECONDS = 160
 _MIN_PROVISION_SECONDS = 60
 _VM_RESERVE_SECONDS = 30
 _NETWORK_WAIT_SECONDS = 20
+_LEASE_SECONDS = 60
+# A stalled ARM call can outlive its blob lease. Leave enough time for the
+# request budget, one final dependency call and clock skew between workers.
+_IN_PROGRESS_SECONDS = _REQUEST_BUDGET_SECONDS + _LEASE_SECONDS + 10
 
 _REQUIRED_SETTINGS = (
     "ALLOWED_TENANT_ID",
@@ -235,10 +243,35 @@ _REQUIRED_SETTINGS = (
 )
 
 
+def _valid_storage_url(value):
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and bool(re.fullmatch(r"[a-zA-Z0-9.-]+", parsed.hostname or ""))
+        and not parsed.username
+        and parsed.password is None
+        and port in (None, 443)
+        and bool(re.fullmatch(r"/[a-z0-9-]{3,63}/?", parsed.path))
+        and not any(char in value for char in "?#@ \t\r\n")
+    )
+
+
 @lru_cache(maxsize=1)
 def _runner_config():
     values = {key: os.environ.get(key, "").strip() for key in _REQUIRED_SETTINGS}
+    repos = {repo.strip() for repo in values["ALLOWED_REPOS"].split(",") if repo.strip()}
+    values["ALLOWED_REPOS"] = (
+        {repo.lower() for repo in repos} if all(_valid_repo(repo) for repo in repos) else set()
+    )
     missing = sorted(key for key, value in values.items() if not value)
+    storage_url = os.environ.get("IDEMPOTENCY_STORAGE_URL", "").strip()
+    values["IDEMPOTENCY_STORAGE_URL"] = (
+        storage_url if _valid_storage_url(storage_url) else ""
+    )
     return values, missing
 
 
@@ -270,14 +303,12 @@ def _group_state(group):
     return ((properties and properties.provisioning_state) or "").lower()
 
 
-def _allowed_repo(repo, config):
-    # GitHub owner and repository names are case-insensitive.
-    allowed = {
-        value.strip().lower()
-        for value in config["ALLOWED_REPOS"].split(",")
-        if value.strip()
-    }
-    return repo.lower() in allowed
+def _valid_repo(repo):
+    return (
+        isinstance(repo, str)
+        and _REPO_RE.fullmatch(repo) is not None
+        and not repo.endswith(("/.", "/.."))
+    )
 
 
 def _idempotency_key(req):
@@ -295,6 +326,143 @@ def _request_fingerprint(repo, runner_name, resource_group, virtualization_flavo
         [repo.lower(), runner_name, resource_group, virtualization_flavor]
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+class _IdempotencyRecord:
+    """An Azure blob binds one key to a request and leases its provisioning slot."""
+
+    def __init__(self, credential, storage_url, key):
+        self.credential = credential
+        self.url = storage_url.rstrip("/") + "/" + hashlib.sha256(key.encode()).hexdigest()
+        self.lease_id = str(uuid4())
+
+    def _request(self, method, headers=None, **kwargs):
+        try:
+            token = self.credential.get_token("https://storage.azure.com/.default")
+            return requests.request(
+                method,
+                self.url,
+                headers={
+                    "Authorization": f"Bearer {token.token}",
+                    "x-ms-date": formatdate(usegmt=True),
+                    "x-ms-version": "2023-11-03",
+                    **(headers or {}),
+                },
+                timeout=(3, 5),
+                allow_redirects=False,
+                **kwargs,
+            )
+        except (AzureError, requests.RequestException) as error:
+            raise self._unavailable() from error
+
+    @staticmethod
+    def _unavailable():
+        return _BrokerFailure(503, "Idempotency storage is unavailable", 5)
+
+    @staticmethod
+    def in_progress():
+        return _BrokerFailure(503, "A request with this Idempotency-Key is in progress", 5)
+
+    @staticmethod
+    def _parse_record(response):
+        try:
+            record = response.json()
+        except (ValueError, TypeError):
+            raise _BrokerFailure(502, "Idempotency storage returned an invalid record") from None
+        resources = record.get("resources") if isinstance(record, dict) else None
+        if (
+            not isinstance(record, dict)
+            or not isinstance(record.get("fingerprint"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", record["fingerprint"])
+            or not isinstance(record.get("subnet"), str)
+            or not record["subnet"]
+            or not isinstance(record.get("accepted"), bool)
+            or type(record.get("busy_until")) is not int
+            or record["busy_until"] < 0
+            or not isinstance(resources, dict)
+            or any(
+                not isinstance(resources.get(key), str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", resources[key])
+                for key in ("vnet", "ip", "nic", "nsg")
+            )
+            or not isinstance(resources.get("vm"), str)
+            or not _NAME_RE.fullmatch(resources["vm"])
+        ):
+            raise _BrokerFailure(502, "Idempotency storage returned an invalid record")
+        return record
+
+    def reserve(self, initial):
+        response = self._request("GET")
+        if response.status_code == 200:
+            return self._parse_record(response)
+        if response.status_code != 404:
+            raise self._unavailable()
+        response = self._request(
+            "PUT",
+            headers={"If-None-Match": "*", "x-ms-blob-type": "BlockBlob"},
+            json=initial,
+        )
+        if response.status_code == 201:
+            return initial
+        if response.status_code in (409, 412):
+            return self.read()
+        raise self._unavailable()
+
+    def read(self):
+        response = self._request("GET")
+        if response.status_code != 200:
+            raise self._unavailable()
+        return self._parse_record(response)
+
+    def _lease_action(self, action, **headers):
+        return self._request(
+            "PUT", {"x-ms-lease-action": action, **headers}, params={"comp": "lease"}
+        )
+
+    @contextmanager
+    def lease(self, context):
+        response = self._lease_action(
+            "acquire",
+            **{
+                "x-ms-proposed-lease-id": self.lease_id,
+                "x-ms-lease-duration": str(_LEASE_SECONDS),
+            },
+        )
+        error_code = next(
+            (v for k, v in (response.headers or {}).items() if k.lower() == "x-ms-error-code"),
+            None,
+        )
+        if response.status_code == 409 and error_code in (
+            "LeaseAlreadyPresent", "LeaseIsBreakingAndCannotBeAcquired"
+        ):
+            raise self.in_progress()
+        if response.status_code != 201:
+            raise self._unavailable()
+        try:
+            yield
+        finally:
+            try:
+                if self._lease_action("release", **{"x-ms-lease-id": self.lease_id}).status_code != 200:
+                    _log_stage(context, "idempotency-lease-release-failed", logging.WARNING)
+            except _BrokerFailure:
+                _log_stage(context, "idempotency-lease-release-failed", logging.WARNING)
+
+    def renew(self):
+        response = self._lease_action("renew", **{"x-ms-lease-id": self.lease_id})
+        if response.status_code != 200:
+            raise self._unavailable()
+
+    def write(self, record, **changes):
+        response = self._request(
+            "PUT",
+            headers={"x-ms-blob-type": "BlockBlob", "x-ms-lease-id": self.lease_id},
+            json={**record, **changes},
+        )
+        if response.status_code != 201:
+            raise self._unavailable()
+
+    def accept(self, record):
+        self.write(record, accepted=True, busy_until=0)
 
 
 def _resource_names(config, idempotency_key=None):
@@ -655,7 +823,7 @@ def _parse_runner_request(req, config):
     runner_name = body.get("runner-name", "gh-runner-vm")
     resource_group = body.get("resource-group", config["RESOURCE_GROUP"])
     virtualization_flavor = body.get("virtualization-flavor", "hyperv")
-    if not isinstance(repo, str) or not _REPO_RE.fullmatch(repo):
+    if not _valid_repo(repo):
         raise ValueError("repo")
     if not _valid_resource_group(resource_group):
         raise ValueError("resource-group")
@@ -683,6 +851,10 @@ def _existing_runner(resource_client, compute, resource_group, vm_name, fingerpr
     if not _owned_by_broker(group):
         raise _BrokerFailure(
             409, "Resource group exists and is not owned by the runner broker"
+        )
+    if _group_state(group) == "deleting":
+        raise _BrokerFailure(
+            409, "Resource group is being deleted; use a new group or wait for deletion"
         )
     try:
         vm = compute.virtual_machines.get(resource_group, vm_name)
@@ -733,46 +905,55 @@ def _ensure_resource_group(resource_client, resource_group):
     return True
 
 
-def _create_network(network_client, resource_group, names, location, deadline):
+def _network_resource(operations, path, model, deadline, keyed, before_write):
+    if keyed:
+        # In particular, avoid re-PUTting a working VNet without its subnet
+        # in the body. A partial attempt may already have attached its NIC.
+        try:
+            existing = operations.get(*path)
+        except ResourceNotFoundError:
+            pass
+        else:
+            state = (getattr(existing, "provisioning_state", None) or "").lower()
+            if state == "succeeded":
+                return existing
+            if state not in ("failed", "canceled", "cancelled"):
+                raise _BrokerFailure(503, "An Azure network operation is still pending", 5)
+    before_write()
+    return _network_result(operations.begin_create_or_update(*path, model), deadline)
+
+
+def _create_network(
+    network_client, resource_group, names, location, deadline, subnet_name, keyed, before_write
+):
     """Create VNet, subnet, public IP, NSG and NIC; return the NIC."""
     vnet_name = names["vnet"]
-    subnet_name = os.environ.get("SUBNET_NAME", "default")
-
-    _network_result(
-        network_client.virtual_networks.begin_create_or_update(
-            resource_group,
-            vnet_name,
-            network_models.VirtualNetwork(
-                location=location,
-                address_space=network_models.AddressSpace(
-                    address_prefixes=["10.0.0.0/16"]
-                ),
-            ),
+    _network_resource(
+        network_client.virtual_networks,
+        (resource_group, vnet_name),
+        network_models.VirtualNetwork(
+            location=location,
+            address_space=network_models.AddressSpace(address_prefixes=["10.0.0.0/16"]),
         ),
-        deadline,
+        deadline, keyed, before_write,
     )
 
-    subnet = _network_result(
-        network_client.subnets.begin_create_or_update(
-            resource_group,
-            vnet_name,
-            subnet_name,
-            network_models.Subnet(address_prefix="10.0.0.0/24"),
-        ),
-        deadline,
+    subnet = _network_resource(
+        network_client.subnets,
+        (resource_group, vnet_name, subnet_name),
+        network_models.Subnet(address_prefix="10.0.0.0/24"),
+        deadline, keyed, before_write,
     )
 
-    public_ip = _network_result(
-        network_client.public_ip_addresses.begin_create_or_update(
-            resource_group,
-            names["ip"],
-            network_models.PublicIPAddress(
-                location=location,
-                public_ip_allocation_method="Static",
-                sku=network_models.PublicIPAddressSku(name="Standard"),
-            ),
+    public_ip = _network_resource(
+        network_client.public_ip_addresses,
+        (resource_group, names["ip"]),
+        network_models.PublicIPAddress(
+            location=location,
+            public_ip_allocation_method="Static",
+            sku=network_models.PublicIPAddressSku(name="Standard"),
         ),
-        deadline,
+        deadline, keyed, before_write,
     )
 
     # No inbound rules are added: the runner only needs OUTBOUND connectivity
@@ -782,39 +963,38 @@ def _create_network(network_client, resource_group, names, location, deadline):
     # unauthenticated attack surface (brute force, RDP CVEs). For the rare debug
     # session, use Azure Bastion / just-in-time VM access instead of a standing
     # inbound rule.
-    nsg = _network_result(
-        network_client.network_security_groups.begin_create_or_update(
-            resource_group,
-            names["nsg"],
-            network_models.NetworkSecurityGroup(location=location),
-        ),
-        deadline,
+    nsg = _network_resource(
+        network_client.network_security_groups,
+        (resource_group, names["nsg"]),
+        network_models.NetworkSecurityGroup(location=location),
+        deadline, keyed, before_write,
     )
 
-    return _network_result(
-        network_client.network_interfaces.begin_create_or_update(
-            resource_group,
-            names["nic"],
-            network_models.NetworkInterface(
-                location=location,
-                ip_configurations=[
-                    network_models.NetworkInterfaceIPConfiguration(
-                        name="ipconfig1",
-                        subnet=network_models.Subnet(id=subnet.id),
-                        public_ip_address=network_models.PublicIPAddress(
-                            id=public_ip.id
-                        ),
-                    )
-                ],
-                network_security_group=network_models.NetworkSecurityGroup(id=nsg.id),
-            ),
+    return _network_resource(
+        network_client.network_interfaces,
+        (resource_group, names["nic"]),
+        network_models.NetworkInterface(
+            location=location,
+            ip_configurations=[
+                network_models.NetworkInterfaceIPConfiguration(
+                    name="ipconfig1",
+                    subnet=network_models.Subnet(id=subnet.id),
+                    public_ip_address=network_models.PublicIPAddress(id=public_ip.id),
+                )
+            ],
+            network_security_group=network_models.NetworkSecurityGroup(id=nsg.id),
         ),
-        deadline,
+        deadline, keyed, before_write,
     )
 
 
-def _submit_vm(compute, resource_group, vm_name, vm_params, context):
+def _submit_vm(compute, resource_group, vm_name, vm_params, context, keyed, before_write):
     """Submit the VM without waiting; try Spot first when VM_USE_SPOT=true."""
+    options = {"polling": False}
+    if keyed:
+        # A timed-out PUT can still reach Compute after a subsequent GET saw
+        # no VM. Prevent either request from updating a VM the other created.
+        options["match_condition"] = MatchConditions.IfMissing
     regular_vm = compute_models.VirtualMachine(**vm_params)
     if os.environ.get("VM_USE_SPOT", "false").lower() == "true":
         # Built before the try below: a model error is a code bug and must not
@@ -826,18 +1006,27 @@ def _submit_vm(compute, resource_group, vm_name, vm_params, context):
             # -1 means pay up to on-demand price
             billing_profile=compute_models.BillingProfile(max_price=-1),
         )
+        _log_stage(context, "spot-attempt")
+        before_write()
         try:
-            _log_stage(context, "spot-attempt")
             compute.virtual_machines.begin_create_or_update(
-                resource_group, vm_name, spot_vm, polling=False
+                resource_group, vm_name, spot_vm, **options
             )
             return
         except HttpResponseError as spot_error:
+            if keyed and (
+                spot_error.status_code not in (400, 409)
+                or _arm_code(spot_error) not in (
+                    "SkuNotAvailable", "AllocationFailed", "ZonalAllocationFailed"
+                )
+            ):
+                raise
             _log_stage(
                 context, "spot-fallback", logging.WARNING, **_error_fields(spot_error)
             )
+    before_write()
     compute.virtual_machines.begin_create_or_update(
-        resource_group, vm_name, regular_vm, polling=False
+        resource_group, vm_name, regular_vm, **options
     )
 
 
@@ -851,48 +1040,130 @@ def _provision_runner(req, context, config, progress):
             context, 400, "Invalid Idempotency-Key header: use 1-128 of [A-Za-z0-9._:-]"
         )
     try:
-        repo, runner_name, resource_group, virtualization_flavor = (
-            _parse_runner_request(req, config)
-        )
+        runner_request = _parse_runner_request(req, config)
     except (ValueError, KeyError, TypeError, AttributeError):
         return _runner_response(
             context,
             400,
             "Invalid request body, repo, resource-group, runner-name or virtualization-flavor",
         )
-    if not _allowed_repo(repo, config):
+    repo, _, resource_group, _ = runner_request
+    if repo.lower() not in config["ALLOWED_REPOS"]:
         # The GitHub PAT may reach more repositories than the broker serves.
         _log_stage(context, "repo-rejected", logging.WARNING)
         return _runner_response(context, 403, "Repository is not allowed")
     names = _resource_names(config, idempotency_key)
-    context.update({"resource-group": resource_group, "vm": names["vm"]})
+    context["resource-group"] = resource_group
     _log_stage(
         context, "validated", resources=names, idempotent=idempotency_key is not None
     )
 
-    credential = _credential()
-    fingerprint = None
-    if idempotency_key is not None:
-        progress["idempotent"] = True
-        fingerprint = _request_fingerprint(
-            repo, runner_name, resource_group, virtualization_flavor
+    subnet_name = os.environ.get("SUBNET_NAME") or "default"
+    storage_url = config["IDEMPOTENCY_STORAGE_URL"]
+    if idempotency_key is not None and not storage_url:
+        return _runner_response(
+            context, 503, "Missing required app settings", missing=["IDEMPOTENCY_STORAGE_URL"]
         )
-        # A retry after an uncertain response: return the runner the first
-        # request created instead of fetching a new token and creating another.
-        context["stage"] = "idempotency"
-        if _existing_runner(
-            ResourceManagementClient(
-                credential, config["SUBSCRIPTION_ID"], **_arm_options()
-            ),
-            ComputeManagementClient(
-                credential, config["SUBSCRIPTION_ID"], **_arm_options()
-            ),
-            resource_group,
-            names["vm"],
-            fingerprint,
-        ):
+    credential = _credential()
+    if idempotency_key is None:
+        context["vm"] = names["vm"]
+        _create_runner(credential, config, runner_request, names, subnet_name,
+                       deadline, context, progress)
+        return _accepted_response(context, names)
+
+    context["stage"] = "idempotency"
+    progress["idempotent"] = True
+    fingerprint = _request_fingerprint(*runner_request)
+    reservation = _IdempotencyRecord(credential, storage_url, idempotency_key)
+    record = reservation.reserve({
+        "fingerprint": fingerprint,
+        "resources": names,
+        "subnet": subnet_name,
+        "accepted": False,
+        "busy_until": 0,
+    })
+    if record["fingerprint"] != fingerprint:
+        raise _BrokerFailure(
+            409, "Idempotency-Key was already used for a different request"
+        )
+    context["vm"] = record["resources"]["vm"]
+    if record["accepted"]:
+        _log_stage(context, "replayed")
+        return _accepted_response(context, record["resources"], replayed=True)
+
+    with reservation.lease(context):
+        # Another worker may have finished or the storage policy may have
+        # expired an old record between the read and the lease acquisition.
+        record = reservation.read()
+        if record["fingerprint"] != fingerprint:
+            raise _BrokerFailure(
+                409, "Idempotency-Key was already used for a different request"
+            )
+        names = record["resources"]
+        context["vm"] = names["vm"]
+        if record["accepted"]:
             _log_stage(context, "replayed")
             return _accepted_response(context, names, replayed=True)
+        if record["busy_until"] > time():
+            raise reservation.in_progress()
+        # Refresh Last-Modified before provisioning. Lease operations alone
+        # do not extend blob lifecycle retention or guard a stalled ARM call.
+        reservation.write(record, busy_until=int(time()) + _IN_PROGRESS_SECONDS)
+        try:
+            resource_client = ResourceManagementClient(
+                credential, config["SUBSCRIPTION_ID"], **_arm_options()
+            )
+            compute = ComputeManagementClient(
+                credential, config["SUBSCRIPTION_ID"], **_arm_options()
+            )
+            # ARM may have accepted a VM before a previous worker timed out.
+            replayed = _existing_runner(
+                resource_client, compute, resource_group, names["vm"], fingerprint
+            )
+            if not replayed:
+                try:
+                    _create_runner(
+                        credential, config, runner_request, names, record["subnet"],
+                        deadline, context, progress, reservation, fingerprint,
+                    )
+                except HttpResponseError as error:
+                    # A delayed first submission can win the create-only PUT.
+                    if (
+                        context["stage"] != "vm" or error.status_code != 412
+                        or not _existing_runner(
+                            resource_client, compute, resource_group, names["vm"], fingerprint
+                        )
+                    ):
+                        raise
+                    replayed = True
+        except Exception:
+            try:
+                reservation.write(record, busy_until=0)
+            except _BrokerFailure:
+                _log_stage(context, "idempotency-claim-clear-failed", logging.WARNING)
+            raise
+        # The VM exists or was submitted. Preserve the pending claim if this
+        # write is uncertain so we never overwrite an accepted record.
+        progress["resources"] = names
+        context["stage"] = "idempotency"
+        reservation.accept(record)
+        if replayed:
+            _log_stage(context, "replayed")
+        return _accepted_response(context, names, replayed=replayed)
+
+
+def _create_runner(
+    credential, config, runner_request, names, subnet_name, deadline, context, progress,
+    reservation=None, fingerprint=None,
+):
+    repo, runner_name, resource_group, virtualization_flavor = runner_request
+
+    def before_write():
+        if reservation is not None:
+            reservation.renew()
+            if monotonic() >= deadline:
+                raise _BrokerFailure(504, "Request budget exhausted before an Azure write", 5)
+        progress["resources"] = names
 
     context["stage"] = "pat"
     kv_client = SecretClient(
@@ -924,9 +1195,8 @@ def _provision_runner(req, context, config, progress):
         credential, config["SUBSCRIPTION_ID"], **_arm_options()
     )
     reused = _ensure_resource_group(resource_client, resource_group)
-    # From here on, Azure may hold resources for this request.
-    progress["resources"] = names
     if not reused:
+        before_write()
         resource_client.resource_groups.create_or_update(
             resource_group,
             ResourceGroup(location=location, tags={RG_OWNER_TAG: RG_OWNER_TAG_VALUE}),
@@ -937,7 +1207,10 @@ def _provision_runner(req, context, config, progress):
     network_client = NetworkManagementClient(
         credential, config["SUBSCRIPTION_ID"], polling_interval=1, **_arm_options()
     )
-    nic = _create_network(network_client, resource_group, names, location, deadline)
+    keyed = reservation is not None
+    nic = _create_network(
+        network_client, resource_group, names, location, deadline, subnet_name, keyed, before_write
+    )
     _log_stage(context, "created")
 
     context["stage"] = "vm"
@@ -946,6 +1219,7 @@ def _provision_runner(req, context, config, progress):
     )
     # Keyword arguments shared by the regular and the spot VirtualMachine, so
     # the spot fallback sends none of the spot-only fields.
+    disk_name = {"name": f"{names['vm']}-os"} if keyed else {}
     vm_params = {
         "location": location,
         "hardware_profile": compute_models.HardwareProfile(vm_size=config["VM_SIZE"]),
@@ -960,6 +1234,7 @@ def _provision_runner(req, context, config, progress):
                 managed_disk=compute_models.ManagedDiskParameters(
                     storage_account_type="Premium_LRS"
                 ),
+                **disk_name,
             ),
         ),
         "os_profile": compute_models.OSProfile(
@@ -975,9 +1250,8 @@ def _provision_runner(req, context, config, progress):
     }
     if fingerprint is not None:
         vm_params["tags"] = {VM_REQUEST_TAG: fingerprint}
-    _submit_vm(compute, resource_group, names["vm"], vm_params, context)
+    _submit_vm(compute, resource_group, names["vm"], vm_params, context, keyed, before_write)
     _log_stage(context, "submitted")
-    return _accepted_response(context, names)
 
 
 # --- runner_status --------------------------------------------------------------
