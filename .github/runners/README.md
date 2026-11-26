@@ -22,6 +22,11 @@ self-hosted runners using [Tart](https://tart.run) virtualisation.
 GITHUB_REPO=myorg/myrepo ./create-macos-tart-runner.sh
 ```
 
+## Offline provisioning test
+
+From the repository root, run `bash .github/runners/test-prepare-tart-base.sh`
+to check Azure CLI cask provisioning with fake Homebrew and `az` commands.
+
 ---
 
 ## Networking

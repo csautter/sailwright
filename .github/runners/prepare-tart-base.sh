@@ -31,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ─── Renovate-managed version pins ────────────────────────────────────────────
 # renovate: datasource=github-releases depName=actions/runner versioning=loose
 DEFAULT_RUNNER_VERSION="2.338.2"
-# renovate: datasource=custom.homebrew-formula depName=azure-cli packageName=azure-cli versioning=loose
+# renovate: datasource=custom.homebrew-cask depName=azure-cli packageName=azure-cli versioning=loose
 AZURE_CLI_VERSION="2.88.0"
 # renovate: datasource=custom.homebrew-formula depName=gh packageName=gh versioning=loose
 GH_CLI_VERSION="2.102.0"
@@ -413,7 +413,7 @@ fi
 PROVISION
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
-brew_install "Azure CLI"   az                        azure-cli             "${AZURE_CLI_VERSION}"
+brew_install "Azure CLI"   az                        azure-cli             "${AZURE_CLI_VERSION}"    ""  --cask
 brew_install "GitHub CLI"  gh                        gh                    "${GH_CLI_VERSION}"
 brew_install "Packer"      packer                    hashicorp/tap/packer  "${PACKER_VERSION}"       hashicorp/tap
 brew_install "Go"          go                        go                    "${GO_VERSION}"
