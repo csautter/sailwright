@@ -1104,44 +1104,45 @@ def _provision_runner(req, context, config, progress):
         if record["accepted"]:
             _log_stage(context, "replayed")
             return _accepted_response(context, names, replayed=True)
-        if record["busy_until"] > time():
-            raise reservation.in_progress()
-        # Refresh Last-Modified before provisioning. Lease operations alone
-        # do not extend blob lifecycle retention or guard a stalled ARM call.
-        reservation.write(record, busy_until=int(time()) + _IN_PROGRESS_SECONDS)
-        try:
-            resource_client = ResourceManagementClient(
-                credential, config["SUBSCRIPTION_ID"], **_arm_options()
-            )
-            compute = ComputeManagementClient(
-                credential, config["SUBSCRIPTION_ID"], **_arm_options()
-            )
-            # ARM may have accepted a VM before a previous worker timed out.
-            replayed = _existing_runner(
-                resource_client, compute, resource_group, names["vm"], fingerprint
-            )
-            if not replayed:
-                try:
-                    _create_runner(
-                        credential, config, runner_request, names, record["subnet"],
-                        deadline, context, progress, reservation, fingerprint,
-                    )
-                except HttpResponseError as error:
-                    # A delayed first submission can win the create-only PUT.
-                    if (
-                        context["stage"] != "vm" or error.status_code != 412
-                        or not _existing_runner(
-                            resource_client, compute, resource_group, names["vm"], fingerprint
-                        )
-                    ):
-                        raise
-                    replayed = True
-        except Exception:
+        resource_client = ResourceManagementClient(
+            credential, config["SUBSCRIPTION_ID"], **_arm_options()
+        )
+        compute = ComputeManagementClient(
+            credential, config["SUBSCRIPTION_ID"], **_arm_options()
+        )
+        # ARM may have accepted a VM before a previous worker timed out.
+        # Recover it with reads even while the provisioning claim is active.
+        replayed = _existing_runner(
+            resource_client, compute, resource_group, names["vm"], fingerprint
+        )
+        if not replayed:
+            now = time()
+            if record["busy_until"] > now:
+                raise reservation.in_progress()
+            # Refresh Last-Modified before provisioning. Lease operations alone
+            # do not extend blob retention or guard an uncertain ARM write.
+            reservation.write(record, busy_until=int(now) + _IN_PROGRESS_SECONDS)
             try:
-                reservation.write(record, busy_until=0)
-            except _BrokerFailure:
-                _log_stage(context, "idempotency-claim-clear-failed", logging.WARNING)
-            raise
+                _create_runner(
+                    credential, config, runner_request, names, record["subnet"],
+                    deadline, context, progress, reservation, fingerprint,
+                )
+            except Exception as error:
+                if "resources" not in progress:
+                    try:
+                        reservation.write(record, busy_until=0)
+                    except _BrokerFailure:
+                        _log_stage(context, "idempotency-claim-clear-failed", logging.WARNING)
+                # A delayed first submission can win the create-only PUT.
+                if (
+                    context["stage"] != "vm" or not isinstance(error, HttpResponseError)
+                    or error.status_code != 412
+                    or not _existing_runner(
+                        resource_client, compute, resource_group, names["vm"], fingerprint
+                    )
+                ):
+                    raise
+                replayed = True
         # The VM exists or was submitted. Preserve the pending claim if this
         # write is uncertain so we never overwrite an accepted record.
         progress["resources"] = names

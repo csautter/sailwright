@@ -209,11 +209,13 @@ A retry after acceptance returns `202` with the original `resources` and
 `"replayed": true` without fetching a new registration token. Use `runner_status`
 to check the VM's current state, including after a deletion.
 
-For an uncertain Azure response, the broker looks up the VM using the saved
-name and verifies its `broker-request` fingerprint tag. If the VM has yet to
-appear, the broker waits for any in-progress attempt, then resumes with the
-saved names. It reuses successful network resources and waits for pending
-network writes. The VM PUT uses `If-None-Match: *` and a stable OS disk name
+After an uncertain Azure write, a matching retry looks up the VM by its saved
+name and checks its `broker-request` fingerprint tag. While the claim is active,
+a retry with no visible VM returns `503` with `Retry-After` before fetching a
+registration token or writing to ARM. Once the claim expires, the broker checks
+again and can resume with the saved names. It reuses successful network
+resources and waits for pending network writes. The VM PUT uses
+`If-None-Match: *` and a stable OS disk name
 to protect against a late acceptance from an earlier submission. Use a new
 key for each new runner, including after cleanup. Retry the same runner within
 seven days of the last reservation write. Azure's background lifecycle policy

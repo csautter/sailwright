@@ -1040,22 +1040,78 @@ class RequestRunnerTest(unittest.TestCase):
         function_app.requests.post.assert_called_once()
         self.compute.virtual_machines.begin_create_or_update.assert_called_once()
 
-    def test_retry_after_vm_acceptance_with_lost_response_does_not_provision_again(self):
-        def accept_then_timeout(group, name, vm, **kwargs):
-            self._vm_exists(vm.tags)
-            raise ServiceResponseError("read timeout")
-
+    def test_retries_wait_for_an_accepted_vm_that_is_not_yet_visible(self):
         key = {"Idempotency-Key": "k"}
         vm_put = self.compute.virtual_machines.begin_create_or_update
-        vm_put.side_effect = accept_then_timeout
-        first = self._request_runner(key)
+        vm_put.side_effect = ServiceResponseError("read timeout")
+        with mock.patch.object(function_app, "time", return_value=1000):
+            first = self._request_runner(key)
+            self.resources.resource_groups.get.side_effect = None
+            self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
+            self.compute.virtual_machines.get.side_effect = ResourceNotFoundError()
+            pending = self._request_runner(key)
+            self.assertEqual(pending.status_code, 503)
+            self.assertEqual(pending.headers["Retry-After"], "5")
+            self.assertNotIn("cleanup-required", json.loads(pending.body))
+            names = json.loads(first.body)["resources"]
+            self.compute.virtual_machines.get.assert_called_once_with(
+                "gh-runner-tmp-1-hv", names["vm"]
+            )
+            self._vm_exists(vm_put.call_args.args[-1].tags)
+            retry = self._request_runner(key)
+
         self.assertEqual(first.status_code, 503)
-        retry = self._request_runner(key)
         self.assertEqual(retry.status_code, 202)
         self.assertTrue(json.loads(retry.body)["replayed"])
-        self.assertEqual(json.loads(first.body)["resources"], json.loads(retry.body)["resources"])
+        self.assertEqual(names, json.loads(retry.body)["resources"])
         vm_put.assert_called_once()
         self.network.virtual_networks.begin_create_or_update.assert_called_once()
+        function_app.requests.post.assert_called_once()
+
+    def test_retry_does_not_repeat_an_unobservable_network_write(self):
+        key = {"Idempotency-Key": "delayed-vnet"}
+        self.resources.resource_groups.get.side_effect = None
+        self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
+        self.compute.virtual_machines.get.side_effect = ResourceNotFoundError()
+        vnet = self.network.virtual_networks
+        vnet.begin_create_or_update.side_effect = ServiceResponseError("read timeout")
+        with mock.patch.object(function_app, "time", return_value=1000) as clock:
+            first = self._request_runner(key)
+            self.assertEqual(first.status_code, 503)
+            self.assertTrue(json.loads(first.body)["cleanup-required"])
+            token_calls = function_app.requests.post.call_count
+            pending = self._request_runner(key)
+            self.assertEqual(pending.status_code, 503)
+            self.assertEqual(pending.headers["Retry-After"], "5")
+            self.assertNotIn("cleanup-required", json.loads(pending.body))
+            vnet.begin_create_or_update.assert_called_once()
+            self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+            self.assertEqual(function_app.requests.post.call_count, token_calls)
+
+            clock.return_value += function_app._IN_PROGRESS_SECONDS
+            vnet.get.side_effect = None
+            vnet.get.return_value.provisioning_state = "Succeeded"
+            resumed = self._request_runner(key)
+        self.assertEqual(resumed.status_code, 202)
+        names = json.loads(first.body)["resources"]
+        self.assertEqual(json.loads(resumed.body)["resources"], names)
+        vnet.begin_create_or_update.assert_called_once()
+        self.assertEqual(vnet.get.call_args.args, ("gh-runner-tmp-1-hv", names["vnet"]))
+        self.compute.virtual_machines.begin_create_or_update.assert_called_once()
+
+    def test_failure_before_an_arm_write_allows_an_immediate_keyed_retry(self):
+        key = {"Idempotency-Key": "pre-write-failure"}
+        self.secrets.get_secret.side_effect = ServiceRequestError()
+        with mock.patch.object(function_app, "time", return_value=1000):
+            first = self._request_runner(key)
+            self.assertEqual(first.status_code, 503)
+            self.assertEqual(first.headers["Retry-After"], "5")
+            self.assertNotIn("cleanup-required", json.loads(first.body))
+            self.resources.resource_groups.create_or_update.assert_not_called()
+            function_app.requests.post.assert_not_called()
+            self.secrets.get_secret.side_effect = None
+            self.assertEqual(self._request_runner(key).status_code, 202)
+        self.compute.virtual_machines.begin_create_or_update.assert_called_once()
         function_app.requests.post.assert_called_once()
 
     def test_keyed_spot_capacity_rejection_can_fall_back_to_regular_vm(self):
@@ -1077,7 +1133,10 @@ class RequestRunnerTest(unittest.TestCase):
         vnet_put = self.network.virtual_networks.begin_create_or_update
         self.compute.virtual_machines.get.side_effect = ResourceNotFoundError()
         vm_put.side_effect = ServiceResponseError("read timeout")
-        with self.assertLogs(level="ERROR"):
+        with (
+            self.assertLogs(level="ERROR"),
+            mock.patch.object(function_app, "time", return_value=1000),
+        ):
             first = self._request_runner(key)
         first_body = json.loads(first.body)
         self.assertEqual(first.status_code, 503)
@@ -1091,7 +1150,10 @@ class RequestRunnerTest(unittest.TestCase):
         self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
         self.network.virtual_networks.get.side_effect = None
         self.network.virtual_networks.get.return_value.provisioning_state = "Succeeded"
-        second = self._request_runner(key)
+        with mock.patch.object(
+            function_app, "time", return_value=1000 + function_app._IN_PROGRESS_SECONDS
+        ):
+            second = self._request_runner(key)
 
         self.assertEqual(second.status_code, 202)
         self.assertEqual(json.loads(second.body)["resources"], first_body["resources"])
@@ -1102,6 +1164,7 @@ class RequestRunnerTest(unittest.TestCase):
         vnet_put.assert_called_once()
         self.assertEqual(vnet_put.call_args.args[1], first_body["resources"]["vnet"])
         self.resources.resource_groups.create_or_update.assert_called_once()
+        self.assertEqual(function_app.requests.post.call_count, 2)
 
     def test_recovery_waits_for_an_existing_network_write(self):
         self.resources.resource_groups.get.side_effect = None
