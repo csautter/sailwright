@@ -559,6 +559,8 @@ class RequestRunnerTest(unittest.TestCase):
                 if status == 429:
                     self.assertEqual(response.headers["Retry-After"], "90")
                 self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+                self.resources.resource_groups.create_or_update.assert_not_called()
+                self.network.virtual_networks.begin_create_or_update.assert_not_called()
 
     def test_github_invalid_response(self):
         for body in (None, {}, {"token": None}, {"token": ""}, []):
@@ -987,6 +989,7 @@ class RequestRunnerTest(unittest.TestCase):
         self.resources.resource_groups.create_or_update.assert_not_called()
         self.network.virtual_networks.begin_create_or_update.assert_not_called()
         self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+        function_app.requests.post.assert_not_called()
 
     def test_guard_survives_lease_expiry_during_arm_write(self):
         key = {"Idempotency-Key": "expired"}
@@ -1009,7 +1012,7 @@ class RequestRunnerTest(unittest.TestCase):
             self.assertEqual(second.headers["Retry-After"], "5")
             self.assertNotIn("cleanup-required", json.loads(second.body))
             group_put.assert_called_once()
-            function_app.requests.post.assert_called_once()
+            function_app.requests.post.assert_not_called()
             self.network.virtual_networks.begin_create_or_update.assert_not_called()
 
             clock.return_value += function_app._IN_PROGRESS_SECONDS
@@ -1079,14 +1082,14 @@ class RequestRunnerTest(unittest.TestCase):
             first = self._request_runner(key)
             self.assertEqual(first.status_code, 503)
             self.assertTrue(json.loads(first.body)["cleanup-required"])
-            token_calls = function_app.requests.post.call_count
+            function_app.requests.post.assert_not_called()
             pending = self._request_runner(key)
             self.assertEqual(pending.status_code, 503)
             self.assertEqual(pending.headers["Retry-After"], "5")
             self.assertNotIn("cleanup-required", json.loads(pending.body))
             vnet.begin_create_or_update.assert_called_once()
             self.compute.virtual_machines.begin_create_or_update.assert_not_called()
-            self.assertEqual(function_app.requests.post.call_count, token_calls)
+            function_app.requests.post.assert_not_called()
 
             clock.return_value += function_app._IN_PROGRESS_SECONDS
             vnet.get.side_effect = None
@@ -1098,6 +1101,7 @@ class RequestRunnerTest(unittest.TestCase):
         vnet.begin_create_or_update.assert_called_once()
         self.assertEqual(vnet.get.call_args.args, ("gh-runner-tmp-1-hv", names["vnet"]))
         self.compute.virtual_machines.begin_create_or_update.assert_called_once()
+        function_app.requests.post.assert_called_once()
 
     def test_failure_before_an_arm_write_allows_an_immediate_keyed_retry(self):
         key = {"Idempotency-Key": "pre-write-failure"}
@@ -1167,18 +1171,60 @@ class RequestRunnerTest(unittest.TestCase):
         self.assertEqual(function_app.requests.post.call_count, 2)
 
     def test_recovery_waits_for_an_existing_network_write(self):
+        key = {"Idempotency-Key": "pending-network"}
         self.resources.resource_groups.get.side_effect = None
         self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
         self.compute.virtual_machines.get.side_effect = ResourceNotFoundError()
         vnet = self.network.virtual_networks
-        vnet.get.side_effect = None
-        vnet.get.return_value.provisioning_state = "Updating"
-        response = self._request_runner({"Idempotency-Key": "pending-network"})
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.headers["Retry-After"], "5")
-        self.assertNotIn("cleanup-required", json.loads(response.body))
-        vnet.begin_create_or_update.assert_not_called()
+        poller = vnet.begin_create_or_update.return_value
+        poller.done.return_value = False
+        with mock.patch.object(function_app, "time", return_value=1000) as clock:
+            self.assertEqual(self._request_runner(key).status_code, 504)
+            clock.return_value += function_app._IN_PROGRESS_SECONDS
+            vnet.get.side_effect = None
+            vnet.get.return_value.provisioning_state = "Updating"
+            token_calls = function_app.requests.post.call_count
+            for _ in range(2):
+                response = self._request_runner(key)
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.headers["Retry-After"], "5")
+                self.assertEqual(json.loads(response.body)["stage"], "network")
+                self.assertNotIn("cleanup-required", json.loads(response.body))
+                self.assertEqual(function_app.requests.post.call_count, token_calls)
+        function_app.requests.post.assert_not_called()
+        vnet.begin_create_or_update.assert_called_once()
         self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+
+    def test_checks_claim_and_budget_after_network_recovery_before_token_post(self):
+        self.resources.resource_groups.get.side_effect = None
+        self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
+        self.compute.virtual_machines.get.side_effect = ResourceNotFoundError()
+        for operations in (
+            self.network.virtual_networks,
+            self.network.subnets,
+            self.network.public_ip_addresses,
+            self.network.network_security_groups,
+        ):
+            operations.get.side_effect = None
+            operations.get.return_value.provisioning_state = "Succeeded"
+
+        for case, status in (("lease", 503), ("budget", 504)):
+            with self.subTest(case=case), mock.patch.object(
+                function_app, "monotonic", return_value=0
+            ) as clock:
+                def check_nic(*args):
+                    self.storage.reject_renewal = case == "lease"
+                    if case == "budget":
+                        clock.return_value = 110
+                    return types.SimpleNamespace(provisioning_state="Succeeded", id="nic")
+
+                self.network.network_interfaces.get.side_effect = check_nic
+                response = self._request_runner({"Idempotency-Key": case})
+                self.assertEqual(response.status_code, status)
+                self.assertEqual(response.headers["Retry-After"], "5")
+                self.assertNotIn("cleanup-required", json.loads(response.body))
+                function_app.requests.post.assert_not_called()
+                self.compute.virtual_machines.begin_create_or_update.assert_not_called()
 
     def test_same_key_with_any_different_request_field_conflicts(self):
         key = {"Idempotency-Key": "conflict"}

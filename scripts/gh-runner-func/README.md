@@ -113,14 +113,18 @@ before submitting again, or retry with the same `Idempotency-Key`.
 **What the endpoint does**
 
 1. Validates request and caller identity.
-2. Retrieves `github-runner-pat` from Key Vault.
-3. Calls `POST https://api.github.com/repos/{repo}/actions/runners/registration-token` to obtain a short-lived runner token.
-4. Loads and parameterises `runner-setup.ps1` with the token, repo URL, and virtualization flavor; base64-encodes it as VM `custom_data`.
-5. Creates (or reuses) the resource group in `LOCATION`.
-6. Provisions a VNet (`10.0.0.0/16`), subnet, public IP, NSG (no inbound rules), and NIC.
-7. Creates the VM using the image referenced by `CUSTOM_IMAGE_ID` + `-` + `virtualization-flavor`.
-8. If `VM_USE_SPOT=true`, first attempts a spot VM; an ARM error on the initial submission triggers an on-demand fallback. Failures after acceptance are reported by `runner_status`.
-9. The image's `AzureProvisioning` startup task runs the injected PowerShell
+2. Retrieves the GitHub PAT and VM admin password from Key Vault.
+3. Creates or reuses the resource group in `LOCATION` and provisions a VNet
+   (`10.0.0.0/16`), subnet, public IP, NSG (no inbound rules), and NIC.
+4. Calls `POST https://api.github.com/repos/{repo}/actions/runners/registration-token`
+   to obtain a short-lived token. Keyed requests wait until the network is
+   ready and check the lease and remaining budget before calling GitHub.
+   Requests without a key obtain the token before creating Azure resources.
+5. Loads `runner-setup.ps1` with the token, repo URL, and virtualization flavor
+   and base64-encodes it as VM `custom_data`.
+6. Creates the VM using the image referenced by `CUSTOM_IMAGE_ID` + `-` + `virtualization-flavor`.
+7. If `VM_USE_SPOT=true`, first attempts a spot VM; an ARM error on the initial submission triggers an on-demand fallback. Failures after acceptance are reported by `runner_status`.
+8. The image's `AzureProvisioning` startup task runs the injected PowerShell
    script as `C:\AzureData\CustomData.ps1`. For Hyper-V, setup enables the role as
    needed and schedules the same script to continue after any required reboot.
    It configures Hyper-V networking before registering the runner.
@@ -184,7 +188,8 @@ the managed identity endpoint and GitHub, and 10 s for ARM.
 Everything before the VM submission shares a 160 s request budget, which keeps
 the request under the ~230 s Function App front-end limit. Resource creation
 only starts with at least 60 s of budget left. Network pollers wait at most 20 s
-each, keeping 30 s for the VM submission. VM provisioning is asynchronous.
+each, keeping 30 s for the VM submission and, for keyed requests, another 26 s
+for GitHub token retrieval. VM provisioning is asynchronous.
 
 Without an `Idempotency-Key`, a retry of `request_runner` creates new
 resources; it is **not idempotent**. After an uncertain response or network

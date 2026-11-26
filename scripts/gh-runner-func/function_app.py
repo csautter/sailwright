@@ -218,10 +218,12 @@ def _credential():
 # The Function App frontend aborts HTTP requests after about 230 s. Everything up
 # to the VM submission must finish within _REQUEST_BUDGET_SECONDS. Resource
 # creation only starts with at least _MIN_PROVISION_SECONDS left, and network
-# waits leave _VM_RESERVE_SECONDS for the VM submission (and its Spot fallback).
+# waits leave time for the VM submission (and its Spot fallback).
 _REQUEST_BUDGET_SECONDS = 160
 _MIN_PROVISION_SECONDS = 60
 _VM_RESERVE_SECONDS = 30
+# Three GitHub attempts, each with 3 s connect and 5 s read timeouts, plus backoff.
+_GITHUB_TOKEN_RESERVE_SECONDS = 26
 _NETWORK_WAIT_SECONDS = 20
 _LEASE_SECONDS = 60
 # A stalled ARM call can outlive its blob lease. Leave enough time for the
@@ -783,6 +785,18 @@ def _github_token(pat, repo, context):
         sleep(0.5 * 2**attempt)
 
 
+def _registration_data(pat, repo, virtualization_flavor, context):
+    context["stage"] = "github-token"
+    runner_token = _github_token(pat, repo, context)
+    _log_stage(context, "acquired")
+
+    context["stage"] = "bootstrap"
+    script = load_powershell_script(
+        runner_token, f"https://github.com/{repo}", virtualization_flavor
+    )
+    return base64.b64encode(script.encode("utf-8")).decode("utf-8")
+
+
 @app.route(
     route="request_runner", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"]
 )
@@ -1128,7 +1142,7 @@ def _provision_runner(req, context, config, progress):
                     deadline, context, progress, reservation, fingerprint,
                 )
             except Exception as error:
-                if "resources" not in progress:
+                if not progress.get("arm_write_pending"):
                     try:
                         reservation.write(record, busy_until=0)
                     except _BrokerFailure:
@@ -1158,12 +1172,14 @@ def _create_runner(
     reservation=None, fingerprint=None,
 ):
     repo, runner_name, resource_group, virtualization_flavor = runner_request
+    keyed = reservation is not None
 
     def before_write():
-        if reservation is not None:
+        if keyed:
             reservation.renew()
             if monotonic() >= deadline:
                 raise _BrokerFailure(504, "Request budget exhausted before an Azure write", 5)
+            progress["arm_write_pending"] = True
         progress["resources"] = names
 
     context["stage"] = "pat"
@@ -1172,15 +1188,8 @@ def _create_runner(
     )
     pat = _get_secret(kv_client, "github-runner-pat", context)
     _log_stage(context, "retrieved")
-    context["stage"] = "github-token"
-    runner_token = _github_token(pat, repo, context)
-    _log_stage(context, "acquired")
-
-    context["stage"] = "bootstrap"
-    script = load_powershell_script(
-        runner_token, f"https://github.com/{repo}", virtualization_flavor
-    )
-    custom_data = base64.b64encode(script.encode("utf-8")).decode("utf-8")
+    if not keyed:
+        custom_data = _registration_data(pat, repo, virtualization_flavor, context)
     context["stage"] = "admin-password"
     admin_password = _get_secret(kv_client, "github-runner-vm-admin-pw", context)
     _log_stage(context, "retrieved")
@@ -1202,17 +1211,28 @@ def _create_runner(
             resource_group,
             ResourceGroup(location=location, tags={RG_OWNER_TAG: RG_OWNER_TAG_VALUE}),
         )
+        progress["arm_write_pending"] = False
     _log_stage(context, "ready", reused=reused)
 
     context["stage"] = "network"
     network_client = NetworkManagementClient(
         credential, config["SUBSCRIPTION_ID"], polling_interval=1, **_arm_options()
     )
-    keyed = reservation is not None
+    network_deadline = deadline - _GITHUB_TOKEN_RESERVE_SECONDS if keyed else deadline
     nic = _create_network(
-        network_client, resource_group, names, location, deadline, subnet_name, keyed, before_write
+        network_client, resource_group, names, location, network_deadline,
+        subnet_name, keyed, before_write,
     )
+    progress["arm_write_pending"] = False
     _log_stage(context, "created")
+
+    if keyed:
+        # A pending network operation must finish before requesting a token.
+        context["stage"] = "github-token"
+        reservation.renew()
+        if deadline - monotonic() < _GITHUB_TOKEN_RESERVE_SECONDS + _VM_RESERVE_SECONDS:
+            raise _BrokerFailure(504, "Request budget exhausted before getting a runner token", 5)
+        custom_data = _registration_data(pat, repo, virtualization_flavor, context)
 
     context["stage"] = "vm"
     compute = ComputeManagementClient(
