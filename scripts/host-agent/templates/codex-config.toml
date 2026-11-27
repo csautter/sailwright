@@ -1,0 +1,13 @@
+# Approval-preserving Codex configuration template for sailwright-host-agent.
+# Bypass and unrestricted modes ("never", "danger-full-access") are forbidden.
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+project_doc_max_bytes = 0
+
+[sandbox_workspace_write]
+network_access = false
+exclude_tmpdir_env_var = false
+exclude_slash_tmp = false
+
+[mcp_servers]

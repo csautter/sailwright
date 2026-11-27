@@ -1,0 +1,213 @@
+# Approval-preserving Codex execpolicy rules for sailwright-host-agent.
+# Host-changing operations, privilege escalation, bypass flags, force-push,
+# foreign/original VM mutations, and credential-store queries are forbidden by default.
+
+prefix_rule(
+    pattern = ["sailwright", "provision", "local"],
+    decision = "forbidden",
+    justification = "Host-changing operation requires --approve-host-changes and explicit human approval.",
+)
+
+prefix_rule(
+    pattern = ["./sailwright", "provision", "local"],
+    decision = "forbidden",
+    justification = "Host-changing operation requires --approve-host-changes and explicit human approval.",
+)
+
+prefix_rule(
+    pattern = ["sailwright", "install"],
+    decision = "forbidden",
+    justification = "Host-changing operation requires --approve-host-changes and explicit human approval.",
+)
+
+prefix_rule(
+    pattern = ["./sailwright", "install"],
+    decision = "forbidden",
+    justification = "Host-changing operation requires --approve-host-changes and explicit human approval.",
+)
+
+prefix_rule(
+    pattern = ["sailwright", "self-update"],
+    decision = "forbidden",
+    justification = "Host-changing operation requires --approve-host-changes and explicit human approval.",
+)
+
+prefix_rule(
+    pattern = ["./sailwright", "self-update"],
+    decision = "forbidden",
+    justification = "Host-changing operation requires --approve-host-changes and explicit human approval.",
+)
+
+prefix_rule(
+    pattern = ["sailwright", "destroy", "all"],
+    decision = "forbidden",
+    justification = "Bulk VM destruction can touch foreign or default VMs.",
+)
+
+prefix_rule(
+    pattern = ["./sailwright", "destroy", "all"],
+    decision = "forbidden",
+    justification = "Bulk VM destruction can touch foreign or default VMs.",
+)
+
+prefix_rule(
+    pattern = ["sailwright", "stop", "all"],
+    decision = "forbidden",
+    justification = "Bulk VM stop can touch foreign or default VMs.",
+)
+
+prefix_rule(
+    pattern = ["./sailwright", "stop", "all"],
+    decision = "forbidden",
+    justification = "Bulk VM stop can touch foreign or default VMs.",
+)
+
+prefix_rule(
+    pattern = ["sudo"],
+    decision = "forbidden",
+    justification = "Privilege escalation requires explicit human approval.",
+)
+
+prefix_rule(
+    pattern = ["su"],
+    decision = "forbidden",
+    justification = "Privilege escalation requires explicit human approval.",
+)
+
+prefix_rule(
+    pattern = ["doas"],
+    decision = "forbidden",
+    justification = "Privilege escalation requires explicit human approval.",
+)
+
+prefix_rule(
+    pattern = ["runas"],
+    decision = "forbidden",
+    justification = "Windows administrator elevation requires --approve-host-changes and explicit human approval.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", "--force"],
+    decision = "forbidden",
+    justification = "Only regular fast-forward pushes to the assigned results ref are allowed.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", "-f"],
+    decision = "forbidden",
+    justification = "Only regular fast-forward pushes to the assigned results ref are allowed.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", "--force-with-lease"],
+    decision = "forbidden",
+    justification = "Only regular fast-forward pushes to the assigned results ref are allowed.",
+)
+
+prefix_rule(
+    pattern = ["claude", "--dangerously-skip-permissions"],
+    decision = "forbidden",
+    justification = "Bypass and YOLO modes are prohibited.",
+)
+
+prefix_rule(
+    pattern = ["codex", "--yolo"],
+    decision = "forbidden",
+    justification = "Bypass and YOLO modes are prohibited.",
+)
+
+prefix_rule(
+    pattern = ["codex", "--dangerously-bypass-approvals-and-sandbox"],
+    decision = "forbidden",
+    justification = "Bypass and YOLO modes are prohibited.",
+)
+
+prefix_rule(
+    pattern = ["sailwright-gateway", "serve", "--bypass-approvals"],
+    decision = "forbidden",
+    justification = "Bypass and YOLO modes are prohibited.",
+)
+
+prefix_rule(
+    pattern = ["tart", "run", "tahoe-runner"],
+    decision = "forbidden",
+    justification = "Original runner VM must stay untouched and stopped; use a disposable clone.",
+)
+
+prefix_rule(
+    pattern = ["tart", "delete", "tahoe-runner"],
+    decision = "forbidden",
+    justification = "Original runner VM must stay untouched and stopped.",
+)
+
+prefix_rule(
+    pattern = ["tart", "set", "tahoe-runner"],
+    decision = "forbidden",
+    justification = "Original runner VM must stay untouched and stopped.",
+)
+
+prefix_rule(
+    pattern = ["tart", "stop", "tahoe-runner"],
+    decision = "forbidden",
+    justification = "Original runner VM must stay untouched and stopped.",
+)
+
+prefix_rule(
+    pattern = ["virsh", "undefine"],
+    decision = "forbidden",
+    justification = "Use Sailwright destroy on owned VMs instead of raw virsh undefine.",
+)
+
+prefix_rule(
+    pattern = ["virsh", "destroy"],
+    decision = "forbidden",
+    justification = "Use Sailwright destroy on owned VMs instead of raw virsh destroy.",
+)
+
+prefix_rule(
+    pattern = ["gh", "pr"],
+    decision = "forbidden",
+    justification = "Host agents must not open or modify pull requests.",
+)
+
+prefix_rule(
+    pattern = ["gh", "workflow"],
+    decision = "forbidden",
+    justification = "Host agents must not trigger or modify CI workflows.",
+)
+
+prefix_rule(
+    pattern = ["gh", "release"],
+    decision = "forbidden",
+    justification = "Host agents must not publish or modify releases.",
+)
+
+prefix_rule(
+    pattern = ["security", "find-generic-password"],
+    decision = "forbidden",
+    justification = "Reading macOS Keychain secrets is prohibited.",
+)
+
+prefix_rule(
+    pattern = ["security", "find-internet-password"],
+    decision = "forbidden",
+    justification = "Reading macOS Keychain secrets is prohibited.",
+)
+
+prefix_rule(
+    pattern = ["tart", "clone"],
+    decision = "prompt",
+    justification = "Confirm macOS runner-slot availability before cloning and starting a Tart VM.",
+)
+
+prefix_rule(
+    pattern = ["tart", "run"],
+    decision = "prompt",
+    justification = "Confirm macOS runner-slot availability before starting a Tart VM.",
+)
+
+prefix_rule(
+    pattern = ["tart", "delete"],
+    decision = "prompt",
+    justification = "Confirm that only a request-owned disposable Tart clone is being deleted.",
+)
