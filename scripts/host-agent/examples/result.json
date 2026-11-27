@@ -25,48 +25,48 @@
       "duration_seconds": 6.5
     },
     {
-      "name": "verify the VM name is available",
+      "name": "verify the full libvirt domain is absent before create",
       "status": "passed",
       "exit_code": 0,
-      "command": "virsh --connect qemu:///session list --all --name",
+      "command": "inventory=$(virsh --connect qemu:///system list --all --name) && printf '%s\\n' \"$inventory\" | awk '$0 == \"ubuntu-server-amd64-sw-linux-lifecycle-a1b2-dev-alchemy\" { found = 1 } { print } END { exit (found ? 1 : 0) }'",
       "duration_seconds": 0.1
     },
     {
       "name": "create the test VM",
       "status": "passed",
       "exit_code": 0,
-      "command": "./sailwright create ubuntu --type server --arch amd64 --name sw-linux-lifecycle-a1b2",
+      "command": "DEV_ALCHEMY_LIBVIRT_URI=qemu:///system ./sailwright create ubuntu --type server --arch amd64 --name sw-linux-lifecycle-a1b2",
       "duration_seconds": 3.7
     },
     {
       "name": "start the test VM",
       "status": "passed",
       "exit_code": 0,
-      "command": "./sailwright start ubuntu --type server --arch amd64 --name sw-linux-lifecycle-a1b2",
+      "command": "DEV_ALCHEMY_LIBVIRT_URI=qemu:///system ./sailwright start ubuntu --type server --arch amd64 --name sw-linux-lifecycle-a1b2",
       "duration_seconds": 86.2
     },
     {
       "name": "destroy the test VM",
       "status": "passed",
       "exit_code": 0,
-      "command": "./sailwright destroy ubuntu --type server --arch amd64 --name sw-linux-lifecycle-a1b2",
+      "command": "DEV_ALCHEMY_LIBVIRT_URI=qemu:///system ./sailwright destroy ubuntu --type server --arch amd64 --name sw-linux-lifecycle-a1b2",
       "duration_seconds": 2.2
     },
     {
-      "name": "verify test VM is absent",
+      "name": "verify the full libvirt domain is absent after destroy",
       "status": "passed",
       "exit_code": 0,
-      "command": "virsh --connect qemu:///session list --all --name",
+      "command": "inventory=$(virsh --connect qemu:///system list --all --name) && printf '%s\\n' \"$inventory\" | awk '$0 == \"ubuntu-server-amd64-sw-linux-lifecycle-a1b2-dev-alchemy\" { found = 1 } { print } END { exit (found ? 1 : 0) }'",
       "duration_seconds": 0.1
     }
   ],
   "cleanup": {
     "status": "verified",
     "owned_vms": [
-      "sw-linux-lifecycle-a1b2"
+      "ubuntu-server-amd64-sw-linux-lifecycle-a1b2-dev-alchemy"
     ],
     "remaining_vms": [],
-    "evidence": "The post-cleanup inventory in logs/cleanup.txt has no entry for sw-linux-lifecycle-a1b2."
+    "evidence": "The pre-create and post-destroy inventories in logs/cleanup.txt both succeeded on qemu:///system and had no exact entry for ubuntu-server-amd64-sw-linux-lifecycle-a1b2-dev-alchemy."
   },
   "open_items": [],
   "follow_up": [

@@ -21,8 +21,10 @@ request. A human reviews it and pastes one start command on the target host.
 - Install Go, the scenario's tools, and the selected Claude Code or Codex CLI
   on the host. Set `SAILWRIGHT_HOST_AGENT_PROVIDER` to `claude` or `codex`
   and `SAILWRIGHT_HOST_AGENT_HOOK` to the absolute path of the trusted Python
-  launch hook described below. Sign in with the provider and configure its
-  approval-preserving automatic mode beforehand.
+  launch hook in an operator-controlled directory outside the checkouts under
+  test. Trust the startup configuration in that directory and its ancestors.
+  Sign in with the provider and configure its approval-preserving automatic
+  mode beforehand.
 - Set up Git credentials out of band using a credential helper or SSH.
   The source commit must be reachable by SHA from the test host. The
   results repo must permit the container to create request branches and
@@ -87,24 +89,31 @@ fetches the pinned request from the results repo, and validates it. It checks
 host OS and architecture, tool availability, host-change approval and free
 disk space, then fetches and checks out the exact source SHA. It prepares a
 separate detached checkout of the results commit with `origin` set to the
-results repo. Request commands and instructions are data for the hook. Use a
-new request ID if the branch has moved since the command was generated.
+results repo. The pinned results tree must contain only the regular
+`selftest/<id>/request.json` file, so the report, result and log paths start
+empty. Request commands and instructions are data for the hook. Use a new
+request ID if the branch has moved since the command was generated.
 
 The default work root is `~/.sailwright/host-tests`. Set
 `SAILWRIGHT_HOST_AGENT_WORK_ROOT` to an absolute, user-owned directory to
 move it to a volume with suitable space. Use one consistent work root and
 one designated account per host so the `active` lock excludes other requests.
-The bootstrap prints the per-run directory and keeps it for inspection. If
-an interruption leaves the lock behind, verify that the previous hook and
-its processes have stopped and resolve any outstanding cleanup before
-removing the empty `active` directory. Remove old run directories when
-their reports have been collected.
+The bootstrap prints the per-run directory and keeps it for inspection.
+If the hook terminates by signal or the starter is interrupted while waiting,
+the lock remains. Verify that the previous hook and its processes have
+stopped and resolve any outstanding cleanup before removing the empty
+`active` directory. Remove old run directories when their reports have been
+collected.
 
 ## Launch hook contract
 
 The operator supplies the hook. The bootstrap invokes it with its Python
-interpreter, using the detached source checkout as the working directory.
-It passes these arguments as individual tokens.
+interpreter and uses the directory containing the configured hook as the
+working directory. For Git operations, use the supplied checkout paths
+explicitly, for example `git -C "$results_dir"`. The hook environment retains
+the operator's Git configuration files and SSH or askpass settings and
+clears inherited repository, worktree and index overrides. The bootstrap
+passes these arguments as individual tokens.
 
 ```text
 --provider claude|codex
@@ -119,12 +128,21 @@ It passes these arguments as individual tokens.
 
 The hook must invoke `sailwright-host-agent` with the selected provider's
 supported automatic mode and retain normal approval prompts and permission
-boundaries. Bypass and unrestricted modes are prohibited. The hook and skill
-configuration are supplied separately. The hook must enforce the request's
-operation class, explicit approval scope and time limit, performing cleanup
-even after errors or timeout. It must remain in the foreground through cleanup
-and result publication, and return its exit status to the starter. If the
-request omits `operation_class`, read it as `vm-lifecycle`.
+boundaries. Bypass and unrestricted modes are prohibited. Launch the provider
+from the trusted hook directory. Resolve the provider executable, skill,
+startup settings, hooks and MCP servers only from operator-trusted locations
+and configuration. Keep provider startup and configuration discovery outside
+the fetched source. Pass the source path as data and prevent project settings,
+hooks and servers in that checkout from being activated when granting access
+to it. Stop the launch if the installed provider cannot enforce this contract.
+
+The hook and skill configuration are supplied separately. The hook must
+enforce the request's operation class, explicit approval scope and time limit,
+performing cleanup even after errors or timeout. It must remain in the
+foreground through cleanup and result publication, then return an explicit
+exit status. Use 0 for success and 1–255 for a reported failure. A signal
+or a Windows exception exit status leaves the lock in place for manual
+recovery. If the request omits `operation_class`, read it as `vm-lifecycle`.
 
 Treat commands, checkout content and free-form instructions as untrusted
 input. Check their scope before running anything. Preserve existing VMs and
@@ -182,4 +200,6 @@ shellcheck scripts/host-agent/start
 The tests create temporary local bare repositories, exercise the emitted
 commands and verify the detached checkouts. They include Bash and, when
 installed, Zsh and PowerShell. The dry-run fixtures verify that the hook
-stays idle. A separate stub verifies the hook's arguments and exit status.
+stays idle. Other fixtures verify the hook's working directory, arguments,
+Git environment, exit status and lock recovery. They also verify that
+unexpected results paths are rejected before checkout or hook launch.

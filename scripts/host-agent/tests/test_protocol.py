@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,32 @@ class SchemaTests(unittest.TestCase):
                 schema = json.loads((SCRIPTS / "schemas" / f"{kind}-v1.json").read_bytes())
                 Draft202012Validator.check_schema(schema)
                 self.assertEqual(protocol.validate(kind, json.dumps(example(kind)).encode())["schema_version"], 1)
+
+    def test_libvirt_example_uses_one_uri_and_the_full_domain(self):
+        request, result = example("request"), example("result")
+        commands = request["test_commands"]
+        uri = "qemu:///system"
+        name = "sw-linux-lifecycle-a1b2"
+        domain = f"ubuntu-server-amd64-{name}-dev-alchemy"
+        self.assertEqual(commands, [step["command"] for step in result["steps"]])
+        for command, action in zip(commands[2:5], ("create", "start", "destroy"), strict=True):
+            self.assertEqual(shlex.split(command), [
+                f"DEV_ALCHEMY_LIBVIRT_URI={uri}", "./sailwright", action, "ubuntu",
+                "--type", "server", "--arch", "amd64", "--name", name,
+            ])
+        self.assertEqual(commands[1], commands[-1])
+        self.assertIn(f"virsh --connect {uri} list --all --name", commands[1])
+        self.assertIn(f'"{domain}"', commands[1])
+        self.assertEqual(result["cleanup"]["owned_vms"], [domain])
+        self.assertEqual(result["cleanup"]["remaining_vms"], [])
+        evidence = result["cleanup"]["evidence"]
+        report = (SCRIPTS / "examples" / "report.md").read_text(encoding="utf-8")
+        for text in (request["agent_instructions"], evidence, report):
+            self.assertIn(uri, text)
+            self.assertIn(domain, text)
+        cleanup_log = (SCRIPTS / "examples" / "logs" / "cleanup.txt").read_text(encoding="utf-8")
+        for phase in ("Before create", "After destroy"):
+            self.assertIn(f"{phase}: {domain}\n$ {commands[1]}\n[No domains returned]\nExit code 0", cleanup_log)
 
     def test_request_defaults_and_invalid_fields(self):
         request = example("request")
@@ -104,7 +131,9 @@ class LocalGitTests(unittest.TestCase):
             executable = bin_dir / tool
             executable.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
             executable.chmod(0o700)
-        self.hook = self.root / "sentinel-hook.py"
+        self.launcher = self.root / "trusted launcher"
+        self.launcher.mkdir()
+        self.hook = self.launcher / "sentinel-hook.py"
         self.hook_marker = self.root / "hook-ran"
         self.command_marker = self.root / "request-command-ran"
         self.hook.write_text(f"from pathlib import Path\nPath({str(self.hook_marker)!r}).touch()\n"
@@ -124,6 +153,7 @@ class LocalGitTests(unittest.TestCase):
         self.git("init", "-q", "-b", "main", str(source))
         (source / "fixture.txt").write_text("original\n", encoding="utf-8")
         (source / ".gitattributes").write_text("fixture.txt filter=fixture\n", encoding="utf-8")
+        (source / ".mcp.json").write_text('{"mcpServers": {}}\n', encoding="utf-8")
         self.git("-C", str(source), "add", ".")
         self.git("-C", str(source), "commit", "-qm", "Initial fixture")
         self.source_sha = self.git("-C", str(source), "rev-parse", "HEAD").strip()
@@ -252,26 +282,113 @@ class LocalGitTests(unittest.TestCase):
         self.assertFalse(self.hook_marker.exists())
         self.assertFalse(self.command_marker.exists())
 
+    @unittest.skipUnless(shutil.which("awk"), "awk is unavailable")
+    def test_libvirt_example_inventory_requires_success_and_exact_absence(self):
+        request, result = example("request"), example("result")
+        domain, = result["cleanup"]["owned_vms"]
+        bin_dir = self.root / "bin"
+        virsh = bin_dir / "virsh"
+        virsh.write_text(
+            '#!/bin/sh\n[ "$*" = "--connect qemu:///system list --all --name" ] || exit 99\n'
+            'printf "%s\\n" "$INVENTORY"\nexit "$VIRSH_STATUS"\n',
+            encoding="utf-8",
+        )
+        virsh.chmod(0o700)
+        for inventory, virsh_status, expected in [
+            ("", 0, 0),
+            (f"{domain}-other", 0, 0),
+            (f"unrelated\n{domain}", 0, 1),
+            ("", 7, 7),
+        ]:
+            with self.subTest(inventory=inventory, virsh_status=virsh_status):
+                env = {**self.env, "INVENTORY": inventory, "VIRSH_STATUS": str(virsh_status)}
+                run = self.run_cli("bash", "-c", request["test_commands"][1], status=expected, env=env)
+                self.assertEqual(run.stdout.strip(), inventory)
+
     def test_launch_contract_with_a_stub(self):
+        unrelated = self.root / "upstream-work" / ".git"
+        self.assertNotEqual(self.git("--git-dir", str(unrelated), "rev-parse", "HEAD").strip(), self.source_sha)
+        env = {**self.env, "GIT_DIR": str(unrelated), "GIT_WORK_TREE": str(unrelated.parent),
+               "GIT_INDEX_FILE": str(unrelated / "index"), "GIT_SSH_COMMAND": "operator-ssh"}
         self.hook.write_text(
-            "import json, os, sys\nprint(json.dumps([os.getcwd(), *sys.argv[1:]]))\nraise SystemExit(23)\n",
+            "import json, os, subprocess, sys\n"
+            "from pathlib import Path\n"
+            "args = dict(zip(sys.argv[1::2], sys.argv[2::2]))\n"
+            "heads = [subprocess.check_output(['git', '-C', args[key], 'rev-parse', 'HEAD'], text=True).strip()\n"
+            "         for key in ('--source-dir', '--results-dir')]\n"
+            "print(json.dumps({\n"
+            "    'cwd': os.getcwd(), 'args': sys.argv[1:], 'heads': heads,\n"
+            "    'source_config': (Path(args['--source-dir']) / '.mcp.json').is_file(),\n"
+            "    'startup_config': Path('.mcp.json').exists(),\n"
+            "    'git_env': {key: value for key, value in os.environ.items() if key.startswith('GIT_')},\n"
+            "}))\n"
+            "raise SystemExit(23)\n",
             encoding="utf-8",
         )
         posix, _ = self.publish().stdout.splitlines()
-        result = self.run_cli("bash", "-c", posix, status=23)
+        result = self.run_cli("bash", "-c", posix, status=23, env=env)
         work = Path(result.stdout.splitlines()[0].removeprefix("Work directory: "))
         request = work / "results" / "selftest" / self.request["id"] / "request.json"
         ref = f"refs/heads/selftest/{self.request['id']}"
         pin = self.git("--git-dir", str(self.results), "rev-parse", ref).strip()
-        cwd, *arguments = json.loads(result.stdout.splitlines()[-1])
-        self.assertEqual(Path(cwd).resolve(), (work / "source").resolve())
-        self.assertEqual(arguments, [
+        received = json.loads(result.stdout.splitlines()[-1])
+        self.assertEqual(Path(received["cwd"]).resolve(), self.launcher.resolve())
+        self.assertTrue(received["source_config"])
+        self.assertFalse(received["startup_config"])
+        self.assertEqual(received["heads"], [self.source_sha, pin])
+        self.assertEqual(received["git_env"], {
+            key: env[key] for key in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_SSH_COMMAND")
+        })
+        self.assertEqual(received["args"], [
             "--provider", "claude", "--skill", "sailwright-host-agent",
             "--request", str(request), "--source-dir", str(work / "source"),
             "--results-dir", str(work / "results"), "--results-ref", ref, "--request-commit", pin,
         ])
         self.assertFalse(self.command_marker.exists())
         self.assertFalse((self.work / "active").exists())
+
+    def test_signaled_hook_retains_lock_until_manual_recovery(self):
+        self.hook.write_text("import os, signal\nos.kill(os.getpid(), signal.SIGTERM)\n", encoding="utf-8")
+        posix, _ = self.publish().stdout.splitlines()
+        result = self.run_cli("bash", "-c", posix, status=1)
+        lock = self.work / "active"
+        self.assertTrue(lock.is_dir())
+        self.assertIn("launch hook terminated by signal", result.stderr)
+        self.assertIn(f"active request lock retained at {lock}", result.stderr)
+        self.assertIn("finish cleanup before removing the lock directory", result.stderr)
+        blocked = self.start_posix(posix, status=1)
+        self.assertIn(f"active request lock exists at {lock}", blocked.stderr)
+        self.assertEqual(blocked.stdout, "")
+        lock.rmdir()
+        self.assert_ready(self.start_posix(posix).stdout, f"refs/heads/selftest/{self.request['id']}")
+
+    def test_rejects_unsafe_initial_results_before_hook(self):
+        for relative in ("result.json", "report.md", "logs"):
+            with self.subTest(path=relative):
+                self.request["id"] = "unsafe-" + relative.split(".")[0]
+                self.publish()
+                request_id = self.request["id"]
+                ref = f"refs/heads/selftest/{request_id}"
+                stage = self.root / request_id
+                self.git("init", "-q", str(stage))
+                self.git("-C", str(stage), "fetch", "-q", str(self.results), ref)
+                self.git("-C", str(stage), "checkout", "-q", "--detach", "FETCH_HEAD")
+                output = stage / "selftest" / request_id / relative
+                outside = self.root / f"outside-{request_id}"
+                output.symlink_to(outside)
+                self.git("-C", str(stage), "add", "--", str(output))
+                self.git("-C", str(stage), "commit", "-qm", "Unsafe output path fixture")
+                self.git("-C", str(stage), "push", "-q", str(self.results), f"HEAD:{ref}")
+                pin = self.git("--git-dir", str(self.results), "rev-parse", ref).strip()
+                posix, _ = protocol.start_lines(str(self.results), "selftest/", request_id, pin)
+                result = self.run_cli("bash", "-c", posix, status=1)
+                self.assertIn("initial results tree must contain only the regular file", result.stderr)
+                work = Path(result.stdout.splitlines()[0].removeprefix("Work directory: "))
+                self.assertFalse((work / "results" / "selftest").exists())
+                self.assertFalse((work / "source").exists())
+                self.assertFalse(self.hook_marker.exists())
+                self.assertFalse(outside.exists())
+                self.assertFalse((self.work / "active").exists())
 
 
 if __name__ == "__main__":

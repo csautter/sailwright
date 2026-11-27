@@ -24,6 +24,7 @@ HERE = Path(__file__).resolve().parent
 SHA = re.compile(r"[0-9a-f]{40}")
 ID = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 SKILL = "sailwright-host-agent"
+LOCK_RECOVERY = "Verify the hook and its processes have stopped and finish cleanup before removing the lock directory."
 
 
 class ProtocolError(Exception):
@@ -107,12 +108,19 @@ def validate(kind, data):
     return document
 
 
+def git_environment():
+    # Select repositories by cwd or explicit arguments while preserving auth.
+    config_env = {
+        "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
+        "GIT_ASKPASS", "GIT_TERMINAL_PROMPT", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT",
+    }
+    return {key: value for key, value in os.environ.items()
+            if not key.upper().startswith("GIT_") or key.upper() in config_env}
+
+
 def git(*args, cwd=None, description, data=None, isolated=False):
-    # Repository state comes from cwd. Use the operator's Git config for remote
-    # authentication, then isolate checkout from configured external filters.
-    config_env = {"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_ASKPASS"}
-    env = {key: value for key, value in os.environ.items()
-           if not key.upper().startswith("GIT_") or key.upper() in config_env}
+    env = git_environment()
+    # Isolate checkout from configured external filters.
     if isolated:
         env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
     # An empty template plus an empty per-repo hooks directory keep local
@@ -166,6 +174,22 @@ def checkout(path, sha):
     # inert during checkout. The configured host hook is the only launch target.
     git("checkout", "--quiet", "--detach", sha, "--", cwd=path, isolated=True,
         description=f"cannot check out exact commit {sha}")
+
+
+def read_initial_request(results, sha, request_id):
+    relative = f"selftest/{request_id}/request.json"
+    tree = git("ls-tree", "-r", "-t", "--full-tree", "-z", sha, cwd=results,
+               description="cannot inspect the pinned results tree")
+    entries = []
+    for entry in tree.split(b"\0")[:-1]:
+        metadata, _, path = entry.partition(b"\t")
+        entries.append((metadata.split()[0], path))
+    expected = [(b"040000", b"selftest"), (b"040000", f"selftest/{request_id}".encode("ascii")),
+                (b"100644", relative.encode("ascii"))]
+    if entries != expected:
+        raise ProtocolError(f"initial results tree must contain only the regular file {relative}")
+    return results / relative, git("show", f"{sha}:{relative}", cwd=results,
+                                   description="cannot read the pinned request.json")
 
 
 def powershell_quote(value):
@@ -257,7 +281,7 @@ def start(args):
     try:
         lock.mkdir(mode=0o700)
     except FileExistsError as error:
-        raise ProtocolError(f"an active request lock exists at {lock}") from error
+        raise ProtocolError(f"an active request lock exists at {lock}. {LOCK_RECOVERY}") from error
 
     hook_running = False
     try:
@@ -267,11 +291,7 @@ def start(args):
         init_repo(results)
         fetch_exact(results, location, ref, args.request_commit,
                     "cannot fetch pinned request from results repo")
-        request_path = results / "selftest" / args.id / "request.json"
-        request_data = git(
-            "show", f"{args.request_commit}:{request_path.relative_to(results).as_posix()}",
-            cwd=results, description="missing request.json at the expected branch path",
-        )
+        request_path, request_data = read_initial_request(results, args.request_commit, args.id)
         request = validate("request", request_data)
         if request["id"] != args.id:
             raise ProtocolError("request id does not match the start line")
@@ -288,8 +308,6 @@ def start(args):
             raise ProtocolError("request.json in the results checkout must be a regular file")
         if request_path.read_bytes() != request_data:
             raise ProtocolError("request.json in the results checkout differs from the pinned request")
-        if (request_path.parent / "result.json").exists():
-            raise ProtocolError("this results branch already contains a result")
         git("remote", "add", "origin", location, cwd=results, description="cannot configure results origin")
         check_disk(work, request["minimum_free_gib"])
 
@@ -305,11 +323,25 @@ def start(args):
             print(f"Dry run: preflight passed for {provider} with skill {SKILL}.")
             return 0
         hook_running = True
-        result = subprocess.run(command, cwd=source, check=False)
+        try:
+            process = subprocess.Popen(command, cwd=hook.parent, env=git_environment())
+        except OSError:
+            hook_running = False
+            raise
+        try:
+            status = process.wait()
+        except KeyboardInterrupt as error:
+            raise ProtocolError("interrupted while waiting for the launch hook") from error
+        if status < 0:
+            raise ProtocolError(f"launch hook terminated by signal {-status}")
+        if os.name == "nt" and status >= 0xC0000000:
+            raise ProtocolError(f"launch hook terminated with Windows exception status 0x{status:08x}")
         hook_running = False
-        return result.returncode
+        return status
     finally:
-        if not hook_running:
+        if hook_running:
+            print(f"host-agent: active request lock retained at {lock}. {LOCK_RECOVERY}", file=sys.stderr)
+        else:
             lock.rmdir()
 
 
