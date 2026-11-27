@@ -820,7 +820,7 @@ sailwright provision windows11 --arch $arch --check
 sailwright provision windows11 --arch $arch
 ```
 
-The wrapper discovers the VM IP automatically from the generated UTM config and `arp -a`, then runs `ansible-playbook` with an inline inventory target.
+The wrapper discovers the VM IP automatically from the generated UTM config and `arp -an`, then runs `ansible-playbook` with an inline inventory target.
 On macOS it also sets `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` for the Ansible process automatically.
 
 If you need to inspect the discovered IP manually:
@@ -875,7 +875,7 @@ sailwright provision ubuntu --type $type --arch $arch --check
 sailwright provision ubuntu --type $type --arch $arch
 ```
 
-The wrapper discovers the VM IP automatically from the generated UTM config and `arp -a`, then runs `ansible-playbook` with an inline inventory target.
+The wrapper discovers the VM IP automatically from the generated UTM config and `arp -an`, then runs `ansible-playbook` with an inline inventory target.
 On macOS it also sets `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` for the Ansible process automatically.
 
 If you need to inspect the discovered IP manually:
