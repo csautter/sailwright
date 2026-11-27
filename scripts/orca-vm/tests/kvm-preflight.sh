@@ -41,10 +41,10 @@ make_stub() {
     chmod +x "$1"
 }
 
-for t in qemu-img virsh virt-install swtpm xorriso qemu-system-x86_64; do
+for t in qemu-img virsh virt-install passt swtpm xorriso bsdtar sshpass qemu-system-x86_64; do
     make_stub "${BIN_AMD64}/${t}"
 done
-for t in qemu-img virsh virt-install swtpm xorriso qemu-system-aarch64; do
+for t in qemu-img virsh virt-install passt swtpm xorriso bsdtar sshpass qemu-system-aarch64; do
     make_stub "${BIN_ARM64}/${t}"
 done
 for t in qemu-img virsh virt-install xorriso; do
@@ -131,6 +131,12 @@ assert_true "preflight missing tools (arm64) lists qemu-system-aarch64" \
     grep -q 'qemu-system-aarch64' <<<"$missing_arm_out"
 assert_true "preflight missing tools (arm64) lists swtpm" \
     grep -q 'swtpm' <<<"$missing_arm_out"
+assert_true "preflight missing tools (arm64) lists passt" \
+    grep -q 'passt' <<<"$missing_arm_out"
+assert_true "preflight missing tools (arm64) lists bsdtar" \
+    grep -q 'bsdtar' <<<"$missing_arm_out"
+assert_true "preflight missing tools (arm64) lists sshpass" \
+    grep -q 'sshpass' <<<"$missing_arm_out"
 
 missing_x86_out="$(
     DEV_ALCHEMY_LIBVIRT_URI=qemu:///session \
@@ -173,7 +179,7 @@ assert_eq "preflight ready (arm64) exits 0" "0" "$ok_arm64_rc"
 assert_true "preflight ready (arm64) reports arm64" grep -q 'arm64 VM tools' <<<"$ok_arm64_out"
 
 unset_uri_out="$(
-    env -u DEV_ALCHEMY_LIBVIRT_URI \
+    unset DEV_ALCHEMY_LIBVIRT_URI
     KVM_PREFLIGHT_ARCH=x86_64 \
     KVM_PREFLIGHT_DEVICE="$FAKE_KVM" \
     KVM_PREFLIGHT_ACCESS_OVERRIDE=ok \

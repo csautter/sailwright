@@ -186,9 +186,12 @@ RUN arch="$(dpkg --print-architecture)" \
 ENV DEV_ALCHEMY_LIBVIRT_URI="qemu:///session"
 
 # Local VM tooling for KVM-accelerated Linux and Windows self-tests
-# (Packer QEMU builds and rootless libvirt user-session domains).
+# (Packer QEMU builds, libvirt user-session domains, and Ansible provisioning).
 # Architecture-specific QEMU system emulators and UEFI firmware keep the image
-# footprint bounded; heavy GUI/OpenGL/SPICE packages are intentionally omitted.
+# footprint bounded; desktop GUI viewers (qemu-system-gui, virt-manager,
+# virt-viewer) remain omitted, while headless SPICE modules required by
+# Sailwright's libvirt domain XML and build/provision runtime helpers
+# (ipxe-qemu, libarchive-tools, sshpass, python3-winrm) are included.
 RUN arch="$(dpkg --print-architecture)" \
     && case "${arch}" in \
         amd64) vm_arch_pkgs="qemu-system-x86 ovmf" ;; \
@@ -198,12 +201,17 @@ RUN arch="$(dpkg --print-architecture)" \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         ${vm_arch_pkgs} \
+        ipxe-qemu \
+        libarchive-tools \
         libvirt-clients \
         libvirt-daemon \
         libvirt-daemon-driver-qemu \
         libvirt-daemon-driver-storage \
         passt \
+        python3-winrm \
+        qemu-system-modules-spice \
         qemu-utils \
+        sshpass \
         swtpm \
         swtpm-tools \
         virtinst \

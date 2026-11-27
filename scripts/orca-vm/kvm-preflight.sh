@@ -145,8 +145,11 @@ required_tools=(
     qemu-img
     virsh
     virt-install
+    passt
     swtpm
     xorriso
+    bsdtar
+    sshpass
 )
 
 missing_tools=()

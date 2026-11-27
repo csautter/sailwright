@@ -211,39 +211,51 @@ checkout, remove the Orca containers using the volume, then run
 ### KVM passthrough and VM self-tests
 
 The devcontainer image includes architecture-specific QEMU, UEFI firmware,
-`swtpm`, libvirt user-session tooling, `virtinst` and `xorriso`, and sets
+`swtpm`, libvirt user-session tooling, `virtinst`, `xorriso`, and the runtime
+helpers required by unmodified Sailwright builds and provisioning, and sets
 `DEV_ALCHEMY_LIBVIRT_URI=qemu:///session` by default (in both `Dockerfile` and
 `devcontainer.json`) so Linux and Windows VMs can run without `privileged` mode
 or a host libvirt socket:
 
-- **amd64 image:** `qemu-system-x86`, `ovmf`, `qemu-utils`, `swtpm`,
-  `swtpm-tools`, `libvirt-daemon`, `libvirt-daemon-driver-qemu`,
-  `libvirt-daemon-driver-storage`, `libvirt-clients`, `passt`, `virtinst`,
-  `xorriso`.
-- **arm64 image:** `qemu-system-arm`, `qemu-efi-aarch64`, plus the same common
-  packages.
+- **amd64 image:** `qemu-system-x86`, `ovmf`, plus the common packages below.
+- **arm64 image:** `qemu-system-arm`, `qemu-efi-aarch64`, plus the common
+  packages below.
+- **Common packages:** `ipxe-qemu`, `libarchive-tools`, `libvirt-clients`,
+  `libvirt-daemon`, `libvirt-daemon-driver-qemu`,
+  `libvirt-daemon-driver-storage`, `passt`, `python3-winrm`,
+  `qemu-system-modules-spice`, `qemu-utils`, `sshpass`, `swtpm`,
+  `swtpm-tools`, `virtinst`, `xorriso`. Desktop GUI viewers
+  (`qemu-system-gui`, `virt-manager`, `virt-viewer`) remain omitted.
 
 `initialize-host.sh` adds `devices: ["/dev/kvm:/dev/kvm"]` to
-`.generated/compose.local.yaml` only when `/dev/kvm` exists on the host (and
-logs it as skipped otherwise). `scripts/orca-vm/docker-lib.sh` translates
-Compose `devices` into `docker run --device` arguments and skips any host device
-that does not exist, so devcontainers and Orca workspaces still start cleanly on
-hosts without `/dev/kvm`.
+`.generated/compose.local.yaml` only when `/dev/kvm` is available (and logs it
+as skipped otherwise). `scripts/orca-vm/docker-lib.sh` translates Compose
+`devices` into `docker run --device` arguments and skips any missing device so
+devcontainers and Orca workspaces still start cleanly without `/dev/kvm`. On
+native Linux hosts both scripts check `/dev/kvm` directly; on non-Linux hosts
+such as macOS with Colima, they probe the active Linux Docker VM (via
+`colima --profile <profile> ssh`, deriving `<profile>` from `COLIMA_PROFILE`,
+`DOCKER_HOST`, or `docker context show`, with a local-image Docker fallback for
+other VM-backed engines) so Apple Silicon M3+/M5 hosts running
+`colima start --nested-virtualization` pass `/dev/kvm` through automatically
+while hosts without `/dev/kvm` (such as Apple Silicon M2) skip it without
+blocking startup.
 
 #### Host variants
 
 | Host | KVM / VM path | Supported guests |
 |---|---|---|
 | **Ubuntu (AMD, rootless Docker)** | `/dev/kvm` passed into the Orca container (`DEV_ALCHEMY_LIBVIRT_URI=qemu:///session`). Under rootless Docker, container `root` maps to your host user without supplementary groups such as `kvm`, so `/dev/kvm` must grant r/w access to the host user (e.g. via ACL or udev rule). | `amd64`: Ubuntu, Windows 11 |
-| **Apple Silicon M3+/M5 (Colima)** | Start Colima with `colima start --nested-virtualization` (requires Apple M3+ and macOS 15+), then recreate the container so `/dev/kvm` is passed through from the Colima VM. | `arm64`: Ubuntu, Windows 11 |
-| **Apple Silicon M2 (Colima)** | **No** hardware nested virtualization before M3 (`/dev/kvm` is absent in the container). Use the **gateway path**: run VMs natively on macOS via `sailwright-gateway` (Tart/UTM) while agents stay in the container (see [agent gateway](../docs/agent-gateway.md)). | `arm64`: Ubuntu, Windows 11, macOS |
+| **Apple Silicon M3+/M5 (Colima)** | Start Colima with `colima start --nested-virtualization` (requires Apple M3+ and macOS 15+), then recreate the container so `/dev/kvm` is probed in the Colima VM and passed through automatically. | `arm64`: Ubuntu, Windows 11 |
+| **Apple Silicon M2 (Colima)** | **No** hardware nested virtualization before M3 (`/dev/kvm` is absent in the Colima VM and container). Use the **gateway path**: run VMs natively on macOS via `sailwright-gateway` (Tart/UTM) while agents stay in the container (see [agent gateway](../docs/agent-gateway.md)). | `arm64`: Ubuntu, Windows 11, macOS |
 
 #### Preflight script
 
 Run `bash scripts/orca-vm/kvm-preflight.sh` inside the container before starting
 local KVM self-tests. It checks CPU architecture, `/dev/kvm` presence and r/w
 access, `DEV_ALCHEMY_LIBVIRT_URI`, and required VM binaries (`qemu-system-*`,
-`qemu-img`, `virsh`, `virt-install`, `swtpm`, `xorriso`):
+`qemu-img`, `virsh`, `virt-install`, `passt`, `swtpm`, `xorriso`, `bsdtar`,
+`sshpass`):
 
 | Exit code | Meaning |
 |---|---|
@@ -266,8 +278,7 @@ Docker/KVM host (Ubuntu AMD with rootless Docker or Apple M3+/M5 Colima with
    `docker run --rm --device /dev/kvm debian:trixie sh -c 'test -r /dev/kvm && test -w /dev/kvm && echo ok'`
 3. Recreate an Orca workspace / devcontainer on the KVM host, confirm
    `bash scripts/orca-vm/kvm-preflight.sh` exits `0`, and verify a real
-   `qemu:///session` domain launch (including whether headless SPICE graphics
-   require `qemu-system-modules-spice` or a headless graphics setting).
+   `qemu:///session` domain launch and Sailwright build/provision flow.
 
 ## Extra personal mounts (optional)
 
