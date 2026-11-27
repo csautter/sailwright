@@ -149,58 +149,57 @@ add_nested() { # source target
 
 KVM_DEVICE="${DEVCONTAINER_KVM_DEVICE:-/dev/kvm}"
 
-colima_profile() {
-  local profile="" ctx=""
-  if [ -n "${COLIMA_PROFILE:-}" ]; then
-    profile="$COLIMA_PROFILE"
+docker_endpoint() {
+  if [ -n "${DOCKER_HOST:-}" ] && [ -z "${DOCKER_CONTEXT:-}" ]; then
+    printf '%s' "$DOCKER_HOST"
   else
-    case "${DOCKER_HOST:-}" in
-      */.colima/*/docker.sock)
-        profile="${DOCKER_HOST#*/.colima/}"
-        profile="${profile%/docker.sock}"
-        ;;
-    esac
+    docker context inspect --format '{{.Endpoints.docker.Host}}' </dev/null 2>/dev/null
   fi
-  if [ -z "$profile" ] && command -v docker >/dev/null 2>&1; then
-    ctx="$(docker context show 2>/dev/null | tr -d '\r' || true)"
-    case "$ctx" in
-      colima) profile="default" ;;
-      colima-*) profile="${ctx#colima-}" ;;
-    esac
-  fi
-  if [ -z "$profile" ] || ! [[ "$profile" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-    profile="default"
-  fi
+}
+
+# The socket has to belong to a profile managed by this Colima installation.
+colima_profile() {
+  local endpoint="$1" colima_home="${COLIMA_HOME:-$HOME/.colima}" profile
+  case "$endpoint" in
+    "unix://${colima_home%/}/"*/docker.sock)
+      profile="${endpoint#"unix://${colima_home%/}/"}"
+      profile="${profile%/docker.sock}"
+      ;;
+    *) return 1 ;;
+  esac
+  [[ "$profile" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
   printf '%s' "$profile"
 }
 
-# Checks whether a Linux device exists on the host or, on non-Linux clients
-# (macOS/Windows/WSL-Windows), inside the active Linux Docker VM (e.g. Colima
-# started with --nested-virtualization). Never fails container startup.
+# Checks local Linux devices directly and probes the active engine otherwise.
+# A missing device or a probe error must leave container startup available.
 host_device_exists() {
-  local src="$1" host_os profile probe_out probe_img
-  [ -e "$src" ] && return 0
+  local src="$1" host_os endpoint profile probe_out probe_img
   case "$src" in
     /dev/*) ;;
-    *) return 1 ;;
+    *) [ -e "$src" ]; return ;;
   esac
   host_os="$(uname -s 2>/dev/null || echo unknown)"
+  endpoint="$(docker_endpoint)" || endpoint=""
+  endpoint="${endpoint%$'\r'}"
   if [ "$host_os" = "Linux" ] && ! $WSL_WINDOWS; then
-    return 1
+    case "$endpoint" in
+      unix:///var/run/docker.sock|unix:///run/docker.sock|unix:///run/user/*/docker.sock)
+        [ -e "$src" ]; return ;;
+    esac
   fi
-  if command -v colima >/dev/null 2>&1; then
-    profile="$(colima_profile)"
+  if command -v colima >/dev/null 2>&1 && profile="$(colima_profile "$endpoint")"; then
     # shellcheck disable=SC2016
-    probe_out="$(colima --profile "$profile" ssh -- sh -c 'if [ -e "$1" ]; then echo present; else echo absent; fi' _ "$src" 2>/dev/null | tr -d '\r')" || probe_out=""
+    probe_out="$(colima --profile "$profile" ssh -- sh -c 'if [ -e "$1" ]; then echo present; else echo absent; fi' _ "$src" </dev/null 2>/dev/null | tr -d '\r')" || probe_out=""
     case "$probe_out" in
       present) return 0 ;;
       absent) return 1 ;;
     esac
   fi
   if command -v docker >/dev/null 2>&1; then
-    probe_img="$(docker images -q 2>/dev/null | head -n 1 | tr -d '\r' || true)"
+    probe_img="$(docker images -q </dev/null 2>/dev/null | head -n 1 | tr -d '\r' || true)"
     if [ -n "$probe_img" ] \
-      && docker run --rm --device "$src" --entrypoint sh "$probe_img" -c 'exit 0' >/dev/null 2>&1; then
+      && docker run --rm --pull=never --device "$src" --entrypoint sh "$probe_img" -c 'exit 0' </dev/null >/dev/null 2>&1; then
       return 0
     fi
   fi

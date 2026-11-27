@@ -7,7 +7,7 @@ set -uo pipefail
 
 for test_env_name in ${!ORCA_DOCKER_@} ${!SAILWRIGHT_@}; do unset "$test_env_name"; done
 unset XDG_CONFIG_HOME CONFIG_HOME DEVCONTAINER_KVM_DEVICE DEVCONTAINER_HOST_EXTRA_PATH \
-    COLIMA_PROFILE DOCKER_HOST WSL_DISTRO_NAME BASH_ENV
+    COLIMA_HOME COLIMA_PROFILE DOCKER_HOST DOCKER_CONTEXT WSL_DISTRO_NAME BASH_ENV
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_SRC="$(cd "${TESTS_DIR}/../../.." && pwd)"
@@ -53,6 +53,9 @@ EOF
 cat >"${STUB_BIN}/colima" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"${TEST_COLIMA_LOG}"
+if [ "${TEST_DRAIN_STDIN:-0}" = 1 ]; then
+    cat >/dev/null
+fi
 if [ "${TEST_COLIMA_FAIL:-0}" = "1" ]; then
     exit 1
 fi
@@ -62,12 +65,14 @@ cat >"${STUB_BIN}/docker" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"${TEST_DOCKER_LOG}"
 case "$1 ${2:-}" in
-    "context show")
-        if [ -n "${TEST_DOCKER_CONTEXT:-}" ]; then
-            printf '%s\n' "${TEST_DOCKER_CONTEXT}"
-            exit 0
+    "context inspect")
+        [ "${3:-}" = --format ] || exit 1
+        if [ "${TEST_UNAME_S:-Linux}" = Linux ]; then
+            printf '%s\n' "${TEST_DOCKER_ENDPOINT:-unix:///var/run/docker.sock}"
+        else
+            printf '%s\n' "${TEST_DOCKER_ENDPOINT:-unix:///Users/dev/.colima/default/docker.sock}"
         fi
-        exit 1
+        exit 0
         ;;
     "images -q")
         if [ -n "${TEST_DOCKER_IMAGE:-}" ]; then
@@ -77,6 +82,9 @@ case "$1 ${2:-}" in
         exit 1
         ;;
     "run --rm")
+        if [ "${TEST_DRAIN_STDIN:-0}" = 1 ]; then
+            cat >/dev/null
+        fi
         exit "${TEST_DOCKER_RUN_RC:-125}"
         ;;
 esac
@@ -97,7 +105,7 @@ run_init() { # kvm_device [bin_dir]
     HOME="$HOME_DIR" XDG_CONFIG_HOME="${HOME_DIR}/.config" USERPROFILE="" \
         PATH="${bin_dir}:/usr/bin:/bin" \
         DEVCONTAINER_HOST_EXTRA_PATH=0 \
-        DEVCONTAINER_KVM_DEVICE="$kvm_dev" \
+        DEVCONTAINER_KVM_DEVICE="$kvm_dev" COLIMA_HOME=/Users/dev/.colima \
         TEST_COLIMA_LOG="$COLIMA_LOG" \
         TEST_DOCKER_LOG="$DOCKER_LOG" \
         bash "${REPO}/.devcontainer/initialize-host.sh" 2>&1
@@ -178,26 +186,47 @@ assert_eq "initialize-host Darwin+Colima absent: probes colima exactly once" "1"
 assert_false "initialize-host Darwin+Colima absent: does not run docker fallback after definitive absent" \
     grep -q '^run ' "$DOCKER_LOG"
 
-# Case 5: Darwin + Colima profile derivation (COLIMA_PROFILE, DOCKER_HOST, docker context, sanitization).
-COLIMA_PROFILE=m5-kvm TEST_UNAME_S=Darwin TEST_COLIMA_OUT=present run_init "$TEST_DEV" >/dev/null
-assert_true "initialize-host Colima profile from COLIMA_PROFILE" \
-    grep -q '^--profile m5-kvm ssh ' "$COLIMA_LOG"
-
+# Case 5: Select the actual Docker endpoint, even with a renamed context.
 DOCKER_HOST="unix:///Users/dev/.colima/custom-kvm/docker.sock" TEST_UNAME_S=Darwin TEST_COLIMA_OUT=present run_init "$TEST_DEV" >/dev/null
 assert_true "initialize-host Colima profile from DOCKER_HOST" \
     grep -q '^--profile custom-kvm ssh ' "$COLIMA_LOG"
 
-TEST_UNAME_S=Darwin TEST_DOCKER_CONTEXT=colima-work TEST_COLIMA_OUT=present run_init "$TEST_DEV" >/dev/null
-assert_true "initialize-host Colima profile from docker context colima-<p>" \
+DOCKER_CONTEXT=renamed DOCKER_HOST=tcp://wrong:2375 COLIMA_PROFILE=wrong \
+    TEST_DOCKER_ENDPOINT=unix:///Users/dev/.colima/work/docker.sock \
+    TEST_UNAME_S=Darwin TEST_COLIMA_OUT=present run_init "$TEST_DEV" >/dev/null
+assert_true "initialize-host context socket overrides DOCKER_HOST and COLIMA_PROFILE" \
     grep -q '^--profile work ssh ' "$COLIMA_LOG"
 
-TEST_UNAME_S=Darwin TEST_DOCKER_CONTEXT=colima TEST_COLIMA_OUT=present run_init "$TEST_DEV" >/dev/null
-assert_true "initialize-host Colima profile from docker context colima -> default" \
-    grep -q '^--profile default ssh ' "$COLIMA_LOG"
+TEST_DOCKER_ENDPOINT='unix:///Users/dev/.colima/-bad;id/docker.sock' \
+    TEST_UNAME_S=Darwin TEST_COLIMA_OUT=present run_init "$TEST_DEV" >/dev/null
+assert_false "initialize-host invalid socket profile: doesn't query Colima" test -s "$COLIMA_LOG"
 
-COLIMA_PROFILE='-bad;id' TEST_UNAME_S=Darwin TEST_COLIMA_OUT=present run_init "$TEST_DEV" >/dev/null
-assert_true "initialize-host invalid COLIMA_PROFILE falls back to default" \
-    grep -q '^--profile default ssh ' "$COLIMA_LOG"
+# Colima's availability cannot affect a different active engine.
+for docker_rc in 0 125; do
+    colima_out=present
+    if [ "$docker_rc" = 0 ]; then colima_out=absent; fi
+    DOCKER_CONTEXT=desktop-linux DOCKER_HOST=unix:///Users/dev/.colima/default/docker.sock COLIMA_PROFILE=default \
+        TEST_DOCKER_ENDPOINT=unix:///Users/dev/.docker/run/docker.sock \
+        TEST_UNAME_S=Darwin TEST_COLIMA_OUT="$colima_out" TEST_DOCKER_IMAGE=localimg TEST_DOCKER_RUN_RC="$docker_rc" \
+        run_init "$TEST_DEV" >/dev/null
+    assert_false "initialize-host mixed engines: no unrelated Colima VM queried" test -s "$COLIMA_LOG"
+    assert_true "initialize-host mixed engines: active Docker queried" grep -q '^run --rm' "$DOCKER_LOG"
+    if [ "$docker_rc" = 0 ]; then
+        assert_true "initialize-host mixed engines: active Docker device available" grep -qxF '    devices:' "$OUT_YAML"
+    else
+        assert_false "initialize-host mixed engines: active Docker device absent" grep -qxF '    devices:' "$OUT_YAML"
+    fi
+done
+
+# Probes must not consume the initializer's inherited input either.
+for endpoint in unix:///Users/dev/.colima/default/docker.sock unix:///Users/dev/.docker/run/docker.sock; do
+    {
+        DOCKER_HOST="$endpoint" TEST_UNAME_S=Darwin TEST_DRAIN_STDIN=1 TEST_COLIMA_OUT=present \
+            TEST_DOCKER_IMAGE=localimg TEST_DOCKER_RUN_RC=0 run_init "$TEST_DEV" >/dev/null
+        IFS= read -r remaining
+    } <<<"operator input"
+    assert_eq "initialize-host draining probe leaves stdin untouched" "operator input" "$remaining"
+done
 
 # Case 6: Darwin + unreachable/failing colima or missing colima -> skips cleanly without failing startup.
 out_fail="$(TEST_UNAME_S=Darwin TEST_COLIMA_FAIL=1 run_init "$TEST_DEV")"

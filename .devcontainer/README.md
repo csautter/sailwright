@@ -231,12 +231,12 @@ or a host libvirt socket:
 `.generated/compose.local.yaml` only when `/dev/kvm` is available (and logs it
 as skipped otherwise). `scripts/orca-vm/docker-lib.sh` translates Compose
 `devices` into `docker run --device` arguments and skips any missing device so
-devcontainers and Orca workspaces still start cleanly without `/dev/kvm`. On
-native Linux hosts both scripts check `/dev/kvm` directly; on non-Linux hosts
-such as macOS with Colima, they probe the active Linux Docker VM (via
-`colima --profile <profile> ssh`, deriving `<profile>` from `COLIMA_PROFILE`,
-`DOCKER_HOST`, or `docker context show`, with a local-image Docker fallback for
-other VM-backed engines) so Apple Silicon M3+/M5 hosts running
+devcontainers and Orca workspaces still start cleanly without `/dev/kvm`.
+Both scripts check `/dev/kvm` directly for local Linux Docker sockets. For
+VM-backed or remote engines they probe the active Docker engine (via
+`colima --profile <profile> ssh` when the selected Docker endpoint is a Colima
+profile socket, or a Docker probe using an already-local image for other
+VM-backed engines) so Apple Silicon M3+/M5 hosts running
 `colima start --nested-virtualization` pass `/dev/kvm` through automatically
 while hosts without `/dev/kvm` (such as Apple Silicon M2) skip it without
 blocking startup.

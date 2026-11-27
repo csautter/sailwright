@@ -313,65 +313,60 @@ host_mount() {
     printf '%s' "$out"
 }
 
-# Derives the active Colima profile name from COLIMA_PROFILE, DOCKER_HOST
-# (*/.colima/<profile>/docker.sock), or `docker context show` (colima /
-# colima-<profile>), defaulting to "default" when unset or unexpected.
-_colima_profile() {
-    local profile="" ctx=""
-    if [ -n "${COLIMA_PROFILE:-}" ]; then
-        profile="$COLIMA_PROFILE"
+_docker_endpoint() {
+    if [ -n "${DOCKER_HOST:-}" ] && [ -z "${DOCKER_CONTEXT:-}" ]; then
+        printf '%s' "$DOCKER_HOST"
     else
-        case "${DOCKER_HOST:-}" in
-            */.colima/*/docker.sock)
-                profile="${DOCKER_HOST#*/.colima/}"
-                profile="${profile%/docker.sock}"
-                ;;
-        esac
+        docker context inspect --format '{{.Endpoints.docker.Host}}' </dev/null 2>/dev/null
     fi
-    if [ -z "$profile" ] && command -v docker >/dev/null 2>&1; then
-        ctx="$(docker context show 2>/dev/null | tr -d '\r' || true)"
-        case "$ctx" in
-            colima) profile="default" ;;
-            colima-*) profile="${ctx#colima-}" ;;
-        esac
-    fi
-    if [ -z "$profile" ] || ! [[ "$profile" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-        profile="default"
-    fi
+}
+
+# The socket has to belong to a profile managed by this Colima installation.
+_colima_profile() {
+    local endpoint="$1" colima_home="${COLIMA_HOME:-$HOME/.colima}" profile
+    case "$endpoint" in
+        "unix://${colima_home%/}/"*/docker.sock)
+            profile="${endpoint#"unix://${colima_home%/}/"}"
+            profile="${profile%/docker.sock}"
+            ;;
+        *) return 1 ;;
+    esac
+    [[ "$profile" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
     printf '%s' "$profile"
 }
 
-# Checks whether a device path exists on the host or, on non-Linux clients
-# (macOS/Windows where dockerd runs in a Linux VM such as Colima), inside the
-# Linux Docker VM. Always passes the path as $1 and treats probe errors as
-# absent so startup is never blocked.
+# Checks local Linux devices directly and probes the active engine otherwise.
+# Pass the device as a positional argument and treat probe errors as absence.
 host_device_exists() {
-    local src="$1" host_os profile probe_out probe_img=""
-    [ -e "$src" ] && return 0
+    local src="$1" host_os endpoint profile probe_out probe_img=""
     case "$src" in
         /dev/*) ;;
-        *) return 1 ;;
+        *) [ -e "$src" ]; return ;;
     esac
     host_os="$(uname -s 2>/dev/null || echo unknown)"
+    endpoint="$(_docker_endpoint)" || endpoint=""
+    endpoint="${endpoint%$'\r'}"
     if [ "$host_os" = "Linux" ]; then
-        return 1
+        case "$endpoint" in
+            unix:///var/run/docker.sock|unix:///run/docker.sock|unix:///run/user/*/docker.sock)
+                [ -e "$src" ]; return ;;
+        esac
     fi
-    if command -v colima >/dev/null 2>&1; then
-        profile="$(_colima_profile)"
-        probe_out="$(colima --profile "$profile" ssh -- sh -c 'if [ -e "$1" ]; then echo present; else echo absent; fi' _ "$src" 2>/dev/null | tr -d '\r')" || probe_out=""
+    if command -v colima >/dev/null 2>&1 && profile="$(_colima_profile "$endpoint")"; then
+        probe_out="$(colima --profile "$profile" ssh -- sh -c 'if [ -e "$1" ]; then echo present; else echo absent; fi' _ "$src" </dev/null 2>/dev/null | tr -d '\r')" || probe_out=""
         case "$probe_out" in
             present) return 0 ;;
             absent) return 1 ;;
         esac
     fi
     if command -v docker >/dev/null 2>&1; then
-        if [ -n "${IMAGE_TAG:-}" ] && docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+        if [ -n "${IMAGE_TAG:-}" ] && docker image inspect "$IMAGE_TAG" </dev/null >/dev/null 2>&1; then
             probe_img="$IMAGE_TAG"
         else
-            probe_img="$(docker images -q 2>/dev/null | head -n 1 | tr -d '\r' || true)"
+            probe_img="$(docker images -q </dev/null 2>/dev/null | head -n 1 | tr -d '\r' || true)"
         fi
         if [ -n "$probe_img" ] \
-            && docker run --rm --device "$src" --entrypoint sh "$probe_img" -c 'exit 0' >/dev/null 2>&1; then
+            && docker run --rm --pull=never --device "$src" --entrypoint sh "$probe_img" -c 'exit 0' </dev/null >/dev/null 2>&1; then
             return 0
         fi
     fi
