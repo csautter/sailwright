@@ -232,7 +232,7 @@ PROJECT_ROOT_IN_CONTAINER="${PROJECT_ROOT_IN_CONTAINER:-/workspaces/${REPO_NAME}
 # devcontainer's service in the merged compose configuration
 # (`docker compose config`), including override files that initializeCommand
 # generates. Only the service's build/image, volumes, environment,
-# extra_hosts, cap_add, security_opt and privileged are applied.
+# extra_hosts, cap_add, security_opt, devices and privileged are applied.
 COMPOSE_SERVICE=""
 if dc_json -e 'has("dockerComposeFile")' >/dev/null; then
     COMPOSE_SERVICE="$(dc_json -r '.service // empty')"
@@ -311,6 +311,50 @@ host_mount() {
         return 0
     fi
     printf '%s' "$out"
+}
+
+# Prints one --device spec when its host source exists, or nothing (and a log
+# line) when the host device is absent or the spec is malformed: Docker would
+# refuse to start the container when an optional host device such as /dev/kvm
+# is missing.
+host_device() {
+    local spec="$1" src rest target perms
+    [ -n "$spec" ] || return 0
+    case "$spec" in
+        *:*)
+            src="${spec%%:*}"
+            rest="${spec#*:}"
+            case "$rest" in
+                *:*)
+                    target="${rest%%:*}"
+                    perms="${rest#*:}"
+                    if [ -z "$target" ] || [ -z "$perms" ] || [[ "$perms" == *:* ]] || ! [[ "$perms" =~ ^[rwm]+$ ]]; then
+                        log "skipping invalid device spec '${spec}'"
+                        return 0
+                    fi
+                    ;;
+                *)
+                    target="$rest"
+                    if [ -z "$target" ]; then
+                        log "skipping invalid device spec '${spec}'"
+                        return 0
+                    fi
+                    ;;
+            esac
+            ;;
+        *)
+            src="$spec"
+            ;;
+    esac
+    if [ -z "$src" ]; then
+        log "skipping invalid device spec '${spec}'"
+        return 0
+    fi
+    if [ ! -e "$src" ]; then
+        log "skipping device ${src} (not found on this host)"
+        return 0
+    fi
+    printf '%s' "$spec"
 }
 
 # Prints the Orca form of one expanded --mount spec, or nothing to drop it.
@@ -451,6 +495,18 @@ compose_run_args() {
           (($s.extra_hosts // []) | if type == "object" then to_entries[] | "\(.key)=\(.value)" else .[] end | "--add-host=\(.)"),
           (($s.cap_add // [])[] | "--cap-add=\(.)"),
           (($s.security_opt // [])[] | "--security-opt=\(.)"),
+          (($s.devices // [])[]
+            | if type == "string" then
+                  select(length > 0) | "--device", .
+              elif type == "object" and (.source | type == "string" and length > 0) then
+                  "--device",
+                  (.source
+                    + (if (.target | type == "string" and length > 0) then ":" + .target
+                       elif (.permissions | type == "string" and length > 0) then ":" + .source
+                       else "" end)
+                    + (if (.permissions | type == "string" and length > 0) then ":" + .permissions
+                       else "" end))
+              else empty end),
           (if $s.privileged then "--privileged" else empty end)'
 }
 
@@ -473,10 +529,14 @@ collect_run_args() {
                 [ -n "$spec" ] && spec="$(translate_mount "$spec")"
                 [ -n "$spec" ] && DOCKER_RUN_ARGS+=(--mount "$spec")
                 pending=""
+            elif [ "$pending" = --device ]; then
+                spec="$(host_device "$raw")"
+                [ -n "$spec" ] && DOCKER_RUN_ARGS+=(--device "$spec")
+                pending=""
             elif [ "$pending" = -e ]; then
                 DOCKER_RUN_ARGS+=(-e "$raw")
                 pending=""
-            elif [ "$raw" = --mount ] || [ "$raw" = -e ]; then
+            elif [ "$raw" = --mount ] || [ "$raw" = --device ] || [ "$raw" = -e ]; then
                 pending="$raw"
             elif [ -n "$raw" ]; then
                 DOCKER_RUN_ARGS+=("$raw")
