@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -19,6 +20,23 @@ REPO_ROOT = SCRIPTS.parents[1]
 sys.path.insert(0, str(SCRIPTS))
 import launch  # noqa: E402
 import protocol  # noqa: E402
+
+
+def build_synthetic_pem_fixture(words, body="fake-synthetic-body", newline="\n", header_only=False):
+    """Build a synthetic PEM, PGP, or OpenSSH marker block at runtime from split tokens."""
+    dashes = "-" * 5
+    label = " ".join(words)
+    begin = f"{dashes}BEGIN {label}{dashes}"
+    if header_only:
+        return begin
+    end = f"{dashes}END {label}{dashes}"
+    return f"{begin}{newline}{body}{newline}{end}{newline}"
+
+
+def build_synthetic_putty_fixture(version, body="fake-synthetic-body"):
+    """Build a synthetic PuTTY key file header fixture at runtime from split tokens."""
+    header = "-".join(("PuTTY", "User", "Key", "File", str(version)))
+    return f"{header}: ssh-ed25519\n{body}\n"
 
 
 FAKE_PROVIDER_SCRIPT = r'''#!/usr/bin/env python3
@@ -32,6 +50,16 @@ import re
 import subprocess
 import sys
 import time
+
+
+def synthetic_key_material(words, body="fake-synthetic-body", newline="\n", header_only=False):
+    dashes = "-" * 5
+    label = " ".join(words)
+    begin = f"{dashes}BEGIN {label}{dashes}"
+    if header_only:
+        return begin
+    end = f"{dashes}END {label}{dashes}"
+    return f"{begin}{newline}{body}{newline}{end}{newline}"
 
 
 def extract(prompt, label):
@@ -192,7 +220,7 @@ def main():
         f"Exit code 0\n"
     )
     if behavior == "private_key_leak":
-        cleanup_log += "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----\n"
+        cleanup_log += synthetic_key_material(("OPENSSH", "PRIVATE", "KEY"), body="fake")
     if behavior == "invalid_inventory":
         cleanup_log = cleanup_log.replace("Exit code 0", "Exit code 1", 1)
     if behavior == "still_present":
@@ -259,18 +287,19 @@ def main():
         (logs_dir / "cleanup.txt").write_text(cleanup_log, encoding="utf-8")
     if behavior == "pgp_private_key_leak":
         (logs_dir / "pgp.txt").write_text(
-            "-----BEGIN PGP PRIVATE KEY BLOCK-----\nfake-synthetic-body\n-----END PGP PRIVATE KEY BLOCK-----\n",
+            synthetic_key_material(("PGP", "PRIVATE", "KEY", "BLOCK")),
             encoding="utf-8",
         )
     if behavior == "utf16_openssh_key_leak":
         (logs_dir / "win-step.txt").write_bytes(
-            "-----BEGIN OPENSSH PRIVATE KEY-----\r\nfake-synthetic-body\r\n-----END OPENSSH PRIVATE KEY-----\r\n"
-            .encode("utf-16")
+            synthetic_key_material(("OPENSSH", "PRIVATE", "KEY"), newline="\r\n").encode("utf-16")
         )
     if behavior == "opaque_binary_log":
         (logs_dir / "opaque.bin").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00")
     if behavior == "bomless_utf16_log":
-        (logs_dir / "bomless.txt").write_bytes("-----BEGIN OPENSSH PRIVATE KEY-----".encode("utf-16-le"))
+        (logs_dir / "bomless.txt").write_bytes(
+            synthetic_key_material(("OPENSSH", "PRIVATE", "KEY"), header_only=True).encode("utf-16-le")
+        )
     if behavior == "utf16_valid_log":
         (logs_dir / "win-redacted.txt").write_bytes("Guest password: [REDACTED]\r\n".encode("utf-16"))
     (logs_dir / "step.txt").write_bytes(b"Guest password: [REDACTED]\r\n")
@@ -909,6 +938,92 @@ class TemplateGuardrailTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(launch.LaunchError, "tart list -q"):
             launch.verify_cleanup(result_doc, raw_tart.encode("utf-8"))
+
+    def test_verify_results_rejects_all_private_key_families(self):
+        request_bytes = (SCRIPTS / "examples" / "request.json").read_bytes()
+        request = json.loads(request_bytes)
+        result_bytes = (SCRIPTS / "examples" / "result.json").read_bytes()
+        result = json.loads(result_bytes)
+        prefix = f"selftest/{request['id']}"
+        baseline_files = {
+            f"{prefix}/request.json": request_bytes,
+            f"{prefix}/result.json": result_bytes,
+            f"{prefix}/report.md": (SCRIPTS / "examples" / "report.md").read_bytes(),
+            f"{prefix}/logs/cleanup.txt": (SCRIPTS / "examples" / "logs" / "cleanup.txt").read_bytes(),
+        }
+        args = SimpleNamespace(request_commit=result["request_commit"])
+
+        # Confirm the unmodified baseline fixture passes before testing rejections.
+        launch.verify_results(args, request, request_bytes, dict(baseline_files))
+
+        cases = [
+            (
+                "pgp-private-block",
+                f"{prefix}/logs/pgp-private.txt",
+                build_synthetic_pem_fixture(("PGP", "PRIVATE", "KEY", "BLOCK")).encode("utf-8"),
+                "private key material",
+            ),
+            (
+                "pgp-secret-block",
+                f"{prefix}/logs/pgp-secret.txt",
+                build_synthetic_pem_fixture(("PGP", "SECRET", "KEY", "BLOCK")).encode("utf-8"),
+                "private key material",
+            ),
+            (
+                "openssh-utf8",
+                f"{prefix}/logs/openssh.txt",
+                build_synthetic_pem_fixture(("OPENSSH", "PRIVATE", "KEY")).encode("utf-8"),
+                "private key material",
+            ),
+            (
+                "openssh-utf16-bom",
+                f"{prefix}/logs/openssh-utf16.txt",
+                build_synthetic_pem_fixture(("OPENSSH", "PRIVATE", "KEY"), newline="\r\n").encode("utf-16"),
+                "private key material",
+            ),
+            (
+                "openssh-utf16-bomless",
+                f"{prefix}/logs/openssh-bomless.txt",
+                build_synthetic_pem_fixture(("OPENSSH", "PRIVATE", "KEY"), header_only=True).encode("utf-16-le"),
+                "unsupported opaque or binary bytes",
+            ),
+            (
+                "pem-rsa",
+                f"{prefix}/logs/rsa.txt",
+                build_synthetic_pem_fixture(("RSA", "PRIVATE", "KEY")).encode("utf-8"),
+                "private key material",
+            ),
+            (
+                "pem-ec",
+                f"{prefix}/logs/ec.txt",
+                build_synthetic_pem_fixture(("EC", "PRIVATE", "KEY")).encode("utf-8"),
+                "private key material",
+            ),
+            (
+                "pem-generic",
+                f"{prefix}/logs/generic.txt",
+                build_synthetic_pem_fixture(("PRIVATE", "KEY")).encode("utf-8"),
+                "private key material",
+            ),
+            (
+                "putty-v2",
+                f"{prefix}/logs/putty-v2.txt",
+                build_synthetic_putty_fixture(2).encode("utf-8"),
+                "private key material",
+            ),
+            (
+                "putty-v3",
+                f"{prefix}/logs/putty-v3.txt",
+                build_synthetic_putty_fixture(3).encode("utf-8"),
+                "private key material",
+            ),
+        ]
+        for label, target_path, payload, expected_error in cases:
+            with self.subTest(case=label):
+                files = dict(baseline_files)
+                files[target_path] = payload
+                with self.assertRaisesRegex(launch.LaunchError, expected_error):
+                    launch.verify_results(args, request, request_bytes, files)
 
 
 @unittest.skipUnless(os.name == "nt", "requires native Windows Job Objects")
