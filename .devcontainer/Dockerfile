@@ -183,4 +183,31 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm -f /tmp/gh.tar.gz \
     && gh --version
 
+ENV DEV_ALCHEMY_LIBVIRT_URI="qemu:///session"
+
+# Local VM tooling for KVM-accelerated Linux and Windows self-tests
+# (Packer QEMU builds and rootless libvirt user-session domains).
+# Architecture-specific QEMU system emulators and UEFI firmware keep the image
+# footprint bounded; heavy GUI/OpenGL/SPICE packages are intentionally omitted.
+RUN arch="$(dpkg --print-architecture)" \
+    && case "${arch}" in \
+        amd64) vm_arch_pkgs="qemu-system-x86 ovmf" ;; \
+        arm64) vm_arch_pkgs="qemu-system-arm qemu-efi-aarch64" ;; \
+        *) echo "Unsupported VM tooling architecture: ${arch}" >&2; exit 1 ;; \
+    esac \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ${vm_arch_pkgs} \
+        libvirt-clients \
+        libvirt-daemon \
+        libvirt-daemon-driver-qemu \
+        libvirt-daemon-driver-storage \
+        passt \
+        qemu-utils \
+        swtpm \
+        swtpm-tools \
+        virtinst \
+        xorriso \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
