@@ -3,7 +3,7 @@ FROM mcr.microsoft.com/devcontainers/go:2.3.7-1.27-trixie
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_VERSION=24.22.0
 # renovate: datasource=npm depName=renovate versioning=npm
-ENV RENOVATE_VERSION="44.168.3"
+ENV RENOVATE_VERSION="44.264.1"
 # renovate: datasource=npm depName=@openai/codex versioning=npm
 ENV CODEX_VERSION="0.171.0"
 # renovate: datasource=npm depName=@anthropic-ai/claude-code versioning=npm
