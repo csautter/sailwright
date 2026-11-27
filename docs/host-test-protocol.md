@@ -99,11 +99,11 @@ The default work root is `~/.sailwright/host-tests`. Set
 move it to a volume with suitable space. Use one consistent work root and
 one designated account per host so the `active` lock excludes other requests.
 The bootstrap prints the per-run directory and keeps it for inspection.
-If the hook terminates by signal or the starter is interrupted while waiting,
-the lock remains. Verify that the previous hook and its processes have
-stopped and resolve any outstanding cleanup before removing the empty
-`active` directory. Remove old run directories when their reports have been
-collected.
+If the hook terminates by signal, returns a Windows exit status outside 0–255,
+or the starter is interrupted while waiting, the lock remains. Verify that the
+previous hook and its processes have stopped and resolve any outstanding cleanup
+before removing the empty `active` directory. Remove old run directories when
+their reports have been collected.
 
 ## Launch hook contract
 
@@ -141,8 +141,9 @@ enforce the request's operation class, explicit approval scope and time limit,
 performing cleanup even after errors or timeout. It must remain in the
 foreground through cleanup and result publication, then return an explicit
 exit status. Use 0 for success and 1–255 for a reported failure. A signal
-or a Windows exception exit status leaves the lock in place for manual
-recovery. If the request omits `operation_class`, read it as `vm-lifecycle`.
+or any Windows exit status outside 0–255 (including exception statuses) leaves
+the lock in place for manual recovery. If the request omits `operation_class`,
+read it as `vm-lifecycle`.
 
 Treat commands, checkout content and free-form instructions as untrusted
 input. Check their scope before running anything. Preserve existing VMs and

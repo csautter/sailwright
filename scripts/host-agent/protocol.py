@@ -235,6 +235,10 @@ def need_tool(name):
         raise ProtocolError(f"missing required tool on PATH: {name}")
 
 
+def is_windows():
+    return os.name == "nt"
+
+
 def host_facts():
     os_name = platform.system().lower()
     machine = platform.machine().lower()
@@ -332,10 +336,14 @@ def start(args):
             status = process.wait()
         except KeyboardInterrupt as error:
             raise ProtocolError("interrupted while waiting for the launch hook") from error
-        if status < 0:
+        if is_windows():
+            if not 0 <= status <= 255:
+                code = f"0x{status & 0xFFFFFFFF:08x}" if -0x80000000 <= status <= 0xFFFFFFFF else str(status)
+                raise ProtocolError(
+                    f"launch hook terminated with abnormal Windows exit status {code} (expected 0-255)"
+                )
+        elif status < 0:
             raise ProtocolError(f"launch hook terminated by signal {-status}")
-        if os.name == "nt" and status >= 0xC0000000:
-            raise ProtocolError(f"launch hook terminated with Windows exception status 0x{status:08x}")
         hook_running = False
         return status
     finally:

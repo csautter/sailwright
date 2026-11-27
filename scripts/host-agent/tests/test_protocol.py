@@ -1,5 +1,7 @@
 """Host-free schema and bootstrap tests using local Git repositories."""
 
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -361,6 +363,76 @@ class LocalGitTests(unittest.TestCase):
         self.assertEqual(blocked.stdout, "")
         lock.rmdir()
         self.assert_ready(self.start_posix(posix).stdout, f"refs/heads/selftest/{self.request['id']}")
+
+    def test_windows_abnormal_exit_retains_lock_and_ordinary_exit_releases_lock(self):
+        posix, _ = self.publish().stdout.splitlines()
+        ref = f"refs/heads/selftest/{self.request['id']}"
+        pin = self.git("--git-dir", str(self.results), "rev-parse", ref).strip()
+        lock = self.work / "active"
+        real_popen = subprocess.Popen
+
+        def run_windows_start(injected_status):
+            launched = []
+
+            class FakeHookProcess:
+                def wait(self):
+                    return injected_status
+
+            def fake_popen(command, *args, **kwargs):
+                if len(command) >= 3 and command[2] == str(self.hook):
+                    launched.append((command, kwargs.get("cwd")))
+                    return FakeHookProcess()
+                return real_popen(command, *args, **kwargs)
+
+            argv = [
+                str(SCRIPTS / "protocol.py"), "start",
+                "--results-repo", str(self.results),
+                "--branch-prefix", "selftest/",
+                "--id", self.request["id"],
+                "--request-commit", pin,
+            ]
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with (
+                patch.object(protocol, "is_windows", return_value=True),
+                patch.object(protocol.subprocess, "Popen", side_effect=fake_popen),
+                patch.object(sys, "argv", argv),
+                patch.dict(os.environ, self.env, clear=True),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                exit_code = protocol.main()
+            self.assertEqual(len(launched), 1)
+            self.assertEqual(Path(launched[0][1]).resolve(), self.launcher.resolve())
+            return exit_code, stdout.getvalue(), stderr.getvalue()
+
+        for status, expected_code in [
+            (0x80000003, "0x80000003"),
+            (0xC0000005, "0xc0000005"),
+            (256, "0x00000100"),
+            (-1, "0xffffffff"),
+        ]:
+            with self.subTest(abnormal_status=status):
+                exit_code, stdout, stderr = run_windows_start(status)
+                self.assertEqual(exit_code, 1)
+                self.assertIn(f"Ready: source {self.source_sha}, results {ref} at {pin}", stdout)
+                self.assertTrue(lock.is_dir())
+                self.assertIn(f"abnormal Windows exit status {expected_code}", stderr)
+                self.assertIn(f"active request lock retained at {lock}", stderr)
+                self.assertIn("finish cleanup before removing the lock directory", stderr)
+                blocked = self.start_posix(posix, status=1)
+                self.assertIn(f"active request lock exists at {lock}", blocked.stderr)
+                self.assertEqual(blocked.stdout, "")
+                lock.rmdir()
+
+        for status in (23, 0, 255):
+            with self.subTest(explicit_status=status):
+                exit_code, stdout, stderr = run_windows_start(status)
+                self.assertEqual(exit_code, status)
+                self.assertIn(f"Ready: source {self.source_sha}, results {ref} at {pin}", stdout)
+                self.assertEqual(stderr, "")
+                self.assertFalse(lock.exists())
+
+        self.assert_ready(self.start_posix(posix).stdout, ref)
 
     def test_rejects_unsafe_initial_results_before_hook(self):
         for relative in ("result.json", "report.md", "logs"):
