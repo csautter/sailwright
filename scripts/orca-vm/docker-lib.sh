@@ -313,10 +313,76 @@ host_mount() {
     printf '%s' "$out"
 }
 
-# Prints one --device spec when its host source exists, or nothing (and a log
-# line) when the host device is absent or the spec is malformed: Docker would
-# refuse to start the container when an optional host device such as /dev/kvm
-# is missing.
+# Derives the active Colima profile name from COLIMA_PROFILE, DOCKER_HOST
+# (*/.colima/<profile>/docker.sock), or `docker context show` (colima /
+# colima-<profile>), defaulting to "default" when unset or unexpected.
+_colima_profile() {
+    local profile="" ctx=""
+    if [ -n "${COLIMA_PROFILE:-}" ]; then
+        profile="$COLIMA_PROFILE"
+    else
+        case "${DOCKER_HOST:-}" in
+            */.colima/*/docker.sock)
+                profile="${DOCKER_HOST#*/.colima/}"
+                profile="${profile%/docker.sock}"
+                ;;
+        esac
+    fi
+    if [ -z "$profile" ] && command -v docker >/dev/null 2>&1; then
+        ctx="$(docker context show 2>/dev/null | tr -d '\r' || true)"
+        case "$ctx" in
+            colima) profile="default" ;;
+            colima-*) profile="${ctx#colima-}" ;;
+        esac
+    fi
+    if [ -z "$profile" ] || ! [[ "$profile" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+        profile="default"
+    fi
+    printf '%s' "$profile"
+}
+
+# Checks whether a device path exists on the host or, on non-Linux clients
+# (macOS/Windows where dockerd runs in a Linux VM such as Colima), inside the
+# Linux Docker VM. Always passes the path as $1 and treats probe errors as
+# absent so startup is never blocked.
+host_device_exists() {
+    local src="$1" host_os profile probe_out probe_img=""
+    [ -e "$src" ] && return 0
+    case "$src" in
+        /dev/*) ;;
+        *) return 1 ;;
+    esac
+    host_os="$(uname -s 2>/dev/null || echo unknown)"
+    if [ "$host_os" = "Linux" ]; then
+        return 1
+    fi
+    if command -v colima >/dev/null 2>&1; then
+        profile="$(_colima_profile)"
+        probe_out="$(colima --profile "$profile" ssh -- sh -c 'if [ -e "$1" ]; then echo present; else echo absent; fi' _ "$src" 2>/dev/null | tr -d '\r')" || probe_out=""
+        case "$probe_out" in
+            present) return 0 ;;
+            absent) return 1 ;;
+        esac
+    fi
+    if command -v docker >/dev/null 2>&1; then
+        if [ -n "${IMAGE_TAG:-}" ] && docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+            probe_img="$IMAGE_TAG"
+        else
+            probe_img="$(docker images -q 2>/dev/null | head -n 1 | tr -d '\r' || true)"
+        fi
+        if [ -n "$probe_img" ] \
+            && docker run --rm --device "$src" --entrypoint sh "$probe_img" -c 'exit 0' >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Prints one --device spec when its host source exists (locally on Linux or
+# inside the Linux Docker VM on non-Linux hosts), or nothing (and a log line)
+# when the host device is absent or the spec is malformed: Docker would refuse
+# to start the container when an optional host device such as /dev/kvm is
+# missing.
 host_device() {
     local spec="$1" src rest target perms
     [ -n "$spec" ] || return 0
@@ -350,7 +416,7 @@ host_device() {
         log "skipping invalid device spec '${spec}'"
         return 0
     fi
-    if [ ! -e "$src" ]; then
+    if ! host_device_exists "$src"; then
         log "skipping device ${src} (not found on this host)"
         return 0
     fi
