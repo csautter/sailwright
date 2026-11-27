@@ -44,19 +44,10 @@ func ConfigureNamedGuestHostname(vm build.VirtualMachineConfig) error {
 		return nil
 	}
 	project := build.GetDirectoriesInstance().ProjectDir
-	if vm.VirtualizationEngine == build.VirtualizationEngineUtm {
-		// Start already verified the registration belongs to this bundle.
-		id, exists, err := inspectUtmInstanceID(vm)
-		if err != nil {
-			return fmt.Errorf("select named UTM guest %s for identity setup: %w", build.InstanceName(vm), err)
-		}
-		if !exists {
-			return fmt.Errorf("select named UTM guest %s for identity setup: VM bundle is missing", build.InstanceName(vm))
-		}
-		// utmctl compares the identifier with UTM's uppercase UUID string.
-		return configureNamedUTMGuest(vm, project, strings.ToUpper(id), time.Now().Add(3*time.Minute), 2*time.Second)
-	}
 	deadline := time.Now().Add(3 * time.Minute)
+	if vm.VirtualizationEngine == build.VirtualizationEngineUtm {
+		return configureNamedUTMGuestFromBundle(vm, project, deadline)
+	}
 	path, args := guestHostnameCommand(vm)
 	payload, _ := json.Marshal(map[string]any{"execute": "guest-exec", "arguments": map[string]any{"path": path, "arg": args, "capture-output": true}})
 	var lastErr error
@@ -79,14 +70,33 @@ func ConfigureNamedGuestHostname(vm build.VirtualMachineConfig) error {
 	return fmt.Errorf("set hostname of named VM %s: guest agent unavailable: %w", build.InstanceName(vm), lastErr)
 }
 
+func configureNamedUTMGuestFromBundle(vm build.VirtualMachineConfig, project string, deadline time.Time) error {
+	// Start already verified the registration belongs to this bundle.
+	id, exists, err := inspectUtmInstanceIDWithRunner(vm, func(project string, timeout time.Duration, executable string, args []string) (string, error) {
+		return runGuestIdentityCommandBefore(deadline, project, timeout, executable, args)
+	})
+	if err != nil {
+		return fmt.Errorf("select named UTM guest %s for identity setup: %w", build.InstanceName(vm), err)
+	}
+	if !exists {
+		return fmt.Errorf("select named UTM guest %s for identity setup: VM bundle is missing", build.InstanceName(vm))
+	}
+	// utmctl compares the identifier with UTM's uppercase UUID string.
+	return configureNamedUTMGuest(vm, project, strings.ToUpper(id), deadline, 2*time.Second)
+}
+
+func runGuestIdentityCommandBefore(deadline time.Time, project string, timeout time.Duration, executable string, args []string) (string, error) {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return "", context.DeadlineExceeded
+	}
+	return runGuestIdentityCommand(project, min(remaining, timeout), executable, args)
+}
+
 func configureNamedUTMGuest(vm build.VirtualMachineConfig, project, id string, deadline time.Time, retryInterval time.Duration) error {
 	instance, hostname := build.InstanceName(vm), build.InstanceHostname(vm)
 	run := func(args ...string) (string, error) {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return "", context.DeadlineExceeded
-		}
-		return runGuestIdentityCommand(project, min(remaining, 30*time.Second), utmctlPath, args)
+		return runGuestIdentityCommandBefore(deadline, project, 30*time.Second, utmctlPath, args)
 	}
 	pull := func(path string) (string, error) {
 		output, err := run("file", "pull", id, path)
@@ -248,34 +258,64 @@ hostnamectl set-hostname ` + build.InstanceHostname(vm) + `
 instance=` + build.InstanceName(vm) + `
 state=` + linuxIdentityPath + `
 pending="$state.pending"
+renderers="$pending.renderers"
+matches_file() {
+  # The host accepts either exact content or a single final newline.
+  printf '%s\n' "$2" | cmp -s "$1" - || printf '%s' "$2" | cmp -s "$1" -
+}
 machine_id=
 if [ -f /etc/machine-id ]; then
   machine_id=$(cat /etc/machine-id)
 fi
 case "$machine_id" in
-  *[!0-9a-f]*|00000000000000000000000000000000) machine_id= ;;
+  *[!0123456789abcdef]*|00000000000000000000000000000000) machine_id= ;;
 esac
-if [ "${#machine_id}" -ne 32 ] || [ ! -f "$state" ] || [ "$(cat "$state")" != "$instance:$machine_id" ]; then
+if [ "${#machine_id}" -ne 32 ] || ! matches_file /etc/machine-id "$machine_id" ||
+   [ ! -f "$state" ] || ! matches_file "$state" "$instance:$machine_id"; then
   mkdir -p /var/lib/sailwright
-  # Retain a pending ID across retries if a network restart fails.
   if [ ! -f "$pending" ]; then
     tr -d '-' < /proc/sys/kernel/random/uuid > "$pending.tmp"
     mv "$pending.tmp" "$pending"
   fi
+  if [ ! -f "$renderers" ]; then
+    # Persist the restart list before changing the machine ID. A failed
+    # restart can leave a previously active renderer down on the next try.
+    legacy_pending=no
+    if [ -f "$pending" ] && [ "$machine_id" = "$(cat "$pending")" ]; then
+      # An older script already wrote this ID without saving its restart list.
+      legacy_pending=yes
+    fi
+    : > "$renderers.tmp"
+    for renderer in systemd-networkd.service NetworkManager.service; do
+      active_state=$(systemctl show --property=ActiveState --value "$renderer")
+      case "$active_state" in
+        active|reloading) ;;
+        *)
+          [ "$legacy_pending" = yes ] || continue
+          if [ "$active_state" != failed ]; then
+            unit_file_state=$(systemctl show --property=UnitFileState --value "$renderer")
+            case "$unit_file_state" in
+              enabled|enabled-runtime) ;;
+              *) continue ;;
+            esac
+          fi
+          ;;
+      esac
+      printf '%s\n' "$renderer" >> "$renderers.tmp"
+    done
+    mv "$renderers.tmp" "$renderers"
+  fi
+  rm -f "$state"
   cat "$pending" > /etc/machine-id
   mkdir -p /var/lib/dbus
   ln -sf /etc/machine-id /var/lib/dbus/machine-id
-  # Both clients cache machine identity. Only restart the active renderer.
-  if systemctl is-active --quiet systemd-networkd.service; then
-    systemctl restart systemd-networkd.service
-  fi
-  if systemctl is-active --quiet NetworkManager.service; then
-    systemctl restart NetworkManager.service
-  fi
+  while IFS= read -r renderer; do
+    systemctl restart "$renderer"
+  done < "$renderers"
   printf '%s:%s\n' "$instance" "$(cat /etc/machine-id)" > "$state.tmp"
   mv "$state.tmp" "$state"
 fi
-rm -f "$pending"
+rm -f "$renderers" "$pending"
 `
 }
 

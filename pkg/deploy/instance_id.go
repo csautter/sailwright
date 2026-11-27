@@ -115,6 +115,10 @@ func truncateForError(value string, limit int) string {
 }
 
 func inspectUtmInstanceID(config alchemy_build.VirtualMachineConfig) (string, bool, error) {
+	return inspectUtmInstanceIDWithRunner(config, runCommandWithCombinedOutput)
+}
+
+func inspectUtmInstanceIDWithRunner(config alchemy_build.VirtualMachineConfig, run func(string, time.Duration, string, []string) (string, error)) (string, bool, error) {
 	vmPath, err := utmVirtualMachinePath(config)
 	if err != nil {
 		return "", false, err
@@ -126,7 +130,7 @@ func inspectUtmInstanceID(config alchemy_build.VirtualMachineConfig) (string, bo
 		}
 		return "", false, err
 	}
-	output, err := runCommandWithCombinedOutput(alchemy_build.GetDirectoriesInstance().ProjectDir,
+	output, err := run(alchemy_build.GetDirectoriesInstance().ProjectDir,
 		instanceIDQueryTimeout, "plutil", []string{"-extract", "Information.UUID", "raw", "-o", "-", configPath})
 	if err != nil {
 		return "", false, fmt.Errorf("read UTM bundle UUID: %w; output: %s", err, strings.TrimSpace(output))

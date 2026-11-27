@@ -142,12 +142,15 @@ and reads back the running and configured hostnames, `/etc/machine-id`, and the
 exact instance name and machine ID in `/var/lib/sailwright/instance-identity`.
 On Windows it waits for confirmation of the configured and active computer name,
 including after any required reboot.
-Named `start` returns an error if readiness or verification exceeds three minutes.
+Named `start` allows up to three minutes for bundle UUID lookup, guest-agent
+readiness, and identity verification together.
 
 On QEMU/UTM, named Linux guests also receive a fresh persistent machine ID on
 their first managed start, including clones of older cached images. The guest
 agent addresses the clone directly and refreshes its network clients before
-IP-based access. Later starts retain that ID and skip the network restart.
+IP-based access. A failed network restart is retried before identity setup
+completes. Later starts with a valid identity retain the ID and skip the network
+restart.
 Hyper-V Ubuntu images clear their machine ID before export so each clone gets
 its own identity before DHCP. Older images lack this guarantee: rebuild once
 with `sailwright build ubuntu --type server --arch amd64 --no-cache` (or

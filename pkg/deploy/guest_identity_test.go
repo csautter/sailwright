@@ -42,21 +42,41 @@ func TestLinuxCloneIdentityIsPersistentAndRefreshesNetworking(t *testing.T) {
 	}
 	write("etc/machine-id", "inherited-image-id\n", 0o600)
 	write("uuid", "12345678-1234-1234-1234-123456789abc\n", 0o600)
+	write("network-state", "active\n", 0o600)
 	write("bin/hostnamectl", "#!/bin/sh\nexit 0\n", 0o700)
 	write("bin/systemctl", `#!/bin/sh
-if [ "$1" = is-active ]; then
-  [ "$3" = systemd-networkd.service ]
-else
+case "$*" in
+'show --property=ActiveState --value systemd-networkd.service')
+  cat "$TEST_NETWORK_STATE" ;;
+'show --property=ActiveState --value NetworkManager.service')
+  printf '%s\n' inactive ;;
+'show --property=UnitFileState --value systemd-networkd.service')
+  printf '%s\n' enabled ;;
+'show --property=UnitFileState --value NetworkManager.service')
+  printf '%s\n' disabled ;;
+'restart systemd-networkd.service'|'restart NetworkManager.service')
   printf '%s\n' "$*" >> "$TEST_CALLS"
-  [ "${TEST_FAIL_NETWORK:-}" != 1 ]
-fi
+  if [ "${TEST_FAIL_NETWORK:-}" = 1 ]; then
+    printf '%s\n' failed > "$TEST_NETWORK_STATE"
+    exit 1
+  fi
+  printf '%s\n' active > "$TEST_NETWORK_STATE" ;;
+*) exit 2 ;;
+esac
 `, 0o700)
 	vm := build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "server", Arch: "amd64", Name: "a", VirtualizationEngine: build.VirtualizationEngineQemu}
+	const machineFile = "etc/machine-id"
+	stamp := strings.TrimPrefix(linuxIdentityPath, "/")
+	pending := stamp + ".pending"
 	run := func(fail bool) error {
 		t.Helper()
 		script := strings.NewReplacer("/etc/machine-id", filepath.Join(root, "etc/machine-id"), "/var/lib", filepath.Join(root, "var/lib"), "/proc/sys/kernel/random/uuid", filepath.Join(root, "uuid")).Replace(linuxInstanceIdentityScript(vm))
 		cmd := exec.Command("sh", "-ec", script)
-		cmd.Env = append(os.Environ(), "PATH="+filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"), "TEST_CALLS="+filepath.Join(root, "calls"))
+		cmd.Env = append(os.Environ(),
+			"PATH="+filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"TEST_CALLS="+filepath.Join(root, "calls"),
+			"TEST_NETWORK_STATE="+filepath.Join(root, "network-state"),
+		)
 		if fail {
 			cmd.Env = append(cmd.Env, "TEST_FAIL_NETWORK=1")
 		}
@@ -66,44 +86,105 @@ fi
 		}
 		return nil
 	}
+	requireUnstamped := func() {
+		t.Helper()
+		if _, err := os.Stat(filepath.Join(root, stamp)); !os.IsNotExist(err) {
+			t.Fatal("marked failed initialization complete")
+		}
+	}
+	verify := func() error {
+		return verifyLinuxUTMIdentity(build.InstanceName(vm), build.InstanceHostname(vm), func(path string) (string, error) {
+			if path == linuxRunningHostnamePath || path == linuxConfiguredHostnamePath {
+				return build.InstanceHostname(vm), nil
+			}
+			return strings.TrimSuffix(read(strings.TrimPrefix(path, "/")), "\n"), nil
+		})
+	}
 	if err := run(true); err == nil {
 		t.Fatal("network restart failure was ignored")
 	}
-	id := read("etc/machine-id")
-	if strings.TrimSpace(id) != "12345678123412341234123456789abc" {
+	id := read(machineFile)
+	if id != "12345678123412341234123456789abc\n" || read("network-state") != "failed\n" {
 		t.Fatal(id)
 	}
-	if _, err := os.Stat(filepath.Join(root, "var/lib/sailwright/instance-identity")); !os.IsNotExist(err) {
-		t.Fatal("marked failed initialization complete")
-	}
+	requireUnstamped()
 	// Retry retains the pending machine ID even if the random source changes.
 	write("uuid", "87654321-4321-4321-4321-cba987654321\n", 0o600)
+	if err := run(true); err == nil {
+		t.Fatal("retry ignored the failed renderer")
+	}
+	requireUnstamped()
+	if read(pending) != id || read(machineFile) != id {
+		t.Fatal("failed retry changed the pending identity")
+	}
+	write("network-state", "inactive\n", 0o600)
 	if err := run(false); err != nil {
 		t.Fatal(err)
 	}
-	if read("etc/machine-id") != id {
+	if read(machineFile) != id {
 		t.Fatal("retry changed the pending identity")
 	}
 	calls := read("calls")
-	if strings.Count(calls, "restart systemd-networkd.service") != 2 || strings.Contains(calls, "restart NetworkManager") {
+	const restart = "restart systemd-networkd.service\n"
+	if calls != strings.Repeat(restart, 3) {
 		t.Fatal(calls)
 	}
+	if err := verify(); err != nil {
+		t.Fatal(err)
+	}
+	// Both forms previously accepted by Go must remain idempotent.
+	write(machineFile, strings.TrimSuffix(id, "\n"), 0o600)
+	write(stamp, strings.TrimSuffix(read(stamp), "\n"), 0o600)
 	if err := run(false); err != nil {
 		t.Fatal(err)
 	}
-	if read("etc/machine-id") != id || read("calls") != calls {
+	if read(machineFile) != strings.TrimSuffix(id, "\n") || read("calls") != calls {
 		t.Fatal("ordinary start changed identity or restarted networking")
+	}
+	// Older scripts could leave an installed pending ID and no renderer list.
+	for _, state := range []string{"failed", "inactive"} {
+		if err := os.Remove(filepath.Join(root, stamp)); err != nil {
+			t.Fatal(err)
+		}
+		write(pending, id, 0o600)
+		write("network-state", state+"\n", 0o600)
+		if err := run(false); err != nil {
+			t.Fatal(err)
+		}
+		calls += restart
+		if read(machineFile) != id || read("calls") != calls {
+			t.Fatalf("legacy retry with %s renderer did not restore networking with the pending ID", state)
+		}
+		if err := verify(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// Even an image containing another instance's marker receives a fresh ID.
 	vm.Name = "b"
 	if err := run(false); err != nil {
 		t.Fatal(err)
 	}
-	if read("etc/machine-id") == id {
+	if read(machineFile) == id {
 		t.Fatal("sibling clone retained the machine ID")
 	}
-	if read("var/lib/dbus/machine-id") != read("etc/machine-id") {
+	if read("var/lib/dbus/machine-id") != read(machineFile) {
 		t.Fatal("D-Bus machine ID differs")
+	}
+	for _, path := range []string{stamp, machineFile} {
+		valid := read(path)
+		write(path, valid+"\n", 0o600)
+		if err := verify(); err == nil {
+			t.Fatalf("readback accepted extra newline in %s", path)
+		}
+		if err := run(false); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(path); got != valid {
+			t.Fatalf("repair of %s returned %q, want %q", path, got, valid)
+		}
+		if err := verify(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -171,31 +252,72 @@ func fakeUTMGuestIdentity(t *testing.T, fake func(time.Duration, []string) (stri
 }
 
 func TestConfigureNamedUTMGuestUsesBundleUUID(t *testing.T) {
-	vm, _, _ := mockMacOSLifecycle(t)
-	vm.Name = "work"
-	bundle, err := utmVirtualMachinePath(vm)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeMacFixture(t, filepath.Join(bundle, "config.plist"), strings.ToLower(guestIdentityTestUTMUUID))
-	const machineID = "12345678123412341234123456789abc"
-	fakeUTMGuestIdentity(t, func(_ time.Duration, args []string) (string, error) {
-		if args[0] == "exec" {
-			return "", nil
-		}
-		switch args[3] {
-		case linuxIdentityPath:
-			return build.InstanceName(vm) + ":" + machineID + "\n", nil
-		case linuxMachineIDPath:
-			return machineID + "\n", nil
-		case linuxRunningHostnamePath, linuxConfiguredHostnamePath:
-			return build.InstanceHostname(vm) + "\n", nil
-		}
-		t.Fatal(args)
-		return "", nil
-	})
-	if err := ConfigureNamedGuestHostname(vm); err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		name   string
+		budget time.Duration
+	}{
+		{"lookup cap", 0},
+		{"lookup and readiness share the deadline", time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vm, _, _ := mockMacOSLifecycle(t)
+			vm.Name = "work"
+			bundle, err := utmVirtualMachinePath(vm)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeMacFixture(t, filepath.Join(bundle, "config.plist"), strings.ToLower(guestIdentityTestUTMUUID))
+			const (
+				machineID  = "12345678123412341234123456789abc"
+				lookupTime = 20 * time.Millisecond
+			)
+			var lookupTimeout time.Duration
+			fakeUTMGuestIdentity(t, func(timeout time.Duration, args []string) (string, error) {
+				if lookupTimeout == 0 {
+					t.Fatal("guest contacted before UUID lookup")
+				}
+				if tc.budget > 0 && timeout > lookupTimeout-lookupTime {
+					t.Fatalf("guest command received %s after lookup spent at least %s of %s", timeout, lookupTime, lookupTimeout)
+				}
+				if args[0] == "exec" {
+					return "", nil
+				}
+				switch args[3] {
+				case linuxIdentityPath:
+					return build.InstanceName(vm) + ":" + machineID + "\n", nil
+				case linuxMachineIDPath:
+					return machineID + "\n", nil
+				case linuxRunningHostnamePath, linuxConfiguredHostnamePath:
+					return build.InstanceHostname(vm) + "\n", nil
+				}
+				t.Fatal(args)
+				return "", nil
+			})
+			runUTM := runGuestIdentityCommand
+			runGuestIdentityCommand = func(project string, timeout time.Duration, executable string, args []string) (string, error) {
+				if executable != "plutil" {
+					return runUTM(project, timeout, executable, args)
+				}
+				lookupTimeout = timeout
+				if tc.budget > 0 {
+					if timeout <= 0 || timeout > tc.budget {
+						t.Fatalf("lookup timeout %s outside the remaining budget %s", timeout, tc.budget)
+					}
+					time.Sleep(lookupTime)
+				} else if timeout != instanceIDQueryTimeout {
+					t.Fatalf("lookup timeout %s, want %s", timeout, instanceIDQueryTimeout)
+				}
+				return runCommandWithCombinedOutput(project, timeout, executable, args)
+			}
+			if tc.budget > 0 {
+				err = configureNamedUTMGuestFromBundle(vm, "", time.Now().Add(tc.budget))
+			} else {
+				err = ConfigureNamedGuestHostname(vm)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
