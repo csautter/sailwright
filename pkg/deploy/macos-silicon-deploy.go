@@ -18,12 +18,18 @@ const (
 	utmGracefulStopPollInterval = 2 * time.Second
 )
 
+var runUtmDeployCommandWithEnv = runCommandWithStreamingLogsWithEnv
+
 func RunUtmDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 	if err := alchemy_build.ValidateInstance(config); err != nil {
 		return err
 	}
 	if !isUtmDeployTarget(config) {
 		return fmt.Errorf("UTM deploy is not implemented for OS=%s type=%s arch=%s", config.OS, config.UbuntuType, config.Arch)
+	}
+	networkMode, err := resolveUtmNetworkModeOverride()
+	if err != nil {
+		return err
 	}
 
 	// Creating the bundle is an offline operation. Defer registration repair to
@@ -42,8 +48,11 @@ func RunUtmDeployOnMacOS(config alchemy_build.VirtualMachineConfig) error {
 	if config.Name != "" {
 		args = append(args, "--name", config.Name)
 	}
+	if networkMode != "" {
+		args = append(args, "--network", strings.ToLower(networkMode))
+	}
 
-	if err := runCommandWithStreamingLogsWithEnv(
+	if err := runUtmDeployCommandWithEnv(
 		projectDir,
 		20*time.Minute,
 		"bash",

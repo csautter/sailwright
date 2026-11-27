@@ -80,7 +80,7 @@
 			<key>MacAddress</key>
 			<string>$MAC_ADDRESS</string>
 			<key>Mode</key>
-			<string>Bridged</string>
+			<string>Shared</string>
 			<key>PortForward</key>
 			<array/>
 		</dict>

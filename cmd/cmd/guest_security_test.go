@@ -157,6 +157,7 @@ func TestCreateListingUsesPlannedSecurityOnlyForMissingTargets(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv(alchemy_deploy.UtmNetworkModeEnvVar, "")
 	t.Setenv("UTM_UBUNTU_ANSIBLE_PASSWORD", "Unique-Guest-Passphrase")
 	write := func(path, value string) {
 		t.Helper()
@@ -277,6 +278,183 @@ func TestGuestSecurityListingsSurviveCredentialConfigurationErrors(t *testing.T)
 			}
 			if !bytes.Contains(data, []byte("guest credential security is unknown")) || bytes.Contains(data, []byte("sensitive-invalid-dotenv-line")) {
 				t.Fatalf("missing or unsafe diagnostic: %s", data)
+			}
+		})
+	}
+}
+
+func TestUtmCreateGuardDefaultSharedVsExplicitBridged(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirs := alchemy_build.GetDirectoriesInstance()
+	oldProject := dirs.ProjectDir
+	oldNetwork := inspectGuestNetwork
+	oldConfig := readGuestSecurityOverride
+	oldExists := inspectCreateTargetExists
+	oldAllow := createAllowInsecureCredentials
+	t.Cleanup(func() {
+		dirs.ProjectDir = oldProject
+		inspectGuestNetwork = oldNetwork
+		readGuestSecurityOverride = oldConfig
+		inspectCreateTargetExists = oldExists
+		createAllowInsecureCredentials = oldAllow
+	})
+	dirs.ProjectDir = repoRoot
+	inspectGuestNetwork = alchemy_deploy.InspectNetworkMode
+	inspectCreateTargetExists = func(alchemy_build.VirtualMachineConfig) (bool, error) { return false, nil }
+	createAllowInsecureCredentials = false
+
+	targets := []alchemy_build.VirtualMachineConfig{
+		{OS: "ubuntu", UbuntuType: "server", Arch: "arm64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineUtm},
+		{OS: "ubuntu", UbuntuType: "desktop", Arch: "amd64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineUtm},
+		{OS: "windows11", Arch: "arm64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineUtm},
+		{OS: "windows11", Arch: "amd64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineUtm},
+	}
+
+	t.Run("default Shared NAT passes guard with default credentials", func(t *testing.T) {
+		t.Setenv(alchemy_deploy.UtmNetworkModeEnvVar, "")
+		readGuestSecurityOverride = func(string) (bool, error) { return false, nil }
+		for _, vm := range targets {
+			var warnings bytes.Buffer
+			if err := checkGuestSecurity(vm, true, false, &warnings); err != nil {
+				t.Fatalf("default UTM create for %s/%s/%s must pass guard, got %v", vm.OS, vm.UbuntuType, vm.Arch, err)
+			}
+			if strings.Contains(warnings.String(), "may be reachable from the LAN") {
+				t.Fatalf("NAT target must not emit LAN warning: %s", warnings.String())
+			}
+			if !strings.Contains(warnings.String(), "non-private guest credentials") {
+				t.Fatalf("expected non-private credentials warning, got: %s", warnings.String())
+			}
+		}
+	})
+
+	t.Run("explicit bridged is refused without override", func(t *testing.T) {
+		t.Setenv(alchemy_deploy.UtmNetworkModeEnvVar, "bridged")
+		readGuestSecurityOverride = func(string) (bool, error) { return false, nil }
+		marker := filepath.Join(t.TempDir(), "started")
+		t.Setenv(createStartedFileEnvVar, marker)
+
+		vm := targets[0]
+		var warnings bytes.Buffer
+		err := checkGuestSecurity(vm, true, false, &warnings)
+		if err == nil || !strings.Contains(err.Error(), "refusing bridged networking") {
+			t.Fatalf("expected bridged refusal, got %v", err)
+		}
+		if !strings.Contains(warnings.String(), "may be reachable from the LAN") {
+			t.Fatalf("expected LAN warning, got %s", warnings.String())
+		}
+		if err := runDeploy(vm); err == nil || !strings.Contains(err.Error(), "refusing bridged networking") {
+			t.Fatalf("expected runDeploy bridged refusal, got %v", err)
+		}
+		if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("refused bridged create must not mark started: %v", statErr)
+		}
+	})
+
+	t.Run("explicit bridged succeeds with flag override", func(t *testing.T) {
+		t.Setenv(alchemy_deploy.UtmNetworkModeEnvVar, "bridged")
+		readGuestSecurityOverride = func(string) (bool, error) { return false, nil }
+		var warnings bytes.Buffer
+		if err := checkGuestSecurity(targets[0], true, true, &warnings); err != nil {
+			t.Fatalf("expected flag override to allow bridged create, got %v", err)
+		}
+		if !strings.Contains(warnings.String(), "may be reachable from the LAN") {
+			t.Fatalf("warnings must remain visible with override: %s", warnings.String())
+		}
+	})
+
+	t.Run("explicit bridged succeeds with config override", func(t *testing.T) {
+		t.Setenv(alchemy_deploy.UtmNetworkModeEnvVar, "bridged")
+		readGuestSecurityOverride = func(string) (bool, error) { return true, nil }
+		var warnings bytes.Buffer
+		if err := checkGuestSecurity(targets[0], true, false, &warnings); err != nil {
+			t.Fatalf("expected config override to allow bridged create, got %v", err)
+		}
+		if !strings.Contains(warnings.String(), "may be reachable from the LAN") {
+			t.Fatalf("warnings must remain visible with config override: %s", warnings.String())
+		}
+	})
+
+	t.Run("invalid SAILWRIGHT_UTM_NETWORK_MODE fails closed as unknown", func(t *testing.T) {
+		t.Setenv(alchemy_deploy.UtmNetworkModeEnvVar, "invalid")
+		readGuestSecurityOverride = func(string) (bool, error) { return false, nil }
+		var warnings bytes.Buffer
+		err := checkGuestSecurity(targets[0], true, false, &warnings)
+		if err == nil || !strings.Contains(err.Error(), "refusing unknown networking") {
+			t.Fatalf("expected unknown networking refusal, got %v", err)
+		}
+	})
+}
+
+func TestCreateListingAgreesWithUtmPlannedNetworkMode(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirs := alchemy_build.GetDirectoriesInstance()
+	oldProject := dirs.ProjectDir
+	oldJSON := listOutputJSON
+	oldNetwork := inspectGuestNetwork
+	oldCredentials := inspectGuestCredentials
+	oldExists, oldArtifact := inspectCreateTargetExists, inspectCreateArtifactExists
+	t.Cleanup(func() {
+		dirs.ProjectDir, listOutputJSON = oldProject, oldJSON
+		inspectGuestNetwork, inspectGuestCredentials = oldNetwork, oldCredentials
+		inspectCreateTargetExists, inspectCreateArtifactExists = oldExists, oldArtifact
+	})
+	dirs.ProjectDir = repoRoot
+	listOutputJSON = true
+	inspectGuestNetwork = alchemy_deploy.InspectNetworkMode
+	inspectGuestCredentials = alchemy_provision.GuestCredentialSecurity
+	inspectCreateTargetExists = alchemy_deploy.CreateTargetExists
+	inspectCreateArtifactExists = func(alchemy_build.VirtualMachineConfig) (bool, error) { return true, nil }
+
+	utmDir := t.TempDir()
+	t.Setenv("SAILWRIGHT_UTM_VM_DIR", utmDir)
+	existingBundle := filepath.Join(utmDir, "ubuntu-desktop-arm64-dev-alchemy.utm")
+	if err := os.MkdirAll(existingBundle, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(existingBundle, "config.plist"),
+		[]byte(`<plist><dict><key>Network</key><array><dict><key>Mode</key><string>Bridged</string></dict></array></dict></plist>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	vms := []alchemy_build.VirtualMachineConfig{
+		{OS: "ubuntu", UbuntuType: "server", Arch: "arm64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineUtm},
+		{OS: "ubuntu", UbuntuType: "desktop", Arch: "arm64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineUtm},
+	}
+
+	for _, tc := range []struct {
+		name         string
+		envValue     string
+		wantMissing  string
+		wantExisting string
+	}{
+		{"default nat for missing, existing stays bridged", "", "nat", "bridged"},
+		{"bridged env for missing, existing stays bridged", "bridged", "bridged", "bridged"},
+		{"shared env for missing, existing stays bridged", "shared", "nat", "bridged"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(alchemy_deploy.UtmNetworkModeEnvVar, tc.envValue)
+			var out bytes.Buffer
+			if err := printCreateCombinations(&out, vms); err != nil {
+				t.Fatal(err)
+			}
+			var listing vmListingJSON
+			if err := json.Unmarshal(out.Bytes(), &listing); err != nil {
+				t.Fatal(err)
+			}
+			if len(listing.Targets) != 2 {
+				t.Fatalf("unexpected targets: %+v", listing.Targets)
+			}
+			if listing.Targets[0].NetworkMode != tc.wantMissing {
+				t.Fatalf("missing target network_mode = %q, want %q", listing.Targets[0].NetworkMode, tc.wantMissing)
+			}
+			if listing.Targets[1].NetworkMode != tc.wantExisting {
+				t.Fatalf("existing target network_mode = %q, want %q", listing.Targets[1].NetworkMode, tc.wantExisting)
 			}
 		})
 	}

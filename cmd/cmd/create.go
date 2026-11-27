@@ -125,6 +125,9 @@ var createCmd = &cobra.Command{
 	Long: `Creates a new VM on your system with the defined OS.
 Use "all" to create all stable VM configurations.
 
+On macOS/UTM, new VMs default to Shared (NAT) networking. Set
+SAILWRIGHT_UTM_NETWORK_MODE=bridged to opt into Bridged (LAN) networking.
+
 Example:
   sailwright create ubuntu --type server --arch amd64
   sailwright create ubuntu --type server --arch amd64 --name work
