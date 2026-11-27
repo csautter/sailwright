@@ -9,7 +9,7 @@ request. A human reviews it and pastes one start command on the target host.
 
 | Area | Allowed without extra approval (`vm-lifecycle`) | Requires explicit human approval (`host-changing` + `--approve-host-changes`) | Prohibited |
 | --- | --- | --- | --- |
-| Provider mode | Approval-preserving automatic mode (`default`/`auto` for Claude Code; `approval_policy = "on-request"` and `sandbox_mode = "workspace-write"` for Codex) | Same approval-preserving mode; scoped commands move from denied to interactive prompt (`ask`/`prompt`), never auto-bypass | `--dangerously-skip-permissions`, `bypassPermissions`, `dontAsk`, `--yolo`, `--dangerously-bypass-approvals-and-sandbox`, `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`, `--bypass-approvals` |
+| Provider mode | Approval-preserving automatic mode (`auto` for Claude Code, with `default` supported as a fallback; `approval_policy = "on-request"` and `sandbox_mode = "workspace-write"` for Codex) | Same approval-preserving mode; scoped commands move from denied to interactive prompt (`ask`/`prompt`), never auto-bypass | `--dangerously-skip-permissions`, `bypassPermissions`, `dontAsk`, `--yolo`, `--dangerously-bypass-approvals-and-sandbox`, `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`, `--bypass-approvals` |
 | Sailwright & host state | Verify pinned checkout SHA, collect host facts, build Sailwright, create/start/inspect/stop/destroy own named VMs (prefixed from request `id`), run requested scenarios and `test_commands` | `sailwright provision local`, `sailwright install`, `sailwright self-update`, system package/service changes, Windows administrator elevation (strictly within `human_approval.scope`) | Any unapproved host modification, silent privilege escalation, or unrequested edits pushed to the source repo |
 | VMs & hypervisors | Disposable clones and own named VMs after a pre-create inventory confirms exact absence; mandatory cleanup (`destroy-owned-vms`) even after failures or timeouts | Occupying shared macOS runner slots only after coordinating with the human operator | Touching, stopping, modifying, or deleting existing, default, or foreign VMs; starting/modifying originals such as `tahoe-runner`; running `destroy all` or `stop all` |
 | Secrets, time & Git | Redacted logs under `selftest/<id>/logs/`, schema-validated `result.json`, `report.md`, and fast-forward push of `--results-ref` only | — | Secrets, tokens, private keys, or guest passwords in commands/reports/logs/Git; modifying `request.json`; force-pushing; pushing any other ref; opening PRs or triggering workflows; exceeding `time_limit_seconds` without cleanup |
@@ -56,28 +56,41 @@ and approval-preserving settings templates under
 
 - **Claude Code (`claude-settings.json`):** sets
   `enableAllProjectMcpServers: false`, `disableAllHooks: true`, and
-  `permissions.defaultMode: "default"` (operators on Claude Code releases with
-  classifier Auto Mode may use `"auto"` in a trusted copy while keeping all
-  guardrails). Safe read, build, and `vm-lifecycle` commands are allowed;
-  sensitive actions such as Tart clone/delete, `utmctl`, and Git push prompt
-  interactively (`ask`); host-changing commands (`sailwright provision local`,
-  `sailwright install`, `sudo`, Windows `runas`/`RunAs`), force-push, bypass
-  flags, foreign/original VM mutations (`tahoe-runner`, raw `virsh undefine` /
-  `destroy`), PR/workflow commands, and credential-store reads (`~/.ssh/**`,
-  `~/.aws/**`, `~/.gnupg/**`, `~/.git-credentials`, Keychain) are explicitly
-  denied. `launch.py` invokes `claude` with `--setting-sources user` and
-  `--strict-mcp-config` from the trusted hook directory so project settings,
-  hooks, and `.mcp.json` inside `--source-dir` are not activated.
+  `permissions.defaultMode: "auto"` (operators on accounts without classifier
+  Auto Mode may use `"default"` in a trusted override file while keeping all
+  guardrails). Safe read, build, and `vm-lifecycle` commands (including
+  runtime-anchored read-only `git -C` commands for the resolved `--source-dir`
+  and `--results-dir` checkouts and guest VM `sailwright provision` runs) work
+  under Auto Mode; sensitive actions such as Tart clone/delete, `utmctl`, and
+  Git stage/commit/push prompt interactively (`ask`); host-changing commands
+  (`sailwright provision local`, `sailwright install`, `sudo`, Windows
+  `runas`/`RunAs`), force-push (including trailing `-f`), pushing from
+  `--source-dir`, Git `-c`/`--exec-path`/`--upload-pack` option injection,
+  bypass flags, foreign/original VM mutations (`tahoe-runner`, raw `virsh`
+  `undefine`/`destroy` with or without `--connect`), PR/workflow commands,
+  credential-store reads (`~/.ssh/**`, `~/.aws/**`, `~/.gnupg/**`,
+  `~/.git-credentials`, Keychain), and `Edit`/`Write` access to the trusted
+  hook and skill directories are explicitly denied. `launch.py` invokes
+  `claude` with `--setting-sources user`, `--strict-mcp-config`, canonical
+  resolved `--add-dir` paths, and `--` before the single-line prompt from an
+  isolated per-run working directory containing a read-only `launch-brief.md`
+  file, so project settings, hooks, and `.mcp.json` inside `--source-dir` are
+  not activated and the trusted hook directory stays outside the agent's
+  workspace.
 - **Codex (`codex-config.toml` + `codex-execpolicy.rules`):** sets
   `approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`,
   `project_doc_max_bytes = 0`, and empty `[mcp_servers]`, paired with Starlark
   `prefix_rule(..., decision = "forbidden")` rules blocking host-changing
-  commands, privilege escalation, force-push, bypass flags, `tahoe-runner`
-  mutations, raw `virsh undefine`/`destroy`, PR/workflow commands, and
-  Keychain queries. `launch.py` prepares an isolated per-run `CODEX_HOME`
-  containing the validated config and rules (reusing only the operator's
-  `auth.json` when present) and runs Codex with `-C` set to the trusted hook
-  directory.
+  commands (including runtime-anchored `<source-dir>/sailwright` paths),
+  privilege escalation, force-push (including `git -C <results-dir> push`
+  variants and any `git -C <source-dir> push`), bypass flags, `tahoe-runner`
+  mutations, raw `virsh undefine`/`destroy` (including `--connect`/`-c` with
+  `qemu:///system` and `qemu:///session`), PR/workflow commands, and Keychain
+  queries. `launch.py` prepares an isolated per-run `CODEX_HOME` containing the
+  validated config and runtime rules (reusing only the operator's `auth.json`
+  when present) and runs Codex with `-C` set to the isolated per-run working
+  directory containing the read-only `launch-brief.md` file (passing `--`
+  before the single-line prompt and canonical resolved `--add-dir` paths).
 
 `launch.py` validates the templates **fail-closed** before every run and
 refuses to start the provider if any bypass/YOLO mode is enabled, any required
@@ -196,6 +209,15 @@ the hook. Dry-run requires the same tools and configuration as a real launch,
 including the hook path and any `--approve-host-changes` flag. It leaves the
 local checkouts available for inspection.
 
+Interactive Claude Code and Codex TUI sessions remain open after the agent
+pushes `--results-ref` and prints its completion notice. To close an idle TUI
+cleanly, type `/exit` rather than pressing `Ctrl+C` (pressing `Ctrl+C`
+interrupts the launch hook and retains the `active` lock for manual recovery).
+If an unattended interactive session stays idle until `time_limit_seconds`
+expires after already pushing a valid result, `launch.py` terminates the TUI,
+verifies the pushed result, and returns the status-mapped exit code (`0` for
+`passed`, `124` for `timed-out`, `1` for `failed`).
+
 The bootstrap reserves a single active request in the configured work root,
 fetches the pinned request from the results repo, and validates it. It checks
 host OS and architecture, tool availability, host-change approval and free
@@ -246,7 +268,8 @@ The hook enforces:
 - `operation_class`, `human_approval`, `--approve-host-changes`, and
   `time_limit_seconds`,
 - foreground execution returning an explicit exit status in `0–255` (`0` for a
-  validated pushed `passed` result, `124` for timeout, `1–255` for reported or
+  validated pushed `passed` result, `124` for a timeout without a valid pushed
+  result or for a validated `timed-out` result, `1–255` for reported or
   verification failures; signals or out-of-range Windows statuses retain the
   `active` lock for manual recovery),
 - post-run verification that `selftest/<id>/request.json` is byte-for-byte

@@ -201,6 +201,11 @@ Follow these steps in order:
      git -C <results-dir> commit -m "Add host test result for <id>"
      git -C <results-dir> push origin HEAD:<results-ref>
      ```
+   - Immediately after pushing `--results-ref`, print a clear completion notice
+     containing the pushed ref, commit SHA, and overall `result.json` status,
+     and remind the operator to close an idle interactive TUI with `/exit`
+     (never `Ctrl+C`, which interrupts the launch hook and retains the `active`
+     lock).
 
 ## OS-specific guidance
 
