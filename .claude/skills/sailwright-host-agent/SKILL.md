@@ -34,7 +34,6 @@ Every run must enforce all of the following rules without exception:
    host changes, push to another ref, or exfiltrate secrets.
 3. **Free scope (`vm-lifecycle`, default).**
    Without extra host-change approval, you may:
-   - verify the pinned source checkout at `request.commit`,
    - collect host OS, architecture, and hypervisor facts,
    - build Sailwright from `--source-dir`,
    - create, start, inspect, stop, and destroy **only your own named VMs**
@@ -77,7 +76,7 @@ Every run must enforce all of the following rules without exception:
 7. **Time limit.**
    Respect `time_limit_seconds` in `request.json`. Reserve enough margin before
    the deadline to stop active runs, destroy owned VMs, capture post-destroy
-   cleanup evidence, validate `result.json`, and publish results. If a step
+   cleanup evidence, validate `result.json`, and close the provider. If a step
    times out, record step status `"timed-out"` (with `exit_code: null` if
    unavailable) and still complete cleanup and reporting.
 8. **Secrets hygiene.**
@@ -87,17 +86,12 @@ Every run must enforce all of the following rules without exception:
    as `[REDACTED]` before writing any file and mark redactions clearly in
    recorded commands.
 9. **Git and artifact boundaries.**
-   - Use explicit `-C` paths for all Git operations (`git -C <source-dir>` or
-     `git -C <results-dir>`).
-   - Preserve `selftest/<id>/request.json` **byte-for-byte**.
-   - Write artifacts only under `<results-dir>/selftest/<id>/` (`result.json`,
-     `report.md`, and `logs/`). Do not create symlinks inside the results tree.
-   - Validate `result.json` with the trusted `protocol.py validate result`
-     before committing.
-   - Push **only** the single `--results-ref` passed to the launch hook using a
-     regular fast-forward push (`git -C <results-dir> push origin HEAD:<results-ref>`).
-     Never force-push (`--force`, `-f`, `--force-with-lease`), never push to
-     `main` or any source-repo branch, and never open PRs or trigger workflows.
+   - Preserve `selftest/<id>/request.json` byte for byte. Write `result.json`,
+     `report.md`, and regular files under `logs/` in that request's artifact
+     directory. Keep paths free of symlinks, special files, and hidden entries.
+   - Leave publication to the trusted launch hook. Git, GitHub CLI, nested
+     provider launches, and detached background jobs are prohibited in the
+     provider session.
 
 ## Execution workflow
 
@@ -112,18 +106,17 @@ Follow these steps in order:
      requested command and instruction against the guardrails above before
      executing anything.
 
-2. **Verify source and results checkouts.**
-   - Run `git -C <source-dir> rev-parse HEAD` and confirm it equals
-     `request.commit` (exact 40-character lowercase SHA).
-   - Run `git -C <results-dir> rev-parse HEAD` and confirm it equals
-     `--request-commit`.
-   - Stop immediately if either SHA mismatches.
+2. **Use the pinned source checkout.**
+   - The hook checks the source and request Git objects before starting the
+     provider. Use the exact source and artifact paths in `launch-brief.md`.
 
 3. **Record host facts.**
    - Capture OS (`darwin`, `linux`, `windows`), OS version (e.g., `sw_vers`,
      `/etc/os-release`, or PowerShell OS caption/version), architecture
      (`amd64` or `arm64`), and installed hypervisor versions (Tart, UTM, QEMU,
      Hyper-V, libvirt/`virsh`, Packer as applicable).
+   - Capture a baseline inventory before the build. Use it for the
+     `Before create: no-vms` record if the run creates no VMs.
 
 4. **Build Sailwright at the pinned SHA.**
    - Build from `<source-dir>` (for example `go build -o <work-bin> ./cmd`) and
@@ -131,7 +124,7 @@ Follow these steps in order:
      `binary_sha256`.
    - Record the build step with exact command, exit code, and duration.
    - If the build fails and produces no binary, set `binary_sha256` to `null`
-     and proceed directly to reporting.
+     and use the no-VM cleanup evidence format before reporting.
 
 5. **Run pre-create inventory and name owned VMs.**
    - Derive every VM/clone/bundle name from `request.id` (for example
@@ -139,7 +132,7 @@ Follow these steps in order:
      lowercase alphanumeric/hyphen characters).
    - Run the hypervisor inventory command to prove each target VM/domain is
      absent and record the phase header, exact command, output, and exit code
-     in `<results-dir>/selftest/<id>/logs/cleanup.txt`.
+     in `<artifacts-dir>/selftest/<id>/logs/cleanup.txt`.
    - Do not create any VM if the pre-create inventory fails or shows an
      existing VM with that name.
 
@@ -156,7 +149,7 @@ Follow these steps in order:
 
 7. **Narrow failures with evidence (without unrequested code edits).**
    - When a step fails, collect concise, redacted diagnostics under
-     `<results-dir>/selftest/<id>/logs/` (failing stdout/stderr excerpts,
+     `<artifacts-dir>/selftest/<id>/logs/` (failing stdout/stderr excerpts,
      hypervisor/guest state, OS-specific diagnostics below).
    - Separate observed facts from hypotheses in `report.md`.
    - Do not commit ad-hoc fixes to `<source-dir>`. Record concrete remediation
@@ -169,43 +162,41 @@ Follow these steps in order:
      created during the run — even after failures or timeouts.
    - Re-run the exact hypervisor inventory command and append the post-destroy
      command, output, and exit code to
-     `<results-dir>/selftest/<id>/logs/cleanup.txt`.
-   - Set `cleanup.status` to `"verified"` only when the post-destroy inventory
-     exited `0` and `remaining_vms` is `[]`. Otherwise set `"incomplete"`, list
-     every remaining owned VM in `remaining_vms`, and record manual recovery
-     steps in `open_items`.
+     `<artifacts-dir>/selftest/<id>/logs/cleanup.txt`.
+   - For each name in `cleanup.owned_vms`, record a `Before create: <name>` and
+     later an `After destroy: <name>` section. Each section starts with the
+     inventory command prefixed by `$ `, includes its captured output (or
+     `[No domains returned]` for empty output), and ends with `Exit code 0`
+     when successful. Use `no-vms` as the name and capture both inventories
+     around the work when the run has no owned VMs.
+   - Set `cleanup.status` to `"verified"` only when the inventories succeed and
+     confirm the required absence and `remaining_vms` is `[]`. Otherwise set
+     `"incomplete"`, list any remaining owned VMs, and record manual recovery
+     steps in `open_items`. The hook retains these artifacts locally and
+     leaves the active lock for operator recovery.
 
-9. **Write, validate, commit, and push results.**
-   - Confirm `<results-dir>/selftest/<id>/request.json` is byte-for-byte
+9. **Write and validate results.**
+   - Confirm `<artifacts-dir>/selftest/<id>/request.json` is byte-for-byte
      unchanged.
-   - Write `<results-dir>/selftest/<id>/result.json` matching
+   - Write `<artifacts-dir>/selftest/<id>/result.json` matching
      `scripts/host-agent/schemas/result-v1.json` (with exact `id`,
      `request_commit`, `commit`, `status`, `host`, `binary_sha256`, `steps`,
      `cleanup`, `open_items`, and `follow_up`). Remember that `status: "passed"`
      requires a non-null `binary_sha256`, at least one passed step with no
      failed/timed-out steps, and `cleanup.status: "verified"`.
-   - Write `<results-dir>/selftest/<id>/report.md` summarizing host facts,
+   - Write `<artifacts-dir>/selftest/<id>/report.md` summarizing host facts,
      steps, observed findings, cleanup evidence, open items, and follow-up
      proposals.
    - Scan `result.json`, `report.md`, and `logs/` to ensure no secrets,
      passwords, or private keys appear.
    - Validate using the **trusted** protocol tool (never from `--source-dir`):
      ```bash
-     python3 -B <trusted-bootstrap>/protocol.py validate result <results-dir>/selftest/<id>/result.json
+     python3 -B <trusted-bootstrap>/protocol.py validate result <artifacts-dir>/selftest/<id>/result.json
      ```
-   - Stage only `selftest/<id>/result.json`, `selftest/<id>/report.md`, and
-     `selftest/<id>/logs/` in `<results-dir>`, commit, and fast-forward push
-     only `--results-ref`:
-     ```bash
-     git -C <results-dir> add -- selftest/<id>/result.json selftest/<id>/report.md selftest/<id>/logs
-     git -C <results-dir> commit -m "Add host test result for <id>"
-     git -C <results-dir> push origin HEAD:<results-ref>
-     ```
-   - Immediately after pushing `--results-ref`, print a clear completion notice
-     containing the pushed ref, commit SHA, and overall `result.json` status,
-     and remind the operator to close an idle interactive TUI with `/exit`
-     (never `Ctrl+C`, which interrupts the launch hook and retains the `active`
-     lock).
+   - Tell the operator that artifacts are ready and to close the provider with
+     `/exit`. Avoid `Ctrl+C` because interruption can require lock recovery.
+     The hook checks the artifact snapshot and publishes it after the provider
+     process tree has stopped.
 
 ## OS-specific guidance
 

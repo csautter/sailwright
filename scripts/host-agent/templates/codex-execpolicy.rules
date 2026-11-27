@@ -1,5 +1,5 @@
 # Approval-preserving Codex execpolicy rules for sailwright-host-agent.
-# Host-changing operations, privilege escalation, bypass flags, force-push,
+# Host-changing operations, privilege escalation, bypass flags, direct Git access,
 # foreign/original VM mutations, and credential-store queries are forbidden by default.
 
 prefix_rule(
@@ -87,57 +87,43 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["git", "push", "--force"],
+    pattern = [[
+        "git", "git.exe", "git.cmd", "git.bat",
+        "./git", "./git.exe", "./git.cmd", "./git.bat",
+        ".\\git", ".\\git.exe", ".\\git.cmd", ".\\git.bat",
+    ]],
     decision = "forbidden",
-    justification = "Only regular fast-forward pushes to the assigned results ref are allowed.",
+    justification = "Use the trusted host-agent hook for Git and provider launches.",
 )
 
 prefix_rule(
-    pattern = ["git", "push", "-f"],
+    pattern = [[
+        "gh", "gh.exe", "gh.cmd", "gh.bat",
+        "./gh", "./gh.exe", "./gh.cmd", "./gh.bat",
+        ".\\gh", ".\\gh.exe", ".\\gh.cmd", ".\\gh.bat",
+    ]],
     decision = "forbidden",
-    justification = "Only regular fast-forward pushes to the assigned results ref are allowed.",
+    justification = "Use the trusted host-agent hook for Git and provider launches.",
 )
 
 prefix_rule(
-    pattern = ["git", "push", "--force-with-lease"],
+    pattern = [[
+        "claude", "claude.exe", "claude.cmd", "claude.bat",
+        "./claude", "./claude.exe", "./claude.cmd", "./claude.bat",
+        ".\\claude", ".\\claude.exe", ".\\claude.cmd", ".\\claude.bat",
+    ]],
     decision = "forbidden",
-    justification = "Only regular fast-forward pushes to the assigned results ref are allowed.",
+    justification = "Use the trusted host-agent hook for Git and provider launches.",
 )
 
 prefix_rule(
-    pattern = ["git", "push", "origin", "--force"],
+    pattern = [[
+        "codex", "codex.exe", "codex.cmd", "codex.bat",
+        "./codex", "./codex.exe", "./codex.cmd", "./codex.bat",
+        ".\\codex", ".\\codex.exe", ".\\codex.cmd", ".\\codex.bat",
+    ]],
     decision = "forbidden",
-    justification = "Only regular fast-forward pushes to the assigned results ref are allowed.",
-)
-
-prefix_rule(
-    pattern = ["git", "push", "origin", "-f"],
-    decision = "forbidden",
-    justification = "Only regular fast-forward pushes to the assigned results ref are allowed.",
-)
-
-prefix_rule(
-    pattern = ["git", "push", "origin", "--force-with-lease"],
-    decision = "forbidden",
-    justification = "Only regular fast-forward pushes to the assigned results ref are allowed.",
-)
-
-prefix_rule(
-    pattern = ["claude", "--dangerously-skip-permissions"],
-    decision = "forbidden",
-    justification = "Bypass and YOLO modes are prohibited.",
-)
-
-prefix_rule(
-    pattern = ["codex", "--yolo"],
-    decision = "forbidden",
-    justification = "Bypass and YOLO modes are prohibited.",
-)
-
-prefix_rule(
-    pattern = ["codex", "--dangerously-bypass-approvals-and-sandbox"],
-    decision = "forbidden",
-    justification = "Bypass and YOLO modes are prohibited.",
+    justification = "Use the trusted host-agent hook for Git and provider launches.",
 )
 
 prefix_rule(

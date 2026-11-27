@@ -24,7 +24,12 @@ HERE = Path(__file__).resolve().parent
 SHA = re.compile(r"[0-9a-f]{40}")
 ID = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 SKILL = "sailwright-host-agent"
-LOCK_RECOVERY = "Verify the hook and its processes have stopped and finish cleanup before removing the lock directory."
+LOCK_RECOVERY = (
+    "Verify the provider and its descendants have stopped. Check the native hypervisor inventory "
+    "and clean up only VMs owned by the request before manually removing this lock directory."
+)
+LOCK_MARKER_ENV = "SAILWRIGHT_HOST_AGENT_LOCK_MARKER"
+RESULTS_REPO_ENV = "SAILWRIGHT_HOST_AGENT_RESULTS_REPO"
 
 
 class ProtocolError(Exception):
@@ -288,6 +293,7 @@ def start(args):
         raise ProtocolError(f"an active request lock exists at {lock}. {LOCK_RECOVERY}") from error
 
     hook_running = False
+    cleanup_pending = lock / "cleanup-pending"
     try:
         work = Path(tempfile.mkdtemp(prefix=f"{args.id}-", dir=root))
         print(f"Work directory: {work}", flush=True)
@@ -328,7 +334,12 @@ def start(args):
             return 0
         hook_running = True
         try:
-            process = subprocess.Popen(command, cwd=hook.parent, env=git_environment())
+            hook_env = git_environment()
+            hook_env.update({
+                LOCK_MARKER_ENV: str(cleanup_pending.resolve()),
+                RESULTS_REPO_ENV: location,
+            })
+            process = subprocess.Popen(command, cwd=hook.parent, env=hook_env)
         except OSError:
             hook_running = False
             raise
@@ -336,18 +347,19 @@ def start(args):
             status = process.wait()
         except KeyboardInterrupt as error:
             raise ProtocolError("interrupted while waiting for the launch hook") from error
-        if is_windows():
-            if not 0 <= status <= 255:
+        if not 0 <= status <= 255:
+            if is_windows():
                 code = f"0x{status & 0xFFFFFFFF:08x}" if -0x80000000 <= status <= 0xFFFFFFFF else str(status)
                 raise ProtocolError(
                     f"launch hook terminated with abnormal Windows exit status {code} (expected 0-255)"
                 )
-        elif status < 0:
-            raise ProtocolError(f"launch hook terminated by signal {-status}")
+            if status < 0:
+                raise ProtocolError(f"launch hook terminated by signal {-status}")
+            raise ProtocolError(f"launch hook exit status {status} is outside 0-255")
         hook_running = False
         return status
     finally:
-        if hook_running:
+        if hook_running or cleanup_pending.exists():
             print(f"host-agent: active request lock retained at {lock}. {LOCK_RECOVERY}", file=sys.stderr)
         else:
             lock.rmdir()

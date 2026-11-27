@@ -133,14 +133,31 @@ def main():
             "codex_rules": codex_rules,
         }, indent=2), encoding="utf-8")
 
+    if behavior == "tty_child":
+        assert sys.stdin.isatty()
+        assert os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
+        assert input("provider ready: ") == "hello"
+        children = []
+        for detached in (False, True):
+            children.append(subprocess.Popen([
+                sys.executable, "-c",
+                "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
+            ], stdin=subprocess.DEVNULL, start_new_session=detached))
+        Path(os.environ["FAKE_PROVIDER_CHILD"]).write_text(
+            " ".join(str(child.pid) for child in children), encoding="utf-8"
+        )
+        import tty
+        tty.setraw(sys.stdin.fileno())
+        time.sleep(30)
+        return 0
+
     if behavior == "sleep":
         time.sleep(10)
         return 0
 
     request_path = Path(extract(prompt, "Pinned request JSON"))
     source_dir = Path(extract(prompt, "Detached source checkout (untrusted code under test)"))
-    results_dir = Path(extract(prompt, "Detached results checkout"))
-    results_ref = extract(prompt, "Results Git ref (push target)")
+    results_dir = Path(extract(prompt, "Results artifact directory"))
     request_commit = extract(prompt, "Pinned request commit SHA")
     protocol_path = Path(extract(prompt, "Trusted protocol validator"))
 
@@ -168,12 +185,20 @@ def main():
     )
     if behavior == "private_key_leak":
         cleanup_log += "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----\n"
-    (logs_dir / "cleanup.txt").write_text(cleanup_log, encoding="utf-8")
+    if behavior == "invalid_inventory":
+        cleanup_log = cleanup_log.replace("Exit code 0", "Exit code 1", 1)
+    if behavior == "still_present":
+        cleanup_log = cleanup_log.replace("[No domains returned]", domain, 1)
+    if behavior == "no_vms":
+        cleanup_log = cleanup_log.replace(domain, "no-vms")
+    if behavior != "missing_cleanup":
+        (logs_dir / "cleanup.txt").write_text(cleanup_log, encoding="utf-8")
+    (logs_dir / "step.txt").write_bytes(b"Guest password: [REDACTED]\r\n")
 
     binary_sha = hashlib.sha256(f"fake-sailwright-{source_sha}".encode("utf-8")).hexdigest()
-    overall_status = "failed" if behavior in {"report_failed", "fail_then_idle"} else "passed"
-    step_status = "failed" if behavior in {"report_failed", "fail_then_idle"} else "passed"
-    step_exit = 2 if behavior in {"report_failed", "fail_then_idle"} else 0
+    overall_status = "failed" if behavior in {"report_failed", "fail_then_idle", "incomplete_cleanup"} else "passed"
+    step_status = "failed" if behavior in {"report_failed", "fail_then_idle", "incomplete_cleanup"} else "passed"
+    step_exit = 2 if behavior in {"report_failed", "fail_then_idle", "incomplete_cleanup"} else 0
 
     result_doc = {
         "schema_version": 1,
@@ -206,7 +231,7 @@ def main():
         ],
         "cleanup": {
             "status": "verified",
-            "owned_vms": [domain],
+            "owned_vms": [] if behavior == "no_vms" else [domain],
             "remaining_vms": [],
             "evidence": (
                 f"Pre-create and post-destroy inventories in logs/cleanup.txt both succeeded on "
@@ -223,6 +248,9 @@ def main():
         ],
     }
 
+    if behavior == "incomplete_cleanup":
+        result_doc["cleanup"]["status"] = "incomplete"
+        result_doc["cleanup"]["remaining_vms"] = [domain]
     if behavior == "bad_commit":
         result_doc["commit"] = "f" * 40
     if behavior == "invalid_schema":
@@ -247,6 +275,9 @@ def main():
     if behavior == "outside_file":
         (results_dir / "stray.txt").write_text("outside selftest/<id>/\n", encoding="utf-8")
 
+    if behavior == "provider_git_history":
+        subprocess.run(["git", "init", "--quiet", str(results_dir)], check=True)
+
     if behavior == "symlink_log":
         (logs_dir / "link.txt").symlink_to(request_path)
 
@@ -256,22 +287,20 @@ def main():
             check=True,
         )
 
-    if behavior == "uncommitted":
-        return 0
-
-    subprocess.run(["git", "-C", str(results_dir), "add", "-A"], check=True)
-    subprocess.run(
-        ["git", "-C", str(results_dir), "commit", "--quiet", "-m", f"Add host test result for {req_id}"],
-        check=True,
-    )
-
-    if behavior == "unpushed":
-        return 0
-
-    subprocess.run(
-        ["git", "-C", str(results_dir), "push", "--quiet", "origin", f"HEAD:{results_ref}"],
-        check=True,
-    )
+    if behavior in {"extra_ref", "origin_redirect"}:
+        assert not (results_dir / ".git").exists()
+        assert "SAILWRIGHT_HOST_AGENT_RESULTS_REPO" not in os.environ
+        bootstrap_repo = results_dir.parent / "results"
+        if behavior == "origin_redirect":
+            target = os.environ["FAKE_REDIRECT_REPO"]
+            subprocess.run(["git", "-C", str(bootstrap_repo), "remote", "add", "origin", target], check=True)
+            remote = "origin"
+        else:
+            remote = os.environ["FAKE_ORIGINAL_REPO"]
+        blocked = subprocess.run([
+            "git", "-C", str(bootstrap_repo), "push", remote, "HEAD:refs/heads/unassigned-probe",
+        ], capture_output=True, text=True)
+        assert blocked.returncode != 0 and "transport 'file' not allowed" in blocked.stderr, blocked
     if behavior in {"pass_then_idle", "fail_then_idle"}:
         time.sleep(10)
     return 0
@@ -369,14 +398,9 @@ class TemplateGuardrailTests(unittest.TestCase):
             "provision local",
             "install",
             "sudo",
-            "-f ",
-            "-f)",
-            "--force*",
-            " -c ",
-            "--exec-path",
-            "--upload-pack",
-            "--yolo",
-            "--dangerously-skip-permissions",
+            "Bash(git:*)",
+            "Bash(claude:*)",
+            "Bash(codex:*)",
             "tahoe-runner",
             "virsh * undefine",
             "virsh * destroy",
@@ -392,46 +416,20 @@ class TemplateGuardrailTests(unittest.TestCase):
             ):
                 launch.validate_claude_settings(tampered)
 
-    def test_materialize_claude_settings_anchors_git_and_protects_trusted_dirs(self):
+    def test_materialize_claude_settings_protects_trusted_dirs(self):
         base = json.loads(launch.DEFAULT_CLAUDE_SETTINGS.read_text(encoding="utf-8"))
-        with tempfile.TemporaryDirectory(prefix="claude-materialize-test-") as tmp:
-            root = Path(tmp).resolve()
-            source_dir = root / "source"
-            results_dir = root / "results"
-            source_dir.mkdir()
-            results_dir.mkdir()
-
-            effective = launch.materialize_claude_settings(
-                base,
-                set(),
-                source_dir=source_dir,
-                results_dir=results_dir,
-                protected_dirs=(SCRIPTS, launch.DEFAULT_SKILL_FILE.parent),
-            )
-            allow = effective["permissions"]["allow"]
-            deny = effective["permissions"]["deny"]
-
-            for repo_dir in (source_dir, results_dir):
-                for subcmd in launch.READ_ONLY_GIT_SUBCOMMANDS:
-                    self.assertIn(f"Bash(git -C {repo_dir} {subcmd})", allow)
-                    self.assertIn(f"Bash(git -C {repo_dir} {subcmd} *)", allow)
-
-            self.assertIn(f"Bash(git -C {source_dir} push)", deny)
-            self.assertIn(f"Bash(git -C {source_dir} push*)", deny)
-            self.assertIn(f"Bash(git -C {source_dir} * push*)", deny)
-
-            for protected in (SCRIPTS, launch.DEFAULT_SKILL_FILE.parent):
-                glob = launch.claude_abs_dir_glob(protected)
-                self.assertTrue(glob.startswith("//"))
-                self.assertFalse(glob.startswith("///"))
-                self.assertIn(f"Edit({glob})", deny)
-                self.assertIn(f"Write({glob})", deny)
-
-            # Verify Windows path formatting avoids triple slashes and normalizes backslashes.
-            self.assertEqual(
-                launch.claude_abs_dir_glob(r"C:\trusted\sailwright\scripts\host-agent"),
-                "//C:/trusted/sailwright/scripts/host-agent/**",
-            )
+        protected_dirs = (SCRIPTS, launch.DEFAULT_SKILL_FILE.parent)
+        effective = launch.materialize_claude_settings(base, set(), protected_dirs=protected_dirs)
+        deny = effective["permissions"]["deny"]
+        self.assertTrue(set(launch.CLAUDE_HOOK_ONLY_RULES).issubset(deny))
+        for protected in protected_dirs:
+            glob = launch.claude_abs_dir_glob(protected)
+            self.assertIn(f"Edit({glob})", deny)
+            self.assertIn(f"Write({glob})", deny)
+        self.assertEqual(
+            launch.claude_abs_dir_glob(r"C:\trusted\sailwright\scripts\host-agent"),
+            "//C:/trusted/sailwright/scripts/host-agent/**",
+        )
 
     def test_default_codex_templates_pass_and_enforce_guardrails(self):
         config = tomllib.loads(launch.DEFAULT_CODEX_CONFIG.read_text(encoding="utf-8"))
@@ -454,6 +452,7 @@ class TemplateGuardrailTests(unittest.TestCase):
             ({**base_cfg, "approval_policy": "never"}, "approval_policy"),
             ({**base_cfg, "approval_policy": "on-failure"}, "approval_policy"),
             ({**base_cfg, "sandbox_mode": "danger-full-access"}, "sandbox_mode"),
+            ({**base_cfg, "sandbox_workspace_write": {"network_access": True}}, "network_access"),
             ({**base_cfg, "project_doc_max_bytes": 1024}, "project_doc_max_bytes"),
             ({**base_cfg, "mcp_servers": {"evil": {"command": "sh"}}}, "mcp_servers"),
             ({**base_cfg, "profiles": {"fast": {"approval_policy": "never"}}}, 'must not be "never"'),
@@ -470,6 +469,12 @@ class TemplateGuardrailTests(unittest.TestCase):
             launch.validate_codex_rules(
                 base_rules + '\nprefix_rule(pattern=["sudo"], decision="allow", justification="bad")\n'
             )
+
+        for executable in ("git", "codex", "claude"):
+            with self.subTest(removed=executable), self.assertRaisesRegex(
+                launch.LaunchError, "missing required forbidden rules"
+            ):
+                launch.validate_codex_rules(base_rules.replace(f'"{executable}", ', "", 1))
 
         for original in (
             'pattern = ["sailwright", "install"]',
@@ -504,21 +509,12 @@ class TemplateGuardrailTests(unittest.TestCase):
             results_dir.mkdir()
 
             rendered_default = launch.render_codex_rules(
-                base_rules, set(), source_dir=source_dir, results_dir=results_dir
+                base_rules, set(), source_dir=source_dir
             )
             parsed_default = {
                 rule["pattern"]: rule["decision"] for rule in launch.validate_codex_rules(rendered_default)
             }
-            self.assertEqual(parsed_default[("git", "-C", str(source_dir), "push")], "forbidden")
-            for suffix in (
-                ("push", "--force"),
-                ("push", "-f"),
-                ("push", "--force-with-lease"),
-                ("push", "origin", "--force"),
-                ("push", "origin", "-f"),
-                ("push", "origin", "--force-with-lease"),
-            ):
-                self.assertEqual(parsed_default[("git", "-C", str(results_dir), *suffix)], "forbidden")
+            self.assertEqual(parsed_default[("git",)], "forbidden")
             for bin_path in (str(source_dir / "sailwright"), str(source_dir / "sailwright.exe")):
                 self.assertEqual(parsed_default[(bin_path, "provision", "local")], "forbidden")
                 self.assertEqual(parsed_default[(bin_path, "install")], "forbidden")
@@ -527,7 +523,7 @@ class TemplateGuardrailTests(unittest.TestCase):
                 self.assertEqual(parsed_default[(bin_path, "stop", "all")], "forbidden")
 
             rendered_approved = launch.render_codex_rules(
-                base_rules, categories, source_dir=source_dir, results_dir=results_dir
+                base_rules, categories, source_dir=source_dir
             )
             parsed_approved = {
                 rule["pattern"]: rule["decision"] for rule in launch.parse_codex_rules(rendered_approved)
@@ -538,8 +534,33 @@ class TemplateGuardrailTests(unittest.TestCase):
             self.assertEqual(parsed_approved[("sailwright", "provision", "local")], "forbidden")
             self.assertEqual(parsed_approved[(str(source_dir / "sailwright"), "provision", "local")], "forbidden")
             self.assertEqual(parsed_approved[(str(source_dir / "sailwright"), "destroy", "all")], "forbidden")
-            self.assertEqual(parsed_approved[("git", "-C", str(source_dir), "push")], "forbidden")
-            self.assertEqual(parsed_approved[("codex", "--yolo")], "forbidden")
+            self.assertEqual(parsed_approved[("git",)], "forbidden")
+            self.assertEqual(parsed_approved[("codex",)], "forbidden")
+
+    @unittest.skipUnless(shutil.which("codex"), "offline Codex policy engine not installed")
+    def test_codex_execpolicy_forbids_git_and_nested_launches(self):
+        base = launch.validate_codex_rules(launch.DEFAULT_CODEX_RULES.read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory(prefix="codex-policy-") as tmp:
+            rules = Path(tmp) / "runtime.rules"
+            rules.write_text(launch.render_codex_rules(base, {"install"}, Path(tmp)), encoding="utf-8")
+            git_path = shutil.which("git")
+            for expected, argv in (
+                ("forbidden", ["git", "-C", tmp, "push", "origin", "HEAD:refs/heads/selftest/x", "-f"]),
+                ("forbidden", ["git", "-c", "color.ui=false", "push", "origin", "--force"]),
+                ("forbidden", [git_path, "push", "origin", "HEAD:refs/heads/selftest/x", "--force-with-lease"]),
+                ("forbidden", ["codex", "exec", "--yolo"]),
+                ("forbidden", ["./codex", "exec", "--yolo"]),
+                ("forbidden", ["codex", "-C", tmp, "--dangerously-bypass-approvals-and-sandbox"]),
+                ("forbidden", ["claude.cmd", "--model", "test", "--dangerously-skip-permissions"]),
+                ("prompt", ["sailwright", "install"]),
+                ("forbidden", ["sailwright", "provision", "local"]),
+            ):
+                with self.subTest(argv=argv):
+                    result = subprocess.check_output(
+                        ["codex", "execpolicy", "check", "--rules", str(rules), "--", *argv],
+                        text=True,
+                    )
+                    self.assertEqual(json.loads(result)["decision"], expected)
 
     def test_skill_and_docs_document_required_guardrails_and_os_guidance(self):
         skill_text = launch.DEFAULT_SKILL_FILE.read_text(encoding="utf-8")
@@ -563,6 +584,47 @@ class TemplateGuardrailTests(unittest.TestCase):
         self.assertIn("launch-brief.md", doc_text)
         self.assertIn("/exit", doc_text)
         self.assertIn("Ctrl+C", doc_text)
+
+
+@unittest.skipUnless(os.name == "nt", "requires native Windows Job Objects")
+class WindowsProcessTreeTests(unittest.TestCase):
+    def test_provider_timeout_terminates_the_windows_job(self):
+        import ctypes
+        from ctypes import wintypes
+
+        with tempfile.TemporaryDirectory(prefix="host-agent-job-") as tmp:
+            root = Path(tmp)
+            child_record = root / "child-pid"
+            provider = """
+from pathlib import Path
+import subprocess
+import sys
+import time
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+Path(sys.argv[1]).write_text(str(child.pid), encoding="ascii")
+time.sleep(60)
+"""
+            status = launch.run_windows_provider(
+                [sys.executable, "-B", "-c", provider, str(child_record)],
+                root, dict(os.environ), 3, root,
+            )
+            self.assertEqual(status, (124, True))
+            pid = int(child_record.read_text(encoding="ascii"))
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+            if not handle:
+                self.assertEqual(ctypes.get_last_error(), 87)  # ERROR_INVALID_PARAMETER
+                return
+            kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            kernel.WaitForSingleObject.restype = wintypes.DWORD
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            try:
+                self.assertEqual(kernel.WaitForSingleObject(handle, 0), 0)  # WAIT_OBJECT_0
+            finally:
+                kernel.CloseHandle(handle)
 
 
 @unittest.skipIf(os.name == "nt", "fixture uses a POSIX container and shell stubs")
@@ -664,8 +726,8 @@ class EndToEndDryRunTests(unittest.TestCase):
         req_id = self.request["id"]
         new_sha = self.git("--git-dir", str(self.results_repo), "rev-parse", ref).strip()
         self.assertNotEqual(new_sha, pin)
-        # Fast-forward ancestor check.
-        self.run_cli("git", "--git-dir", str(self.results_repo), "merge-base", "--is-ancestor", pin, new_sha)
+        self.assertEqual(self.git("--git-dir", str(self.results_repo), "rev-list", "--parents",
+                                  f"{pin}..{new_sha}").splitlines(), [f"{new_sha} {pin}"])
         # request.json must be preserved byte-for-byte.
         initial_req = subprocess.check_output(
             ["git", "--git-dir", str(self.results_repo), "show", f"{pin}:selftest/{req_id}/request.json"]
@@ -693,6 +755,9 @@ class EndToEndDryRunTests(unittest.TestCase):
         )
         self.assertIn("Before create:", cleanup_text)
         self.assertIn("After destroy:", cleanup_text)
+        self.assertEqual(subprocess.check_output([
+            "git", "--git-dir", str(self.results_repo), "show", f"{new_sha}:selftest/{req_id}/logs/step.txt",
+        ]), b"Guest password: [REDACTED]\r\n")
         self.assertFalse((self.work / "active").exists())
 
     def test_end_to_end_dry_run_claude_via_bash_start(self):
@@ -717,10 +782,10 @@ class EndToEndDryRunTests(unittest.TestCase):
         self.assertNotIn("--dangerously-skip-permissions", record["argv"])
         self.assertEqual(record["claude_settings"]["enableAllProjectMcpServers"], False)
         self.assertEqual(record["claude_settings"]["disableAllHooks"], True)
-        source_dir, results_dir = record["add_dirs"]
-        self.assertIn(f"Bash(git -C {source_dir} rev-parse *)", record["claude_settings"]["permissions"]["allow"])
-        self.assertIn(f"Bash(git -C {results_dir} status *)", record["claude_settings"]["permissions"]["allow"])
-        self.assertIn(f"Bash(git -C {source_dir} push*)", record["claude_settings"]["permissions"]["deny"])
+        _, artifacts_dir = record["add_dirs"]
+        self.assertEqual(Path(artifacts_dir).name, "artifacts")
+        self.assertFalse((Path(artifacts_dir) / ".git").exists())
+        self.assertIn("Bash(git:*)", record["claude_settings"]["permissions"]["deny"])
         self.assertIn(
             f"Edit({launch.claude_abs_dir_glob(SCRIPTS)})",
             record["claude_settings"]["permissions"]["deny"],
@@ -753,9 +818,9 @@ class EndToEndDryRunTests(unittest.TestCase):
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", record["argv"])
         self.assertIn('approval_policy = "on-request"', record["codex_cfg"])
         self.assertIn('pattern = ["sailwright", "install"]', record["codex_rules"])
-        source_dir, results_dir = record["add_dirs"]
-        self.assertIn(json.dumps(["git", "-C", source_dir, "push"]), record["codex_rules"])
-        self.assertIn(json.dumps(["git", "-C", results_dir, "push", "origin", "-f"]), record["codex_rules"])
+        source_dir, _ = record["add_dirs"]
+        self.assertIn(json.dumps(["git"]), record["codex_rules"])
+        self.assertIn(json.dumps(["codex"]), record["codex_rules"])
         self.assertIn(json.dumps([str(Path(source_dir) / "sailwright"), "install"]), record["codex_rules"])
 
     def test_canonical_paths_resolved_through_symlinked_work_root(self):
@@ -774,7 +839,7 @@ class EndToEndDryRunTests(unittest.TestCase):
             self.assertTrue(directory.startswith(canonical_work), f"{directory} not under {canonical_work}")
             self.assertNotIn("work-symlink", directory)
         self.assertNotIn("work-symlink", record["brief_text"])
-        self.assertIn(f"Bash(git -C {record['add_dirs'][0]} status *)", record["claude_settings"]["permissions"]["allow"])
+        self.assertEqual(Path(record["add_dirs"][1]).name, "artifacts")
 
     def test_fake_provider_rejects_unseparated_variadic_add_dir_prompt(self):
         # Proves the test stub fails if '--' is omitted after variadic --add-dir.
@@ -819,27 +884,79 @@ class EndToEndDryRunTests(unittest.TestCase):
         self.assertIn("Bash(*sailwright* install*)", record["claude_settings"]["permissions"]["ask"])
         self.assertIn("Bash(*sailwright* provision local*)", record["claude_settings"]["permissions"]["deny"])
 
-    def test_timeout_enforced_with_explicit_exit_code_124(self):
+    def test_timeout_without_result_retains_lock_until_recovery(self):
         self.request.update(id="dryrun-timeout", time_limit_seconds=1)
-        posix, _, _, _ = self.publish()
+        posix, _, ref, pin = self.publish()
         env = {**self.env, "FAKE_PROVIDER_BEHAVIOR": "sleep"}
         run = self.run_cli("bash", "-c", posix, status=124, env=env)
         self.assertIn("timed out", run.stderr)
-        self.assertFalse((self.work / "active").exists())
+        self.assertTrue((self.work / "active" / "cleanup-pending").is_file())
+        self.assert_unpublished(ref, pin)
 
-    def test_post_push_interactive_tui_timeout_maps_exit_code_from_result_status(self):
+        self.request["id"] = "dryrun-second"
+        next_request, _, next_ref, next_pin = self.publish()
+        excluded = self.run_cli("bash", "-c", next_request, status=1)
+        self.assertIn("an active request lock exists", excluded.stderr)
+        shutil.rmtree(self.work / "active")
+        self.run_cli("bash", "-c", next_request)
+        self.assert_pushed_valid_result(next_ref, next_pin)
+
+    def test_tty_timeout_stops_provider_child_and_restores_operator_terminal(self):
+        import errno
+        import pty
+
+        self.request.update(id="dryrun-tty", time_limit_seconds=2)
+        posix, _, ref, pin = self.publish()
+        child_pid_file = self.root / "provider-child"
+        env = {**self.env, "FAKE_PROVIDER_BEHAVIOR": "tty_child", "FAKE_PROVIDER_CHILD": str(child_pid_file)}
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.chdir(self.root)
+            os.execvpe("bash", ["bash", "-c", f'{posix}; rc=$?; printf "operator alive: %s\\n" "$rc"; exit "$rc"'], env)
+        output = bytearray()
+        try:
+            import select
+
+            answered = False
+            while select.select([fd], [], [], 15)[0]:
+                try:
+                    data = os.read(fd, 4096)
+                except OSError as error:
+                    if error.errno != errno.EIO:
+                        raise
+                    break
+                if not data:
+                    break
+                output.extend(data)
+                if not answered and b"provider ready:" in output:
+                    os.write(fd, b"hello\n")
+                    answered = True
+            else:
+                self.fail(f"PTY session stalled: {output!r}")
+        finally:
+            os.close(fd)
+            _, status = os.waitpid(pid, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 124, output)
+        self.assertIn(b"operator alive: 124\r\n", output)
+        for child_pid in child_pid_file.read_text(encoding="utf-8").split():
+            child = subprocess.run(["ps", "-o", "stat=", "-p", child_pid], capture_output=True, text=True)
+            self.assertTrue(not child.stdout.strip() or child.stdout.strip().startswith("Z"), child.stdout)
+        self.assertTrue((self.work / "active" / "cleanup-pending").is_file())
+        self.assert_unpublished(ref, pin)
+
+    def test_idle_provider_timeout_publishes_and_maps_result_status(self):
         self.request.update(id="dryrun-idle-pass", time_limit_seconds=2)
         posix, _, ref, pin = self.publish()
         env_pass = {**self.env, "FAKE_PROVIDER_BEHAVIOR": "pass_then_idle"}
         run_pass = self.run_cli("bash", "-c", posix, status=0, env=env_pass)
-        self.assertIn("valid pushed result (status: passed)", run_pass.stderr)
+        self.assertIn("(status: passed)", run_pass.stderr)
         self.assert_pushed_valid_result(ref, pin, expected_status="passed")
 
         self.request.update(id="dryrun-idle-fail", time_limit_seconds=2)
         posix_fail, _, ref_fail, pin_fail = self.publish()
         env_fail = {**self.env, "FAKE_PROVIDER_BEHAVIOR": "fail_then_idle"}
         run_fail = self.run_cli("bash", "-c", posix_fail, status=1, env=env_fail)
-        self.assertIn("valid pushed result (status: failed)", run_fail.stderr)
+        self.assertIn("(status: failed)", run_fail.stderr)
         self.assert_pushed_valid_result(ref_fail, pin_fail, expected_status="failed")
 
     def test_published_failed_result_returns_exit_1(self):
@@ -847,29 +964,74 @@ class EndToEndDryRunTests(unittest.TestCase):
         posix, _, ref, pin = self.publish()
         env = {**self.env, "FAKE_PROVIDER_BEHAVIOR": "report_failed"}
         run = self.run_cli("bash", "-c", posix, status=1, env=env)
-        self.assertIn("reported status failed", run.stderr)
+        self.assertIn("(status: failed)", run.stderr)
         self.assert_pushed_valid_result(ref, pin, expected_status="failed")
 
-    def test_post_run_verification_rejects_broken_unpushed_or_tampered_results(self):
+    def assert_unpublished(self, ref, pin, repo=None):
+        repo = repo or self.results_repo
+        self.assertEqual(self.git("--git-dir", str(repo), "for-each-ref", "--format=%(refname) %(objectname)").strip(),
+                         f"{ref} {pin}")
+        self.assertEqual(
+            self.git("--git-dir", str(repo), "ls-tree", "-r", "--name-only", ref).splitlines(),
+            [f"selftest/{self.request['id']}/request.json"],
+        )
+
+    def test_invalid_or_incomplete_results_never_reach_remote(self):
         cases = [
             ("tamper_request", "byte-for-byte unchanged"),
             ("invalid_schema", "failed schema validation"),
             ("bad_commit", "commit does not match"),
             ("missing_report", "missing required report.md"),
-            ("uncommitted", "uncommitted changes"),
-            ("unpushed", "expected pushed commit"),
-            ("outside_file", "modified path outside"),
-            ("symlink_log", "symlinks are forbidden"),
+            ("outside_file", "unexpected path in results"),
+            ("symlink_log", "symlinks and reparse points are forbidden"),
             ("private_key_leak", "private key material"),
+            ("missing_cleanup", "missing required nonempty logs/cleanup.txt"),
+            ("invalid_inventory", "exit code 0 per phase"),
+            ("still_present", "inventory still lists an owned VM"),
+            ("provider_git_history", "invalid result path '.git'"),
+            ("incomplete_cleanup", "reports incomplete cleanup"),
         ]
         for index, (behavior, expected_err) in enumerate(cases, start=1):
             with self.subTest(behavior=behavior):
                 self.request["id"] = f"dryrun-neg-{index}"
-                posix, _, _, _ = self.publish()
+                posix, _, ref, pin = self.publish()
                 env = {**self.env, "FAKE_PROVIDER_BEHAVIOR": behavior}
+                objects_before = self.git("--git-dir", str(self.results_repo), "count-objects", "-v")
                 run = self.run_cli("bash", "-c", posix, status=1, env=env)
                 self.assertIn(expected_err, run.stderr)
-                self.assertFalse((self.work / "active").exists())
+                self.assertEqual(self.git("--git-dir", str(self.results_repo), "rev-parse", ref).strip(), pin)
+                self.assertEqual(self.git("--git-dir", str(self.results_repo), "count-objects", "-v"), objects_before)
+                self.assertTrue((self.work / "active" / "cleanup-pending").is_file())
+                self.assertIn("native hypervisor inventory", run.stderr)
+                if behavior == "incomplete_cleanup":
+                    excluded = self.run_cli("bash", "-c", posix, status=1)
+                    self.assertIn("an active request lock exists", excluded.stderr)
+                # Simulate operator recovery on the VM-free fixture.
+                shutil.rmtree(self.work / "active")
+
+    def test_no_vm_run_publishes_with_both_inventories(self):
+        posix, _, ref, pin = self.publish()
+        env = {**self.env, "FAKE_PROVIDER_BEHAVIOR": "no_vms"}
+        self.run_cli("bash", "-c", posix, env=env)
+        self.assert_pushed_valid_result(ref, pin)
+
+    def test_provider_cannot_write_extra_results_ref(self):
+        posix, _, ref, pin = self.publish()
+        env = {**self.env, "FAKE_PROVIDER_BEHAVIOR": "extra_ref", "FAKE_ORIGINAL_REPO": str(self.results_repo)}
+        self.run_cli("bash", "-c", posix, env=env)
+        self.assert_pushed_valid_result(ref, pin)
+        self.assertEqual(self.git("--git-dir", str(self.results_repo), "for-each-ref",
+                                  "--format=%(refname)").splitlines(), [ref])
+
+    def test_origin_redirection_does_not_modify_either_remote(self):
+        posix, _, ref, pin = self.publish()
+        redirect = self.root / "redirect.git"
+        self.git("clone", "--bare", str(self.results_repo), str(redirect))
+        env = {**self.env, "FAKE_PROVIDER_BEHAVIOR": "origin_redirect", "FAKE_REDIRECT_REPO": str(redirect)}
+        result = self.run_cli("bash", "-c", posix, status=1, env=env)
+        self.assertIn("results Git configuration changed", result.stderr)
+        self.assert_unpublished(ref, pin)
+        self.assert_unpublished(ref, pin, redirect)
 
     def test_rejects_template_or_skill_inside_untrusted_source_checkout(self):
         self.request["id"] = "dryrun-untrusted-override"

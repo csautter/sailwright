@@ -12,7 +12,7 @@ request. A human reviews it and pastes one start command on the target host.
 | Provider mode | Approval-preserving automatic mode (`auto` for Claude Code, with `default` supported as a fallback; `approval_policy = "on-request"` and `sandbox_mode = "workspace-write"` for Codex) | Same approval-preserving mode; scoped commands move from denied to interactive prompt (`ask`/`prompt`), never auto-bypass | `--dangerously-skip-permissions`, `bypassPermissions`, `dontAsk`, `--yolo`, `--dangerously-bypass-approvals-and-sandbox`, `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`, `--bypass-approvals` |
 | Sailwright & host state | Verify pinned checkout SHA, collect host facts, build Sailwright, create/start/inspect/stop/destroy own named VMs (prefixed from request `id`), run requested scenarios and `test_commands` | `sailwright provision local`, `sailwright install`, `sailwright self-update`, system package/service changes, Windows administrator elevation (strictly within `human_approval.scope`) | Any unapproved host modification, silent privilege escalation, or unrequested edits pushed to the source repo |
 | VMs & hypervisors | Disposable clones and own named VMs after a pre-create inventory confirms exact absence; mandatory cleanup (`destroy-owned-vms`) even after failures or timeouts | Occupying shared macOS runner slots only after coordinating with the human operator | Touching, stopping, modifying, or deleting existing, default, or foreign VMs; starting/modifying originals such as `tahoe-runner`; running `destroy all` or `stop all` |
-| Secrets, time & Git | Redacted logs under `selftest/<id>/logs/`, schema-validated `result.json`, `report.md`, and fast-forward push of `--results-ref` only | — | Secrets, tokens, private keys, or guest passwords in commands/reports/logs/Git; modifying `request.json`; force-pushing; pushing any other ref; opening PRs or triggering workflows; exceeding `time_limit_seconds` without cleanup |
+| Secrets, time & Git | Redacted logs under `selftest/<id>/logs/`, schema-validated `result.json`, `report.md`, and hook-managed fast-forward publication to `--results-ref` | — | Secrets, tokens, private keys, or guest passwords in commands/reports/logs/Git; modifying `request.json`; provider Git access and nested launches; opening PRs or triggering workflows; exceeding `time_limit_seconds` without cleanup |
 
 ## Prerequisites
 
@@ -58,34 +58,21 @@ and approval-preserving settings templates under
   `enableAllProjectMcpServers: false`, `disableAllHooks: true`, and
   `permissions.defaultMode: "auto"` (operators on accounts without classifier
   Auto Mode may use `"default"` in a trusted override file while keeping all
-  guardrails). Safe read, build, and `vm-lifecycle` commands (including
-  runtime-anchored read-only `git -C` commands for the resolved `--source-dir`
-  and `--results-dir` checkouts and guest VM `sailwright provision` runs) work
-  under Auto Mode; sensitive actions such as Tart clone/delete, `utmctl`, and
-  Git stage/commit/push prompt interactively (`ask`); host-changing commands
-  (`sailwright provision local`, `sailwright install`, `sudo`, Windows
-  `runas`/`RunAs`), force-push (including trailing `-f`), pushing from
-  `--source-dir`, Git `-c`/`--exec-path`/`--upload-pack` option injection,
-  bypass flags, foreign/original VM mutations (`tahoe-runner`, raw `virsh`
-  `undefine`/`destroy` with or without `--connect`), PR/workflow commands,
-  credential-store reads (`~/.ssh/**`, `~/.aws/**`, `~/.gnupg/**`,
-  `~/.git-credentials`, Keychain), and `Edit`/`Write` access to the trusted
-  hook and skill directories are explicitly denied. `launch.py` invokes
-  `claude` with `--setting-sources user`, `--strict-mcp-config`, canonical
-  resolved `--add-dir` paths, and `--` before the single-line prompt from an
-  isolated per-run working directory containing a read-only `launch-brief.md`
-  file, so project settings, hooks, and `.mcp.json` inside `--source-dir` are
-  not activated and the trusted hook directory stays outside the agent's
-  workspace.
-- **Codex (`codex-config.toml` + `codex-execpolicy.rules`):** sets
+  guardrails). Build and VM lifecycle work within the request scope. Sensitive
+  actions such as Tart clone/delete and `utmctl` retain interactive prompts.
+  The settings deny Git, GitHub CLI, nested provider launches, unapproved
+  host changes and privilege escalation. They also protect foreign VMs,
+  credential stores, and the trusted hook and skill paths. The hook starts
+  Claude with user settings, strict MCP configuration, canonical source and
+  artifact paths, and a read-only `launch-brief.md` in an isolated workspace.
+- **Codex (`codex-config.toml` + `codex-execpolicy.rules`)** uses
   `approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`,
-  `project_doc_max_bytes = 0`, and empty `[mcp_servers]`, paired with Starlark
-  `prefix_rule(..., decision = "forbidden")` rules blocking host-changing
-  commands (including runtime-anchored `<source-dir>/sailwright` paths),
-  privilege escalation, force-push (including `git -C <results-dir> push`
-  variants and any `git -C <source-dir> push`), bypass flags, `tahoe-runner`
-  mutations, raw `virsh undefine`/`destroy` (including `--connect`/`-c` with
-  `qemu:///system` and `qemu:///session`), PR/workflow commands, and Keychain
+  disabled sandbox network access, `project_doc_max_bytes = 0`, and an empty
+  `[mcp_servers]`. Execpolicy forbids Git, GitHub CLI, and nested provider
+  commands at the executable prefix. Host-changing commands, including
+  canonical source binary paths, stay forbidden without scoped approval.
+  Rules also cover privilege escalation, foreign and original VM mutations,
+  raw destructive `virsh` commands, and credential-store
   queries. `launch.py` prepares an isolated per-run `CODEX_HOME` containing the
   validated config and runtime rules (reusing only the operator's `auth.json`
   when present) and runs Codex with `-C` set to the isolated per-run working
@@ -98,8 +85,11 @@ deny/forbidden rule is missing, or any trusted file or provider executable
 resolves inside `--source-dir` or `--results-dir`. When a request is
 `host-changing` and the operator appends `--approve-host-changes`, `launch.py`
 moves only the rules matching `human_approval.scope` from `deny`/`forbidden`
-to interactive `ask`/`prompt` for that run; bypass flags, force-push, foreign
-VMs, and credential protections remain strictly denied.
+to interactive `ask`/`prompt` for that run. Git and nested provider commands
+remain prohibited. The hook omits its Git authentication environment from the
+provider and disables Git transports there. Provider rules and environment
+settings govern the lane's command tools. Arbitrary native code with the
+operator account's permissions is outside that boundary.
 
 Optional operator environment overrides (must be absolute paths outside
 `--source-dir` and `--results-dir`):
@@ -209,14 +199,12 @@ the hook. Dry-run requires the same tools and configuration as a real launch,
 including the hook path and any `--approve-host-changes` flag. It leaves the
 local checkouts available for inspection.
 
-Interactive Claude Code and Codex TUI sessions remain open after the agent
-pushes `--results-ref` and prints its completion notice. To close an idle TUI
-cleanly, type `/exit` rather than pressing `Ctrl+C` (pressing `Ctrl+C`
-interrupts the launch hook and retains the `active` lock for manual recovery).
-If an unattended interactive session stays idle until `time_limit_seconds`
-expires after already pushing a valid result, `launch.py` terminates the TUI,
-verifies the pushed result, and returns the status-mapped exit code (`0` for
-`passed`, `124` for `timed-out`, `1` for `failed`).
+After the provider reports artifacts ready, close the TUI with `/exit` so
+the hook can validate and publish. An interruption via `Ctrl+C` can require
+lock recovery. At the request deadline, the hook stops the
+provider and its descendants before inspecting the artifacts. It can still
+publish a complete result after a timeout if it confirms process termination
+and validates the recorded cleanup.
 
 The bootstrap reserves a single active request in the configured work root,
 fetches the pinned request from the results repo, and validates it. It checks
@@ -233,11 +221,14 @@ The default work root is `~/.sailwright/host-tests`. Set
 move it to a volume with suitable space. Use one consistent work root and
 one designated account per host so the `active` lock excludes other requests.
 The bootstrap prints the per-run directory and keeps it for inspection.
-If the hook terminates by signal, returns a Windows exit status outside 0–255,
-or the starter is interrupted while waiting, the lock remains. Verify that the
-previous hook and its processes have stopped and resolve any outstanding cleanup
-before removing the empty `active` directory. Remove old run directories when
-their reports have been collected.
+The lock remains after uncertain process termination, interruption, an
+abnormal hook exit, or missing, invalid, or incomplete cleanup after provider
+launch. Check that the provider and its descendants have stopped, verify the
+native hypervisor inventory, and clean up only VMs owned by the request.
+Then manually remove the `active` directory and its `cleanup-pending` marker
+if present. The per-run `artifacts` directory holds the provider's local
+output for inspection. Use a new request ID for a later run if the original
+branch has advanced.
 
 ## Launch hook contract
 
@@ -260,34 +251,50 @@ arguments as individual tokens:
 [--approve-host-changes]
 ```
 
-The hook enforces:
+The hook runs the provider in approval-preserving mode and gives it a
+Git-free artifact directory. The bootstrap passes the original destination
+and the cleanup marker path to the hook in
+`SAILWRIGHT_HOST_AGENT_RESULTS_REPO` and
+`SAILWRIGHT_HOST_AGENT_LOCK_MARKER`. Custom hooks can keep the original
+arguments, results checkout and `origin`; they can create the marker before
+launch and remove it after confirming termination and cleanup. Legacy hooks
+can continue to communicate normal exit statuses in the range 0–255.
 
-- approval-preserving automatic mode (never bypass or YOLO modes),
-- trusted resolution of the skill, settings templates, `protocol.py`, and
-  provider executable outside `--source-dir` and `--results-dir`,
-- `operation_class`, `human_approval`, `--approve-host-changes`, and
-  `time_limit_seconds`,
-- foreground execution returning an explicit exit status in `0–255` (`0` for a
-  validated pushed `passed` result, `124` for a timeout without a valid pushed
-  result or for a validated `timed-out` result, `1–255` for reported or
-  verification failures; signals or out-of-range Windows statuses retain the
-  `active` lock for manual recovery),
-- post-run verification that `selftest/<id>/request.json` is byte-for-byte
-  unchanged, `selftest/<id>/result.json` passes `protocol.py validate result`
-  with matching `id`, `commit`, and `request_commit`, `report.md` exists, no
-  symlinks or private-key blocks were written, and only `--results-ref` was
-  fast-forward pushed to `origin`.
+The production hook starts a separate foreground process group on POSIX and
+uses a Windows Job Object on Windows. It supervises descendants during the
+run and restores the POSIX terminal to the operator. Linux also adopts
+orphaned provider descendants. On macOS, the process inventory can miss a
+process that deliberately detaches and is reparented between inspections.
+The lane prohibits detached jobs, and the operator should check native
+processes and VMs whenever cleanup is uncertain.
+
+After the process tree stops, the hook verifies the request bytes, result
+schema and pinned identities, report, regular artifact paths, private-key
+patterns, and required cleanup evidence. It commits only that validated
+snapshot, as a single child of the pinned request, in a fresh repository.
+The hook publishes that one commit to the original destination and exact
+`--results-ref` using the pinned request as the expected remote tip. URL
+rewrites, redirects during push, and concurrent changes to the ref cause the
+publication to fail. The hook uses the operator's configured Git credentials
+for publication.
+
+A published passed result normally returns `0`, a reported failed result
+returns `1`, and a timed-out result returns `124`. A provider timeout without
+a valid result also returns `124` and retains the lock. A normal nonzero
+provider exit with a validated and published result preserves its mapped
+exit status. A failed test with valid cleanup evidence can release the lock.
 
 ## Collect a result
 
-Commit the following under `selftest/<id>/` in the provided results checkout.
+Write the following under `selftest/<id>/` in the artifact directory.
 
 | File | Contents |
 | --- | --- |
 | `request.json` | The pinned request, preserved byte for byte |
 | `result.json` | Structured outcome conforming to the v1 result schema |
 | `report.md` | Human-readable summary with steps, findings and cleanup |
-| `logs/` | Redacted, request-specific logs referenced by the report or cleanup evidence |
+| `logs/cleanup.txt` | Pre-create and post-destroy inventory records with commands, output and exit codes |
+| `logs/` | Other redacted, request-specific logs |
 
 See the [result example](../scripts/host-agent/examples/result.json) and
 its [report](../scripts/host-agent/examples/report.md). Include the exact
@@ -295,23 +302,25 @@ source and request SHAs, host OS and version, architecture, hypervisor versions,
 SHA-256 of the tested binary, step commands, exit codes and durations. Use a
 null hash if a failed run never produced a binary. A skipped step has a null
 exit code and zero duration. A timed-out step may have a null exit code if none
-was available. Record created VM names, remaining owned VMs, and evidence from
-a post-cleanup inventory. Put outstanding work under `open_items` and proposed
-fixes under `follow_up`. Each follow-up has a proposal and reason, and a kind
+was available. Record created VM names and any remaining owned VMs. For each
+owned VM, record successful `Before create: <name>` and `After destroy: <name>`
+sections in `logs/cleanup.txt`, with the command prefixed by `$ `, its captured
+output, and `Exit code 0` at the end of each section. When no VMs are owned,
+capture both inventories under the name `no-vms`. The hook checks the shape
+and outcome of the records. The records are provider-reported evidence and
+native hypervisor checks establish actual VM state. Put outstanding work
+under `open_items` and proposed fixes under `follow_up`.
+Each follow-up has a proposal and reason, and a kind
 of `scenario_proposal`, `skill_correction` or `issue_draft`.
 
 Keep secrets and guest passwords out of commands, reports, logs and Git
 history. Redact credentials before writing any artifact, and mark redactions
 in recorded commands so they can be interpreted correctly.
 
-Validate against the [v1 result schema](../scripts/host-agent/schemas/result-v1.json)
-before committing. Push only the single results ref passed to the hook, with
-a regular fast-forward push. A concurrent update requires reconciliation.
-These example commands use the default prefix and the example request ID.
+The provider can run the trusted schema validator before closing.
 
 ```bash
-python3 /path/to/trusted/scripts/host-agent/protocol.py validate result selftest/linux-lifecycle/result.json
-git push origin HEAD:refs/heads/selftest/linux-lifecycle
+python3 /path/to/trusted/scripts/host-agent/protocol.py validate result selftest/<id>/result.json
 ```
 
 Read the completed branch from the configured results repo and match
@@ -330,12 +339,13 @@ exercises:
 
 - request/result schemas, emitted Bash/Zsh/PowerShell start commands,
   preflight errors, and lock recovery (`test_protocol.py`),
-- offline template guardrail checks confirming forbidden-permission settings
-  are present in both Claude Code and Codex templates and that bypass/YOLO
-  settings or missing deny rules are rejected (`test_launch.py`),
+- offline template checks and evaluation with `codex execpolicy check` when
+  Codex is installed, covering denied Git and nested provider commands and
+  preserved scoped host-change prompts (`test_launch.py`),
 - end-to-end dry runs through `scripts/host-agent/start` (Bash, Zsh) and
   `scripts/host-agent/start.ps1` (PowerShell when installed) invoking the
   production `launch.py` hook with a fake provider binary against a local bare
   results repository, verifying `result.json`, `report.md`, `logs/cleanup.txt`,
   `follow_up`, byte-for-byte `request.json` preservation, timeout handling, and
-  fail-closed rejection of tampered or unpushed results (`test_launch.py`).
+  rejection without publication of invalid artifacts and unauthorized
+  destinations (`test_launch.py`).

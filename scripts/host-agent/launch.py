@@ -10,9 +10,11 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 
 HERE = Path(__file__).resolve().parent
@@ -28,7 +30,20 @@ DEFAULT_CODEX_RULES = TEMPLATES_DIR / "codex-execpolicy.rules"
 DEFAULT_SKILL_FILE = HERE.parents[1] / ".claude" / "skills" / protocol.SKILL / "SKILL.md"
 LAUNCH_BRIEF_NAME = "launch-brief.md"
 LAUNCH_PROMPT = f"Read and execute ./{LAUNCH_BRIEF_NAME} strictly following all guardrails."
-READ_ONLY_GIT_SUBCOMMANDS = ("rev-parse", "status", "diff", "log", "ls-remote")
+HOOK_ONLY_COMMANDS = ("git", "gh", "claude", "codex")
+HOOK_ONLY_EXECUTABLES = tuple(name + suffix for name in HOOK_ONLY_COMMANDS
+                              for suffix in ("", ".exe", ".cmd", ".bat"))
+CODEX_HOOK_ONLY_EXECUTABLES = tuple(
+    prefix + exe for exe in HOOK_ONLY_EXECUTABLES for prefix in ("", "./", ".\\")
+)
+CLAUDE_HOOK_ONLY_RULES = tuple(
+    rule for exe in HOOK_ONLY_EXECUTABLES
+    for rule in (f"Bash({exe}:*)", f"Bash(*/{exe})", f"Bash(*/{exe} *)")
+)
+CLAUDE_HOOK_ONLY_COMMAND = re.compile(
+    r"^Bash\((?:[^\s]*[/\\])?(?:" + "|".join(map(re.escape, HOOK_ONLY_EXECUTABLES)) + r")(?=[\s:*)])",
+    re.IGNORECASE,
+)
 
 ALLOWED_CLAUDE_MODES = {"default", "auto"}
 ALLOWED_CODEX_APPROVAL_POLICIES = {"on-request", "untrusted"}
@@ -55,15 +70,7 @@ REQUIRED_CODEX_FORBIDDEN_PATTERNS = (
     ("sailwright", "stop", "all"),
     ("sudo",),
     ("runas",),
-    ("git", "push", "--force"),
-    ("git", "push", "-f"),
-    ("git", "push", "--force-with-lease"),
-    ("git", "push", "origin", "--force"),
-    ("git", "push", "origin", "-f"),
-    ("git", "push", "origin", "--force-with-lease"),
-    ("claude", "--dangerously-skip-permissions"),
-    ("codex", "--yolo"),
-    ("codex", "--dangerously-bypass-approvals-and-sandbox"),
+    *((exe,) for exe in CODEX_HOOK_ONLY_EXECUTABLES),
     ("sailwright-gateway", "serve", "--bypass-approvals"),
     ("tart", "run", "tahoe-runner"),
     ("tart", "delete", "tahoe-runner"),
@@ -185,10 +192,6 @@ def has_deny_rule(deny_rules, predicate):
     return any(predicate(rule.lower()) for rule in deny_rules)
 
 
-def has_short_force_flag(text):
-    return bool(re.search(r"(?<![a-z0-9-])-f(?![a-z0-9-])", text))
-
-
 def has_mixed_bash_glob_prefix(rule):
     stripped = rule.strip()
     if not (stripped[:5].lower() == "bash(" and stripped.endswith(")")):
@@ -236,6 +239,8 @@ def validate_claude_settings(settings):
                     f"Claude permissions.{key} rule {rule!r} mixes '*' with trailing ':*' "
                     "(use pure '*' glob patterns instead)"
                 )
+            if key != "deny" and CLAUDE_HOOK_ONLY_COMMAND.match(rule.strip()):
+                raise LaunchError(f"Claude permissions.{key} must reserve {rule!r} for the trusted hook")
 
     deny = permissions["deny"]
     if not deny:
@@ -252,13 +257,6 @@ def validate_claude_settings(settings):
         lowered = rule.strip().lower()
         if lowered in {"bash", "bash(*)", "bash(:*)", "bash(*:*)", "*"}:
             raise LaunchError(f"Claude permissions.allow must not grant unrestricted shell rule {rule!r}")
-        if re.match(r"^bash\(git\s+-c\s+\*", lowered):
-            raise LaunchError(
-                f"Claude permissions.allow must not allow wildcard git -C rule {rule!r} "
-                "(anchor git -C rules to resolved checkout paths at runtime)"
-            )
-        if has_short_force_flag(lowered):
-            raise LaunchError(f"Claude permissions.allow must not allow {rule!r}")
         for forbidden in FORBIDDEN_ALLOW_SUBSTRINGS:
             if forbidden in lowered:
                 raise LaunchError(f"Claude permissions.allow must not allow {rule!r}")
@@ -270,17 +268,6 @@ def validate_claude_settings(settings):
         ("sailwright stop all", lambda r: "sailwright" in r and "stop all" in r),
         ("sudo", lambda r: bool(re.search(r"\bsudo\b", r))),
         ("Windows admin elevation", lambda r: "runas" in r),
-        ("git push --force", lambda r: "git" in r and "push" in r and "--force" in r and "--force-with-lease" not in r),
-        ("git push -f (with arguments)", lambda r: "git" in r and "push" in r and "-f " in r),
-        ("git push -f (end-of-line)", lambda r: "git" in r and "push" in r and r.rstrip().endswith("-f)")),
-        ("git -C/option push -f (end-of-line)", lambda r: "git *" in r and "push" in r and r.rstrip().endswith("-f)")),
-        ("git push --force-with-lease", lambda r: "git" in r and "push" in r and "--force-with-lease" in r),
-        ("git --exec-path protection", lambda r: "git" in r and "--exec-path" in r),
-        ("git --upload-pack protection", lambda r: "git" in r and "--upload-pack" in r),
-        ("bypass flag --dangerously-skip-permissions", lambda r: "--dangerously-skip-permissions" in r),
-        ("bypass flag --dangerously-bypass-approvals-and-sandbox",
-         lambda r: "--dangerously-bypass-approvals-and-sandbox" in r),
-        ("bypass flag --yolo", lambda r: "--yolo" in r),
         ("bypass flag --bypass-approvals", lambda r: "--bypass-approvals" in r),
         ("tahoe-runner delete protection", lambda r: "tart delete" in r and "tahoe-runner" in r),
         ("tahoe-runner run protection", lambda r: "tart run" in r and "tahoe-runner" in r),
@@ -295,8 +282,7 @@ def validate_claude_settings(settings):
         ("macOS Keychain query protection", lambda r: "find-generic-password" in r),
     ]
     missing = [label for label, predicate in required_checks if not has_deny_rule(deny, predicate)]
-    if not any(rule.strip().startswith("Bash(git") and (" -c " in rule or "*-c " in rule) for rule in deny):
-        missing.append("git -c option injection protection")
+    missing.extend(sorted(set(CLAUDE_HOOK_ONLY_RULES) - set(deny)))
     if missing:
         raise LaunchError("Claude permissions.deny is missing required guardrail rules: " + ", ".join(missing))
     return settings
@@ -319,6 +305,10 @@ def validate_codex_config(config):
             f"Codex sandbox_mode must be one of {sorted(ALLOWED_CODEX_SANDBOX_MODES)} "
             '("danger-full-access" is forbidden)'
         )
+
+    workspace = config.get("sandbox_workspace_write", {})
+    if not isinstance(workspace, dict) or workspace.get("network_access") is not False:
+        raise LaunchError("Codex config template must set sandbox_workspace_write.network_access = false")
 
     max_bytes = config.get("project_doc_max_bytes")
     if type(max_bytes) is not int or max_bytes != 0:
@@ -361,11 +351,16 @@ def parse_codex_rules(text):
         pattern_node = kwargs["pattern"]
         if not isinstance(pattern_node, ast.List) or not pattern_node.elts:
             raise LaunchError("prefix_rule pattern must be a non-empty list of strings")
-        pattern = []
-        for element in pattern_node.elts:
-            if not isinstance(element, ast.Constant) or not isinstance(element.value, str) or not element.value.strip():
-                raise LaunchError("prefix_rule pattern elements must be non-empty strings")
-            pattern.append(element.value)
+        # Execpolicy also accepts alternatives at one command position.
+        if len(pattern_node.elts) == 1 and isinstance(pattern_node.elts[0], ast.List):
+            alternatives = [[element] for element in pattern_node.elts[0].elts]
+        else:
+            alternatives = [pattern_node.elts]
+        if not alternatives or any(
+            not isinstance(token, ast.Constant) or not isinstance(token.value, str) or not token.value.strip()
+            for alternative in alternatives for token in alternative
+        ):
+            raise LaunchError("prefix_rule pattern elements must be non-empty strings")
 
         decision_node = kwargs["decision"]
         if not isinstance(decision_node, ast.Constant) or decision_node.value not in {"forbidden", "prompt", "allow"}:
@@ -378,16 +373,18 @@ def parse_codex_rules(text):
                 or not justification_node.value.strip()):
             raise LaunchError("prefix_rule justification must be a non-empty string")
 
-        if decision == "allow":
-            lowered_tokens = {token.lower() for token in pattern}
-            if lowered_tokens & CODEX_FORBIDDEN_ALLOW_TOKENS:
-                raise LaunchError(f"Codex execpolicy rules must not allow forbidden command {pattern!r}")
-
-        rules.append({
-            "pattern": tuple(pattern),
-            "decision": decision,
-            "justification": justification_node.value,
-        })
+        for alternative in alternatives:
+            pattern = tuple(token.value for token in alternative)
+            if decision == "allow":
+                lowered_tokens = {token.lower() for token in pattern}
+                executable = re.split(r"[/\\]", pattern[0])[-1].lower()
+                if lowered_tokens & CODEX_FORBIDDEN_ALLOW_TOKENS or executable in HOOK_ONLY_EXECUTABLES:
+                    raise LaunchError(f"Codex execpolicy rules must not allow forbidden command {pattern!r}")
+            rules.append({
+                "pattern": pattern,
+                "decision": decision,
+                "justification": justification_node.value,
+            })
     return rules
 
 
@@ -447,8 +444,7 @@ def codex_pattern_category(pattern):
     return None
 
 
-def materialize_claude_settings(base_settings, approved_categories, source_dir=None, results_dir=None,
-                                protected_dirs=()):
+def materialize_claude_settings(base_settings, approved_categories, protected_dirs=()):
     effective = copy.deepcopy(base_settings)
     allow = list(effective["permissions"].get("allow", []))
     ask = list(effective["permissions"].get("ask", []))
@@ -465,26 +461,6 @@ def materialize_claude_settings(base_settings, approved_categories, source_dir=N
     else:
         deny = list(effective["permissions"]["deny"])
 
-    for repo_dir in (source_dir, results_dir):
-        if repo_dir is None:
-            continue
-        repo_str = str(Path(repo_dir).resolve())
-        for subcmd in READ_ONLY_GIT_SUBCOMMANDS:
-            for rule in (f"Bash(git -C {repo_str} {subcmd})", f"Bash(git -C {repo_str} {subcmd} *)"):
-                if rule not in allow:
-                    allow.append(rule)
-
-    if source_dir is not None:
-        source_str = str(Path(source_dir).resolve())
-        for rule in (
-            f"Bash(git -C {source_str} push)",
-            f"Bash(git -C {source_str} push*)",
-            f"Bash(git -C {source_str} * push)",
-            f"Bash(git -C {source_str} * push*)",
-        ):
-            if rule not in deny:
-                deny.append(rule)
-
     for protected in protected_dirs:
         if protected is None:
             continue
@@ -500,7 +476,7 @@ def materialize_claude_settings(base_settings, approved_categories, source_dir=N
     return effective
 
 
-def render_codex_rules(rules, approved_categories, source_dir=None, results_dir=None):
+def render_codex_rules(rules, approved_categories, source_dir=None):
     all_rules = list(rules)
     existing_patterns = {rule["pattern"] for rule in all_rules}
 
@@ -516,11 +492,6 @@ def render_codex_rules(rules, approved_categories, source_dir=None, results_dir=
 
     if source_dir is not None:
         resolved_source = Path(source_dir).resolve()
-        add_runtime_rule(
-            ("git", "-C", str(resolved_source), "push"),
-            "forbidden",
-            "Never push from the untrusted source checkout; push only --results-ref from the results checkout.",
-        )
         for bin_path in (str(resolved_source / "sailwright"), str(resolved_source / "sailwright.exe")):
             add_runtime_rule(
                 (bin_path, "provision", "local"),
@@ -548,21 +519,12 @@ def render_codex_rules(rules, approved_categories, source_dir=None, results_dir=
                 "Bulk VM stop can touch foreign or default VMs.",
             )
 
-    if results_dir is not None:
-        resolved_results = Path(results_dir).resolve()
-        for suffix in (
-            ("push", "--force"),
-            ("push", "-f"),
-            ("push", "--force-with-lease"),
-            ("push", "origin", "--force"),
-            ("push", "origin", "-f"),
-            ("push", "origin", "--force-with-lease"),
-        ):
-            add_runtime_rule(
-                ("git", "-C", str(resolved_results), *suffix),
-                "forbidden",
-                "Only regular fast-forward pushes to the assigned results ref are allowed.",
-            )
+    for exe in HOOK_ONLY_EXECUTABLES:
+        located = shutil.which(exe)
+        if located:
+            for path in sorted({Path(located).absolute(), Path(located).resolve()}):
+                add_runtime_rule((str(path),), "forbidden",
+                                 "Use the trusted host-agent hook for Git and provider launches.")
 
     lines = [
         "# Runtime Codex execpolicy rules generated by sailwright host-agent launch hook.",
@@ -589,7 +551,7 @@ def render_codex_rules(rules, approved_categories, source_dir=None, results_dir=
     return "\n".join(lines)
 
 
-def render_prompt(args, request, skill_file, protocol_path, approved_categories):
+def render_prompt(args, request, skill_file, protocol_path, approved_categories, artifacts_dir):
     vm_prefix = f"sw-{request['id']}-"
     approval_lines = ["Host-changing approval: NOT approved (operation_class is vm-lifecycle)."]
     if request["operation_class"] == "host-changing" and args.approve_host_changes:
@@ -611,10 +573,9 @@ def render_prompt(args, request, skill_file, protocol_path, approved_categories)
         f"- Provider: `{args.provider}`",
         f"- Skill: `{protocol.SKILL}` (`{skill_file}`)",
         f"- Trusted protocol validator: `{protocol_path}`",
-        f"- Pinned request JSON: `{args.request}`",
+        f"- Pinned request JSON: `{artifacts_dir / 'selftest' / request['id'] / 'request.json'}`",
         f"- Detached source checkout (untrusted code under test): `{args.source_dir}`",
-        f"- Detached results checkout: `{args.results_dir}`",
-        f"- Results Git ref (push target): `{args.results_ref}`",
+        f"- Results artifact directory: `{artifacts_dir}`",
         f"- Pinned request commit SHA: `{args.request_commit}`",
         f"- Request ID: `{request['id']}`",
         f"- Expected source commit SHA: `{request['commit']}`",
@@ -632,14 +593,14 @@ def render_prompt(args, request, skill_file, protocol_path, approved_categories)
         "- Never activate project settings, hooks, or MCP servers from `--source-dir`.",
         "- Never touch existing, default, or foreign VMs; use disposable clones only and verify absence before create.",
         "- Clean up every owned VM before exiting (including after failures or timeouts) and save pre-create and",
-        f"  post-destroy inventories with exit codes to `{args.results_dir}/selftest/{request['id']}/logs/cleanup.txt`.",
+        f"  post-destroy inventories with exit codes to `{artifacts_dir}/selftest/{request['id']}/logs/cleanup.txt`.",
         "- Redact all secrets, tokens, private keys, and guest passwords before writing logs or reports.",
-        f"- Preserve `{args.results_dir}/selftest/{request['id']}/request.json` byte-for-byte.",
-        f"- Write `{args.results_dir}/selftest/{request['id']}/result.json`, `report.md`, and `logs/`.",
-        f"- Validate with `python3 -B {protocol_path} validate result {args.results_dir}/selftest/{request['id']}/result.json`.",
-        f"- Commit only under `selftest/{request['id']}/` and fast-forward push ONLY `HEAD:{args.results_ref}` to `origin`.",
-        "- After pushing `--results-ref`, print a completion notice with the pushed ref, commit SHA, and result status,",
-        "  and remind the operator to close an idle interactive TUI with `/exit` (not `Ctrl+C`).",
+        f"- Preserve `{artifacts_dir}/selftest/{request['id']}/request.json` byte-for-byte.",
+        f"- Write `{artifacts_dir}/selftest/{request['id']}/result.json`, `report.md`, and `logs/`.",
+        f"- Validate with `python3 -B {protocol_path} validate result {artifacts_dir}/selftest/{request['id']}/result.json`.",
+        "- Leave artifacts in that directory. Git and nested providers are prohibited.",
+        "- Tell the operator to close the provider with /exit after artifacts are ready.",
+        "- The trusted hook will validate, commit and publish after the provider process tree stops.",
     ]
     if args.provider == "codex":
         lines.extend([
@@ -670,159 +631,403 @@ def prepare_codex_home(runtime_dir, codex_config_path, rendered_rules):
     return codex_home
 
 
-def terminate_process(process, new_session):
-    if process.poll() is not None:
-        return
+def set_foreground_group(fd, group):
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTTOU})
     try:
-        if new_session and not protocol.is_windows():
-            os.killpg(process.pid, signal.SIGTERM)
-        else:
-            process.terminate()
-    except OSError:
-        pass
+        os.tcsetpgrp(fd, group)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
+class PosixProcessTree:
+    def __init__(self, process, adopted_parent):
+        self.process = process
+        self.adopted_parent = adopted_parent
+        self.seen = {}
+
+    def live_members(self):
+        self.process.poll()
+        scanner = subprocess.Popen(
+            [shutil.which("ps", path=os.defpath) or "ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart="],
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            listing, _ = scanner.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            scanner.kill()
+            scanner.wait()
+            raise
+        if scanner.returncode:
+            raise LaunchError("could not inspect the provider process tree")
+        processes = {}
+        children = {}
+        candidates = []
+        for line in listing.splitlines():
+            pid, parent, group, state, started = line.split(maxsplit=4)
+            pid, parent, group = int(pid), int(parent), int(group)
+            if pid == scanner.pid:
+                continue
+            processes[pid] = (group, state, started)
+            children.setdefault(parent, []).append(pid)
+            if (group == self.process.pid or parent == self.adopted_parent
+                    or self.seen.get(pid) == started):
+                candidates.append(pid)
+        members = {}
+        while candidates:
+            pid = candidates.pop()
+            if pid in members:
+                continue
+            members[pid] = processes[pid]
+            candidates.extend(children.get(pid, ()))
+        self.seen = {pid: started for pid, (_, _, started) in members.items()}
+        live = {}
+        for pid, (_, state, started) in members.items():
+            if not state.startswith("Z"):
+                live[pid] = started
+            elif pid != self.process.pid and self.adopted_parent is not None:
+                try:
+                    os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    pass
+        return live
+
+    def wait(self, timeout):
+        deadline = time.monotonic() + timeout
+        while True:
+            status = self.process.poll()
+            if status is not None:
+                return status, False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return 124, True
+            self.live_members()
+            try:
+                return self.process.wait(timeout=max(0, min(deadline - time.monotonic(), 0.5))), False
+            except subprocess.TimeoutExpired:
+                pass
+
+    def stop(self):
+        for sig, grace in ((signal.SIGTERM, 2), (signal.SIGKILL, 5)):
+            deadline = time.monotonic() + grace
+            signalled = set()
+            while time.monotonic() < deadline:
+                members = self.live_members()
+                if not members:
+                    self.process.wait(timeout=5)
+                    return
+                for pid, started in members.items():
+                    identity = (pid, started)
+                    if identity in signalled:
+                        continue
+                    try:
+                        os.kill(pid, sig)
+                    except ProcessLookupError:
+                        pass
+                    signalled.add(identity)
+                time.sleep(0.1)
+        raise LaunchError("could not confirm that the provider process tree stopped")
+
+
+def enable_linux_subreaper():
+    # Orphaned provider children, including children that started new
+    # sessions, reparent here instead of disappearing into the init process.
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    return os.getpid()
+
+
+def wait_provider(process, timeout):
     try:
-        process.wait(timeout=5)
-        return
+        return process.wait(timeout=timeout), False
     except subprocess.TimeoutExpired:
-        pass
+        return 124, True
+    except KeyboardInterrupt as error:
+        raise LaunchError("interrupted while running host agent provider") from error
+
+
+def run_posix_provider(command, cwd, env, timeout):
+    import termios
+
+    fd = sys.stdin.fileno()
     try:
-        if new_session and not protocol.is_windows():
-            os.killpg(process.pid, signal.SIGKILL)
-        else:
+        foreground = os.tcgetpgrp(fd)
+    except OSError:
+        foreground = None
+    if foreground is not None and foreground != os.getpgrp():
+        raise LaunchError("start the interactive host agent in the terminal foreground")
+    attributes = termios.tcgetattr(fd) if foreground is not None else None
+    adopted_parent = enable_linux_subreaper() if sys.platform.startswith("linux") else None
+
+    # Preserve the controlling terminal while isolating provider signals from
+    # the starter and operator shell. Keep tracking command subprocesses if
+    # the provider gives them separate process groups.
+    process = subprocess.Popen(command, cwd=cwd, env=env, process_group=0)
+    tree = PosixProcessTree(process, adopted_parent)
+    try:
+        if foreground is not None and process.poll() is None:
+            try:
+                set_foreground_group(fd, process.pid)
+                os.killpg(process.pid, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+        return tree.wait(timeout)
+    except KeyboardInterrupt as error:
+        raise LaunchError("interrupted while running host agent provider") from error
+    finally:
+        try:
+            tree.stop()
+        finally:
+            if foreground is not None:
+                set_foreground_group(fd, foreground)
+                termios.tcsetattr(fd, termios.TCSANOW, attributes)
+
+
+def run_windows_provider(command, cwd, env, timeout, gate_dir):
+    import ctypes
+    from ctypes import wintypes
+
+    class JobAccounting(ctypes.Structure):
+        _fields_ = [
+            ("user_time", ctypes.c_longlong), ("kernel_time", ctypes.c_longlong),
+            ("period_user_time", ctypes.c_longlong), ("period_kernel_time", ctypes.c_longlong),
+            ("page_faults", wintypes.DWORD), ("total_processes", wintypes.DWORD),
+            ("active_processes", wintypes.DWORD), ("terminated_processes", wintypes.DWORD),
+        ]
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [
+            ("process_time", ctypes.c_longlong), ("job_time", ctypes.c_longlong),
+            ("flags", wintypes.DWORD), ("min_working_set", ctypes.c_size_t),
+            ("max_working_set", ctypes.c_size_t), ("active_processes", wintypes.DWORD),
+            ("affinity", ctypes.c_size_t), ("priority", wintypes.DWORD),
+            ("scheduling", wintypes.DWORD),
+        ]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [
+            ("basic", BasicLimits), ("io_counters", ctypes.c_ulonglong * 6),
+            ("process_memory", ctypes.c_size_t), ("job_memory", ctypes.c_size_t),
+            ("peak_process_memory", ctypes.c_size_t), ("peak_job_memory", ctypes.c_size_t),
+        ]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    def api(name, result, *parameters):
+        function = getattr(kernel, name)
+        function.restype = result
+        function.argtypes = parameters
+        return function
+
+    handle, dword, pointer = wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p
+    create = api("CreateJobObjectW", handle, pointer, wintypes.LPCWSTR)
+    open_process = api("OpenProcess", handle, dword, wintypes.BOOL, dword)
+    set_info = api("SetInformationJobObject", wintypes.BOOL, handle, ctypes.c_int, pointer, dword)
+    query = api("QueryInformationJobObject", wintypes.BOOL, handle, ctypes.c_int, pointer, dword, pointer)
+    assign = api("AssignProcessToJobObject", wintypes.BOOL, handle, handle)
+    terminate = api("TerminateJobObject", wintypes.BOOL, handle, dword)
+    close = api("CloseHandle", wintypes.BOOL, handle)
+
+    def checked(value):
+        if not value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return value
+
+    job = checked(create(None, None))
+    try:
+        limits = ExtendedLimits()
+        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        checked(set_info(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)))
+
+        # A Windows wrapper waits to spawn the actual provider until it is
+        # assigned to the job. Keep the original console handles for the TUI.
+        gate = gate_dir / "provider-job-ready"
+        wrapper = """from pathlib import Path
+import subprocess
+import sys
+import time
+deadline = time.monotonic() + 15
+while not Path(sys.argv[1]).exists():
+    if time.monotonic() >= deadline:
+        sys.exit(1)
+    time.sleep(0.05)
+sys.exit(subprocess.call(sys.argv[2:]))
+"""
+        process = subprocess.Popen(
+            [sys.executable, "-B", "-c", wrapper, str(gate), *command],
+            cwd=cwd, env=env, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+        try:
+            process_handle = checked(open_process(0x0101, False, process.pid))
+            try:
+                checked(assign(job, process_handle))
+            finally:
+                close(process_handle)
+        except OSError:
+            # The gate is still closed, so the wrapper cannot have children.
             process.kill()
-    except OSError:
-        pass
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        pass
+            process.wait(timeout=5)
+            raise
+
+        accounting = JobAccounting()
+
+        def active():
+            checked(query(job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None))
+            return accounting.active_processes
+
+        try:
+            gate.touch(exist_ok=False)
+            return wait_provider(process, timeout)
+        finally:
+            if active():
+                checked(terminate(job, 124))
+                deadline = time.monotonic() + 5
+                while active():
+                    if time.monotonic() >= deadline:
+                        raise LaunchError("could not confirm that the Windows provider job stopped")
+                    time.sleep(0.05)
+            process.wait(timeout=5)
+    finally:
+        close(job)
 
 
-def verify_results(args, request, original_request_bytes):
+def collect_artifacts(directory, request_id):
+    prefix = f"selftest/{request_id}"
+    files = {}
+
+    def read(path, relative):
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise LaunchError(f"symlinks and reparse points are forbidden in results: {relative}")
+        if stat.S_ISDIR(info.st_mode) and (
+            relative in {"", "selftest", prefix} or relative.startswith(f"{prefix}/logs/")
+            or relative == f"{prefix}/logs"
+        ):
+            for child in path.iterdir():
+                name = child.name
+                if name.startswith(".") or re.search(r"[:\\\x00-\x1f\x7f]", name):
+                    raise LaunchError(f"invalid result path {name!r}")
+                read(child, f"{relative}/{name}" if relative else name)
+            return
+        if not stat.S_ISREG(info.st_mode) or not (
+            relative in {f"{prefix}/request.json", f"{prefix}/result.json", f"{prefix}/report.md"}
+            or relative.startswith(f"{prefix}/logs/")
+        ):
+            raise LaunchError(f"unexpected path in results: {relative}")
+        files[relative] = path.read_bytes()
+
+    read(directory, "")
+    return files
+
+
+def verify_cleanup(result_doc, log):
+    cleanup = result_doc["cleanup"]
+    if cleanup["status"] != "verified":
+        raise LaunchError("result reports incomplete cleanup")
+    if not log or not log.strip():
+        raise LaunchError("missing required nonempty logs/cleanup.txt")
+    phases = {}
+    for section in log.decode("utf-8").strip().splitlines():
+        match = re.fullmatch(r"(Before create|After destroy): (\S+)", section)
+        if match:
+            phase, name = match.groups()
+            if (name, phase) in phases:
+                raise LaunchError("cleanup inventory repeats a phase")
+            current = phases[name, phase] = []
+        elif phases:
+            current.append(section)
+        elif section.strip():
+            raise LaunchError("cleanup inventory must start with a phase heading")
+
+    names = cleanup["owned_vms"] or ["no-vms"]
+    expected = {(name, phase) for name in names for phase in ("Before create", "After destroy")}
+    if phases.keys() != expected:
+        raise LaunchError("cleanup inventory must contain both phases for every owned VM")
+    for name in names:
+        before, after = (name, "Before create"), (name, "After destroy")
+        if list(phases).index(before) >= list(phases).index(after):
+            raise LaunchError("cleanup inventory records the post-destroy phase before the pre-create phase")
+        for phase in (before, after):
+            lines = [line.strip() for line in phases[phase] if line.strip()]
+            if (len(lines) < 3 or not lines[0].startswith("$ ") or lines[-1] != "Exit code 0"):
+                raise LaunchError("cleanup inventory requires a command, captured output and exit code 0 per phase")
+            if any(re.fullmatch(r"Exit code -?\d+", line) for line in lines[1:-1]):
+                raise LaunchError("cleanup inventory must record exactly one exit code per phase")
+            if name in lines[1:-1] and cleanup["owned_vms"]:
+                raise LaunchError("cleanup inventory still lists an owned VM")
+
+
+def verify_results(args, request, original_request_bytes, files):
     request_id = request["id"]
-    results_dir = args.results_dir
-    rel_prefix = f"selftest/{request_id}/"
-    result_root = results_dir / "selftest" / request_id
+    prefix = f"selftest/{request_id}"
+    if files.get(f"{prefix}/request.json") != original_request_bytes:
+        raise LaunchError("request.json must remain byte-for-byte unchanged")
 
-    request_path = result_root / "request.json"
-    if request_path.is_symlink() or not request_path.is_file():
-        raise LaunchError(f"pinned request file missing or invalid: {request_path}")
-    if request_path.read_bytes() != original_request_bytes:
-        raise LaunchError("selftest/<id>/request.json was modified; it must remain byte-for-byte unchanged")
+    for path, data in files.items():
+        if PRIVATE_KEY_PATTERN.search(data):
+            raise LaunchError(f"unredacted private key material detected in {path}")
 
-    result_path = result_root / "result.json"
-    if result_path.is_symlink() or not result_path.is_file():
-        raise LaunchError(f"missing required result.json at {result_path}")
     try:
-        result_doc = protocol.validate("result", result_path.read_bytes())
+        result = protocol.validate("result", files[f"{prefix}/result.json"])
+    except KeyError as error:
+        raise LaunchError("missing required result.json") from error
     except protocol.ProtocolError as error:
         raise LaunchError(f"result.json failed schema validation: {error}") from error
-
-    if result_doc["id"] != request_id:
-        raise LaunchError(f"result.json id {result_doc['id']!r} does not match request id {request_id!r}")
-    if result_doc["commit"] != request["commit"]:
+    if result["id"] != request_id:
+        raise LaunchError("result.json id does not match request id")
+    if result["commit"] != request["commit"]:
         raise LaunchError("result.json commit does not match request commit")
-    if result_doc["request_commit"] != args.request_commit:
+    if result["request_commit"] != args.request_commit:
         raise LaunchError("result.json request_commit does not match --request-commit")
+    if any(result["host"][key] != request["target"][key] for key in ("os", "arch")):
+        raise LaunchError("result.json host does not match the request target")
+    if not files.get(f"{prefix}/report.md", b"").decode("utf-8").strip():
+        raise LaunchError("missing required report.md or report is empty")
+    if any(not re.search(rf"(?:^|-)sw-{re.escape(request_id)}-", name)
+           for name in result["cleanup"]["owned_vms"]):
+        raise LaunchError("cleanup lists a VM without the request's owned name prefix")
+    verify_cleanup(result, files.get(f"{prefix}/logs/cleanup.txt"))
+    return result
 
-    report_path = result_root / "report.md"
-    if report_path.is_symlink() or not report_path.is_file():
-        raise LaunchError(f"missing required report.md at {report_path}")
-    if not report_path.read_text(encoding="utf-8").strip():
-        raise LaunchError(f"report.md must not be empty: {report_path}")
 
-    for item in result_root.rglob("*"):
-        if item.is_symlink():
-            raise LaunchError(f"symlinks are forbidden in results tree: {item}")
-        if item.is_file():
-            content = item.read_bytes()
-            if PRIVATE_KEY_PATTERN.search(content):
-                raise LaunchError(f"unredacted private key material detected in {item}")
+def publish_results(location, ref, pin, files):
+    # The provider has no access to this Git repository, config or index.
+    # Write raw blobs to avoid filters and commit only one child of the pin.
+    with tempfile.TemporaryDirectory(prefix="sailwright-host-agent-publish-") as directory:
+        repo = Path(directory) / "results"
+        protocol.init_repo(repo)
 
-    try:
-        status_out = protocol.git(
-            "status", "--porcelain", cwd=results_dir,
-            description="cannot inspect results working tree", isolated=True,
-        )
-    except protocol.ProtocolError as error:
-        raise LaunchError(str(error)) from error
-    if status_out.strip():
-        raise LaunchError("results checkout has uncommitted changes; commit and push only --results-ref")
+        def git(*command, description, data=None, isolated=False):
+            return protocol.git(*command, cwd=repo, description=description, data=data, isolated=isolated)
 
-    try:
-        head_sha = protocol.git(
-            "rev-parse", "--verify", "HEAD^{commit}", cwd=results_dir,
-            description="cannot resolve results HEAD", isolated=True,
-        ).decode("ascii").strip()
-    except protocol.ProtocolError as error:
-        raise LaunchError(str(error)) from error
+        git("remote", "add", "publication", location, description="cannot configure publication destination")
+        for options in (("--all",), ("--push", "--all")):
+            url = git("remote", "get-url", *options, "publication",
+                      description="cannot resolve publication destination").decode("utf-8").rstrip("\r\n")
+            if url != location:
+                raise LaunchError("Git URL rewriting would change the pinned results destination")
+        protocol.fetch_exact(repo, location, ref, pin, "results ref changed before publication")
 
-    if head_sha == args.request_commit:
-        raise LaunchError("no result commit was created on top of --request-commit")
+        index = bytearray()
+        for path, content in sorted(files.items()):
+            blob = git("hash-object", "-w", "--stdin", data=content, isolated=True,
+                       description="cannot store validated result artifact").strip()
+            index.extend(b"100644 " + blob + b"\t" + path.encode("utf-8") + b"\0")
+        git("update-index", "-z", "--index-info", data=index, isolated=True,
+            description="cannot stage validated result artifacts")
+        tree = git("write-tree", isolated=True, description="cannot write validated results tree").decode().strip()
+        commit = git("commit-tree", tree, "-p", pin, "-m", "Add host test result",
+                     description="cannot commit results (configure a Git identity)").decode().strip()
 
-    try:
-        protocol.git(
-            "merge-base", "--is-ancestor", args.request_commit, head_sha, cwd=results_dir,
-            description="results HEAD is not a fast-forward descendant of --request-commit", isolated=True,
-        )
-    except protocol.ProtocolError as error:
-        raise LaunchError(str(error)) from error
-
-    try:
-        tree_bytes = protocol.git(
-            "ls-tree", "-r", "-z", head_sha, cwd=results_dir,
-            description="cannot inspect committed results tree", isolated=True,
-        )
-    except protocol.ProtocolError as error:
-        raise LaunchError(str(error)) from error
-
-    committed_paths = set()
-    for entry in tree_bytes.split(b"\0")[:-1]:
-        meta, _, path_bytes = entry.partition(b"\t")
-        mode = meta.split()[0]
-        path_text = path_bytes.decode("utf-8", errors="surrogateescape")
-        if mode not in {b"100644", b"100755"}:
-            raise LaunchError(f"committed results tree contains non-regular entry {path_text!r}")
-        if not path_text.startswith(rel_prefix):
-            raise LaunchError(f"committed results tree modified path outside {rel_prefix}: {path_text!r}")
-        committed_paths.add(path_text)
-
-    for required_rel in (f"{rel_prefix}request.json", f"{rel_prefix}result.json", f"{rel_prefix}report.md"):
-        if required_rel not in committed_paths:
-            raise LaunchError(f"committed results tree is missing {required_rel}")
-
-    try:
-        committed_request = protocol.git(
-            "show", f"{head_sha}:{rel_prefix}request.json", cwd=results_dir,
-            description="cannot read committed request.json", isolated=True,
-        )
-    except protocol.ProtocolError as error:
-        raise LaunchError(str(error)) from error
-    if committed_request != original_request_bytes:
-        raise LaunchError("committed request.json differs from the pinned request")
-
-    try:
-        remote_lines = protocol.git(
-            "ls-remote", "--refs", "origin", args.results_ref, cwd=results_dir,
-            description="cannot verify pushed --results-ref on origin",
-        ).decode("utf-8", errors="replace").splitlines()
-    except protocol.ProtocolError as error:
-        raise LaunchError(str(error)) from error
-
-    remote_sha = None
-    for line in remote_lines:
-        sha, _, ref = line.partition("\t")
-        if ref == args.results_ref:
-            remote_sha = sha.strip()
-            break
-    if remote_sha is None:
-        raise LaunchError(f"results ref {args.results_ref} was not found on origin")
-    if remote_sha != head_sha:
-        raise LaunchError(
-            f"origin {args.results_ref} points to {remote_sha}, expected pushed commit {head_sha}"
-        )
-
-    return result_doc
+        # The lease makes the exact base check atomic with the ref update.
+        # As a direct child of pin, this commit can only advance that base.
+        git("-c", "http.followRedirects=false", "push", "--no-follow-tags", "--recurse-submodules=no",
+            f"--force-with-lease={ref}:{pin}", "--", location, f"{commit}:{ref}",
+            description="cannot publish the validated results commit")
+        return commit
 
 
 def parse_args(argv=None):
@@ -929,8 +1134,29 @@ def run_hook(args):
     provider_bin = Path(provider_bin_str)
     ensure_outside(provider_bin, untrusted_roots, f"{args.provider} executable")
 
-    prompt_text = render_prompt(args, request, skill_file, protocol_path, approved_categories)
-    provider_env = protocol.git_environment()
+    _, pinned_request = protocol.read_initial_request(results_dir, args.request_commit, request_id)
+    if pinned_request != original_request_bytes:
+        raise LaunchError("request.json does not match the pinned Git object")
+    location = os.environ.get(protocol.RESULTS_REPO_ENV)
+    if location is None:
+        # Direct hook callers still use the original SW-080 origin contract.
+        location = protocol.git("config", "--local", "--get", "remote.origin.url", cwd=results_dir,
+                                description="cannot read original results destination").decode().rstrip("\r\n")
+    location = protocol.git_location(location, "results repo")
+    if Path(location).is_absolute():
+        location = str(Path(location).resolve(strict=True))
+    ref = args.results_ref
+    marker = os.environ.get(protocol.LOCK_MARKER_ENV)
+    cleanup_pending = Path(marker) if marker else None
+
+    provider_env = {key: value for key, value in os.environ.items()
+                    if not key.upper().startswith(("GIT_", "GH_"))
+                    and key not in {protocol.RESULTS_REPO_ENV, protocol.LOCK_MARKER_ENV,
+                                    "GITHUB_TOKEN", "SSH_AUTH_SOCK", "SSH_AGENT_PID"}}
+    provider_env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+                        GIT_ALLOW_PROTOCOL="", GIT_TERMINAL_PROMPT="0")
+
+    artifacts_dir = results_dir.parent / "artifacts"
 
     with tempfile.TemporaryDirectory(prefix="sailwright-host-agent-run-") as tmp:
         runtime_dir = Path(tmp).resolve()
@@ -938,8 +1164,6 @@ def run_hook(args):
         agent_cwd = runtime_dir / "workspace"
         agent_cwd.mkdir(mode=0o700)
         brief_path = agent_cwd / LAUNCH_BRIEF_NAME
-        brief_path.write_text(prompt_text, encoding="utf-8")
-        brief_path.chmod(0o400)
 
         try:
             if args.provider == "claude":
@@ -957,9 +1181,7 @@ def run_hook(args):
                 effective_settings = materialize_claude_settings(
                     base_settings,
                     approved_categories,
-                    source_dir=source_dir,
-                    results_dir=results_dir,
-                    protected_dirs=(HERE, skill_file.parent),
+                    protected_dirs=(HERE, skill_file.parent, results_dir),
                 )
                 settings_path = runtime_dir / "claude-settings.json"
                 settings_path.write_text(json.dumps(effective_settings, indent=2) + "\n", encoding="utf-8")
@@ -975,7 +1197,7 @@ def run_hook(args):
                     "--mcp-config", str(empty_mcp_path),
                     "--append-system-prompt-file", str(skill_file),
                     "--add-dir", str(source_dir),
-                    "--add-dir", str(results_dir),
+                    "--add-dir", str(artifacts_dir),
                     "--",
                     LAUNCH_PROMPT,
                 ]
@@ -1002,7 +1224,6 @@ def run_hook(args):
                     parsed_rules,
                     approved_categories,
                     source_dir=source_dir,
-                    results_dir=results_dir,
                 )
                 codex_home = prepare_codex_home(runtime_dir, codex_config_path, rendered_rules)
                 provider_env["CODEX_HOME"] = str(codex_home)
@@ -1012,30 +1233,38 @@ def run_hook(args):
                     "-c", f'approval_policy="{codex_config["approval_policy"]}"',
                     "-c", f'sandbox_mode="{codex_config["sandbox_mode"]}"',
                     "-c", "project_doc_max_bytes=0",
+                    "-c", "sandbox_workspace_write.network_access=false",
                     "-C", str(agent_cwd),
                     "--add-dir", str(source_dir),
-                    "--add-dir", str(results_dir),
+                    "--add-dir", str(artifacts_dir),
                     "--",
                     LAUNCH_PROMPT,
                 ]
 
-            new_session = (not protocol.is_windows()) and (not sys.stdin.isatty())
-            process = subprocess.Popen(
-                command,
-                cwd=agent_cwd,
-                env=provider_env,
-                start_new_session=new_session,
-            )
-            timed_out = False
-            try:
-                provider_rc = process.wait(timeout=request["time_limit_seconds"])
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                terminate_process(process, new_session)
-                provider_rc = 124
-            except KeyboardInterrupt as error:
-                terminate_process(process, new_session)
-                raise LaunchError("interrupted while running host agent provider") from error
+            artifacts_dir.mkdir(mode=0o700)
+            artifact_request = artifacts_dir / "selftest" / request_id / "request.json"
+            artifact_request.parent.mkdir(parents=True, mode=0o700)
+            artifact_request.write_bytes(pinned_request)
+            prompt_text = render_prompt(args, request, skill_file, protocol_path, approved_categories, artifacts_dir)
+            brief_path.write_text(prompt_text, encoding="utf-8")
+            brief_path.chmod(0o400)
+
+            # Leave the bootstrap's checkout without a write destination.
+            protocol.git("remote", "remove", "origin", cwd=results_dir, isolated=True,
+                         description="cannot detach results origin before provider launch")
+            config_path = results_dir / ".git" / "config"
+            results_config = config_path.read_bytes()
+
+            if cleanup_pending:
+                cleanup_pending.touch(exist_ok=False)
+            else:
+                print("host-agent-launch: record the work directory for manual recovery if cleanup is uncertain",
+                      file=sys.stderr)
+            timeout = request["time_limit_seconds"]
+            if protocol.is_windows():
+                provider_rc, timed_out = run_windows_provider(command, agent_cwd, provider_env, timeout, runtime_dir)
+            else:
+                provider_rc, timed_out = run_posix_provider(command, agent_cwd, provider_env, timeout)
         finally:
             try:
                 if brief_path.exists():
@@ -1043,52 +1272,35 @@ def run_hook(args):
             except OSError:
                 pass
 
-    if timed_out:
-        try:
-            result_doc = verify_results(args, request, original_request_bytes)
-        except LaunchError as error:
-            print(
-                f"host-agent-launch: provider timed out after {request['time_limit_seconds']}s "
-                f"and no valid pushed result was found ({error})",
-                file=sys.stderr,
-            )
-            return 124
-        print(
-            f"host-agent-launch: interactive provider session reached time limit after "
-            f"{request['time_limit_seconds']}s with a valid pushed result "
-            f"(status: {result_doc['status']})",
-            file=sys.stderr,
-        )
-        if result_doc["status"] == "passed":
-            return 0
-        if result_doc["status"] == "timed-out":
-            return 124
-        return 1
-
-    result_doc = verify_results(args, request, original_request_bytes)
-    if provider_rc != 0:
-        code = normalize_exit_code(provider_rc, fallback=1)
-        print(
-            f"host-agent-launch: provider exited with status {provider_rc} "
-            f"(published result status: {result_doc['status']})",
-            file=sys.stderr,
-        )
-        return code if code != 0 else 1
-
-    if result_doc["status"] == "passed":
-        return 0
-    if result_doc["status"] == "timed-out":
-        print("host-agent-launch: published host test result reported status timed-out", file=sys.stderr)
+    try:
+        if config_path.is_symlink() or not config_path.is_file() or config_path.read_bytes() != results_config:
+            raise LaunchError("bootstrap results Git configuration changed during provider execution")
+        files = collect_artifacts(artifacts_dir, request_id)
+        result = verify_results(args, request, pinned_request, files)
+    except (LaunchError, OSError, UnicodeError) as error:
+        if not timed_out:
+            raise
+        print(f"host-agent-launch: provider timed out after {timeout}s without a valid result ({error})",
+              file=sys.stderr)
         return 124
-    print("host-agent-launch: published host test result reported status failed", file=sys.stderr)
-    return 1
+
+    if cleanup_pending:
+        cleanup_pending.unlink()
+    commit = publish_results(location, ref, args.request_commit, files)
+    status = result["status"]
+    print(f"host-agent-launch: published {ref} at {commit} (status: {status})", file=sys.stderr)
+
+    if not timed_out and provider_rc != 0:
+        print(f"host-agent-launch: provider exited with status {provider_rc}", file=sys.stderr)
+        return normalize_exit_code(provider_rc)
+    return {"passed": 0, "failed": 1, "timed-out": 124}[status]
 
 
 def main(argv=None):
     args = parse_args(argv)
     try:
         return normalize_exit_code(run_hook(args), fallback=1)
-    except (LaunchError, OSError) as error:
+    except (LaunchError, OSError, UnicodeError, protocol.ProtocolError, subprocess.SubprocessError) as error:
         print(f"host-agent-launch: {error}", file=sys.stderr)
         return 1
 

@@ -86,7 +86,10 @@
           "uniqueItems": true,
           "items": {"$ref": "#/$defs/text"}
         },
-        "evidence": {"$ref": "#/$defs/text"}
+        "evidence": {
+          "$ref": "#/$defs/text",
+          "description": "Summary of the pre-create and post-destroy records in the request's logs/cleanup.txt."
+        }
       },
       "if": {"properties": {"status": {"const": "verified"}}},
       "then": {"properties": {"remaining_vms": {"maxItems": 0}}}
