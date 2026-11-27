@@ -21,6 +21,9 @@ type workflow struct {
 	Permissions map[string]string `yaml:"permissions"`
 	Env         map[string]string `yaml:"env"`
 	Jobs        map[string]job    `yaml:"jobs"`
+	Concurrency struct {
+		CancelInProgress string `yaml:"cancel-in-progress"`
+	} `yaml:"concurrency"`
 }
 
 type triggers struct {
