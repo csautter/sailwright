@@ -188,6 +188,143 @@ esac
 	}
 }
 
+func TestLinuxCloneIdentityRefreshesRendererStartingDuringBoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executes the Linux guest shell script")
+	}
+	for _, tc := range []struct {
+		name         string
+		initialState string
+	}{
+		{"activating networkd during sampling", "activating"},
+		{"inactive enabled-runtime networkd during boot", "inactive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			for _, dir := range []string{"etc", "var/lib", "bin"} {
+				if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write := func(path, value string, mode os.FileMode) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(root, path), []byte(value), mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			read := func(path string) string {
+				t.Helper()
+				data, err := os.ReadFile(filepath.Join(root, path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(data)
+			}
+			const (
+				inheritedID = "11111111111111111111111111111111\n"
+				freshUUID   = "22222222-2222-2222-2222-222222222222\n"
+				freshID     = "22222222222222222222222222222222\n"
+			)
+			vm := build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "server", Arch: "arm64", Name: "work", VirtualizationEngine: build.VirtualizationEngineUtm}
+			stampRel := strings.TrimPrefix(linuxIdentityPath, "/")
+			write("etc/machine-id", inheritedID, 0o600)
+			write("etc/hostname", "# managed locally\n"+build.InstanceHostname(vm)+"\n", 0o600)
+			write("uuid", freshUUID, 0o600)
+			write("network-state", tc.initialState+"\n", 0o600)
+			// Model hostnamectl returning 0 without rewriting an already-matching annotated /etc/hostname.
+			write("bin/hostnamectl", "#!/bin/sh\nexit 0\n", 0o700)
+			write("bin/systemctl", `#!/bin/sh
+set -eu
+case "$*" in
+'show --property=ActiveState --value systemd-networkd.service')
+  cat "$TEST_NETWORK_STATE" ;;
+'show --property=UnitFileState --value systemd-networkd.service')
+  printf '%s\n' enabled-runtime ;;
+'show --property=ActiveState --value NetworkManager.service')
+  # Simulate networkd completing activation and caching the inherited ID
+  # before the script writes the replacement machine ID.
+  if [ ! -f "$TEST_RENDERER_ID" ]; then
+    cat "$TEST_MACHINE_ID" > "$TEST_RENDERER_ID"
+    printf '%s\n' active > "$TEST_NETWORK_STATE"
+  fi
+  printf '%s\n' inactive ;;
+'show --property=UnitFileState --value NetworkManager.service')
+  # Absent unit reports empty UnitFileState with exit 0.
+  printf '\n' ;;
+'restart systemd-networkd.service')
+  if [ -f "$TEST_STAMP" ]; then
+    echo "stamp published before renderer restart" >&2
+    exit 9
+  fi
+  printf '%s\n' "$*" >> "$TEST_CALLS"
+  cat "$TEST_MACHINE_ID" > "$TEST_RENDERER_ID"
+  printf '%s\n' active > "$TEST_NETWORK_STATE" ;;
+'restart NetworkManager.service')
+  echo "attempted to restart absent NetworkManager.service" >&2
+  exit 5 ;;
+*) exit 2 ;;
+esac
+`, 0o700)
+			run := func() error {
+				t.Helper()
+				script := strings.NewReplacer(
+					"/etc/machine-id", filepath.Join(root, "etc/machine-id"),
+					"/var/lib", filepath.Join(root, "var/lib"),
+					"/proc/sys/kernel/random/uuid", filepath.Join(root, "uuid"),
+				).Replace(linuxInstanceIdentityScript(vm))
+				cmd := exec.Command("sh", "-ec", script)
+				cmd.Env = append(os.Environ(),
+					"PATH="+filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"),
+					"TEST_CALLS="+filepath.Join(root, "calls"),
+					"TEST_NETWORK_STATE="+filepath.Join(root, "network-state"),
+					"TEST_MACHINE_ID="+filepath.Join(root, "etc/machine-id"),
+					"TEST_RENDERER_ID="+filepath.Join(root, "renderer-id"),
+					"TEST_STAMP="+filepath.Join(root, stampRel),
+				)
+				if data, err := cmd.CombinedOutput(); err != nil {
+					return fmt.Errorf("%w: %s", err, data)
+				}
+				return nil
+			}
+			verify := func() error {
+				return verifyLinuxUTMIdentity(build.InstanceName(vm), build.InstanceHostname(vm), func(path string) (string, error) {
+					if path == linuxRunningHostnamePath {
+						return build.InstanceHostname(vm), nil
+					}
+					return strings.TrimSuffix(read(strings.TrimPrefix(path, "/")), "\n"), nil
+				})
+			}
+
+			if err := run(); err != nil {
+				t.Fatal(err)
+			}
+			if got := read("etc/machine-id"); got != freshID {
+				t.Fatalf("disk machine-id = %q, want %q", got, freshID)
+			}
+			if got := read("renderer-id"); got != freshID {
+				t.Fatalf("renderer cached machine-id = %q, want %q", got, freshID)
+			}
+			const restart = "restart systemd-networkd.service\n"
+			if got := read("calls"); got != restart {
+				t.Fatalf("systemctl calls = %q, want %q", got, restart)
+			}
+			if err := verify(); err != nil {
+				t.Fatal(err)
+			}
+			// Subsequent start on an already-stamped guest remains idempotent.
+			if err := run(); err != nil {
+				t.Fatal(err)
+			}
+			if got := read("calls"); got != restart {
+				t.Fatalf("second apply restarted networking: %q", got)
+			}
+			if err := verify(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestNamedGuestHostnameUsesProviderIdentity(t *testing.T) {
 	old := runGuestIdentityCommand
 	defer func() { runGuestIdentityCommand = old }()
@@ -437,6 +574,32 @@ func TestNamedUTMGuestIdentityDeadline(t *testing.T) {
 	})
 }
 
+func TestVerifyLinuxUTMIdentityAcceptsAnnotatedConfiguredHostname(t *testing.T) {
+	const instance = "ubuntu-server-arm64-work-dev-alchemy"
+	const machineID = "12345678123412341234123456789abc"
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"comment above hostname", "# managed locally\n" + instance},
+		{"blank lines, whitespace, and trailing comment", "\n  # managed locally\n\n  " + instance + " \t\r\n# trailing comment"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := map[string]string{
+				linuxIdentityPath:           instance + ":" + machineID,
+				linuxMachineIDPath:          machineID,
+				linuxRunningHostnamePath:    instance,
+				linuxConfiguredHostnamePath: tc.content,
+			}
+			if err := verifyLinuxUTMIdentity(instance, instance, func(path string) (string, error) {
+				return state[path], nil
+			}); err != nil {
+				t.Fatalf("rejected valid annotated %s (%q): %v", linuxConfiguredHostnamePath, tc.content, err)
+			}
+		})
+	}
+}
+
 func TestVerifyLinuxUTMIdentityRejectsMismatchedState(t *testing.T) {
 	const instance = "ubuntu-server-arm64-work-dev-alchemy"
 	const machineID = "12345678123412341234123456789abc"
@@ -449,7 +612,11 @@ func TestVerifyLinuxUTMIdentityRejectsMismatchedState(t *testing.T) {
 		{"different instance", linuxIdentityPath, "sibling:" + machineID},
 		{"different machine ID", linuxMachineIDPath, "87654321432143214321cba987654321"},
 		{"different running hostname", linuxRunningHostnamePath, "ubuntu-server"},
+		{"annotated running hostname", linuxRunningHostnamePath, "# managed locally\n" + instance},
 		{"different configured hostname", linuxConfiguredHostnamePath, "ubuntu-desktop"},
+		{"annotated different configured hostname", linuxConfiguredHostnamePath, "# managed locally\nubuntu-desktop"},
+		{"comment-only configured hostname", linuxConfiguredHostnamePath, "# managed locally\n\n"},
+		{"inline comment in configured hostname", linuxConfiguredHostnamePath, instance + " # managed locally"},
 	} {
 		t.Run(check.name, func(t *testing.T) {
 			state := map[string]string{

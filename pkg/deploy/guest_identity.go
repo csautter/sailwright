@@ -198,16 +198,36 @@ func verifyLinuxUTMIdentity(instance, hostname string, pull func(string) (string
 	if machineID != stampedID {
 		return fmt.Errorf("guest machine ID does not match %s", linuxIdentityPath)
 	}
-	for _, path := range []string{linuxRunningHostnamePath, linuxConfiguredHostnamePath} {
-		actual, err := pull(path)
-		if err != nil {
-			return err
-		}
-		if actual != hostname {
-			return fmt.Errorf("guest hostname in %s does not match %q", path, hostname)
-		}
+	runningHostname, err := pull(linuxRunningHostnamePath)
+	if err != nil {
+		return err
+	}
+	if runningHostname != hostname {
+		return fmt.Errorf("guest hostname in %s does not match %q", linuxRunningHostnamePath, hostname)
+	}
+	configuredHostname, err := pull(linuxConfiguredHostnamePath)
+	if err != nil {
+		return err
+	}
+	if parseLinuxConfiguredHostname(configuredHostname) != hostname {
+		return fmt.Errorf("guest hostname in %s does not match %q", linuxConfiguredHostnamePath, hostname)
 	}
 	return nil
+}
+
+// parseLinuxConfiguredHostname extracts the effective static hostname from
+// /etc/hostname using systemd's hostname-setup.c line rules: ignore empty lines
+// and lines whose first non-whitespace byte is '#', and take the first
+// remaining trimmed line without lossy character cleanup.
+func parseLinuxConfiguredHostname(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.Trim(line, " \t\r")
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		return trimmed
+	}
+	return ""
 }
 
 func windowsUTMIdentityCommand(id, hostname, token string, apply bool) []string {
@@ -278,27 +298,19 @@ if [ "${#machine_id}" -ne 32 ] || ! matches_file /etc/machine-id "$machine_id" |
     mv "$pending.tmp" "$pending"
   fi
   if [ ! -f "$renderers" ]; then
-    # Persist the restart list before changing the machine ID. A failed
-    # restart can leave a previously active renderer down on the next try.
-    legacy_pending=no
-    if [ -f "$pending" ] && [ "$machine_id" = "$(cat "$pending")" ]; then
-      # An older script already wrote this ID without saving its restart list.
-      legacy_pending=yes
-    fi
+    # Persist the restart list before changing the machine ID so a failed
+    # restart or a configured renderer starting during boot still refreshes.
     : > "$renderers.tmp"
     for renderer in systemd-networkd.service NetworkManager.service; do
       active_state=$(systemctl show --property=ActiveState --value "$renderer")
       case "$active_state" in
-        active|reloading) ;;
+        active|activating|reloading|failed) ;;
         *)
-          [ "$legacy_pending" = yes ] || continue
-          if [ "$active_state" != failed ]; then
-            unit_file_state=$(systemctl show --property=UnitFileState --value "$renderer")
-            case "$unit_file_state" in
-              enabled|enabled-runtime) ;;
-              *) continue ;;
-            esac
-          fi
+          unit_file_state=$(systemctl show --property=UnitFileState --value "$renderer")
+          case "$unit_file_state" in
+            enabled|enabled-runtime) ;;
+            *) continue ;;
+          esac
           ;;
       esac
       printf '%s\n' "$renderer" >> "$renderers.tmp"
