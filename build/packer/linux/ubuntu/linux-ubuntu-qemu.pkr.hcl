@@ -260,7 +260,7 @@ source "qemu" "ubuntu" {
 
   boot_wait        = var.arch == "amd64" ? "2s" : "10s"
   boot_command     = local.boot_command[var.arch]
-  shutdown_command = "echo 'P@ssw0rd!' | sudo -S shutdown -P now"
+  shutdown_command = "echo 'P@ssw0rd!' | sudo -S sh -ec 'rm -f /var/lib/dbus/machine-id; truncate -s 0 /etc/machine-id; shutdown -P now'"
   qemuargs         = local.qemu_args[var.arch]
 }
 
