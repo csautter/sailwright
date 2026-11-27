@@ -28,6 +28,26 @@ person or an agent performs them.
 A candidate is only fully covered when both kinds have run. Record which plans
 were not run instead of leaving the gap implicit.
 
+## Backfill missing release assets
+
+Release Please runs one workflow at a time per branch. An active run keeps its
+slot through binary publishing and verification, so newer pushes to `main`
+wait. GitHub retains one pending run in the group and replaces it when another
+push arrives.
+
+- If GitHub still offers **Re-run failed jobs** on the original Release Please
+  run, use it to resume publishing with the original release job's outputs.
+  Runs started before the concurrency fix retain the old cancellation behavior.
+  Keep `main` quiet while retrying one of those runs.
+- Once the fix is on `main`, open **Actions → Release Binaries → Run workflow**,
+  select the `main` branch, and enter the existing release tag as `version`
+  (for example, `v1.2.3`). The build checks out that tag and the workflow runs
+  on `refs/heads/main`, which gives the checksums signature the identity the
+  installers expect.
+
+Check **Publish release assets** and **Verify install script** for the backfill.
+The Homebrew tap job refuses to downgrade a tap that already has a newer version.
+
 ## Protocol
 
 1. **One phase per approval.** Show the exact command, run it, read

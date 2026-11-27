@@ -8,7 +8,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
-  cancel-in-progress: true
+  # Keep the active run through asset publishing, including the reusable workflow.
+  cancel-in-progress: false
 
 permissions:
   contents: write
