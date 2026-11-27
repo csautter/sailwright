@@ -93,9 +93,11 @@ const (
 	utmIPv4DiscoveryRetryInterval   = 2 * time.Second
 	utmIPv4ARPCommandTimeout        = 5 * time.Second
 	utmIPv4ProbeDialTimeout         = 150 * time.Millisecond
+	utmIPv4CandidateProbeTimeout    = 500 * time.Millisecond
 	utmIPv4ProbeWorkerCount         = 64
 	utmIPv4ProbePort                = 5985
 	utmIPv4ProbeSubnetPrefixMinimum = 24
+	utmDHCPDLeasesPath              = "/var/db/dhcpd_leases"
 
 	linuxLibvirtIPv4DiscoveryRetryWindow   = 2 * time.Minute
 	linuxLibvirtIPv4DiscoveryRetryInterval = 3 * time.Second
@@ -203,15 +205,18 @@ type sshAnsibleConnectionEnvVars struct {
 }
 
 type utmIPv4DiscoveryOptions struct {
-	readFile        func(string) ([]byte, error)
-	runCommand      func(string, time.Duration, string, []string) (string, error)
-	now             func() time.Time
-	sleep           func(time.Duration)
-	primeARPCache   func(context.Context) ([]string, error)
-	discoveryBudget time.Duration
-	retryInterval   time.Duration
-	maxAttempts     int
-	arpCommandTimer time.Duration
+	readFile              func(string) ([]byte, error)
+	runCommand            func(string, time.Duration, string, []string) (string, error)
+	now                   func() time.Time
+	sleep                 func(time.Duration)
+	primeARPCache         func(context.Context) ([]string, error)
+	dial                  func(context.Context, string, string) (net.Conn, error)
+	dhcpLeasesPath        string
+	discoveryBudget       time.Duration
+	retryInterval         time.Duration
+	maxAttempts           int
+	arpCommandTimer       time.Duration
+	candidateProbeTimeout time.Duration
 }
 
 type utmHostInterface struct {
@@ -1089,24 +1094,34 @@ func discoverUtmVMIPv4WithOptions(projectDir string, vm alchemy_build.VirtualMac
 		sort.Strings(checkedInterfaces)
 	}
 
-	runARPLookup := func(timeout time.Duration) (string, error) {
+	runARPLookup := func(timeout time.Duration) (string, bool, error) {
 		attempts++
 		output, lookupErr := options.runCommand(projectDir, timeout, "arp", []string{"-an"})
 		if lookupErr != nil {
-			return "", fmt.Errorf("arp lookup failed: %w; output: %s", lookupErr, strings.TrimSpace(output))
+			return "", false, fmt.Errorf("arp lookup failed: %w; output: %s", lookupErr, strings.TrimSpace(output))
 		}
-		ip, parseErr := extractIPv4ForMacAddress(output, macAddress)
+		candidates, parseErr := extractIPv4CandidatesForMacAddress(output, macAddress)
 		if parseErr != nil {
-			return "", fmt.Errorf("could not determine IPv4 address for UTM MAC %q from arp output: %w", macAddress, parseErr)
+			return "", false, fmt.Errorf("could not determine IPv4 address for UTM MAC %q from arp output: %w", macAddress, parseErr)
 		}
-		return ip, nil
+		if len(candidates) == 1 {
+			return candidates[0], false, nil
+		}
+		ip, resolveErr := resolveMultipleUtmARPCandidates(projectDir, vm, macAddress, candidates, deadline, options)
+		if resolveErr != nil {
+			return "", true, resolveErr
+		}
+		return ip, false, nil
 	}
 
 	// Check arp -an first without probing; a cached guest returns immediately with zero probe calls.
 	firstTimeout := clampDurationToRemaining(options.arpCommandTimer, deadline.Sub(options.now()))
-	ip, lookupErr := runARPLookup(firstTimeout)
+	ip, terminal, lookupErr := runARPLookup(firstTimeout)
 	if lookupErr == nil {
 		return ip, nil
+	}
+	if terminal {
+		return "", lookupErr
 	}
 	lastLookupErr = lookupErr
 
@@ -1138,9 +1153,12 @@ func discoverUtmVMIPv4WithOptions(projectDir string, vm alchemy_build.VirtualMac
 		}
 
 		cmdTimeout := clampDurationToRemaining(options.arpCommandTimer, remaining)
-		ip, lookupErr := runARPLookup(cmdTimeout)
+		ip, terminal, lookupErr := runARPLookup(cmdTimeout)
 		if lookupErr == nil {
 			return ip, nil
+		}
+		if terminal {
+			return "", lookupErr
 		}
 		lastLookupErr = lookupErr
 
@@ -1201,6 +1219,12 @@ func withDefaultUtmIPv4DiscoveryOptions(options utmIPv4DiscoveryOptions) utmIPv4
 	if options.primeARPCache == nil {
 		options.primeARPCache = primeUtmARPCache
 	}
+	if options.dial == nil {
+		options.dial = (&net.Dialer{}).DialContext
+	}
+	if options.dhcpLeasesPath == "" {
+		options.dhcpLeasesPath = utmDHCPDLeasesPath
+	}
 	if options.discoveryBudget <= 0 {
 		options.discoveryBudget = utmIPv4DiscoveryBudget
 	}
@@ -1209,6 +1233,9 @@ func withDefaultUtmIPv4DiscoveryOptions(options utmIPv4DiscoveryOptions) utmIPv4
 	}
 	if options.arpCommandTimer <= 0 {
 		options.arpCommandTimer = utmIPv4ARPCommandTimeout
+	}
+	if options.candidateProbeTimeout <= 0 {
+		options.candidateProbeTimeout = utmIPv4CandidateProbeTimeout
 	}
 
 	return options
@@ -1242,16 +1269,26 @@ func extractUtmMacAddressFromConfig(content string) (string, error) {
 }
 
 func extractIPv4ForMacAddress(output string, targetMacAddress string) (string, error) {
+	candidates, err := extractIPv4CandidatesForMacAddress(output, targetMacAddress)
+	if err != nil {
+		return "", err
+	}
+	return candidates[0], nil
+}
+
+func extractIPv4CandidatesForMacAddress(output string, targetMacAddress string) ([]string, error) {
 	normalizedTargetMAC, err := normalizeMACAddress(targetMacAddress)
 	if err != nil {
-		return "", fmt.Errorf("invalid target MAC address %q: %w", targetMacAddress, err)
+		return nil, fmt.Errorf("invalid target MAC address %q: %w", targetMacAddress, err)
 	}
 
 	matches := arpEntryRegex.FindAllStringSubmatch(output, -1)
 	if len(matches) == 0 {
-		return "", errors.New("no ARP entries found in command output")
+		return nil, errors.New("no ARP entries found in command output")
 	}
 
+	var candidates []string
+	seen := make(map[string]struct{})
 	for _, match := range matches {
 		if len(match) < 3 {
 			continue
@@ -1276,11 +1313,18 @@ func extractIPv4ForMacAddress(output string, targetMacAddress string) (string, e
 			continue
 		}
 		if normalizedCandidateMAC == normalizedTargetMAC {
-			return ip, nil
+			if _, exists := seen[ip]; !exists {
+				seen[ip] = struct{}{}
+				candidates = append(candidates, ip)
+			}
 		}
 	}
 
-	return "", errors.New("no IPv4 address found for MAC address in arp output")
+	if len(candidates) == 0 {
+		return nil, errors.New("no IPv4 address found for MAC address in arp output")
+	}
+
+	return candidates, nil
 }
 
 func normalizeMACAddress(value string) (string, error) {
