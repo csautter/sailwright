@@ -80,3 +80,75 @@ func TestWindowsHypervCostGate(t *testing.T) {
 		t.Error("deletion failure must fail cleanup")
 	}
 }
+
+const windowsBuildWorkflow = "test-build-windows.yml"
+
+// Jobs that call the runner broker and therefore need a GitHub OIDC token.
+var windowsBrokerJobs = []string{
+	"provision-hyperv-runner",
+	"provision-virtualbox-runner",
+	"watch-hyperv-runner-queue",
+	"cleanup-hyperv",
+	"cleanup-virtualbox",
+}
+
+// The build jobs run pull request code on the self-hosted runner VM. They must
+// not be able to request an OIDC token for the runner broker identity.
+func TestWindowsBuildWorkflowGrantsIDTokenOnlyToBrokerJobs(t *testing.T) {
+	t.Parallel()
+
+	wf := loadWorkflow(t, windowsBuildWorkflow)
+	if wf.Permissions["id-token"] != "" {
+		t.Error("workflow must not grant id-token at workflow scope")
+	}
+	for _, jobID := range sortedKeys(wf.Jobs) {
+		j := wf.Jobs[jobID]
+		isBrokerJob := slices.Contains(windowsBrokerJobs, jobID)
+		if isBrokerJob && j.Permissions["id-token"] != "write" {
+			t.Errorf("job %q: calls the runner broker and needs id-token: write", jobID)
+		}
+		if !isBrokerJob && j.Permissions["id-token"] != "" {
+			t.Errorf("job %q: must not be granted id-token", jobID)
+		}
+	}
+}
+
+// The broker API does not require Azure RBAC. Its logins must work even when
+// the optional legacy cache is disabled and the CI identity has no roles.
+func TestWindowsBuildWorkflowLogsInWithoutSubscription(t *testing.T) {
+	t.Parallel()
+
+	wf := loadWorkflow(t, windowsBuildWorkflow)
+	logins := 0
+	for _, jobID := range sortedKeys(wf.Jobs) {
+		for _, s := range wf.Jobs[jobID].stepsUsing("azure/login") {
+			logins++
+			if s.With["subscription-id"] != "" {
+				t.Errorf("job %q step %q: broker login must not set subscription-id", jobID, s.Name)
+			}
+			if s.With["allow-no-subscriptions"] != "true" {
+				t.Errorf("job %q step %q: broker login needs allow-no-subscriptions: true", jobID, s.Name)
+			}
+		}
+	}
+	if logins == 0 {
+		t.Fatal("expected azure/login steps in the Windows build workflow")
+	}
+}
+
+func TestWindowsBuildWorkflowUsesIdempotencyKeyForRunnerRequests(t *testing.T) {
+	t.Parallel()
+
+	wf := loadWorkflow(t, windowsBuildWorkflow)
+	for jobID, flavor := range map[string]string{
+		"provision-hyperv-runner":     "hv",
+		"provision-virtualbox-runner": "vb",
+	} {
+		job := wf.job(t, jobID)
+		request := job.stepByID(t, jobID, "request")
+		want := `"Idempotency-Key=${{ github.run_id }}-${{ github.run_attempt }}-` + flavor + `"`
+		if !strings.Contains(request.Run, "/api/request_runner") || !strings.Contains(request.Run, want) {
+			t.Errorf("job %q: runner request must include %s", jobID, want)
+		}
+	}
+}

@@ -47,11 +47,47 @@ resource "azurerm_role_assignment" "keyvault_secrets_officer" {
   role_definition_name = "Key Vault Secrets Officer"
   principal_id         = data.azurerm_client_config.current.object_id
 }
+
+resource "azurerm_user_assigned_identity" "storage_encryption" {
+  name                = "gh-runner-storage-key-${random_integer.suffix.result}"
+  location            = azurerm_resource_group.gh_runner_manager.location
+  resource_group_name = azurerm_resource_group.gh_runner_manager.name
+}
+
+resource "azurerm_key_vault_key" "storage_encryption" {
+  name            = "github-runner-storage"
+  key_vault_id    = azurerm_key_vault.gh_runner_kv.id
+  key_type        = "RSA"
+  key_size        = 2048
+  key_opts        = ["unwrapKey", "wrapKey"]
+  expiration_date = timeadd(timestamp(), "8760h")
+
+  rotation_policy {
+    expire_after         = "P1Y"
+    notify_before_expiry = "P45D"
+    automatic {
+      time_before_expiry = "P30D"
+    }
+  }
+
+  lifecycle {
+    prevent_destroy = true
+    # Set the first version's expiry at creation. Key Vault rotates later versions.
+    ignore_changes = [expiration_date]
+  }
+}
+
+resource "azurerm_role_assignment" "storage_encryption" {
+  scope                = azurerm_key_vault_key.storage_encryption.resource_versionless_id
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = azurerm_user_assigned_identity.storage_encryption.principal_id
+}
+
 # Accepted trivy findings:
 # AZU-0012: the Y1 consumption plan has no VNet integration or fixed outbound IPs, so a
 #   default-deny network rule would cut the function app off from its own storage.
 # AZU-0057: classic storage analytics logging is not worth the cost for function storage.
-# AZU-0058: LRS is sufficient; the account only holds function runtime data.
+# AZU-0058: LRS is sufficient for function runtime data and runner request records.
 # AZU-0061: infrastructure_encryption_enabled forces replacement, which prevent_destroy blocks.
 #trivy:ignore:AZU-0012
 #trivy:ignore:AZU-0057
@@ -65,8 +101,58 @@ resource "azurerm_storage_account" "gh_runner_storage" {
   account_replication_type        = "LRS"
   allow_nested_items_to_be_public = false
 
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.storage_encryption.id]
+  }
+
+  customer_managed_key {
+    key_vault_key_id          = azurerm_key_vault_key.storage_encryption.versionless_id
+    user_assigned_identity_id = azurerm_user_assigned_identity.storage_encryption.id
+  }
+
+  depends_on = [azurerm_role_assignment.storage_encryption]
+
   lifecycle {
     prevent_destroy = true
+  }
+}
+
+resource "azurerm_storage_container" "runner_requests" {
+  name                  = "runner-requests"
+  storage_account_id    = azurerm_storage_account.gh_runner_storage.id
+  container_access_type = "private"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "azurerm_role_assignment" "runner_requests" {
+  scope                = azurerm_storage_container.runner_requests.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_linux_function_app.gh_runner_func_app.identity[0].principal_id
+}
+
+resource "azurerm_storage_management_policy" "runner_requests" {
+  storage_account_id = azurerm_storage_account.gh_runner_storage.id
+
+  rule {
+    name    = "expire-runner-requests"
+    enabled = true
+
+    filters {
+      prefix_match = ["${azurerm_storage_container.runner_requests.name}/"]
+      blob_types   = ["blockBlob"]
+    }
+
+    actions {
+      base_blob {
+        # A provisioning attempt updates the record before any ARM write.
+        # Keep the key well past a workflow run and its immediate retries.
+        delete_after_days_since_modification_greater_than = 7
+      }
+    }
   }
 }
 
@@ -119,6 +205,11 @@ resource "azurerm_linux_function_app" "gh_runner_func_app" {
     ALLOWED_AUDIENCE         = "api://${azuread_application.gh_actions_runner_broker.client_id}"
     ALLOWED_CLIENT_IDS       = azuread_application.gh_actions_runner_broker.client_id
     ALLOWED_USER_OBJECT_IDS  = length(var.allowed_user_object_ids) > 0 ? join(",", var.allowed_user_object_ids) : data.azurerm_client_config.current.object_id
+    # Repositories the broker may request runner registration tokens for with
+    # the GitHub PAT. The broker refuses every request while this is empty.
+    ALLOWED_REPOS               = var.github_repository
+    IDEMPOTENCY_STORAGE_ACCOUNT = azurerm_storage_account.gh_runner_storage.name
+    IDEMPOTENCY_STORAGE_URL     = "${trimsuffix(azurerm_storage_account.gh_runner_storage.primary_blob_endpoint, "/")}/${azurerm_storage_container.runner_requests.name}"
   }
 
   identity {
@@ -131,6 +222,7 @@ resource "azurerm_linux_function_app" "gh_runner_func_app" {
 
   auth_settings_v2 {
     auth_enabled           = true
+    require_authentication = true
     default_provider       = "azureactivedirectory"
     unauthenticated_action = "Return401"
     active_directory_v2 {
@@ -162,12 +254,11 @@ resource "azurerm_role_assignment" "keyvault_secrets_user" {
   principal_id         = azurerm_linux_function_app.gh_runner_func_app.identity[0].principal_id
 }
 
-# Least-privilege role for the runner broker in place of subscription-wide
-# Contributor. It can create/delete the per-job resource groups and manage the
-# compute + networking resources inside them, but has no data-plane access (e.g.
-# it cannot read Key Vault secrets outside its dedicated data-plane assignment)
-# and no IAM (role assignment) permissions, shrinking the blast radius if the
-# broker were ever compromised.
+# Dynamic per-job group creation and deletion require subscription scope.
+# Azure's group delete action can delete any group in scope and its contents,
+# regardless of individual resource permissions. The broker endpoints enforce
+# temporary group names and the broker ownership tag at the application layer.
+# Data access comes from the separate vault and request-container assignments.
 resource "azurerm_role_definition" "gh_runner_broker" {
   name        = "gh-runner-broker-${random_integer.suffix.result}"
   scope       = data.azurerm_subscription.current.id
@@ -178,8 +269,25 @@ resource "azurerm_role_definition" "gh_runner_broker" {
       "Microsoft.Resources/subscriptions/resourceGroups/read",
       "Microsoft.Resources/subscriptions/resourceGroups/write",
       "Microsoft.Resources/subscriptions/resourceGroups/delete",
-      "Microsoft.Compute/*",
-      "Microsoft.Network/*",
+
+      # Reads, including the image reference and long-running operation status.
+      "Microsoft.Compute/*/read",
+      "Microsoft.Network/*/read",
+
+      # Runner VM and its implicitly created managed OS disk.
+      "Microsoft.Compute/virtualMachines/write",
+      "Microsoft.Compute/disks/write",
+
+      # Per-request VNet, subnet, public IP, NSG and NIC.
+      "Microsoft.Network/virtualNetworks/write",
+      "Microsoft.Network/virtualNetworks/subnets/write",
+      "Microsoft.Network/virtualNetworks/subnets/join/action",
+      "Microsoft.Network/publicIPAddresses/write",
+      "Microsoft.Network/publicIPAddresses/join/action",
+      "Microsoft.Network/networkSecurityGroups/write",
+      "Microsoft.Network/networkSecurityGroups/join/action",
+      "Microsoft.Network/networkInterfaces/write",
+      "Microsoft.Network/networkInterfaces/join/action",
     ]
     not_actions = []
   }

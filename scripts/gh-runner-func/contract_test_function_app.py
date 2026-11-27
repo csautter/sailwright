@@ -24,6 +24,7 @@ except importlib.metadata.PackageNotFoundError:
 
 if SDKS_INSTALLED:
     import azure.functions as func
+    import requests
     from azure.core.credentials import AccessToken
     from azure.core.exceptions import ResourceNotFoundError, ServiceResponseError
     from azure.core.pipeline.transport import HttpResponse, HttpTransport
@@ -71,6 +72,8 @@ if SDKS_INSTALLED:
         def __init__(self, responses):
             self.responses = iter(responses)
             self.requests = []
+            self.headers = []
+            self.bodies = []
             self.sleeps = []
 
         def sleep(self, duration):
@@ -90,6 +93,8 @@ if SDKS_INSTALLED:
 
         def send(self, request, **kwargs):
             self.requests.append((request.method, request.url, kwargs))
+            self.headers.append(request.headers)
+            self.bodies.append(request.body)
             item = next(self.responses)
             if isinstance(item, Exception):
                 raise item
@@ -107,6 +112,7 @@ ENV = {
     "VM_SIZE": "Standard_D4s_v5",
     "ADMIN_USERNAME": "runneradmin",
     "CUSTOM_IMAGE_ID": "/images/gh-runner",
+    "ALLOWED_REPOS": "owner/repo",
     "RESOURCE_GROUP": "unused",
 }
 
@@ -117,6 +123,8 @@ NETWORK_OPERATIONS = (
     "network_security_groups",
     "network_interfaces",
 )
+STORAGE_ACCOUNT = "ghrunnerstorage12345"
+STORAGE_URL = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net/runner-requests"
 
 REGULAR_VM_PROPERTIES = {
     "hardwareProfile": {"vmSize": "Standard_D4s_v5"},
@@ -139,17 +147,19 @@ REGULAR_VM_PROPERTIES = {
 @unittest.skipUnless(SDKS_INSTALLED, "requires the Azure SDKs from requirements.txt")
 class RequestRunnerWireFormatTest(unittest.TestCase):
     def setUp(self):
+        function_app._runner_config.cache_clear()
+        self.addCleanup(function_app._runner_config.cache_clear)
         self.network = mock.Mock()
         for operation in NETWORK_OPERATIONS:
-            poller = getattr(
-                self.network, operation
-            ).begin_create_or_update.return_value
+            operations = getattr(self.network, operation)
+            operations.get.side_effect = ResourceNotFoundError()
+            poller = operations.begin_create_or_update.return_value
             poller.result.return_value.id = f"/id/{operation}"
         self.compute = mock.Mock()
         self.resources = mock.Mock()
         # request_runner looks the group up before creating it.
         self.resources.resource_groups.get.side_effect = ResourceNotFoundError()
-        secrets = mock.Mock()
+        secrets = self.secrets = mock.Mock()
         secrets.get_secret.return_value.value = "secret"
         github = mock.Mock(status_code=201)
         github.json.return_value = {"token": "registration-token"}
@@ -172,16 +182,71 @@ class RequestRunnerWireFormatTest(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def _request_runner(self):
+    def _request_runner(self, headers=None, **overrides):
         body = {
             "repo": "owner/repo",
             "resource-group": "gh-runner-tmp-1-hv",
             "runner-name": "1-hv",
+            **overrides,
         }
         request = func.HttpRequest(
-            method="POST", url="/api/request_runner", body=json.dumps(body).encode()
+            method="POST",
+            url="/api/request_runner",
+            body=json.dumps(body).encode(),
+            headers=headers or {},
         )
         return function_app.handle_request_runner(request)
+
+    def _enable_storage(self):
+        record, active_lease = None, None
+
+        def send(request, **options):
+            nonlocal record, active_lease
+            blob_url, _, query = request.url.partition("?")
+            self.assertRegex(blob_url, rf"^{STORAGE_URL}/[a-f0-9]{{64}}$")
+            self.assertEqual(request.headers["Authorization"], "Bearer blob-token")
+            self.assertIn("x-ms-version", request.headers)
+            self.assertIn("x-ms-date", request.headers)
+            response = requests.Response()
+            response.request = request
+            if request.method == "GET":
+                response.status_code = 404 if record is None else 200
+                response._content = json.dumps(record).encode()
+                return response
+            self.assertEqual(request.method, "PUT")
+            if query == "comp=lease":
+                self.assertEqual(request.headers["Content-Length"], "0")
+                action = request.headers["x-ms-lease-action"]
+                if action == "acquire":
+                    self.assertIsNone(active_lease)
+                    active_lease = request.headers["x-ms-proposed-lease-id"]
+                    response.status_code = 201
+                    return response
+                self.assertEqual(request.headers["x-ms-lease-id"], active_lease)
+                self.assertIn(action, ("renew", "release"))
+                if action == "release":
+                    active_lease = None
+                response.status_code = 200
+                return response
+            if record is None:
+                self.assertEqual(request.headers["If-None-Match"], "*")
+            else:
+                self.assertEqual(request.headers["x-ms-lease-id"], active_lease)
+            self.assertEqual(request.headers["x-ms-blob-type"], "BlockBlob")
+            record = json.loads(request.body)
+            response.status_code = 201
+            return response
+
+        function_app.DefaultAzureCredential.return_value.get_token.return_value.token = "blob-token"
+        for patch in (
+            mock.patch.dict(os.environ, {
+                "IDEMPOTENCY_STORAGE_ACCOUNT": STORAGE_ACCOUNT,
+                "IDEMPOTENCY_STORAGE_URL": STORAGE_URL,
+            }),
+            mock.patch.object(requests.Session, "send", side_effect=send),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
 
     @staticmethod
     def _wire(operation, encoder):
@@ -255,6 +320,103 @@ class RequestRunnerWireFormatTest(unittest.TestCase):
             self._vm_wire(),
             [{"location": "westeurope", "properties": REGULAR_VM_PROPERTIES}],
         )
+
+    def test_idempotent_vm_body_carries_request_tag(self):
+        # Real HttpRequest headers are case-insensitive.
+        self._enable_storage()
+        response = self._request_runner({"idempotency-key": "run-1-1-hv"})
+        self.assertEqual(response.status_code, 202)
+
+        (body,) = self._vm_wire()
+        fingerprint = body.pop("tags")[function_app.VM_REQUEST_TAG]
+        self.assertRegex(fingerprint, r"^[a-f0-9]{64}$")
+        vm = json.loads(response.get_body())["vm"]
+        self.assertEqual(body["properties"]["storageProfile"]["osDisk"].pop("name"), f"{vm}-os")
+        self.assertEqual(
+            body, {"location": "westeurope", "properties": REGULAR_VM_PROPERTIES}
+        )
+        replay = self._request_runner({"Idempotency-Key": "run-1-1-hv"}, repo="OWNER/REPO")
+        self.assertEqual(replay.status_code, 202)
+        self.assertTrue(json.loads(replay.get_body())["replayed"])
+        self.assertEqual(json.loads(replay.get_body())["resources"], json.loads(response.get_body())["resources"])
+        conflict = self._request_runner(
+            {"Idempotency-Key": "run-1-1-hv"}, **{"resource-group": "gh-runner-tmp-other"}
+        )
+        self.assertEqual(conflict.status_code, 409)
+        function_app.requests.post.assert_called_once()
+        self.compute.virtual_machines.begin_create_or_update.assert_called_once()
+
+    def test_keyed_arm_retry_cannot_replace_vm_after_a_lost_response(self):
+        self._enable_storage()
+        fingerprint = function_app._request_fingerprint("owner/repo", "1-hv", "gh-runner-tmp-1-hv", "hyperv")
+        transport = _Transport([
+            ServiceResponseError("response lost after submission"),
+            (412, {"error": {"code": "PreconditionFailed"}}, {}),
+            (200, {"tags": {function_app.VM_REQUEST_TAG: fingerprint}}, {}),
+        ])
+        credential = mock.Mock(spec=["get_token"])
+        credential.get_token.return_value = AccessToken("fake-token", 9999999999)
+        compute = ComputeManagementClient(credential, "sub", transport=transport, **function_app._arm_options())
+        self.addCleanup(compute.close)
+        self.resources.resource_groups.get.side_effect = [
+            ResourceNotFoundError(),
+            ResourceNotFoundError(),
+            mock.Mock(tags={"managed-by": "gh-runner-broker"}, properties=None),
+        ]
+        key = {"Idempotency-Key": "uncertain-spot"}
+        with (
+            mock.patch.dict(os.environ, {"VM_USE_SPOT": "true"}),
+            mock.patch.object(function_app, "ComputeManagementClient", return_value=compute),
+        ):
+            response = self._request_runner(key)
+            self.assertEqual(response.status_code, 202)
+            self.assertTrue(json.loads(response.get_body())["replayed"])
+            retry = self._request_runner(key)
+            self.assertEqual(retry.status_code, 202)
+        self.assertEqual([item[0] for item in transport.requests], ["PUT", "PUT", "GET"])
+        self.assertEqual(transport.requests[0][1], transport.requests[1][1])
+        self.assertEqual([headers["If-None-Match"] for headers in transport.headers[:2]], ["*", "*"])
+        function_app.requests.post.assert_called_once()
+
+    def _assert_keyed_spot_fallback(self, arm_code):
+        self._enable_storage()
+        transport = _Transport([
+            (400, {"error": {"code": arm_code, "message": "Spot unavailable"}}, {}),
+            (201, {"properties": {"provisioningState": "Creating"}}, {}),
+        ])
+        credential = mock.Mock(spec=["get_token"])
+        credential.get_token.return_value = AccessToken("fake-token", 9999999999)
+        compute = ComputeManagementClient(
+            credential, "sub", transport=transport, **function_app._arm_options()
+        )
+        self.addCleanup(compute.close)
+
+        with (
+            mock.patch.dict(os.environ, {"VM_USE_SPOT": "true"}),
+            mock.patch.object(function_app, "ComputeManagementClient", return_value=compute),
+        ):
+            response = self._request_runner({"Idempotency-Key": "spot-rejection"})
+        self.assertEqual(response.status_code, 202)
+        vm_name = json.loads(response.get_body())["resources"]["vm"]
+        self.assertEqual([item[0] for item in transport.requests], ["PUT", "PUT"])
+        spot_url, regular_url = [item[1] for item in transport.requests]
+        self.assertEqual(regular_url, spot_url)
+        self.assertIn(f"/virtualMachines/{vm_name}?", regular_url)
+        self.assertEqual([headers["If-None-Match"] for headers in transport.headers], ["*", "*"])
+        spot, regular = map(json.loads, transport.bodies)
+        spot_properties = spot["properties"]
+        self.assertEqual(spot_properties.pop("priority"), "Spot")
+        self.assertEqual(spot_properties.pop("evictionPolicy"), "Deallocate")
+        self.assertEqual(spot_properties.pop("billingProfile"), {"maxPrice": -1})
+        self.assertEqual(regular, spot)
+        self.assertEqual(regular["properties"]["storageProfile"]["osDisk"]["name"], f"{vm_name}-os")
+        function_app.requests.post.assert_called_once()
+
+    def test_keyed_spot_subscription_rejection_falls_back(self):
+        self._assert_keyed_spot_fallback("AzureSpotFeatureNotEnabledForSubscription")
+
+    def test_keyed_spot_vm_size_rejection_falls_back(self):
+        self._assert_keyed_spot_fallback("AzureSpotIsNotSupportedForThisVMSize")
 
     def test_spot_vm_and_fallback_bodies(self):
         self.compute.virtual_machines.begin_create_or_update.side_effect = [

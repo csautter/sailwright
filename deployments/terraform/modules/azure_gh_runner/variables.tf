@@ -15,8 +15,11 @@ variable "github_repository" {
   default     = "csautter/sailwright"
 
   validation {
-    condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))
-    error_message = "github_repository must be in owner/repo form."
+    condition = (
+      can(regex("^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+$", var.github_repository)) &&
+      !endswith(var.github_repository, "/.") && !endswith(var.github_repository, "/..")
+    )
+    error_message = "github_repository must be a valid owner/repository without URL dot segments."
   }
 }
 

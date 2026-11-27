@@ -37,11 +37,9 @@ resource "azuread_service_principal" "gh_actions_runner_broker" {
   client_id = azuread_application.gh_actions_runner_broker.client_id
 }
 
-resource "azurerm_role_assignment" "gh_actions_runner_broker_contributor" {
-  principal_id         = azuread_service_principal.gh_actions_runner_broker.object_id
-  role_definition_name = "Contributor"
-  scope                = azurerm_linux_function_app.gh_runner_func_app.id
-}
+# The CI principal has no role on the Function App or its parent scopes. Its
+# optional legacy cache roles in cache.tf apply to a separate resource group.
+# Broker callers only need an API token, so azure/login permits no subscription.
 
 resource "azuread_application_federated_identity_credential" "gh_actions_github_actions" {
   application_id = azuread_application.gh_actions_runner_broker.id

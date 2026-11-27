@@ -10,6 +10,7 @@ import sys
 import types
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 from unittest import mock
 
 
@@ -114,6 +115,7 @@ def _install_stubs():
     functions.HttpResponse = _HttpResponse
     functions.HttpRequest = object
     functions.AuthLevel = types.SimpleNamespace(ANONYMOUS="anonymous")
+    modules["azure.core"].MatchConditions = types.SimpleNamespace(IfMissing="IfMissing")
     for cls in (
         AzureError,
         HttpResponseError,
@@ -141,8 +143,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import function_app  # noqa: E402
 
 
-def _request(body):
-    return types.SimpleNamespace(get_json=lambda: body, headers={})
+def _request(body, headers=None):
+    return types.SimpleNamespace(get_json=lambda: body, headers=dict(headers or {}))
 
 
 def _resource_group(tags=None, provisioning_state="Succeeded"):
@@ -266,8 +268,65 @@ REQUEST_RUNNER_ENV = {
     "VM_SIZE": "Standard_D4s_v5",
     "ADMIN_USERNAME": "runneradmin",
     "CUSTOM_IMAGE_ID": "/images/gh-runner",
-    "RESOURCE_GROUP": "unused",
+    "ALLOWED_REPOS": "owner/repo",
+    "IDEMPOTENCY_STORAGE_ACCOUNT": "ghrunnerstorage12345",
+    "IDEMPOTENCY_STORAGE_URL": "https://ghrunnerstorage12345.blob.core.windows.net/runner-requests",
+    "RESOURCE_GROUP": "gh-runner-tmp-before",
 }
+
+
+class _BlobStorage:
+    """Simulate Azure's conditional creation and lease checks at the HTTP boundary."""
+
+    def __init__(self):
+        self.lock = Lock()
+        self.records = {}
+        self.leases = {}
+        self.reject_renewal = False
+
+    def request(self, method, url, headers, params=None, json=None, **options):
+        def response(status, body=None, code=""):
+            return mock.Mock(
+                status_code=status, headers={"x-ms-error-code": code},
+                **{"json.return_value": body},
+            )
+
+        if not url.startswith(REQUEST_RUNNER_ENV["IDEMPOTENCY_STORAGE_URL"] + "/"):
+            raise AssertionError("Unexpected storage URL")
+        with self.lock:
+            lease = self.leases.get(url)
+            if method == "GET":
+                return response(200, self.records[url]) if url in self.records else response(404)
+            if method != "PUT":
+                raise AssertionError(f"Unexpected method {method}")
+            if params == {"comp": "lease"}:
+                if url not in self.records:
+                    return response(404)
+                action = headers["x-ms-lease-action"]
+                if action == "acquire":
+                    if lease is not None:
+                        return response(409, code="LeaseAlreadyPresent")
+                    assert headers["x-ms-lease-duration"] == "60"
+                    self.leases[url] = headers["x-ms-proposed-lease-id"]
+                    return response(201)
+                if lease is None or headers["x-ms-lease-id"] != lease:
+                    return response(409)
+                if action == "release":
+                    del self.leases[url]
+                elif action == "renew":
+                    if self.reject_renewal:
+                        return response(409)
+                else:
+                    raise AssertionError(f"Unexpected lease action {action}")
+                return response(200)
+            if headers.get("If-None-Match") == "*":
+                if url in self.records:
+                    return response(412)
+            elif lease is None or headers["x-ms-lease-id"] != lease:
+                return response(412)
+            assert headers["x-ms-blob-type"] == "BlockBlob"
+            self.records[url] = json
+            return response(201)
 
 
 class RequestRunnerTest(unittest.TestCase):
@@ -275,6 +334,15 @@ class RequestRunnerTest(unittest.TestCase):
         self.network = mock.Mock()
         self.compute = mock.Mock()
         self.resources = mock.Mock()
+        self.storage = _BlobStorage()
+        for operations in (
+            self.network.virtual_networks,
+            self.network.subnets,
+            self.network.public_ip_addresses,
+            self.network.network_security_groups,
+            self.network.network_interfaces,
+        ):
+            operations.get.side_effect = ResourceNotFoundError()
         # A new group by default; tests that reuse one set a return value.
         self.resources.resource_groups.get.side_effect = ResourceNotFoundError()
         secrets = self.secrets = mock.Mock()
@@ -298,6 +366,9 @@ class RequestRunnerTest(unittest.TestCase):
             mock.patch.object(
                 function_app.requests, "post", create=True, return_value=github
             ),
+            mock.patch.object(
+                function_app.requests, "request", create=True, side_effect=self.storage.request
+            ),
             mock.patch.dict(os.environ, REQUEST_RUNNER_ENV),
             mock.patch.object(function_app, "sleep"),
         ]
@@ -305,16 +376,14 @@ class RequestRunnerTest(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def _request_runner(self):
-        return function_app.handle_request_runner(
-            _request(
-                {
-                    "repo": "owner/repo",
-                    "resource-group": "gh-runner-tmp-1-hv",
-                    "runner-name": "1-hv",
-                }
-            )
-        )
+    def _request_runner(self, headers=None, **overrides):
+        body = {
+            "repo": "owner/repo",
+            "resource-group": "gh-runner-tmp-1-hv",
+            "runner-name": "1-hv",
+            **overrides,
+        }
+        return function_app.handle_request_runner(_request(body, headers))
 
     def _bodies(self):
         operations = {
@@ -491,6 +560,8 @@ class RequestRunnerTest(unittest.TestCase):
                 if status == 429:
                     self.assertEqual(response.headers["Retry-After"], "90")
                 self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+                self.resources.resource_groups.create_or_update.assert_not_called()
+                self.network.virtual_networks.begin_create_or_update.assert_not_called()
 
     def test_github_invalid_response(self):
         for body in (None, {}, {"token": None}, {"token": ""}, []):
@@ -516,6 +587,8 @@ class RequestRunnerTest(unittest.TestCase):
             {},
             {"repo": 12},
             {"repo": "../repo"},
+            {"repo": "owner/."},
+            {"repo": "owner/.."},
             {"repo": "owner/repo", "virtualization-flavor": []},
             {"repo": "owner/repo", "resource-group": "production"},
         ):
@@ -752,6 +825,622 @@ class RequestRunnerTest(unittest.TestCase):
                 self.assertNotIn("cleanup-required", json.loads(response.body))
         self.resources.resource_groups.create_or_update.assert_not_called()
         self.network.virtual_networks.begin_create_or_update.assert_not_called()
+
+    def test_rejects_repositories_outside_the_allowlist(self):
+        with self.assertLogs(level="WARNING") as logs:
+            response = self._request_runner({"Idempotency-Key": "k"}, repo="owner/other")
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("repo-rejected", str(logs.output))
+        self.secrets.get_secret.assert_not_called()
+        self.resources.resource_groups.get.assert_not_called()
+        function_app.DefaultAzureCredential.assert_not_called()
+        function_app.requests.request.assert_not_called()
+
+    def test_allowlist_is_case_insensitive_and_accepts_several_repositories(self):
+        with mock.patch.dict(
+            os.environ, {"ALLOWED_REPOS": " owner/.github , Owner/Repo "}
+        ):
+            function_app._runner_config.cache_clear()
+            self.assertEqual(self._request_runner().status_code, 202)
+            self.assertEqual(self._request_runner(repo="OWNER/.GitHub").status_code, 202)
+            self.assertEqual(self._request_runner(repo="owner/third").status_code, 403)
+
+    def test_empty_or_invalid_repository_allowlist_blocks_all_requests(self):
+        for setting in ("", ", ,", "owner/repo, owner/.."):
+            with self.subTest(setting=setting), mock.patch.dict(
+                os.environ, {"ALLOWED_REPOS": setting}
+            ):
+                function_app._runner_config.cache_clear()
+                response = self._request_runner()
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(json.loads(response.body)["missing"], ["ALLOWED_REPOS"])
+        self.secrets.get_secret.assert_not_called()
+        function_app.DefaultAzureCredential.assert_not_called()
+
+    def test_requests_without_idempotency_key_are_untagged(self):
+        with mock.patch.dict(os.environ, {"IDEMPOTENCY_STORAGE_URL": ""}):
+            self.assertEqual(self._request_runner().status_code, 202)
+        (vm,) = self._bodies()["VirtualMachine"]
+        self.assertFalse(hasattr(vm, "tags"))
+        self.compute.virtual_machines.get.assert_not_called()
+        function_app.requests.request.assert_not_called()
+
+    def test_keyed_requests_fail_closed_without_valid_storage_url(self):
+        for url in (
+            "",
+            "https://[invalid/runner-requests",
+            "https://host/",
+            "http://host/container",
+            "https://example.com/runner-requests",
+            "https://ghrunnerstorage12345.blob.core.windows.net.example.com/runner-requests",
+            "https://ghrunnerstorage12345.blob.core-windows.net/runner-requests",
+            "https://ghrunnerſtorage12345.blob.core.windows.net/runner-requests",
+            "https://otheraccount.blob.core.windows.net/runner-requests",
+        ):
+            with self.subTest(url=url), mock.patch.dict(os.environ, {"IDEMPOTENCY_STORAGE_URL": url}):
+                function_app._runner_config.cache_clear()
+                response = self._request_runner({"Idempotency-Key": "k"})
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(json.loads(response.body)["missing"], ["IDEMPOTENCY_STORAGE_URL"])
+        function_app.DefaultAzureCredential.assert_not_called()
+        function_app.requests.request.assert_not_called()
+        function_app.requests.post.assert_not_called()
+
+    def test_keyed_requests_fail_closed_without_a_configured_storage_account(self):
+        for account in ("", "invalid.account"):
+            with self.subTest(account=account), mock.patch.dict(
+                os.environ, {"IDEMPOTENCY_STORAGE_ACCOUNT": account}
+            ):
+                function_app._runner_config.cache_clear()
+                response = self._request_runner({"Idempotency-Key": "k"})
+                self.assertEqual(response.status_code, 503)
+        function_app.DefaultAzureCredential.assert_not_called()
+        function_app.requests.request.assert_not_called()
+        function_app.requests.post.assert_not_called()
+
+    def test_keyed_requests_accept_the_terraform_storage_endpoint(self):
+        response = self._request_runner({"Idempotency-Key": "k"})
+        self.assertEqual(response.status_code, 202)
+        get, *_ = function_app.requests.request.call_args_list
+        self.assertEqual(get.args[0], "GET")
+        container_url, _ = get.args[1].rsplit("/", 1)
+        self.assertEqual(container_url, REQUEST_RUNNER_ENV["IDEMPOTENCY_STORAGE_URL"])
+        self.assertFalse(get.kwargs["allow_redirects"])
+
+    def test_invalid_or_unavailable_records_stop_before_provisioning(self):
+        for upstream_status, record, expected_status in (
+            (200, ValueError("private response"), 502),
+            (200, {"fingerprint": "invalid"}, 502),
+            (403, {}, 503),
+        ):
+            with self.subTest(upstream_status=upstream_status, record=type(record)):
+                stored = mock.Mock(status_code=upstream_status)
+                if isinstance(record, ValueError):
+                    stored.json.side_effect = record
+                else:
+                    stored.json.return_value = record
+                with mock.patch.object(function_app.requests, "request", return_value=stored):
+                    result = self._request_runner({"Idempotency-Key": "k"})
+                self.assertEqual(result.status_code, expected_status)
+                self.assertNotIn("cleanup-required", json.loads(result.body))
+                self.assertNotIn("private response", result.body)
+        self.secrets.get_secret.assert_not_called()
+        self.resources.resource_groups.get.assert_not_called()
+
+    def test_legacy_records_require_the_original_effective_group(self):
+        headers = {"Idempotency-Key": "legacy"}
+        group = REQUEST_RUNNER_ENV["RESOURCE_GROUP"]
+        request = _request({"repo": "owner/repo"}, headers)
+        config, _ = function_app._runner_config()
+        record = {
+            "fingerprint": function_app._request_fingerprint(
+                "owner/repo", "gh-runner-vm", group, "hyperv"
+            ),
+            "resources": function_app._resource_names(config, "legacy"),
+            "subnet": "default",
+            "accepted": True,
+            "busy_until": 0,
+        }
+        stored = mock.Mock(status_code=200, **{"json.return_value": record})
+        function_app.requests.request.side_effect = None
+        function_app.requests.request.return_value = stored
+
+        same_default = function_app.handle_request_runner(request)
+        with mock.patch.dict(os.environ, {"RESOURCE_GROUP": "gh-runner-tmp-after"}):
+            function_app._runner_config.cache_clear()
+            self.assertEqual(function_app.handle_request_runner(request).status_code, 409)
+            explicit = function_app.handle_request_runner(
+                _request({"repo": "owner/repo", "resource-group": group}, headers)
+            )
+
+        for response in (same_default, explicit):
+            self.assertEqual(response.status_code, 202)
+            body = json.loads(response.body)
+            self.assertEqual(body["resource-group"], group)
+            self.assertEqual(body["resources"], record["resources"])
+            self.assertTrue(body["replayed"])
+        self.assertEqual(
+            [call.args[0] for call in function_app.requests.request.call_args_list],
+            ["GET"] * 3,
+        )
+        self.resources.resource_groups.get.assert_not_called()
+        function_app.requests.post.assert_not_called()
+
+    def test_invalid_stored_group_binding_stops_before_provisioning(self):
+        group = REQUEST_RUNNER_ENV["RESOURCE_GROUP"]
+        request = _request({"repo": "owner/repo"}, {"Idempotency-Key": "invalid-binding"})
+        config, _ = function_app._runner_config()
+        record = {
+            "fingerprint": function_app._request_fingerprint(
+                "owner/repo", "gh-runner-vm", group, "hyperv"
+            ),
+            "resources": function_app._resource_names(config, "invalid-binding"),
+            "subnet": "default",
+            "accepted": True,
+            "busy_until": 0,
+        }
+        function_app.requests.request.side_effect = None
+        for fields in (
+            {"resource_group": group},
+            {"resource_group_defaulted": True},
+            {"resource_group": "foreign-group", "resource_group_defaulted": True},
+            {"resource_group": group, "resource_group_defaulted": 1},
+        ):
+            with self.subTest(fields=fields):
+                function_app.requests.request.return_value = mock.Mock(
+                    status_code=200, **{"json.return_value": {**record, **fields}}
+                )
+                response = function_app.handle_request_runner(request)
+                self.assertEqual(response.status_code, 502)
+                self.assertNotIn("cleanup-required", json.loads(response.body))
+        self.resources.resource_groups.get.assert_not_called()
+        function_app.requests.post.assert_not_called()
+
+    def test_invalid_idempotency_keys_are_rejected_before_dependencies(self):
+        for key in ("", "bad key", "line\nbreak", "x" * 129, "ü"):
+            with self.subTest(key=key):
+                response = self._request_runner({"Idempotency-Key": key})
+                self.assertEqual(response.status_code, 400)
+        self.secrets.get_secret.assert_not_called()
+        self.resources.resource_groups.get.assert_not_called()
+
+    def _vm_exists(self, tags):
+        self.resources.resource_groups.get.side_effect = None
+        self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
+        self.compute.virtual_machines.get.side_effect = None
+        self.compute.virtual_machines.get.return_value = types.SimpleNamespace(
+            tags=tags
+        )
+
+    def test_same_key_and_body_create_one_vm_and_return_the_same_resources(self):
+        key = {"Idempotency-Key": "run-42-1-hv"}
+        request = _request({"repo": "owner/repo"}, key)
+        group = REQUEST_RUNNER_ENV["RESOURCE_GROUP"]
+        new_group = "gh-runner-tmp-after"
+        self.compute.virtual_machines.get.side_effect = ResourceNotFoundError()
+        with mock.patch.object(
+            function_app, "require_authenticated_caller", return_value=(True, "")
+        ):
+            first = function_app.request_runner(request)
+            self.assertEqual(first.status_code, 202)
+            function_app.requests.request.reset_mock()
+            with mock.patch.dict(
+                os.environ, {"RESOURCE_GROUP": new_group, "VM_NAME": "changed-vm"}
+            ):
+                function_app._runner_config.cache_clear()
+                with self.assertLogs(level="INFO") as logs:
+                    second = function_app.request_runner(request)
+                with self.assertLogs(level="ERROR"):
+                    changed = function_app.request_runner(
+                        _request({"repo": "owner/repo", "resource-group": new_group}, key)
+                    )
+                explicit = function_app.request_runner(
+                    _request({"repo": "owner/repo", "resource-group": group}, key)
+                )
+
+        (vm,) = self._bodies()["VirtualMachine"]
+        self.assertRegex(vm.tags[function_app.VM_REQUEST_TAG], r"^[a-f0-9]{64}$")
+        first_body, second_body = json.loads(first.body), json.loads(second.body)
+        self.assertEqual(second.status_code, 202)
+        self.assertEqual(first_body["resource-group"], group)
+        self.assertEqual(second_body["resource-group"], group)
+        self.assertTrue(second_body["replayed"])
+        self.assertNotIn("replayed", first_body)
+        self.assertEqual(first_body["resources"], second_body["resources"])
+        self.assertEqual(second_body["status-url"], "/api/runner_status")
+        events = [json.loads(record.getMessage()) for record in logs.records]
+        bound_events = [event for event in events if "resource-group" in event]
+        self.assertTrue(all(event["resource-group"] == group for event in bound_events))
+        self.assertEqual(bound_events[-1]["event"], "replayed")
+        self.assertEqual(explicit.status_code, 202)
+        self.assertTrue(json.loads(explicit.body)["replayed"])
+        self.assertEqual(changed.status_code, 409)
+        # The replay neither fetches a new registration token nor writes to Azure.
+        self.compute.virtual_machines.begin_create_or_update.assert_called_once()
+        self.resources.resource_groups.create_or_update.assert_called_once()
+        self.assertEqual(self.secrets.get_secret.call_count, 2)
+        self.assertEqual(function_app.requests.post.call_count, 1)
+        self.assertEqual(
+            [call.args[0] for call in function_app.requests.request.call_args_list],
+            ["GET"] * 3,
+        )
+
+    def test_concurrent_requests_share_one_provisioning_slot_across_invocations(self):
+        key = {"Idempotency-Key": "concurrent"}
+        provisioning, resume = Event(), Event()
+        vm_put = self.compute.virtual_machines.begin_create_or_update
+
+        def pause_provisioning(*args, **kwargs):
+            provisioning.set()
+            if not resume.wait(timeout=5):
+                raise AssertionError("Test did not release provisioning")
+
+        vm_put.side_effect = pause_provisioning
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(self._request_runner, key)
+            try:
+                self.assertTrue(provisioning.wait(timeout=5))
+                duplicate = pool.submit(self._request_runner, key).result(timeout=5)
+                self.assertEqual(duplicate.status_code, 503)
+                self.assertEqual(duplicate.headers["Retry-After"], "5")
+                self.assertNotIn("cleanup-required", json.loads(duplicate.body))
+                conflict = self._request_runner(key, **{"resource-group": "gh-runner-tmp-other"})
+                self.assertEqual(conflict.status_code, 409)
+                self.assertEqual(function_app.requests.post.call_count, 1)
+                vm_put.assert_called_once()
+            finally:
+                resume.set()
+            accepted = first.result(timeout=5)
+
+        retry = self._request_runner(key)
+        self.assertEqual(accepted.status_code, 202)
+        self.assertEqual(retry.status_code, 202)
+        self.assertEqual(json.loads(accepted.body)["resources"], json.loads(retry.body)["resources"])
+        vm_put.assert_called_once()
+
+    def test_lost_lease_stops_before_arm_writes(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                if existing:
+                    self.resources.resource_groups.get.side_effect = None
+                    self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
+                    self.compute.virtual_machines.get.side_effect = ResourceNotFoundError()
+                self.storage.reject_renewal = True
+                response = self._request_runner({"Idempotency-Key": f"k-{existing}"})
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.headers["Retry-After"], "5")
+                self.assertNotIn("cleanup-required", json.loads(response.body))
+        self.resources.resource_groups.create_or_update.assert_not_called()
+        self.network.virtual_networks.begin_create_or_update.assert_not_called()
+        self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+        function_app.requests.post.assert_not_called()
+
+    def test_guard_survives_lease_expiry_during_arm_write(self):
+        key = {"Idempotency-Key": "expired"}
+        group_put = self.resources.resource_groups.create_or_update
+        second_responses = []
+
+        def expire_lease(*args):
+            with self.storage.lock:
+                self.storage.leases.clear()
+            second_responses.append(self._request_runner(key))
+
+        group_put.side_effect = expire_lease
+        with mock.patch.object(function_app, "time", return_value=1000) as clock:
+            first = self._request_runner(key)
+            self.assertEqual(first.status_code, 503)
+            self.assertTrue(json.loads(first.body)["cleanup-required"])
+            self.assertNotIn("Retry-After", first.headers)
+            (second,) = second_responses
+            self.assertEqual(second.status_code, 503)
+            self.assertEqual(second.headers["Retry-After"], "5")
+            self.assertNotIn("cleanup-required", json.loads(second.body))
+            group_put.assert_called_once()
+            function_app.requests.post.assert_not_called()
+            self.network.virtual_networks.begin_create_or_update.assert_not_called()
+
+            clock.return_value += function_app._IN_PROGRESS_SECONDS
+            self.resources.resource_groups.get.side_effect = None
+            self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
+            self.compute.virtual_machines.get.side_effect = ResourceNotFoundError()
+            recovered = self._request_runner(key)
+        self.assertEqual(recovered.status_code, 202)
+        self.assertEqual(json.loads(first.body)["resources"], json.loads(recovered.body)["resources"])
+        group_put.assert_called_once()
+
+    def test_acceptance_committed_before_storage_timeout_is_replayed(self):
+        def timeout_after_accept(*args, **kwargs):
+            response = self.storage.request(*args, **kwargs)
+            if kwargs.get("json", {}).get("accepted"):
+                raise Timeout("response was lost")
+            return response
+
+        key = {"Idempotency-Key": "accepted"}
+        function_app.requests.request.side_effect = timeout_after_accept
+        first = self._request_runner(key)
+        self.assertEqual(first.status_code, 503)
+        self.assertTrue(json.loads(first.body)["cleanup-required"])
+        replay = self._request_runner(key)
+        self.assertEqual(replay.status_code, 202)
+        self.assertTrue(json.loads(replay.body)["replayed"])
+        self.assertEqual(json.loads(first.body)["resources"], json.loads(replay.body)["resources"])
+        function_app.requests.post.assert_called_once()
+        self.compute.virtual_machines.begin_create_or_update.assert_called_once()
+
+    def test_retries_wait_for_an_accepted_vm_that_is_not_yet_visible(self):
+        group = REQUEST_RUNNER_ENV["RESOURCE_GROUP"]
+        request = _request({"repo": "owner/repo"}, {"Idempotency-Key": "k"})
+        vm_put = self.compute.virtual_machines.begin_create_or_update
+        vm_put.side_effect = ServiceResponseError("read timeout")
+        with mock.patch.object(function_app, "time", return_value=1000):
+            first = function_app.handle_request_runner(request)
+        first_body = json.loads(first.body)
+        self.assertEqual(first.status_code, 503)
+        self.assertEqual(first_body["resource-group"], group)
+        self.assertTrue(first_body["cleanup-required"])
+        names = first_body["resources"]
+        with (
+            mock.patch.object(function_app, "time", return_value=1000),
+            mock.patch.dict(os.environ, {"RESOURCE_GROUP": "gh-runner-tmp-after"}),
+        ):
+            function_app._runner_config.cache_clear()
+            self.resources.resource_groups.get.side_effect = None
+            self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
+            self.resources.resource_groups.get.reset_mock()
+            self.compute.virtual_machines.get.side_effect = ResourceNotFoundError()
+            pending = function_app.handle_request_runner(request)
+            self.assertEqual(pending.status_code, 503)
+            self.assertEqual(pending.headers["Retry-After"], "5")
+            pending_body = json.loads(pending.body)
+            self.assertEqual(pending_body["resource-group"], group)
+            self.assertNotIn("cleanup-required", pending_body)
+            self._vm_exists(vm_put.call_args.args[-1].tags)
+            retry = function_app.handle_request_runner(request)
+
+        self.assertEqual(retry.status_code, 202)
+        retry_body = json.loads(retry.body)
+        self.assertEqual(retry_body["resource-group"], group)
+        self.assertTrue(retry_body["replayed"])
+        self.assertEqual(retry_body["resources"], names)
+        self.assertEqual(
+            self.resources.resource_groups.get.call_args_list, [mock.call(group)] * 2
+        )
+        self.assertEqual(
+            self.compute.virtual_machines.get.call_args_list, [mock.call(group, names["vm"])] * 2
+        )
+        vm_put.assert_called_once()
+        self.network.virtual_networks.begin_create_or_update.assert_called_once()
+        function_app.requests.post.assert_called_once()
+
+    def test_retry_does_not_repeat_an_unobservable_network_write(self):
+        key = {"Idempotency-Key": "delayed-vnet"}
+        self.resources.resource_groups.get.side_effect = None
+        self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
+        self.compute.virtual_machines.get.side_effect = ResourceNotFoundError()
+        vnet = self.network.virtual_networks
+        vnet.begin_create_or_update.side_effect = ServiceResponseError("read timeout")
+        with mock.patch.object(function_app, "time", return_value=1000) as clock:
+            first = self._request_runner(key)
+            self.assertEqual(first.status_code, 503)
+            self.assertTrue(json.loads(first.body)["cleanup-required"])
+            function_app.requests.post.assert_not_called()
+            pending = self._request_runner(key)
+            self.assertEqual(pending.status_code, 503)
+            self.assertEqual(pending.headers["Retry-After"], "5")
+            self.assertNotIn("cleanup-required", json.loads(pending.body))
+            vnet.begin_create_or_update.assert_called_once()
+            self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+            function_app.requests.post.assert_not_called()
+
+            clock.return_value += function_app._IN_PROGRESS_SECONDS
+            vnet.get.side_effect = None
+            vnet.get.return_value.provisioning_state = "Succeeded"
+            resumed = self._request_runner(key)
+        self.assertEqual(resumed.status_code, 202)
+        names = json.loads(first.body)["resources"]
+        self.assertEqual(json.loads(resumed.body)["resources"], names)
+        vnet.begin_create_or_update.assert_called_once()
+        self.assertEqual(vnet.get.call_args.args, ("gh-runner-tmp-1-hv", names["vnet"]))
+        self.compute.virtual_machines.begin_create_or_update.assert_called_once()
+        function_app.requests.post.assert_called_once()
+
+    def test_failure_before_an_arm_write_allows_an_immediate_keyed_retry(self):
+        key = {"Idempotency-Key": "pre-write-failure"}
+        self.secrets.get_secret.side_effect = ServiceRequestError()
+        with mock.patch.object(function_app, "time", return_value=1000):
+            first = self._request_runner(key)
+            self.assertEqual(first.status_code, 503)
+            self.assertEqual(first.headers["Retry-After"], "5")
+            self.assertNotIn("cleanup-required", json.loads(first.body))
+            self.resources.resource_groups.create_or_update.assert_not_called()
+            function_app.requests.post.assert_not_called()
+            self.secrets.get_secret.side_effect = None
+            self.assertEqual(self._request_runner(key).status_code, 202)
+        self.compute.virtual_machines.begin_create_or_update.assert_called_once()
+        function_app.requests.post.assert_called_once()
+
+    def test_keyed_spot_capacity_rejection_can_fall_back_to_regular_vm(self):
+        vm_put = self.compute.virtual_machines.begin_create_or_update
+        vm_put.side_effect = [HttpResponseError(status_code=409, code="SkuNotAvailable"), mock.DEFAULT]
+        with mock.patch.dict(os.environ, {"VM_USE_SPOT": "true"}):
+            response = self._request_runner({"Idempotency-Key": "spot-capacity"})
+        self.assertEqual(response.status_code, 202)
+        spot, regular = vm_put.call_args_list
+        self.assertEqual(spot.args[:2], regular.args[:2])
+        self.assertEqual(spot.args[-1].priority, "Spot")
+        self.assertFalse(hasattr(regular.args[-1], "priority"))
+        for call in (spot, regular):
+            self.assertEqual(call.kwargs["match_condition"], function_app.MatchConditions.IfMissing)
+
+    def test_retry_after_timeout_with_the_same_key_reuses_the_resource_names(self):
+        group = REQUEST_RUNNER_ENV["RESOURCE_GROUP"]
+        request = _request({"repo": "owner/repo"}, {"Idempotency-Key": "run-42-1-hv"})
+        vm_put = self.compute.virtual_machines.begin_create_or_update
+        vnet_put = self.network.virtual_networks.begin_create_or_update
+        self.compute.virtual_machines.get.side_effect = ResourceNotFoundError()
+        vm_put.side_effect = ServiceResponseError("read timeout")
+        with (
+            self.assertLogs(level="ERROR"),
+            mock.patch.object(function_app, "time", return_value=1000),
+            mock.patch.dict(os.environ, {"SUBNET_NAME": "original-subnet"}),
+        ):
+            first = function_app.handle_request_runner(request)
+        first_body = json.loads(first.body)
+        self.assertEqual(first.status_code, 503)
+        self.assertTrue(first_body["cleanup-required"])
+        self.assertIn("Idempotency-Key", first_body["message"])
+        self.assertNotIn("Retry-After", first.headers)
+
+        # The VM write did not land; the resource group did.
+        vm_put.side_effect = None
+        self.resources.resource_groups.get.side_effect = None
+        self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
+        self.network.virtual_networks.get.side_effect = None
+        self.network.virtual_networks.get.return_value.provisioning_state = "Succeeded"
+        with (
+            mock.patch.object(
+                function_app, "time", return_value=1000 + function_app._IN_PROGRESS_SECONDS
+            ),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "RESOURCE_GROUP": "gh-runner-tmp-after",
+                    "VNET_NAME": "changed-vnet",
+                    "SUBNET_NAME": "changed-subnet",
+                },
+            ),
+        ):
+            function_app._runner_config.cache_clear()
+            second = function_app.handle_request_runner(request)
+
+        self.assertEqual(second.status_code, 202)
+        self.assertEqual(first_body["resource-group"], group)
+        second_body = json.loads(second.body)
+        self.assertEqual(second_body["resource-group"], group)
+        self.assertEqual(second_body["resources"], first_body["resources"])
+        self.assertEqual(
+            [call.args[:2] for call in vm_put.call_args_list],
+            [(group, first_body["vm"])] * 2,
+        )
+        vnet_put.assert_called_once()
+        vnet_name = first_body["resources"]["vnet"]
+        self.network.virtual_networks.get.assert_called_with(group, vnet_name)
+        self.network.subnets.get.assert_called_with(group, vnet_name, "original-subnet")
+        self.resources.resource_groups.create_or_update.assert_called_once()
+        self.assertEqual(function_app.requests.post.call_count, 2)
+
+    def test_recovery_waits_for_an_existing_network_write(self):
+        key = {"Idempotency-Key": "pending-network"}
+        self.resources.resource_groups.get.side_effect = None
+        self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
+        self.compute.virtual_machines.get.side_effect = ResourceNotFoundError()
+        vnet = self.network.virtual_networks
+        poller = vnet.begin_create_or_update.return_value
+        poller.done.return_value = False
+        with mock.patch.object(function_app, "time", return_value=1000) as clock:
+            self.assertEqual(self._request_runner(key).status_code, 504)
+            clock.return_value += function_app._IN_PROGRESS_SECONDS
+            vnet.get.side_effect = None
+            vnet.get.return_value.provisioning_state = "Updating"
+            token_calls = function_app.requests.post.call_count
+            for _ in range(2):
+                response = self._request_runner(key)
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.headers["Retry-After"], "5")
+                self.assertEqual(json.loads(response.body)["stage"], "network")
+                self.assertNotIn("cleanup-required", json.loads(response.body))
+                self.assertEqual(function_app.requests.post.call_count, token_calls)
+        function_app.requests.post.assert_not_called()
+        vnet.begin_create_or_update.assert_called_once()
+        self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+
+    def test_checks_claim_and_budget_after_network_recovery_before_token_post(self):
+        self.resources.resource_groups.get.side_effect = None
+        self.resources.resource_groups.get.return_value = _resource_group(OWNED_TAGS)
+        self.compute.virtual_machines.get.side_effect = ResourceNotFoundError()
+        for operations in (
+            self.network.virtual_networks,
+            self.network.subnets,
+            self.network.public_ip_addresses,
+            self.network.network_security_groups,
+        ):
+            operations.get.side_effect = None
+            operations.get.return_value.provisioning_state = "Succeeded"
+
+        for case, status in (("lease", 503), ("budget", 504)):
+            with self.subTest(case=case), mock.patch.object(
+                function_app, "monotonic", return_value=0
+            ) as clock:
+                def check_nic(*args):
+                    self.storage.reject_renewal = case == "lease"
+                    if case == "budget":
+                        clock.return_value = 110
+                    return types.SimpleNamespace(provisioning_state="Succeeded", id="nic")
+
+                self.network.network_interfaces.get.side_effect = check_nic
+                response = self._request_runner({"Idempotency-Key": case})
+                self.assertEqual(response.status_code, status)
+                self.assertEqual(response.headers["Retry-After"], "5")
+                self.assertNotIn("cleanup-required", json.loads(response.body))
+                function_app.requests.post.assert_not_called()
+                self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+
+    def test_same_key_with_any_different_request_field_conflicts(self):
+        key = {"Idempotency-Key": "conflict"}
+        with mock.patch.dict(os.environ, {
+            "ALLOWED_REPOS": "owner/repo,owner/other", "RESOURCE_GROUP": "gh-runner-tmp-1-hv"
+        }):
+            self.assertEqual(self._request_runner(key).status_code, 202)
+            for overrides in (
+                {"repo": "owner/other"},
+                {"runner-name": "other-name"},
+                {"resource-group": "gh-runner-tmp-other"},
+                {"virtualization-flavor": "virtualbox"},
+            ):
+                with self.subTest(overrides=overrides):
+                    conflict = self._request_runner(key, **overrides)
+                    self.assertEqual(conflict.status_code, 409)
+                    self.assertNotIn("cleanup-required", json.loads(conflict.body))
+            replay = self._request_runner(key, repo="OWNER/REPO")
+            self.assertEqual(replay.status_code, 202)
+            self.assertTrue(json.loads(replay.body)["replayed"])
+            omitted = _request({"repo": "owner/repo", "runner-name": "1-hv"}, key)
+            self.assertEqual(function_app.handle_request_runner(omitted).status_code, 202)
+        function_app._runner_config.cache_clear()
+        self.assertEqual(function_app.handle_request_runner(omitted).status_code, 409)
+        function_app.requests.post.assert_called_once()
+        self.compute.virtual_machines.begin_create_or_update.assert_called_once()
+
+    def test_different_keys_get_different_resource_names(self):
+        self.compute.virtual_machines.get.side_effect = ResourceNotFoundError()
+        first = json.loads(self._request_runner({"Idempotency-Key": "a"}).body)
+        second = json.loads(self._request_runner({"Idempotency-Key": "b"}).body)
+        for resource in ("vm", "vnet", "ip", "nic", "nsg"):
+            self.assertNotEqual(first["resources"][resource], second["resources"][resource])
+
+    def test_preexisting_vm_without_matching_fingerprint_conflicts(self):
+        key = {"Idempotency-Key": "run-42-1-hv"}
+        for tags in ({function_app.VM_REQUEST_TAG: "0" * 64}, None, {}):
+            with self.subTest(tags=tags):
+                self._vm_exists(tags)
+                with self.assertLogs(level="ERROR"):
+                    response = self._request_runner(key, **{"runner-name": "other"})
+                body = json.loads(response.body)
+                self.assertEqual(response.status_code, 409)
+                self.assertIn("different request", body["message"])
+                self.assertNotIn("cleanup-required", body)
+        self.secrets.get_secret.assert_not_called()
+        self.compute.virtual_machines.begin_create_or_update.assert_not_called()
+        self.resources.resource_groups.create_or_update.assert_not_called()
+
+    def test_idempotency_lookup_refuses_foreign_resource_groups(self):
+        self.resources.resource_groups.get.side_effect = None
+        self.resources.resource_groups.get.return_value = _resource_group({})
+        with self.assertLogs(level="ERROR"):
+            response = self._request_runner({"Idempotency-Key": "k"})
+        self.assertEqual(response.status_code, 409)
+        self.compute.virtual_machines.get.assert_not_called()
+        self.secrets.get_secret.assert_not_called()
 
     def test_unexpected_error_logs_frames_without_message(self):
         self.network.virtual_networks.begin_create_or_update.side_effect = (
