@@ -1107,11 +1107,7 @@ func discoverUtmVMIPv4WithOptions(projectDir string, vm alchemy_build.VirtualMac
 		if len(candidates) == 1 {
 			return candidates[0], false, nil
 		}
-		ip, resolveErr := resolveMultipleUtmARPCandidates(projectDir, vm, macAddress, candidates, deadline, options)
-		if resolveErr != nil {
-			return "", true, resolveErr
-		}
-		return ip, false, nil
+		return resolveMultipleUtmARPCandidates(projectDir, vm, macAddress, candidates, deadline, options)
 	}
 
 	// Check arp -an first without probing; a cached guest returns immediately with zero probe calls.
