@@ -59,10 +59,11 @@ remains enabled on macOS and Linux hosts; Windows hosts do not currently record
 VNC. The flag applies to `build`, including parallel builds, and does not change
 the display behavior of `create` or `start`.
 
-`create`, `start`, and `provision` now refuse bridged or unknown networks with
-non-private guest credentials unless you explicitly accept the risk. The UTM
-templates still use bridged networking, so their new-VM creation is affected.
-Before following those workflows, read
+`create`, `start`, and `provision` refuse bridged or unknown networks with
+non-private guest credentials unless you explicitly accept the risk. Shipped UTM
+templates default to Shared (NAT) networking (`SAILWRIGHT_UTM_NETWORK_MODE=bridged`
+opts into Bridged networking and remains subject to the guard).
+Before following bridged workflows or running existing bridged VMs, read
 [Guest network security](./guest-security.md) for migration guidance, credential
 classification, and per-command or persistent overrides. Provisioning variables
 do not change credentials baked into an image.
@@ -905,8 +906,10 @@ Portable tests cover all four providers' names/paths and legacy defaults. Before
 releasing on real macOS/Windows hosts, verify two named instances and a legacy
 default together, including create/start/info/provision/stop/destroy:
 
-- UTM: bundle registration, fresh UUID/MAC, guest-agent hostname setup and bridged
-  DHCP leases. Verify both architectures supported by the host.
+- UTM: bundle registration, fresh UUID/MAC, guest-agent hostname setup and
+  DHCP leases (Shared NAT by default, or Bridged when
+  `SAILWRIGHT_UTM_NETWORK_MODE=bridged` is set). Verify both architectures
+  supported by the host.
 - Tart: independent clones/MACs, configured SSH hostname setup, bridged mode where
   used, and rejection of `TART_MACOS_VM_NAME` together with `--name`.
 - Hyper-V: distinct Vagrant state and VM disks, switch/address discovery through

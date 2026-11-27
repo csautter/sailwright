@@ -114,9 +114,11 @@ The Homebrew tap job refuses to downgrade a tap that already has a newer version
 - UTM bundles live in the container's `Documents` directory, not under
   `DEV_ALCHEMY_APP_DATA_DIR`. A failed run can leave a bundle there; check
   before the next round.
-- UTM templates use bridged networking. Lifecycle checks need
-  `RT_ALLOW_INSECURE_CREDENTIALS=1`, and every `create`, `start` and
-  `provision` step of a scenario must pass the flag.
+- Shipped UTM templates default to Shared (NAT) networking, so new UTM VMs with
+  default credentials no longer require `RT_ALLOW_INSECURE_CREDENTIALS=1`. To
+  exercise the bridged guest-security guard on UTM, set
+  `SAILWRIGHT_UTM_NETWORK_MODE=bridged` (existing bridged `.utm` bundles also
+  remain guarded unless switched to Shared).
 
 ### Gateway
 
