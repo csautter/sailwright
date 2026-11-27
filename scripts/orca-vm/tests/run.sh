@@ -259,6 +259,12 @@ case "$1 ${2:-}" in
         exit 0
         ;;
     "image inspect")
+        if [ -n "${TEST_DOCKER_TRUSTED_IMAGE:-}" ]; then
+            if [ "${3:-}" = "${TEST_DOCKER_TRUSTED_IMAGE}" ]; then
+                exit 0
+            fi
+            exit 1
+        fi
         exit "${TEST_DOCKER_INSPECT_RC:-1}"
         ;;
     "images -q")
@@ -322,17 +328,40 @@ for docker_rc in 0 125; do
     assert_eq "host_device Darwin mixed engines: uses active Docker run exit $docker_rc" "$expected" \
         "$(DOCKER_CONTEXT=desktop-linux DOCKER_HOST=unix:///Users/dev/.colima/default/docker.sock \
             COLIMA_PROFILE=default TEST_DOCKER_ENDPOINT=unix:///Users/dev/.docker/run/docker.sock \
-            TEST_COLIMA_OUT="$colima_out" TEST_DOCKER_IMAGE=localimg TEST_DOCKER_RUN_RC="$docker_rc" \
+            TEST_COLIMA_OUT="$colima_out" TEST_DOCKER_IMAGE=unrelated-cached-image \
+            TEST_DOCKER_TRUSTED_IMAGE="mcr.microsoft.com/devcontainers/base:debian" TEST_DOCKER_RUN_RC="$docker_rc" \
             dlib bin "host_device '${DARWIN_DEV}:/dev/kvm'" 2>/dev/null)"
     assert_true "host_device Darwin mixed engines: no unrelated Colima VM queried" test ! -s "${TMP}/darwin/colima.log"
-    assert_true "host_device Darwin mixed engines: active Docker queried" grep -q '^run --rm' "${TMP}/darwin/docker.log"
+    assert_true "host_device Darwin mixed engines: active Docker queried with trusted image" \
+        grep -qF "run --rm --pull=never --device ${DARWIN_DEV} --entrypoint sh mcr.microsoft.com/devcontainers/base:debian" "${TMP}/darwin/docker.log"
+    assert_true "host_device Darwin mixed engines: never runs unrelated cached image" \
+        bash -c "! grep -qF unrelated-cached-image '${TMP}/darwin/docker.log'"
 done
-assert_eq "host_device Darwin failing colima: skips cleanly" "" \
-    "$(TEST_UNAME_S=Darwin TEST_COLIMA_FAIL=1 dlib bin "host_device '${DARWIN_DEV}:/dev/kvm'" 2>/dev/null)"
+assert_eq "host_device Darwin unrelated-image-first without trusted image: skips cleanly" "" \
+    "$(TEST_UNAME_S=Darwin TEST_DOCKER_ENDPOINT=unix:///Users/dev/.docker/run/docker.sock \
+        TEST_DOCKER_IMAGE=unrelated-cached-image TEST_DOCKER_INSPECT_RC=1 TEST_DOCKER_RUN_RC=0 \
+        dlib nocolima "host_device '${DARWIN_DEV}:/dev/kvm'" 2>"${TMP}/darwin/no-trusted.log")"
+assert_true "host_device Darwin unrelated-image-first without trusted image: never invokes docker run" \
+    bash -c "! grep -q '^run ' '${TMP}/darwin/docker.log'"
+assert_true "host_device Darwin unrelated-image-first without trusted image: never lists arbitrary cache" \
+    bash -c "! grep -q '^images ' '${TMP}/darwin/docker.log'"
+assert_true "host_device Darwin unrelated-image-first without trusted image: logs clear diagnostic" \
+    grep -qF "skipping device ${DARWIN_DEV} (no trusted local probe image available)" "${TMP}/darwin/no-trusted.log"
+assert_eq "host_device Darwin failing colima without trusted image: skips cleanly" "" \
+    "$(TEST_UNAME_S=Darwin TEST_COLIMA_FAIL=1 TEST_DOCKER_IMAGE=unrelated-cached-image TEST_DOCKER_INSPECT_RC=1 TEST_DOCKER_RUN_RC=0 \
+        dlib bin "host_device '${DARWIN_DEV}:/dev/kvm'" 2>"${TMP}/darwin/fail-colima.log")"
+assert_true "host_device Darwin failing colima without trusted image: logs clear diagnostic" \
+    grep -qF "skipping device ${DARWIN_DEV} (no trusted local probe image available)" "${TMP}/darwin/fail-colima.log"
 assert_eq "host_device Darwin docker fallback with local IMAGE_TAG: keeps device" "${DARWIN_DEV}:/dev/kvm" \
-    "$(TEST_UNAME_S=Darwin TEST_DOCKER_INSPECT_RC=0 TEST_DOCKER_RUN_RC=0 dlib nocolima "IMAGE_TAG=orca-test:1; host_device '${DARWIN_DEV}:/dev/kvm'")"
+    "$(TEST_UNAME_S=Darwin TEST_DOCKER_ENDPOINT=unix:///Users/dev/.docker/run/docker.sock \
+        TEST_DOCKER_IMAGE=unrelated-cached-image TEST_DOCKER_TRUSTED_IMAGE=orca-test:1 TEST_DOCKER_RUN_RC=0 \
+        dlib nocolima "IMAGE_TAG=orca-test:1; host_device '${DARWIN_DEV}:/dev/kvm'")"
+assert_true "host_device Darwin docker fallback with local IMAGE_TAG: runs IMAGE_TAG only" \
+    grep -qF "run --rm --pull=never --device ${DARWIN_DEV} --entrypoint sh orca-test:1" "${TMP}/darwin/docker.log"
 assert_eq "host_device Darwin docker fallback absent: skips cleanly" "" \
-    "$(TEST_UNAME_S=Darwin TEST_DOCKER_INSPECT_RC=0 TEST_DOCKER_RUN_RC=125 dlib nocolima "IMAGE_TAG=orca-test:1; host_device '${DARWIN_DEV}:/dev/kvm'" 2>/dev/null)"
+    "$(TEST_UNAME_S=Darwin TEST_DOCKER_ENDPOINT=unix:///Users/dev/.docker/run/docker.sock \
+        TEST_DOCKER_TRUSTED_IMAGE=orca-test:1 TEST_DOCKER_RUN_RC=125 \
+        dlib nocolima "IMAGE_TAG=orca-test:1; host_device '${DARWIN_DEV}:/dev/kvm'" 2>/dev/null)"
 if $IS_WINDOWS; then
     assert_eq "windows: HOME and USERPROFILE joined only once" "${TMP}/home/.x" \
         "$(lib 'expand_vars "\${localEnv:HOME}\${localEnv:USERPROFILE}/.x"')"
@@ -499,8 +528,8 @@ assert_true "compose Darwin+Colima absent: logs skipped device" \
 for endpoint in unix:///Users/dev/.colima/default/docker.sock unix:///Users/dev/.docker/run/docker.sock; do
     drain_args="$(
         DOCKER_HOST="$endpoint" TEST_UNAME_S=Darwin TEST_DRAIN_STDIN=1 TEST_COLIMA_OUT=present \
-        TEST_DOCKER_IMAGE=localimg TEST_DOCKER_RUN_RC=0 \
-        dlib bin "is_compose() { return 0; }
+        TEST_DOCKER_TRUSTED_IMAGE=orca-test:1 TEST_DOCKER_RUN_RC=0 \
+        dlib bin "IMAGE_TAG=orca-test:1; is_compose() { return 0; }
             compose_run_args() { printf '%s\n' --device '${DARWIN_DEV}:/dev/kvm' --device '${DARWIN_DEV}-2:/dev/kvm2' --privileged; }
             collect_run_args; printf '%s\n' \"\${DOCKER_RUN_ARGS[@]}\""
     )"

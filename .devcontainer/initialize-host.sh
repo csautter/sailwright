@@ -171,10 +171,45 @@ colima_profile() {
   printf '%s' "$profile"
 }
 
+dockerfile_base_image() {
+  local dockerfile="$1" img
+  [ -f "$dockerfile" ] || return 1
+  img="$(awk '
+    /^[[:space:]]*([Ff][Rr][Oo][Mm])[[:space:]]+/ {
+      for (i = 2; i <= NF; i++) {
+        if ($i ~ /^--/) continue
+        sub(/\r$/, "", $i)
+        print $i
+        exit
+      }
+    }
+  ' "$dockerfile")"
+  case "$img" in
+    ''|scratch|SCRATCH|*'$'*) return 1 ;;
+    *) printf '%s' "$img"; return 0 ;;
+  esac
+}
+
+# Select only an explicitly trusted, already-local image for Docker device probes.
+trusted_probe_image() {
+  local candidate base_img=""
+  base_img="$(dockerfile_base_image "$SCRIPT_DIR/Dockerfile" || true)"
+  for candidate in "${DEVCONTAINER_KVM_PROBE_IMAGE:-}" "$base_img"; do
+    [ -n "$candidate" ] || continue
+    if docker image inspect "$candidate" </dev/null >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Checks local Linux devices directly and probes the active engine otherwise.
 # A missing device or a probe error must leave container startup available.
+KVM_SKIP_REASON="not found"
 host_device_exists() {
   local src="$1" host_os endpoint profile probe_out probe_img
+  KVM_SKIP_REASON="not found"
   case "$src" in
     /dev/*) ;;
     *) [ -e "$src" ]; return ;;
@@ -197,12 +232,16 @@ host_device_exists() {
     esac
   fi
   if command -v docker >/dev/null 2>&1; then
-    probe_img="$(docker images -q </dev/null 2>/dev/null | head -n 1 | tr -d '\r' || true)"
-    if [ -n "$probe_img" ] \
-      && docker run --rm --pull=never --device "$src" --entrypoint sh "$probe_img" -c 'exit 0' </dev/null >/dev/null 2>&1; then
-      return 0
+    if probe_img="$(trusted_probe_image)"; then
+      if docker run --rm --pull=never --device "$src" --entrypoint sh "$probe_img" -c 'exit 0' </dev/null >/dev/null 2>&1; then
+        return 0
+      fi
+      return 1
     fi
+    KVM_SKIP_REASON="no trusted local probe image available"
+    return 1
   fi
+  KVM_SKIP_REASON="no trusted local probe image available"
   return 1
 }
 
@@ -229,7 +268,7 @@ fi
 if $KVM_AVAILABLE; then
   MOUNTED+=("device ${KVM_DEVICE} -> /dev/kvm")
 else
-  SKIPPED+=("device ${KVM_DEVICE} (not found)")
+  SKIPPED+=("device ${KVM_DEVICE} (${KVM_SKIP_REASON})")
 fi
 
 # Always mounted; the sources are created because they are devcontainer-owned.

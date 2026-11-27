@@ -36,8 +36,10 @@ REPO="${TMP}/fixture-repo"
 HOME_DIR="${TMP}/home"
 STUB_BIN="${TMP}/stub-bin"
 NO_COLIMA_BIN="${TMP}/no-colima-bin"
+TRUSTED_BASE_IMAGE="mcr.microsoft.com/devcontainers/go:2.3.7-1.27-trixie"
 mkdir -p "${REPO}/.devcontainer" "${HOME_DIR}" "${STUB_BIN}" "${NO_COLIMA_BIN}"
 cp "$INIT_SRC" "${REPO}/.devcontainer/initialize-host.sh"
+printf 'FROM %s\n' "$TRUSTED_BASE_IMAGE" >"${REPO}/.devcontainer/Dockerfile"
 cat >"${REPO}/.devcontainer/github-auth.sh" <<'EOF'
 #!/usr/bin/env bash
 mkdir -p "${CONFIG_HOME}/sailwright/devcontainer/github"
@@ -73,6 +75,12 @@ case "$1 ${2:-}" in
             printf '%s\n' "${TEST_DOCKER_ENDPOINT:-unix:///Users/dev/.colima/default/docker.sock}"
         fi
         exit 0
+        ;;
+    "image inspect")
+        if [ -n "${TEST_DOCKER_TRUSTED_IMAGE:-}" ] && [ "${3:-}" = "${TEST_DOCKER_TRUSTED_IMAGE}" ]; then
+            exit 0
+        fi
+        exit 1
         ;;
     "images -q")
         if [ -n "${TEST_DOCKER_IMAGE:-}" ]; then
@@ -207,10 +215,15 @@ for docker_rc in 0 125; do
     if [ "$docker_rc" = 0 ]; then colima_out=absent; fi
     DOCKER_CONTEXT=desktop-linux DOCKER_HOST=unix:///Users/dev/.colima/default/docker.sock COLIMA_PROFILE=default \
         TEST_DOCKER_ENDPOINT=unix:///Users/dev/.docker/run/docker.sock \
-        TEST_UNAME_S=Darwin TEST_COLIMA_OUT="$colima_out" TEST_DOCKER_IMAGE=localimg TEST_DOCKER_RUN_RC="$docker_rc" \
+        TEST_UNAME_S=Darwin TEST_COLIMA_OUT="$colima_out" \
+        TEST_DOCKER_IMAGE=$'unrelated-cached-image\n'"$TRUSTED_BASE_IMAGE" \
+        TEST_DOCKER_TRUSTED_IMAGE="$TRUSTED_BASE_IMAGE" TEST_DOCKER_RUN_RC="$docker_rc" \
         run_init "$TEST_DEV" >/dev/null
     assert_false "initialize-host mixed engines: no unrelated Colima VM queried" test -s "$COLIMA_LOG"
-    assert_true "initialize-host mixed engines: active Docker queried" grep -q '^run --rm' "$DOCKER_LOG"
+    assert_true "initialize-host mixed engines: active Docker queried with trusted image" \
+        grep -qF "run --rm --pull=never --device ${TEST_DEV} --entrypoint sh ${TRUSTED_BASE_IMAGE}" "$DOCKER_LOG"
+    assert_false "initialize-host mixed engines: never runs unrelated cached image" \
+        grep -qF "unrelated-cached-image" "$DOCKER_LOG"
     if [ "$docker_rc" = 0 ]; then
         assert_true "initialize-host mixed engines: active Docker device available" grep -qxF '    devices:' "$OUT_YAML"
     else
@@ -222,36 +235,48 @@ done
 for endpoint in unix:///Users/dev/.colima/default/docker.sock unix:///Users/dev/.docker/run/docker.sock; do
     {
         DOCKER_HOST="$endpoint" TEST_UNAME_S=Darwin TEST_DRAIN_STDIN=1 TEST_COLIMA_OUT=present \
-            TEST_DOCKER_IMAGE=localimg TEST_DOCKER_RUN_RC=0 run_init "$TEST_DEV" >/dev/null
+            TEST_DOCKER_TRUSTED_IMAGE="$TRUSTED_BASE_IMAGE" TEST_DOCKER_RUN_RC=0 run_init "$TEST_DEV" >/dev/null
         IFS= read -r remaining
     } <<<"operator input"
     assert_eq "initialize-host draining probe leaves stdin untouched" "operator input" "$remaining"
 done
 
-# Case 6: Darwin + unreachable/failing colima or missing colima -> skips cleanly without failing startup.
-out_fail="$(TEST_UNAME_S=Darwin TEST_COLIMA_FAIL=1 run_init "$TEST_DEV")"
+# Case 6: Darwin + unreachable/failing colima or missing colima without a trusted local probe image
+# skips cleanly with a clear diagnostic and never executes arbitrary cached images.
+out_fail="$(TEST_UNAME_S=Darwin TEST_COLIMA_FAIL=1 TEST_DOCKER_IMAGE=unrelated-cached-image TEST_DOCKER_RUN_RC=0 run_init "$TEST_DEV")"
 rc_fail=$?
-assert_eq "initialize-host failing colima: exits 0" "0" "$rc_fail"
-assert_false "initialize-host failing colima: omits devices block" grep -q '^    devices:' "$OUT_YAML"
-assert_true "initialize-host failing colima: logs skipped device" \
-    grep -qF "skipped: device ${TEST_DEV} (not found)" <<<"$out_fail"
+assert_eq "initialize-host failing colima without trusted probe: exits 0" "0" "$rc_fail"
+assert_false "initialize-host failing colima without trusted probe: omits devices block" grep -q '^    devices:' "$OUT_YAML"
+assert_false "initialize-host failing colima without trusted probe: never runs docker probe" grep -q '^run ' "$DOCKER_LOG"
+assert_true "initialize-host failing colima without trusted probe: logs clear diagnostic" \
+    grep -qF "skipped: device ${TEST_DEV} (no trusted local probe image available)" <<<"$out_fail"
 
-out_nocolima="$(TEST_UNAME_S=Darwin run_init "$TEST_DEV" "$NO_COLIMA_BIN")"
+out_nocolima="$(TEST_UNAME_S=Darwin TEST_DOCKER_ENDPOINT=unix:///Users/dev/.docker/run/docker.sock \
+    TEST_DOCKER_IMAGE=unrelated-cached-image TEST_DOCKER_RUN_RC=0 run_init "$TEST_DEV" "$NO_COLIMA_BIN")"
 rc_nocolima=$?
-assert_eq "initialize-host missing colima binary: exits 0" "0" "$rc_nocolima"
-assert_false "initialize-host missing colima binary: omits devices block" grep -q '^    devices:' "$OUT_YAML"
-assert_true "initialize-host missing colima binary: logs skipped device" \
-    grep -qF "skipped: device ${TEST_DEV} (not found)" <<<"$out_nocolima"
+assert_eq "initialize-host unrelated-image-first without trusted image: exits 0" "0" "$rc_nocolima"
+assert_false "initialize-host unrelated-image-first without trusted image: omits devices block" grep -q '^    devices:' "$OUT_YAML"
+assert_false "initialize-host unrelated-image-first without trusted image: never runs unrelated image" grep -q '^run ' "$DOCKER_LOG"
+assert_false "initialize-host unrelated-image-first without trusted image: never lists arbitrary cache" grep -q '^images ' "$DOCKER_LOG"
+assert_true "initialize-host unrelated-image-first without trusted image: logs clear diagnostic" \
+    grep -qF "skipped: device ${TEST_DEV} (no trusted local probe image available)" <<<"$out_nocolima"
 
-# Case 7: Darwin + non-Colima Docker VM fallback using local image (no pull).
-out_docker_ok="$(TEST_UNAME_S=Darwin TEST_DOCKER_IMAGE=localimg123 TEST_DOCKER_RUN_RC=0 run_init "$TEST_DEV" "$NO_COLIMA_BIN")"
+# Case 7: Darwin + non-Colima Docker VM fallback using explicitly trusted already-local image (no pull).
+out_docker_ok="$(TEST_UNAME_S=Darwin TEST_DOCKER_ENDPOINT=unix:///Users/dev/.docker/run/docker.sock \
+    TEST_DOCKER_IMAGE=$'unrelated-cached-image\n'"$TRUSTED_BASE_IMAGE" \
+    TEST_DOCKER_TRUSTED_IMAGE="$TRUSTED_BASE_IMAGE" TEST_DOCKER_RUN_RC=0 run_init "$TEST_DEV" "$NO_COLIMA_BIN")"
 rc_docker_ok=$?
 assert_eq "initialize-host Docker VM fallback present: exits 0" "0" "$rc_docker_ok"
 assert_true "initialize-host Docker VM fallback present: emits devices block" grep -qxF '    devices:' "$OUT_YAML"
+assert_true "initialize-host Docker VM fallback present: runs trusted base image only" \
+    grep -qF "run --rm --pull=never --device ${TEST_DEV} --entrypoint sh ${TRUSTED_BASE_IMAGE}" "$DOCKER_LOG"
+assert_false "initialize-host Docker VM fallback present: never runs unrelated image" \
+    grep -qF "unrelated-cached-image" "$DOCKER_LOG"
 assert_true "initialize-host Docker VM fallback present: logs mounted device" \
     grep -qF "mounted: device ${TEST_DEV} -> /dev/kvm" <<<"$out_docker_ok"
 
-out_docker_no="$(TEST_UNAME_S=Darwin TEST_DOCKER_IMAGE=localimg123 TEST_DOCKER_RUN_RC=125 run_init "$TEST_DEV" "$NO_COLIMA_BIN")"
+out_docker_no="$(TEST_UNAME_S=Darwin TEST_DOCKER_ENDPOINT=unix:///Users/dev/.docker/run/docker.sock \
+    TEST_DOCKER_TRUSTED_IMAGE="$TRUSTED_BASE_IMAGE" TEST_DOCKER_RUN_RC=125 run_init "$TEST_DEV" "$NO_COLIMA_BIN")"
 rc_docker_no=$?
 assert_eq "initialize-host Docker VM fallback absent: exits 0" "0" "$rc_docker_no"
 assert_false "initialize-host Docker VM fallback absent: omits devices block" grep -q '^    devices:' "$OUT_YAML"

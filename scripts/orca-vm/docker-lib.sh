@@ -335,10 +335,46 @@ _colima_profile() {
     printf '%s' "$profile"
 }
 
+_dockerfile_base_image() {
+    local dockerfile="$1" img
+    [ -f "$dockerfile" ] || return 1
+    img="$(awk '
+        /^[[:space:]]*([Ff][Rr][Oo][Mm])[[:space:]]+/ {
+            for (i = 2; i <= NF; i++) {
+                if ($i ~ /^--/) continue
+                sub(/\r$/, "", $i)
+                print $i
+                exit
+            }
+        }
+    ' "$dockerfile")"
+    case "$img" in
+        ''|scratch|SCRATCH|*'$'*) return 1 ;;
+        *) printf '%s' "$img"; return 0 ;;
+    esac
+}
+
+# Select only an explicitly trusted, already-local image for Docker device probes.
+_trusted_probe_image() {
+    local candidate dc_img="" df_img=""
+    dc_img="$(dc_json -r '.image // empty' 2>/dev/null || true)"
+    df_img="$(_dockerfile_base_image "${DEVCONTAINER_DIR}/Dockerfile" || true)"
+    for candidate in "${ORCA_DOCKER_KVM_PROBE_IMAGE:-}" "${DEVCONTAINER_KVM_PROBE_IMAGE:-}" "${IMAGE_TAG:-}" "$dc_img" "$df_img"; do
+        [ -n "$candidate" ] || continue
+        if docker image inspect "$candidate" </dev/null >/dev/null 2>&1; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Checks local Linux devices directly and probes the active engine otherwise.
 # Pass the device as a positional argument and treat probe errors as absence.
+HOST_DEVICE_SKIP_REASON=""
 host_device_exists() {
     local src="$1" host_os endpoint profile probe_out probe_img=""
+    HOST_DEVICE_SKIP_REASON=""
     case "$src" in
         /dev/*) ;;
         *) [ -e "$src" ]; return ;;
@@ -360,16 +396,16 @@ host_device_exists() {
         esac
     fi
     if command -v docker >/dev/null 2>&1; then
-        if [ -n "${IMAGE_TAG:-}" ] && docker image inspect "$IMAGE_TAG" </dev/null >/dev/null 2>&1; then
-            probe_img="$IMAGE_TAG"
-        else
-            probe_img="$(docker images -q </dev/null 2>/dev/null | head -n 1 | tr -d '\r' || true)"
+        if probe_img="$(_trusted_probe_image)"; then
+            if docker run --rm --pull=never --device "$src" --entrypoint sh "$probe_img" -c 'exit 0' </dev/null >/dev/null 2>&1; then
+                return 0
+            fi
+            return 1
         fi
-        if [ -n "$probe_img" ] \
-            && docker run --rm --pull=never --device "$src" --entrypoint sh "$probe_img" -c 'exit 0' </dev/null >/dev/null 2>&1; then
-            return 0
-        fi
+        HOST_DEVICE_SKIP_REASON="no trusted local probe image available"
+        return 1
     fi
+    HOST_DEVICE_SKIP_REASON="no trusted local probe image available"
     return 1
 }
 
@@ -412,7 +448,7 @@ host_device() {
         return 0
     fi
     if ! host_device_exists "$src"; then
-        log "skipping device ${src} (not found on this host)"
+        log "skipping device ${src} (${HOST_DEVICE_SKIP_REASON:-not found on this host})"
         return 0
     fi
     printf '%s' "$spec"

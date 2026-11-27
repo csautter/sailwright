@@ -235,8 +235,12 @@ devcontainers and Orca workspaces still start cleanly without `/dev/kvm`.
 Both scripts check `/dev/kvm` directly for local Linux Docker sockets. For
 VM-backed or remote engines they probe the active Docker engine (via
 `colima --profile <profile> ssh` when the selected Docker endpoint is a Colima
-profile socket, or a Docker probe using an already-local image for other
-VM-backed engines) so Apple Silicon M3+/M5 hosts running
+profile socket, or a no-pull Docker probe using only an explicitly trusted,
+already-local image — such as the devcontainer's declared base image, the built
+Orca image, or `DEVCONTAINER_KVM_PROBE_IMAGE` / `ORCA_DOCKER_KVM_PROBE_IMAGE` —
+for other VM-backed engines; if no trusted probe image is locally available,
+they skip `/dev/kvm` with a clear diagnostic rather than executing an arbitrary
+cached image) so Apple Silicon M3+/M5 hosts running
 `colima start --nested-virtualization` pass `/dev/kvm` through automatically
 while hosts without `/dev/kvm` (such as Apple Silicon M2) skip it without
 blocking startup.
