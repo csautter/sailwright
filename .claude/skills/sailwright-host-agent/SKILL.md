@@ -41,7 +41,8 @@ Every run must enforce all of the following rules without exception:
    - run requested `scenarios` and `test_commands` that stay within
      `vm-lifecycle`.
 4. **Host-changing scope (`host-changing` — explicit human approval required).**
-   `sailwright provision local`, `sailwright install`, `sailwright self-update`,
+   `sailwright provision local`, `sailwright install`, `sailwright update`
+   (and legacy `sailwright self-update`),
    package/service/host configuration changes, and Windows administrator
    elevation are **forbidden** unless **all four** conditions hold:
    - `request.json` sets `"operation_class": "host-changing"`,

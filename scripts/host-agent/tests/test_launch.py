@@ -1,6 +1,7 @@
 """Host-free guardrail, template, and end-to-end dry-run tests for launch.py."""
 
 import copy
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -422,6 +423,32 @@ class TemplateGuardrailTests(unittest.TestCase):
             for rule in validated["permissions"][section]:
                 self.assertFalse(launch.has_mixed_bash_glob_prefix(rule), rule)
 
+        # Command-anchored update deny globs block real update invocations without
+        # spuriously matching VM lifecycle selectors containing "update".
+        update_globs = [
+            rule[5:-1]
+            for rule in validated["permissions"]["deny"]
+            if launch.CLAUDE_SAILWRIGHT_UPDATE_RULE.match(rule)
+        ]
+        self.assertEqual(len(update_globs), len(launch.CLAUDE_SAILWRIGHT_UPDATE_RULES))
+        for blocked_cmd in (
+            "sailwright update",
+            "sailwright update --yes",
+            "./sailwright update",
+            "./sailwright update --yes",
+            "/usr/local/bin/sailwright update --yes",
+            "sailwright.exe update --yes",
+            "./sailwright.exe update --yes",
+        ):
+            self.assertTrue(any(fnmatch.fnmatchcase(blocked_cmd, g) for g in update_globs), blocked_cmd)
+        for lifecycle_cmd in (
+            "./sailwright create ubuntu --name sw-update-case",
+            "./sailwright destroy ubuntu --name sw-update-a1b2",
+            "sailwright start --name sw-update-case",
+        ):
+            self.assertFalse(any(fnmatch.fnmatchcase(lifecycle_cmd, g) for g in update_globs), lifecycle_cmd)
+            self.assertIsNone(launch.claude_rule_category(f"Bash({lifecycle_cmd})"))
+
         # Confirm default fallback mode is also accepted when all guardrails stay intact.
         fallback_variant = copy.deepcopy(settings)
         fallback_variant["permissions"]["defaultMode"] = "default"
@@ -464,6 +491,8 @@ class TemplateGuardrailTests(unittest.TestCase):
             "Bash(sudo:*)",
             "Bash(sailwright provision local:*)",
             "Bash(sailwright install:*)",
+            "Bash(sailwright update:*)",
+            "Bash(./sailwright update --yes)",
             "Bash(sailwright self-update:*)",
             "Bash(git push -f)",
             "Bash(git -C * status *)",
@@ -477,6 +506,8 @@ class TemplateGuardrailTests(unittest.TestCase):
         for removed_substring in (
             "provision local",
             "install",
+            "Bash(sailwright update)",
+            "Bash(*/sailwright update *)",
             "self-update",
             "sudo",
             "Bash(git:*)",
@@ -546,10 +577,14 @@ class TemplateGuardrailTests(unittest.TestCase):
         with self.assertRaisesRegex(launch.LaunchError, "prefix_rule"):
             launch.validate_codex_rules(base_rules + "\nimport os\n")
 
-        with self.assertRaisesRegex(launch.LaunchError, "must not allow"):
-            launch.validate_codex_rules(
-                base_rules + '\nprefix_rule(pattern=["sudo"], decision="allow", justification="bad")\n'
-            )
+        for bad_allow_pattern in (["sudo"], ["sailwright", "update"], ["./sailwright", "update"]):
+            with self.subTest(bad_allow_pattern=bad_allow_pattern), self.assertRaisesRegex(
+                launch.LaunchError, "must not allow"
+            ):
+                launch.validate_codex_rules(
+                    base_rules
+                    + f'\nprefix_rule(pattern={json.dumps(bad_allow_pattern)}, decision="allow", justification="bad")\n'
+                )
 
         for executable in ("git", "codex", "claude"):
             with self.subTest(removed=executable), self.assertRaisesRegex(
@@ -559,6 +594,8 @@ class TemplateGuardrailTests(unittest.TestCase):
 
         for original in (
             'pattern = ["sailwright", "install"]',
+            'pattern = ["sailwright", "update"]',
+            'pattern = ["./sailwright", "update"]',
             'pattern = ["sailwright", "self-update"]',
             'pattern = ["./sailwright", "self-update"]',
             'pattern = ["virsh", "--connect", "qemu:///system", "undefine"]',
@@ -580,13 +617,30 @@ class TemplateGuardrailTests(unittest.TestCase):
         self.assertNotIn("Bash(*sailwright* install*)", effective_claude["permissions"]["deny"])
         # Unapproved host-changing commands and bypass flags stay strictly denied.
         self.assertIn("Bash(*sailwright* provision local*)", effective_claude["permissions"]["deny"])
+        self.assertIn("Bash(sailwright update *)", effective_claude["permissions"]["deny"])
+        self.assertIn("Bash(*/sailwright update *)", effective_claude["permissions"]["deny"])
         self.assertIn("Bash(*sailwright* self-update*)", effective_claude["permissions"]["deny"])
         self.assertIn("Bash(sudo:*)", effective_claude["permissions"]["deny"])
         self.assertIn("Bash(*--dangerously-skip-permissions*)", effective_claude["permissions"]["deny"])
 
-        self_update_categories = launch.approved_host_change_categories(["sailwright self-update"])
-        self.assertEqual(self_update_categories, {"self_update"})
-        effective_claude_su = launch.materialize_claude_settings(base_claude, self_update_categories)
+        self.assertEqual(launch.approved_host_change_categories(["sailwright update"]), {"self_update"})
+        self.assertEqual(launch.approved_host_change_categories(["sailwright update --yes"]), {"self_update"})
+        self.assertEqual(launch.approved_host_change_categories(["sailwright self-update"]), {"self_update"})
+        self.assertEqual(
+            launch.approved_host_change_categories(["update packages for sailwright install"]),
+            {"install"},
+        )
+        self.assertEqual(
+            launch.approved_host_change_categories(["sailwright create ubuntu --name sw-update-case"]),
+            set(),
+        )
+
+        update_categories = launch.approved_host_change_categories(["sailwright update"])
+        effective_claude_su = launch.materialize_claude_settings(base_claude, update_categories)
+        for rule in launch.CLAUDE_SAILWRIGHT_UPDATE_RULES:
+            self.assertIn(rule, effective_claude_su["permissions"]["ask"])
+            self.assertNotIn(rule, effective_claude_su["permissions"]["allow"])
+            self.assertNotIn(rule, effective_claude_su["permissions"]["deny"])
         self.assertIn("Bash(*sailwright* self-update*)", effective_claude_su["permissions"]["ask"])
         self.assertIn("Bash(*sailwright* install*)", effective_claude_su["permissions"]["deny"])
         self.assertIn("Bash(*sailwright* provision local*)", effective_claude_su["permissions"]["deny"])
@@ -609,6 +663,7 @@ class TemplateGuardrailTests(unittest.TestCase):
             for bin_path in (str(source_dir / "sailwright"), str(source_dir / "sailwright.exe")):
                 self.assertEqual(parsed_default[(bin_path, "provision", "local")], "forbidden")
                 self.assertEqual(parsed_default[(bin_path, "install")], "forbidden")
+                self.assertEqual(parsed_default[(bin_path, "update")], "forbidden")
                 self.assertEqual(parsed_default[(bin_path, "self-update")], "forbidden")
                 self.assertEqual(parsed_default[(bin_path, "destroy", "all")], "forbidden")
                 self.assertEqual(parsed_default[(bin_path, "stop", "all")], "forbidden")
@@ -623,20 +678,27 @@ class TemplateGuardrailTests(unittest.TestCase):
             self.assertEqual(parsed_approved[(str(source_dir / "sailwright"), "install")], "prompt")
             self.assertEqual(parsed_approved[(str(source_dir / "sailwright.exe"), "install")], "prompt")
             self.assertEqual(parsed_approved[("sailwright", "provision", "local")], "forbidden")
+            self.assertEqual(parsed_approved[("sailwright", "update")], "forbidden")
+            self.assertEqual(parsed_approved[("./sailwright", "update")], "forbidden")
             self.assertEqual(parsed_approved[("sailwright", "self-update")], "forbidden")
             self.assertEqual(parsed_approved[("./sailwright", "self-update")], "forbidden")
             self.assertEqual(parsed_approved[(str(source_dir / "sailwright"), "provision", "local")], "forbidden")
+            self.assertEqual(parsed_approved[(str(source_dir / "sailwright"), "update")], "forbidden")
             self.assertEqual(parsed_approved[(str(source_dir / "sailwright"), "self-update")], "forbidden")
             self.assertEqual(parsed_approved[(str(source_dir / "sailwright"), "destroy", "all")], "forbidden")
             self.assertEqual(parsed_approved[("git",)], "forbidden")
             self.assertEqual(parsed_approved[("codex",)], "forbidden")
 
             rendered_su = launch.render_codex_rules(
-                base_rules, self_update_categories, source_dir=source_dir
+                base_rules, update_categories, source_dir=source_dir
             )
             parsed_su = {
                 rule["pattern"]: rule["decision"] for rule in launch.parse_codex_rules(rendered_su)
             }
+            self.assertEqual(parsed_su[("sailwright", "update")], "prompt")
+            self.assertEqual(parsed_su[("./sailwright", "update")], "prompt")
+            self.assertEqual(parsed_su[(str(source_dir / "sailwright"), "update")], "prompt")
+            self.assertEqual(parsed_su[(str(source_dir / "sailwright.exe"), "update")], "prompt")
             self.assertEqual(parsed_su[("sailwright", "self-update")], "prompt")
             self.assertEqual(parsed_su[("./sailwright", "self-update")], "prompt")
             self.assertEqual(parsed_su[(str(source_dir / "sailwright"), "self-update")], "prompt")
@@ -646,28 +708,56 @@ class TemplateGuardrailTests(unittest.TestCase):
     def test_codex_execpolicy_forbids_git_and_nested_launches(self):
         base = launch.validate_codex_rules(launch.DEFAULT_CODEX_RULES.read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory(prefix="codex-policy-") as tmp:
-            rules = Path(tmp) / "runtime.rules"
-            rules.write_text(launch.render_codex_rules(base, {"install"}, Path(tmp)), encoding="utf-8")
+            source_dir = Path(tmp).resolve()
+            source_bin = str(source_dir / "sailwright")
+            default_rules = source_dir / "default.rules"
+            default_rules.write_text(launch.render_codex_rules(base, set(), source_dir), encoding="utf-8")
+            install_rules = source_dir / "install.rules"
+            install_rules.write_text(launch.render_codex_rules(base, {"install"}, source_dir), encoding="utf-8")
+            update_rules = source_dir / "update.rules"
+            update_rules.write_text(
+                launch.render_codex_rules(
+                    base,
+                    launch.approved_host_change_categories(["sailwright update"]),
+                    source_dir,
+                ),
+                encoding="utf-8",
+            )
             git_path = shutil.which("git")
-            for expected, argv in (
-                ("forbidden", ["git", "-C", tmp, "push", "origin", "HEAD:refs/heads/selftest/x", "-f"]),
-                ("forbidden", ["git", "-c", "color.ui=false", "push", "origin", "--force"]),
-                ("forbidden", [git_path, "push", "origin", "HEAD:refs/heads/selftest/x", "--force-with-lease"]),
-                ("forbidden", ["codex", "exec", "--yolo"]),
-                ("forbidden", ["./codex", "exec", "--yolo"]),
-                ("forbidden", ["codex", "-C", tmp, "--dangerously-bypass-approvals-and-sandbox"]),
-                ("forbidden", ["claude.cmd", "--model", "test", "--dangerously-skip-permissions"]),
-                ("prompt", ["sailwright", "install"]),
-                ("forbidden", ["sailwright", "provision", "local"]),
-                ("forbidden", ["sailwright", "self-update"]),
-                ("forbidden", ["./sailwright", "self-update"]),
+            for rules_file, expected, argv in (
+                (default_rules, "forbidden", ["sailwright", "update", "--yes"]),
+                (default_rules, "forbidden", ["./sailwright", "update", "--yes"]),
+                (default_rules, "forbidden", [source_bin, "update", "--yes"]),
+                (default_rules, None, ["./sailwright", "create", "ubuntu", "--name", "sw-update-case"]),
+                (install_rules, "forbidden", ["git", "-C", tmp, "push", "origin", "HEAD:refs/heads/selftest/x", "-f"]),
+                (install_rules, "forbidden", ["git", "-c", "color.ui=false", "push", "origin", "--force"]),
+                (install_rules, "forbidden", [git_path, "push", "origin", "HEAD:refs/heads/selftest/x", "--force-with-lease"]),
+                (install_rules, "forbidden", ["codex", "exec", "--yolo"]),
+                (install_rules, "forbidden", ["./codex", "exec", "--yolo"]),
+                (install_rules, "forbidden", ["codex", "-C", tmp, "--dangerously-bypass-approvals-and-sandbox"]),
+                (install_rules, "forbidden", ["claude.cmd", "--model", "test", "--dangerously-skip-permissions"]),
+                (install_rules, "prompt", ["sailwright", "install"]),
+                (install_rules, "forbidden", ["sailwright", "provision", "local"]),
+                (install_rules, "forbidden", ["sailwright", "update", "--yes"]),
+                (install_rules, "forbidden", ["./sailwright", "update", "--yes"]),
+                (install_rules, "forbidden", [source_bin, "update", "--yes"]),
+                (install_rules, "forbidden", ["sailwright", "self-update"]),
+                (install_rules, "forbidden", ["./sailwright", "self-update"]),
+                (update_rules, "prompt", ["sailwright", "update", "--yes"]),
+                (update_rules, "prompt", ["./sailwright", "update", "--yes"]),
+                (update_rules, "prompt", [source_bin, "update", "--yes"]),
+                (update_rules, "forbidden", ["sailwright", "install"]),
+                (update_rules, None, ["./sailwright", "create", "ubuntu", "--name", "sw-update-case"]),
             ):
-                with self.subTest(argv=argv):
+                with self.subTest(rules=rules_file.name, argv=argv):
                     result = subprocess.check_output(
-                        ["codex", "execpolicy", "check", "--rules", str(rules), "--", *argv],
+                        ["codex", "execpolicy", "check", "--rules", str(rules_file), "--", *argv],
                         text=True,
                     )
-                    self.assertEqual(json.loads(result)["decision"], expected)
+                    parsed = json.loads(result)
+                    self.assertEqual(parsed.get("decision"), expected)
+                    if expected is None:
+                        self.assertEqual(parsed.get("matchedRules"), [])
 
     def test_skill_and_docs_document_required_guardrails_and_os_guidance(self):
         skill_text = launch.DEFAULT_SKILL_FILE.read_text(encoding="utf-8")
@@ -678,6 +768,8 @@ class TemplateGuardrailTests(unittest.TestCase):
 
         self.assertIn("sailwright-host-e2e", skill_text)
         self.assertIn("sailwright-host-agent", e2e_skill_text)
+        self.assertIn("sailwright update", skill_text)
+        self.assertIn("sailwright update", doc_text)
         self.assertIn("tahoe-runner", skill_text)
         self.assertIn("boot-utm.py --software-emulation", skill_text)
         self.assertIn("screendump", skill_text)

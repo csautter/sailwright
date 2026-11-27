@@ -45,6 +45,24 @@ CLAUDE_HOOK_ONLY_COMMAND = re.compile(
     r"^Bash\((?:[^\s]*[/\\])?(?:" + "|".join(map(re.escape, HOOK_ONLY_EXECUTABLES)) + r")(?=[\s:*)])",
     re.IGNORECASE,
 )
+CLAUDE_SAILWRIGHT_UPDATE_RULES = (
+    "Bash(sailwright update)",
+    "Bash(sailwright update *)",
+    "Bash(*/sailwright update)",
+    "Bash(*/sailwright update *)",
+    "Bash(sailwright.exe update)",
+    "Bash(sailwright.exe update *)",
+    "Bash(*/sailwright.exe update)",
+    "Bash(*/sailwright.exe update *)",
+)
+CLAUDE_SAILWRIGHT_UPDATE_RULE = re.compile(
+    r"^bash\((?:[^\s]*[/\\*])?sailwright(?:\.exe)?\*?\s+update(?:$|[\s:*)])",
+    re.IGNORECASE,
+)
+CLAUDE_SAILWRIGHT_UPDATE_ALLOW = re.compile(
+    r"\bsailwright(?:\.exe)?\*?\s+update(?:$|[\s:*)])",
+    re.IGNORECASE,
+)
 
 ALLOWED_CLAUDE_MODES = {"default", "auto"}
 ALLOWED_CODEX_APPROVAL_POLICIES = {"on-request", "untrusted"}
@@ -92,6 +110,8 @@ REQUIRED_CODEX_FORBIDDEN_PATTERNS = (
     ("./sailwright", "provision", "local"),
     ("sailwright", "install"),
     ("./sailwright", "install"),
+    ("sailwright", "update"),
+    ("./sailwright", "update"),
     ("sailwright", "self-update"),
     ("./sailwright", "self-update"),
     ("sailwright", "destroy", "all"),
@@ -132,6 +152,7 @@ FORBIDDEN_ALLOW_SUBSTRINGS = (
 CODEX_FORBIDDEN_ALLOW_TOKENS = {
     "provision",
     "install",
+    "update",
     "self-update",
     "sudo",
     "su",
@@ -285,6 +306,8 @@ def validate_claude_settings(settings):
         lowered = rule.strip().lower()
         if lowered in {"bash", "bash(*)", "bash(:*)", "bash(*:*)", "*"}:
             raise LaunchError(f"Claude permissions.allow must not grant unrestricted shell rule {rule!r}")
+        if CLAUDE_SAILWRIGHT_UPDATE_ALLOW.search(lowered):
+            raise LaunchError(f"Claude permissions.allow must not allow {rule!r}")
         for forbidden in FORBIDDEN_ALLOW_SUBSTRINGS:
             if forbidden in lowered:
                 raise LaunchError(f"Claude permissions.allow must not allow {rule!r}")
@@ -311,6 +334,7 @@ def validate_claude_settings(settings):
         ("macOS Keychain query protection", lambda r: "find-generic-password" in r),
     ]
     missing = [label for label, predicate in required_checks if not has_deny_rule(deny, predicate)]
+    missing.extend(sorted(set(CLAUDE_SAILWRIGHT_UPDATE_RULES) - set(deny)))
     missing.extend(sorted(set(CLAUDE_HOOK_ONLY_RULES) - set(deny)))
     if missing:
         raise LaunchError("Claude permissions.deny is missing required guardrail rules: " + ", ".join(missing))
@@ -435,7 +459,12 @@ def approved_host_change_categories(scope):
             categories.add("provision_local")
         if "install" in text:
             categories.add("install")
-        if "self-update" in text or "self_update" in text:
+        if (
+            "self-update" in text
+            or "self_update" in text
+            or re.search(r"\bsailwright(?:\.exe)?\s+update(?![a-z0-9_-])", text)
+            or re.fullmatch(r"update", text.strip())
+        ):
             categories.add("self_update")
         if any(word in text for word in ("sudo", "admin", "administrator", "elevat", "runas")):
             categories.add("elevation")
@@ -450,7 +479,7 @@ def claude_rule_category(rule):
         return "provision_local"
     if "sailwright" in lowered and "install" in lowered:
         return "install"
-    if "sailwright" in lowered and "self-update" in lowered:
+    if ("sailwright" in lowered and "self-update" in lowered) or CLAUDE_SAILWRIGHT_UPDATE_RULE.match(lowered):
         return "self_update"
     if any(token in lowered for token in ("bash(sudo:", "bash(* sudo ", "bash(runas:", "-verb runas")):
         return "elevation"
@@ -466,7 +495,7 @@ def codex_pattern_category(pattern):
             return "provision_local"
         if pattern[1:] == ("install",):
             return "install"
-        if pattern[1:] == ("self-update",):
+        if pattern[1:] in {("update",), ("self-update",)}:
             return "self_update"
     if pattern in {("sudo",), ("runas",)}:
         return "elevation"
@@ -519,34 +548,46 @@ def render_codex_rules(rules, approved_categories, source_dir=None):
             "justification": justification,
         })
 
+    sailwright_bins = []
     if source_dir is not None:
         resolved_source = Path(source_dir).resolve()
-        for bin_path in (str(resolved_source / "sailwright"), str(resolved_source / "sailwright.exe")):
-            add_runtime_rule(
-                (bin_path, "provision", "local"),
-                "forbidden",
-                "Host-changing operation requires --approve-host-changes and explicit human approval.",
-            )
-            add_runtime_rule(
-                (bin_path, "install"),
-                "forbidden",
-                "Host-changing operation requires --approve-host-changes and explicit human approval.",
-            )
-            add_runtime_rule(
-                (bin_path, "self-update"),
-                "forbidden",
-                "Host-changing operation requires --approve-host-changes and explicit human approval.",
-            )
-            add_runtime_rule(
-                (bin_path, "destroy", "all"),
-                "forbidden",
-                "Bulk VM destruction can touch foreign or default VMs.",
-            )
-            add_runtime_rule(
-                (bin_path, "stop", "all"),
-                "forbidden",
-                "Bulk VM stop can touch foreign or default VMs.",
-            )
+        sailwright_bins.extend((str(resolved_source / "sailwright"), str(resolved_source / "sailwright.exe")))
+    for exe in ("sailwright", "sailwright.exe"):
+        located = shutil.which(exe)
+        if located:
+            for path in sorted({Path(located).absolute(), Path(located).resolve()}):
+                sailwright_bins.append(str(path))
+    for bin_path in sailwright_bins:
+        add_runtime_rule(
+            (bin_path, "provision", "local"),
+            "forbidden",
+            "Host-changing operation requires --approve-host-changes and explicit human approval.",
+        )
+        add_runtime_rule(
+            (bin_path, "install"),
+            "forbidden",
+            "Host-changing operation requires --approve-host-changes and explicit human approval.",
+        )
+        add_runtime_rule(
+            (bin_path, "update"),
+            "forbidden",
+            "Host-changing operation requires --approve-host-changes and explicit human approval.",
+        )
+        add_runtime_rule(
+            (bin_path, "self-update"),
+            "forbidden",
+            "Host-changing operation requires --approve-host-changes and explicit human approval.",
+        )
+        add_runtime_rule(
+            (bin_path, "destroy", "all"),
+            "forbidden",
+            "Bulk VM destruction can touch foreign or default VMs.",
+        )
+        add_runtime_rule(
+            (bin_path, "stop", "all"),
+            "forbidden",
+            "Bulk VM stop can touch foreign or default VMs.",
+        )
 
     for exe in HOOK_ONLY_EXECUTABLES:
         located = shutil.which(exe)

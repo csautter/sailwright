@@ -27,6 +27,18 @@ prefix_rule(
 )
 
 prefix_rule(
+    pattern = ["sailwright", "update"],
+    decision = "forbidden",
+    justification = "Host-changing operation requires --approve-host-changes and explicit human approval.",
+)
+
+prefix_rule(
+    pattern = ["./sailwright", "update"],
+    decision = "forbidden",
+    justification = "Host-changing operation requires --approve-host-changes and explicit human approval.",
+)
+
+prefix_rule(
     pattern = ["sailwright", "self-update"],
     decision = "forbidden",
     justification = "Host-changing operation requires --approve-host-changes and explicit human approval.",
