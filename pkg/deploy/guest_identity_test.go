@@ -2,10 +2,12 @@ package deploy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -142,17 +144,252 @@ func TestNamedGuestHostnameUsesProviderIdentity(t *testing.T) {
 	}
 }
 
-func TestNamedUTMGuestHostnameCommand(t *testing.T) {
+const guestIdentityTestUTMUUID = "AABBCCDD-1111-2222-3333-444444444444"
+
+func fakeUTMGuestIdentity(t *testing.T, fake func(time.Duration, []string) (string, error)) {
+	t.Helper()
 	old := runGuestIdentityCommand
-	defer func() { runGuestIdentityCommand = old }()
-	vm := build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "desktop", Arch: "arm64", Name: "work", VirtualizationEngine: build.VirtualizationEngineUtm}
-	runGuestIdentityCommand = func(_ string, _ time.Duration, executable string, args []string) (string, error) {
-		if !strings.HasSuffix(executable, "utmctl") || args[1] != build.InstanceName(vm) || !strings.Contains(strings.Join(args, " "), build.InstanceHostname(vm)) {
-			t.Fatal(executable, args)
+	t.Cleanup(func() { runGuestIdentityCommand = old })
+	runGuestIdentityCommand = func(_ string, timeout time.Duration, executable string, args []string) (string, error) {
+		if executable != utmctlPath || timeout <= 0 || timeout > 30*time.Second {
+			t.Fatalf("unexpected command %s with timeout %s", executable, timeout)
 		}
-		return "", nil
+		switch args[0] {
+		case "exec":
+			if args[1] != guestIdentityTestUTMUUID || args[2] != "--cmd" {
+				t.Fatal(args)
+			}
+		case "file":
+			if len(args) != 4 || args[1] != "pull" || args[2] != guestIdentityTestUTMUUID {
+				t.Fatal(args)
+			}
+		default:
+			t.Fatal(args)
+		}
+		return fake(timeout, args)
 	}
+}
+
+func TestConfigureNamedUTMGuestUsesBundleUUID(t *testing.T) {
+	vm, _, _ := mockMacOSLifecycle(t)
+	vm.Name = "work"
+	bundle, err := utmVirtualMachinePath(vm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeMacFixture(t, filepath.Join(bundle, "config.plist"), strings.ToLower(guestIdentityTestUTMUUID))
+	const machineID = "12345678123412341234123456789abc"
+	fakeUTMGuestIdentity(t, func(_ time.Duration, args []string) (string, error) {
+		if args[0] == "exec" {
+			return "", nil
+		}
+		switch args[3] {
+		case linuxIdentityPath:
+			return build.InstanceName(vm) + ":" + machineID + "\n", nil
+		case linuxMachineIDPath:
+			return machineID + "\n", nil
+		case linuxRunningHostnamePath, linuxConfiguredHostnamePath:
+			return build.InstanceHostname(vm) + "\n", nil
+		}
+		t.Fatal(args)
+		return "", nil
+	})
 	if err := ConfigureNamedGuestHostname(vm); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNamedUTMGuestVerifiesIdentityAfterLateAgentReadiness(t *testing.T) {
+	vm := build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "desktop", Arch: "arm64", Name: "work", VirtualizationEngine: build.VirtualizationEngineUtm}
+	instance := build.InstanceName(vm)
+	hostname := build.InstanceHostname(vm)
+	const machineID = "12345678123412341234123456789abc"
+	probes, applies := 0, 0
+	fakeUTMGuestIdentity(t, func(_ time.Duration, args []string) (string, error) {
+		if args[0] == "exec" {
+			if probes != 3 || args[3] != "/usr/bin/flock" || args[4] != "-n" || !strings.Contains(args[len(args)-1], "hostnamectl set-hostname "+hostname) {
+				t.Fatal(args)
+			}
+			applies++
+			if applies == 2 {
+				// A guest command can still finish after the host call times out.
+				return "", errors.New("host timeout")
+			}
+			return "", nil
+		}
+		if applies == 0 {
+			if args[3] != linuxRunningHostnamePath {
+				t.Fatal(args)
+			}
+			probes++
+			if probes < 3 {
+				return "", nil
+			}
+			return "ubuntu-desktop\n", nil
+		}
+		switch args[3] {
+		case linuxIdentityPath:
+			if applies == 1 {
+				return "", nil
+			}
+			return instance + ":" + machineID + "\n", nil
+		case linuxMachineIDPath:
+			return machineID + "\n", nil
+		case linuxRunningHostnamePath, linuxConfiguredHostnamePath:
+			return hostname + "\n", nil
+		}
+		t.Fatal(args)
+		return "", nil
+	})
+	if err := configureNamedUTMGuest(vm, "", guestIdentityTestUTMUUID, time.Now().Add(time.Second), time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if probes != 3 || applies != 2 {
+		t.Fatalf("got %d readiness probes and %d apply calls", probes, applies)
+	}
+}
+
+func TestNamedUTMGuestIdentityDeadline(t *testing.T) {
+	vm := build.VirtualMachineConfig{OS: "ubuntu", UbuntuType: "server", Arch: "arm64", Name: "work", VirtualizationEngine: build.VirtualizationEngineUtm}
+	const budget = 100 * time.Millisecond
+	t.Run("no readiness evidence", func(t *testing.T) {
+		fakeUTMGuestIdentity(t, func(timeout time.Duration, args []string) (string, error) {
+			if args[0] != "file" || args[3] != linuxRunningHostnamePath || timeout > budget {
+				t.Fatal(timeout, args)
+			}
+			return "", nil
+		})
+		start := time.Now()
+		err := configureNamedUTMGuest(vm, "", guestIdentityTestUTMUUID, start.Add(budget), 2*time.Second)
+		if err == nil || !strings.Contains(err.Error(), "timed out waiting for UTM guest agent readiness") || !strings.Contains(err.Error(), build.InstanceName(vm)) {
+			t.Fatal(err)
+		}
+		if time.Since(start) >= time.Second {
+			t.Fatal("readiness retry slept past the deadline")
+		}
+	})
+	t.Run("no verified state", func(t *testing.T) {
+		fakeUTMGuestIdentity(t, func(timeout time.Duration, args []string) (string, error) {
+			if timeout > budget {
+				t.Fatal(timeout)
+			}
+			switch {
+			case args[0] == "exec":
+				return "", nil
+			case args[3] == linuxRunningHostnamePath:
+				return "ubuntu-server\n", nil
+			case args[3] == linuxIdentityPath:
+				return "", nil
+			}
+			t.Fatal(args)
+			return "", nil
+		})
+		start := time.Now()
+		err := configureNamedUTMGuest(vm, "", guestIdentityTestUTMUUID, start.Add(budget), 2*time.Second)
+		if err == nil || !strings.Contains(err.Error(), "timed out verifying UTM guest identity") || !strings.Contains(err.Error(), linuxIdentityPath) {
+			t.Fatal(err)
+		}
+		if time.Since(start) >= time.Second {
+			t.Fatal("verification retry slept past the deadline")
+		}
+	})
+	t.Run("apply consumes the remaining budget", func(t *testing.T) {
+		fakeUTMGuestIdentity(t, func(timeout time.Duration, args []string) (string, error) {
+			if timeout > budget {
+				t.Fatal(timeout)
+			}
+			switch {
+			case args[0] == "exec":
+				time.Sleep(timeout)
+				return "", errors.New("host timeout")
+			case args[3] == linuxRunningHostnamePath:
+				return "ubuntu-server\n", nil
+			}
+			t.Fatal("readback ran after the deadline", args)
+			return "", nil
+		})
+		err := configureNamedUTMGuest(vm, "", guestIdentityTestUTMUUID, time.Now().Add(budget), 2*time.Second)
+		if err == nil || !strings.Contains(err.Error(), "timed out verifying UTM guest identity") || !strings.Contains(err.Error(), "host timeout") {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestVerifyLinuxUTMIdentityRejectsMismatchedState(t *testing.T) {
+	const instance = "ubuntu-server-arm64-work-dev-alchemy"
+	const machineID = "12345678123412341234123456789abc"
+	for _, check := range []struct {
+		name, path, content string
+	}{
+		{"blank machine ID", linuxMachineIDPath, ""},
+		{"invalid stamped machine ID", linuxIdentityPath, instance + ":invalid"},
+		{"zero stamped machine ID", linuxIdentityPath, instance + ":00000000000000000000000000000000"},
+		{"different instance", linuxIdentityPath, "sibling:" + machineID},
+		{"different machine ID", linuxMachineIDPath, "87654321432143214321cba987654321"},
+		{"different running hostname", linuxRunningHostnamePath, "ubuntu-server"},
+		{"different configured hostname", linuxConfiguredHostnamePath, "ubuntu-desktop"},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			state := map[string]string{
+				linuxIdentityPath:           instance + ":" + machineID,
+				linuxMachineIDPath:          machineID,
+				linuxRunningHostnamePath:    instance,
+				linuxConfiguredHostnamePath: instance,
+			}
+			state[check.path] = check.content
+			if err := verifyLinuxUTMIdentity(instance, instance, func(path string) (string, error) {
+				return state[path], nil
+			}); err == nil {
+				t.Fatal("accepted mismatched state")
+			}
+		})
+	}
+}
+
+func TestNamedUTMWindowsGuestVerifiesComputerNameAfterRestart(t *testing.T) {
+	vm := build.VirtualMachineConfig{OS: "windows11", Arch: "arm64", Name: "work", VirtualizationEngine: build.VirtualizationEngineUtm}
+	probes, applies := 0, 0
+	var report string
+	tokenPattern := regexp.MustCompile(`'([A-Z2-7]+-(ready|verified)):'`)
+	fakeUTMGuestIdentity(t, func(_ time.Duration, args []string) (string, error) {
+		if args[0] == "file" {
+			if args[3] != windowsIdentityProbePath {
+				t.Fatal(args)
+			}
+			return report, nil
+		}
+		if args[3] != windowsPowerShellPath || len(args) != 8 {
+			t.Fatal(args)
+		}
+		script := args[7]
+		fields := tokenPattern.FindStringSubmatch(script)
+		if len(fields) != 3 {
+			t.Fatal(script)
+		}
+		if fields[2] == "ready" {
+			probes++
+			if probes == 1 {
+				report = "STALE-ready:WIN-IMAGE"
+			} else {
+				report = fields[1] + ":WIN-IMAGE"
+			}
+			return "", nil
+		}
+		if probes != 2 || !strings.Contains(script, "Rename-Computer") || !strings.Contains(script, "shutdown.exe /r /t 5") {
+			t.Fatal(script)
+		}
+		applies++
+		if applies == 2 {
+			report = fields[1] + ":WRONG-NAME"
+		} else if applies == 3 {
+			report = fields[1] + ":" + strings.ToUpper(build.InstanceHostname(vm))
+		}
+		return "", nil
+	})
+	if err := configureNamedUTMGuest(vm, "", guestIdentityTestUTMUUID, time.Now().Add(time.Second), time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if probes != 2 || applies != 3 {
+		t.Fatalf("got %d readiness probes and %d apply calls", probes, applies)
 	}
 }
