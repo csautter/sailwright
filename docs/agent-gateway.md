@@ -651,7 +651,8 @@ Addresses of containers or other interfaces inside the guest are ignored. If
 the Hyper-V query fails, takes longer than 10 seconds or reports no usable
 address yet, Vagrant discovery is tried and its answer must pass the same
 checks. `sailwright provision` on Hyper-V uses the same discovery. Gateway jobs do not receive
-`VAGRANT_HYPERV_SWITCH` or `TART_MACOS_BRIDGED_INTERFACE`; add them to
+`VAGRANT_HYPERV_SWITCH`, `TART_MACOS_BRIDGED_INTERFACE`, or
+`SAILWRIGHT_UTM_NETWORK_MODE`; add them to
 `env_passthrough` if the agent's VMs should use the same network as yours.
 The same applies to the Tart guest DNS and readiness settings
 (`TART_MACOS_DNS_SERVERS*`, `TART_MACOS_NETWORK_CHECK*`; see

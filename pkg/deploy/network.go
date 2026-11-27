@@ -3,6 +3,7 @@ package deploy
 import (
 	"encoding/json"
 	"encoding/xml"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -11,6 +12,26 @@ import (
 
 	alchemy_build "github.com/csautter/dev-alchemy/pkg/build"
 )
+
+// UtmNetworkModeEnvVar selects the network mode for newly created UTM VMs.
+// Unset or "shared" uses Shared (NAT); "bridged" explicitly opts into Bridged (LAN)
+// networking and remains subject to the guest-security guard.
+const UtmNetworkModeEnvVar = "SAILWRIGHT_UTM_NETWORK_MODE"
+
+func resolveUtmNetworkModeOverride() (string, error) {
+	raw := strings.TrimSpace(os.Getenv(UtmNetworkModeEnvVar))
+	if raw == "" {
+		return "", nil
+	}
+	switch strings.ToLower(raw) {
+	case "shared":
+		return "Shared", nil
+	case "bridged":
+		return "Bridged", nil
+	default:
+		return "", fmt.Errorf("invalid %s=%q: allowed values are \"shared\" or \"bridged\"", UtmNetworkModeEnvVar, raw)
+	}
+}
 
 // NetworkMode describes exposure, rather than promising a particular firewall configuration.
 // Host-only networks are classified as nat because they do not expose the guest to the LAN.
@@ -33,7 +54,13 @@ func InspectNetworkMode(vm alchemy_build.VirtualMachineConfig, creating bool) Ne
 	switch vm.VirtualizationEngine {
 	case alchemy_build.VirtualizationEngineUtm:
 		var file string
+		var override string
 		if creating {
+			var err error
+			override, err = resolveUtmNetworkModeOverride()
+			if err != nil {
+				return unknownNetwork(err.Error())
+			}
 			osName := strings.Split(vm.OS, "-")[0]
 			file = filepath.Join(project, "deployments", "utm", osName+"-"+vm.Arch, "config.plist")
 		} else {
@@ -55,7 +82,17 @@ func InspectNetworkMode(vm alchemy_build.VirtualMachineConfig, creating bool) Ne
 			}
 			data = []byte(output)
 		}
-		return utmNetworkMode(data)
+		mode := utmNetworkMode(data)
+		if creating && override != "" {
+			if mode.Mode == "unknown" {
+				return mode
+			}
+			if override == "Bridged" {
+				return NetworkMode{"bridged", "UTM Bridged (" + UtmNetworkModeEnvVar + ")"}
+			}
+			return NetworkMode{"nat", "UTM Shared (" + UtmNetworkModeEnvVar + ")"}
+		}
+		return mode
 	case alchemy_build.VirtualizationEngineHyperv:
 		var command string
 		if creating {

@@ -27,6 +27,15 @@ libvirt user interfaces with port forwards retain `nat` only for explicit numeri
 loopback bindings. Other bindings produce `unknown`. See the
 [libvirt domain format](https://libvirt.org/formatdomain.html#userspace-connection-using-passt).
 
+UTM templates default to **Shared (NAT)** networking (`Shared`, classified as
+`nat`). To opt into LAN/Bridged networking for a newly created UTM VM, set
+`SAILWRIGHT_UTM_NETWORK_MODE=bridged` (or pass `--network bridged` when invoking
+`deployments/utm/create-utm-vm.sh` directly). The planned mode is reflected by
+`sailwright create list` and remains subject to the guest-security guard below.
+Unrecognized values for `SAILWRIGHT_UTM_NETWORK_MODE` classify as `unknown` and
+are rejected before creating a VM. Existing UTM VMs are always inspected from
+their on-disk `config.plist`, regardless of `SAILWRIGHT_UTM_NETWORK_MODE`.
+
 UTM Emulated networking can publish guest services through port forwards. Only
 explicit numeric loopback bindings, such as `127.0.0.1` or `::1`, retain the
 `nat` classification. Wildcard, LAN, missing, empty, or unrecognized bindings
@@ -115,11 +124,26 @@ Where the guest password was changed, configure the matching provisioning
 variables. Alternatively use an appropriate isolated/NAT network, or explicitly
 accept the remaining exposure as described above.
 
-The shipped UTM templates still use **bridged networking**. Their new-VM
-`create` commands therefore require either a suitable template change or explicit
-risk acceptance. Provisioning overrides alone do not make a new image private.
-This release adds detection and guards; it does not change the default deployment
-network or generate credentials per host.
+The shipped UTM templates now default to **Shared (NAT)** networking, so
+`sailwright create` for new UTM VMs succeeds with default image credentials
+without an override (credential warnings remain visible). Opting into LAN
+access with `SAILWRIGHT_UTM_NETWORK_MODE=bridged` classifies the planned VM as
+`bridged` and still requires explicit risk acceptance for a new VM (provisioning
+overrides alone do not make a new image private).
+
+Existing UTM `.utm` bundles are **not modified automatically**. VMs created with
+earlier Sailwright versions still have `Mode = Bridged` in their `config.plist`,
+continue to classify as `bridged`, and remain guarded on `start` and
+`provision`. For an existing Bridged UTM VM, you can either:
+
+- switch the VM's Network Mode to **Shared Network** in UTM (or change
+  `<key>Mode</key>` from `Bridged` to `Shared` in its `config.plist`),
+- destroy and recreate the VM (`sailwright destroy` then `sailwright create`) to
+  pick up the `Shared` default,
+- change the guest password inside the VM and configure the matching
+  `UTM_UBUNTU_ANSIBLE_PASSWORD` / `UTM_WINDOWS_ANSIBLE_PASSWORD` variables, or
+- explicitly accept the remaining risk with `--allow-insecure-credentials` or
+  `security.allow_insecure_credentials: true`.
 
 QEMU image builds bind their SSH/WinRM port forwards to `127.0.0.1`. This build
 setting is separate from the deployed VM's network configuration.

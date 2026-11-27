@@ -43,7 +43,7 @@
       "Hardware": "e1000",
       "IsolateFromHost": false,
       "MacAddress": "<MAC>",
-      "Mode": "Bridged",
+      "Mode": "Shared",
       "PortForward": []
     }
   ],

@@ -195,6 +195,14 @@ Linux libvirt runtime prefers native-architecture guests for `create all` and
 `start all`. Cross-architecture guests are available when selected explicitly,
 but they are marked unstable because QEMU TCG emulation is slow and less tested.
 
+Ubuntu QEMU builds for libvirt and UTM remove `/var/lib/dbus/machine-id` and
+empty `/etc/machine-id` at shutdown. Clones of newly built images initialize
+their own machine ID at first boot. Rebuilding an image affects future clones.
+On existing named UTM and libvirt guests,
+[named startup](../../../../docs/testing-workflows.md#named-vm-instances)
+repairs an inherited machine ID and refreshes the network clients on the first
+managed start, including for clones made from older cached images.
+
 Ubuntu QEMU images include `qemu-guest-agent` and `spice-vdagent`, and the
 libvirt domain enables the SPICE agent channel so `virt-manager` can provide
 better clipboard, pointer, and dynamic display resize integration for desktop

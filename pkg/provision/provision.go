@@ -1,6 +1,7 @@
 package provision
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,14 +80,24 @@ const (
 	tartMacOSIPv4DiscoveryRetryInterval  = 2 * time.Second
 	tartMacOSCommandTimeout              = time.Minute
 
-	utmIPv4DiscoveryRetryWindow     = 45 * time.Second
-	utmIPv4DiscoveryRetryInterval   = 3 * time.Second
-	utmIPv4ARPCommandTimeout        = time.Minute
-	utmIPv4ProbeDialTimeout         = 250 * time.Millisecond
-	utmIPv4ProbeWorkerCount         = 32
-	utmIPv4ProbePortHTTP            = 5985
-	utmIPv4ProbePortHTTPS           = 5986
+	// UTM guest IPv4 discovery is bounded to a 30s wall-clock budget so vm_info
+	// and SSH/WinRM callers fail or succeed well before the ~120s gateway deadline
+	// (leaving ~90s headroom for utmctl state/identity checks and RPC overhead).
+	// `arp -an` skips slow reverse DNS lookups and finishes in milliseconds, so 5s
+	// absorbs host scheduling spikes without risking a stalled subprocess. Probing
+	// targets only active bridge* private /24 subnets on a single TCP port (kernel
+	// ARP resolution happens before SYN transmission; 5985 gets immediate SYN-ACK
+	// on Windows WinRM and immediate RST on Ubuntu without firewall drops), taking
+	// <= ~1.2s across two /24 bridge subnets with 64 workers and a 150ms dial timeout.
+	utmIPv4DiscoveryBudget          = 30 * time.Second
+	utmIPv4DiscoveryRetryInterval   = 2 * time.Second
+	utmIPv4ARPCommandTimeout        = 5 * time.Second
+	utmIPv4ProbeDialTimeout         = 150 * time.Millisecond
+	utmIPv4CandidateProbeTimeout    = 500 * time.Millisecond
+	utmIPv4ProbeWorkerCount         = 64
+	utmIPv4ProbePort                = 5985
 	utmIPv4ProbeSubnetPrefixMinimum = 24
+	utmDHCPDLeasesPath              = "/var/db/dhcpd_leases"
 
 	linuxLibvirtIPv4DiscoveryRetryWindow   = 2 * time.Minute
 	linuxLibvirtIPv4DiscoveryRetryInterval = 3 * time.Second
@@ -122,7 +133,7 @@ var (
 	linuxIPv4Regex     = regexp.MustCompile(`(?m)\b((?:\d{1,3}\.){3}\d{1,3})\b`)
 	sshConfigHostRegex = regexp.MustCompile(`(?mi)^\s*HostName\s+([^\s#]+)\s*$`)
 	utmMacAddressRegex = regexp.MustCompile(`(?s)<key>MacAddress</key>\s*<string>([^<]+)</string>`)
-	arpEntryRegex      = regexp.MustCompile(`(?i)\((\d{1,3}(?:\.\d{1,3}){3})\)\s+at\s+([0-9a-f:-]+|<incomplete>)`)
+	arpEntryRegex      = regexp.MustCompile(`(?i)\((\d{1,3}(?:\.\d{1,3}){3})\)\s+at\s+(\(incomplete\)|<incomplete>|[0-9a-f:-]+)`)
 	loopbackAddressSet = map[string]struct{}{
 		"127.0.0.1": {},
 		"0.0.0.0":   {},
@@ -194,13 +205,29 @@ type sshAnsibleConnectionEnvVars struct {
 }
 
 type utmIPv4DiscoveryOptions struct {
-	readFile        func(string) ([]byte, error)
-	runCommand      func(string, time.Duration, string, []string) (string, error)
-	sleep           func(time.Duration)
-	primeARPCache   func() error
-	retryInterval   time.Duration
-	maxAttempts     int
-	arpCommandTimer time.Duration
+	readFile              func(string) ([]byte, error)
+	runCommand            func(string, time.Duration, string, []string) (string, error)
+	now                   func() time.Time
+	sleep                 func(time.Duration)
+	primeARPCache         func(context.Context) ([]string, error)
+	dial                  func(context.Context, string, string) (net.Conn, error)
+	dhcpLeasesPath        string
+	discoveryBudget       time.Duration
+	retryInterval         time.Duration
+	maxAttempts           int
+	arpCommandTimer       time.Duration
+	candidateProbeTimeout time.Duration
+}
+
+type utmHostInterface struct {
+	Name  string
+	Flags net.Flags
+	Addrs []net.Addr
+}
+
+type utmProbeTargets struct {
+	CheckedInterfaces []string
+	CandidateIPs      []string
 }
 
 type tartIPv4DiscoveryOptions struct {
@@ -1044,43 +1071,130 @@ func discoverUtmVMIPv4WithOptions(projectDir string, vm alchemy_build.VirtualMac
 		return "", fmt.Errorf("failed to extract UTM MAC address from %q: %w", configPath, err)
 	}
 
-	var lastLookupErr error
-	var primeErr error
+	startTime := options.now()
+	deadline := startTime.Add(options.discoveryBudget)
 
-	for attempt := 1; attempt <= options.maxAttempts; attempt++ {
-		output, lookupErr := options.runCommand(projectDir, options.arpCommandTimer, "arp", []string{"-a"})
-		if lookupErr != nil {
-			lastLookupErr = fmt.Errorf("arp lookup failed: %w; output: %s", lookupErr, strings.TrimSpace(output))
-		} else {
-			ip, parseErr := extractIPv4ForMacAddress(output, macAddress)
-			if parseErr == nil {
-				return ip, nil
+	var (
+		attempts          int
+		lastLookupErr     error
+		lastProbeErr      error
+		probeRan          bool
+		checkedInterfaces []string
+		checkedSet        = make(map[string]struct{})
+	)
+
+	recordCheckedInterfaces := func(ifaces []string) {
+		for _, iface := range ifaces {
+			if _, seen := checkedSet[iface]; seen {
+				continue
 			}
-			lastLookupErr = fmt.Errorf("could not determine IPv4 address for UTM MAC %q from arp output: %w", macAddress, parseErr)
+			checkedSet[iface] = struct{}{}
+			checkedInterfaces = append(checkedInterfaces, iface)
+		}
+		sort.Strings(checkedInterfaces)
+	}
+
+	runARPLookup := func(timeout time.Duration) (string, bool, error) {
+		attempts++
+		output, lookupErr := options.runCommand(projectDir, timeout, "arp", []string{"-an"})
+		if lookupErr != nil {
+			return "", false, fmt.Errorf("arp lookup failed: %w; output: %s", lookupErr, strings.TrimSpace(output))
+		}
+		candidates, parseErr := extractIPv4CandidatesForMacAddress(output, macAddress)
+		if parseErr != nil {
+			return "", false, fmt.Errorf("could not determine IPv4 address for UTM MAC %q from arp output: %w", macAddress, parseErr)
+		}
+		if len(candidates) == 1 {
+			return candidates[0], false, nil
+		}
+		return resolveMultipleUtmARPCandidates(projectDir, vm, macAddress, candidates, deadline, options)
+	}
+
+	// Check arp -an first without probing; a cached guest returns immediately with zero probe calls.
+	firstTimeout := clampDurationToRemaining(options.arpCommandTimer, deadline.Sub(options.now()))
+	ip, terminal, lookupErr := runARPLookup(firstTimeout)
+	if lookupErr == nil {
+		return ip, nil
+	}
+	if terminal {
+		return "", lookupErr
+	}
+	lastLookupErr = lookupErr
+
+	for options.maxAttempts <= 0 || attempts < options.maxAttempts {
+		remaining := deadline.Sub(options.now())
+		if remaining <= 0 {
+			break
 		}
 
-		if attempt < options.maxAttempts {
-			primeErr = options.primeARPCache()
+		probeRan = true
+		probeCtx, cancelProbe := context.WithDeadline(context.Background(), deadline)
+		probedIfaces, probeErr := options.primeARPCache(probeCtx)
+		cancelProbe()
+		recordCheckedInterfaces(probedIfaces)
+		lastProbeErr = probeErr
+
+		remaining = deadline.Sub(options.now())
+		if remaining <= 0 {
+			break
+		}
+
+		canContinueAfterLookup := remaining > options.retryInterval
+		if canContinueAfterLookup {
 			options.sleep(options.retryInterval)
+			remaining = deadline.Sub(options.now())
+			if remaining <= 0 {
+				break
+			}
+		}
+
+		cmdTimeout := clampDurationToRemaining(options.arpCommandTimer, remaining)
+		ip, terminal, lookupErr := runARPLookup(cmdTimeout)
+		if lookupErr == nil {
+			return ip, nil
+		}
+		if terminal {
+			return "", lookupErr
+		}
+		lastLookupErr = lookupErr
+
+		if !canContinueAfterLookup {
+			break
 		}
 	}
 
-	if primeErr != nil {
+	elapsed := options.now().Sub(startTime)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+
+	checkedSummary := "none"
+	if !probeRan {
+		checkedSummary = "none (probe not run)"
+	} else if len(checkedInterfaces) > 0 {
+		checkedSummary = strings.Join(checkedInterfaces, ", ")
+	}
+
+	if lastProbeErr != nil {
 		return "", fmt.Errorf(
-			"could not determine IPv4 address for UTM MAC %q after %d attempts over %s (ARP cache probe failed: %v): %w",
+			"could not determine IPv4 address for UTM MAC %q after %d attempt(s) in %s (budget %s, checked bridge interfaces: %s; ARP cache probe failed: %v): %w",
 			macAddress,
-			options.maxAttempts,
-			time.Duration(options.maxAttempts-1)*options.retryInterval,
-			primeErr,
+			attempts,
+			elapsed,
+			options.discoveryBudget,
+			checkedSummary,
+			lastProbeErr,
 			lastLookupErr,
 		)
 	}
 
 	return "", fmt.Errorf(
-		"could not determine IPv4 address for UTM MAC %q after %d attempts over %s: %w",
+		"could not determine IPv4 address for UTM MAC %q after %d attempt(s) in %s (budget %s, checked bridge interfaces: %s): %w",
 		macAddress,
-		options.maxAttempts,
-		time.Duration(options.maxAttempts-1)*options.retryInterval,
+		attempts,
+		elapsed,
+		options.discoveryBudget,
+		checkedSummary,
 		lastLookupErr,
 	)
 }
@@ -1092,23 +1206,45 @@ func withDefaultUtmIPv4DiscoveryOptions(options utmIPv4DiscoveryOptions) utmIPv4
 	if options.runCommand == nil {
 		options.runCommand = runCommandWithCombinedOutput
 	}
+	if options.now == nil {
+		options.now = time.Now
+	}
 	if options.sleep == nil {
 		options.sleep = time.Sleep
 	}
 	if options.primeARPCache == nil {
 		options.primeARPCache = primeUtmARPCache
 	}
+	if options.dial == nil {
+		options.dial = (&net.Dialer{}).DialContext
+	}
+	if options.dhcpLeasesPath == "" {
+		options.dhcpLeasesPath = utmDHCPDLeasesPath
+	}
+	if options.discoveryBudget <= 0 {
+		options.discoveryBudget = utmIPv4DiscoveryBudget
+	}
 	if options.retryInterval <= 0 {
 		options.retryInterval = utmIPv4DiscoveryRetryInterval
-	}
-	if options.maxAttempts <= 0 {
-		options.maxAttempts = int(utmIPv4DiscoveryRetryWindow/options.retryInterval) + 1
 	}
 	if options.arpCommandTimer <= 0 {
 		options.arpCommandTimer = utmIPv4ARPCommandTimeout
 	}
+	if options.candidateProbeTimeout <= 0 {
+		options.candidateProbeTimeout = utmIPv4CandidateProbeTimeout
+	}
 
 	return options
+}
+
+func clampDurationToRemaining(desired time.Duration, remaining time.Duration) time.Duration {
+	if remaining <= 0 {
+		return 0
+	}
+	if desired <= 0 || desired > remaining {
+		return remaining
+	}
+	return desired
 }
 
 func utmConfigPlistPath(vm alchemy_build.VirtualMachineConfig) (string, error) {
@@ -1129,16 +1265,26 @@ func extractUtmMacAddressFromConfig(content string) (string, error) {
 }
 
 func extractIPv4ForMacAddress(output string, targetMacAddress string) (string, error) {
+	candidates, err := extractIPv4CandidatesForMacAddress(output, targetMacAddress)
+	if err != nil {
+		return "", err
+	}
+	return candidates[0], nil
+}
+
+func extractIPv4CandidatesForMacAddress(output string, targetMacAddress string) ([]string, error) {
 	normalizedTargetMAC, err := normalizeMACAddress(targetMacAddress)
 	if err != nil {
-		return "", fmt.Errorf("invalid target MAC address %q: %w", targetMacAddress, err)
+		return nil, fmt.Errorf("invalid target MAC address %q: %w", targetMacAddress, err)
 	}
 
 	matches := arpEntryRegex.FindAllStringSubmatch(output, -1)
 	if len(matches) == 0 {
-		return "", errors.New("no ARP entries found in command output")
+		return nil, errors.New("no ARP entries found in command output")
 	}
 
+	var candidates []string
+	seen := make(map[string]struct{})
 	for _, match := range matches {
 		if len(match) < 3 {
 			continue
@@ -1148,17 +1294,33 @@ func extractIPv4ForMacAddress(output string, targetMacAddress string) (string, e
 		if _, isLoopback := loopbackAddressSet[ip]; isLoopback {
 			continue
 		}
+		parsedIP := net.ParseIP(ip)
+		if parsedIP == nil || parsedIP.To4() == nil || parsedIP.IsLoopback() || parsedIP.IsUnspecified() {
+			continue
+		}
 
-		normalizedCandidateMAC, normalizeErr := normalizeMACAddress(match[2])
+		rawMAC := strings.TrimSpace(match[2])
+		if strings.EqualFold(rawMAC, "(incomplete)") || strings.EqualFold(rawMAC, "<incomplete>") {
+			continue
+		}
+
+		normalizedCandidateMAC, normalizeErr := normalizeMACAddress(rawMAC)
 		if normalizeErr != nil {
 			continue
 		}
 		if normalizedCandidateMAC == normalizedTargetMAC {
-			return ip, nil
+			if _, exists := seen[ip]; !exists {
+				seen[ip] = struct{}{}
+				candidates = append(candidates, ip)
+			}
 		}
 	}
 
-	return "", errors.New("no IPv4 address found for MAC address in arp output")
+	if len(candidates) == 0 {
+		return nil, errors.New("no IPv4 address found for MAC address in arp output")
+	}
+
+	return candidates, nil
 }
 
 func normalizeMACAddress(value string) (string, error) {
@@ -1197,30 +1359,76 @@ func normalizeMACAddress(value string) (string, error) {
 	return strings.Join(normalized, ":"), nil
 }
 
-func primeUtmARPCache() error {
-	candidateIPs, err := utmProbeCandidateIPs()
+func primeUtmARPCache(ctx context.Context) ([]string, error) {
+	return primeUtmARPCacheWith(ctx, listUtmHostInterfaces, (&net.Dialer{}).DialContext)
+}
+
+func primeUtmARPCacheWith(
+	ctx context.Context,
+	listInterfaces func() ([]utmHostInterface, error),
+	dial func(context.Context, string, string) (net.Conn, error),
+) ([]string, error) {
+	interfaces, err := listInterfaces()
 	if err != nil {
+		return nil, err
+	}
+
+	targets := selectUtmProbeTargets(interfaces)
+	if len(targets.CandidateIPs) == 0 {
+		return targets.CheckedInterfaces, errors.New("no private IPv4 probe candidates found on active bridge* host interfaces")
+	}
+
+	if err := probeUtmCandidateIPsWithDialer(
+		ctx,
+		targets.CandidateIPs,
+		utmIPv4ProbeDialTimeout,
+		utmIPv4ProbeWorkerCount,
+		dial,
+	); err != nil {
+		return targets.CheckedInterfaces, err
+	}
+
+	return targets.CheckedInterfaces, nil
+}
+
+func probeUtmCandidateIPsWithDialer(
+	ctx context.Context,
+	candidateIPs []string,
+	dialTimeout time.Duration,
+	workerCount int,
+	dial func(context.Context, string, string) (net.Conn, error),
+) error {
+	if len(candidateIPs) == 0 {
+		return errors.New("no private IPv4 probe candidates found on active bridge* host interfaces")
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if len(candidateIPs) == 0 {
-		return errors.New("no private IPv4 probe candidates found on active host interfaces")
+	if dialTimeout <= 0 {
+		dialTimeout = utmIPv4ProbeDialTimeout
+	}
+	if workerCount <= 0 {
+		workerCount = utmIPv4ProbeWorkerCount
+	}
+	if workerCount > len(candidateIPs) {
+		workerCount = len(candidateIPs)
 	}
 
-	type probeTarget struct {
-		ip   string
-		port int
-	}
-
-	targets := make(chan probeTarget)
+	targets := make(chan string)
 	var workers sync.WaitGroup
 
-	for workerIndex := 0; workerIndex < utmIPv4ProbeWorkerCount; workerIndex++ {
+	for workerIndex := 0; workerIndex < workerCount; workerIndex++ {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			for target := range targets {
-				address := net.JoinHostPort(target.ip, strconv.Itoa(target.port))
-				conn, err := net.DialTimeout("tcp4", address, utmIPv4ProbeDialTimeout)
+			for candidateIP := range targets {
+				if ctx.Err() != nil {
+					return
+				}
+				dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+				address := net.JoinHostPort(candidateIP, strconv.Itoa(utmIPv4ProbePort))
+				conn, err := dial(dialCtx, "tcp4", address)
+				cancel()
 				if err == nil {
 					_ = conn.Close()
 				}
@@ -1228,34 +1436,54 @@ func primeUtmARPCache() error {
 		}()
 	}
 
+sendLoop:
 	for _, candidateIP := range candidateIPs {
-		targets <- probeTarget{ip: candidateIP, port: utmIPv4ProbePortHTTP}
-		targets <- probeTarget{ip: candidateIP, port: utmIPv4ProbePortHTTPS}
+		select {
+		case <-ctx.Done():
+			break sendLoop
+		case targets <- candidateIP:
+		}
 	}
 	close(targets)
 	workers.Wait()
 
-	return nil
+	return ctx.Err()
 }
 
-func utmProbeCandidateIPs() ([]string, error) {
+func listUtmHostInterfaces() ([]utmHostInterface, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil, fmt.Errorf("failed to enumerate host network interfaces: %w", err)
 	}
 
+	result := make([]utmHostInterface, 0, len(interfaces))
+	for _, iface := range interfaces {
+		addrs, addrErr := iface.Addrs()
+		if addrErr != nil {
+			continue
+		}
+		result = append(result, utmHostInterface{
+			Name:  iface.Name,
+			Flags: iface.Flags,
+			Addrs: addrs,
+		})
+	}
+	return result, nil
+}
+
+func selectUtmProbeTargets(interfaces []utmHostInterface) utmProbeTargets {
+	checkedSet := make(map[string]struct{})
 	candidateSet := make(map[string]struct{})
+
 	for _, iface := range interfaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
-
-		addrs, err := iface.Addrs()
-		if err != nil {
+		if !isUTMBridgeInterfaceName(iface.Name) {
 			continue
 		}
 
-		for _, addr := range addrs {
+		for _, addr := range iface.Addrs {
 			ipNet, ok := addr.(*net.IPNet)
 			if !ok {
 				continue
@@ -1266,11 +1494,23 @@ func utmProbeCandidateIPs() ([]string, error) {
 				continue
 			}
 
-			for _, candidateIP := range probeCandidatesForHostNetwork(hostIP, ipNet.Mask) {
+			candidates := probeCandidatesForHostNetwork(hostIP, ipNet.Mask)
+			if len(candidates) == 0 {
+				continue
+			}
+
+			checkedSet[iface.Name] = struct{}{}
+			for _, candidateIP := range candidates {
 				candidateSet[candidateIP] = struct{}{}
 			}
 		}
 	}
+
+	checkedInterfaces := make([]string, 0, len(checkedSet))
+	for ifaceName := range checkedSet {
+		checkedInterfaces = append(checkedInterfaces, ifaceName)
+	}
+	sort.Strings(checkedInterfaces)
 
 	candidates := make([]string, 0, len(candidateSet))
 	for candidateIP := range candidateSet {
@@ -1278,7 +1518,14 @@ func utmProbeCandidateIPs() ([]string, error) {
 	}
 	sort.Strings(candidates)
 
-	return candidates, nil
+	return utmProbeTargets{
+		CheckedInterfaces: checkedInterfaces,
+		CandidateIPs:      candidates,
+	}
+}
+
+func isUTMBridgeInterfaceName(name string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), "bridge")
 }
 
 func probeCandidatesForHostNetwork(hostIP net.IP, mask net.IPMask) []string {

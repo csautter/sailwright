@@ -59,10 +59,11 @@ remains enabled on macOS and Linux hosts; Windows hosts do not currently record
 VNC. The flag applies to `build`, including parallel builds, and does not change
 the display behavior of `create` or `start`.
 
-`create`, `start`, and `provision` now refuse bridged or unknown networks with
-non-private guest credentials unless you explicitly accept the risk. The UTM
-templates still use bridged networking, so their new-VM creation is affected.
-Before following those workflows, read
+`create`, `start`, and `provision` refuse bridged or unknown networks with
+non-private guest credentials unless you explicitly accept the risk. Shipped UTM
+templates default to Shared (NAT) networking (`SAILWRIGHT_UTM_NETWORK_MODE=bridged`
+opts into Bridged networking and remains subject to the guard).
+Before following bridged workflows or running existing bridged VMs, read
 [Guest network security](./guest-security.md) for migration guidance, credential
 classification, and per-command or persistent overrides. Provisioning variables
 do not change credentials baked into an image.
@@ -130,14 +131,26 @@ The same selector works with `stop` and `provision`. Names use 1–24 lowercase
 letters, digits, and internal hyphens; `default` and `all` are reserved. Omitting
 `--name` finds your existing VM without migration. Instances share the built
 image, with their own writable disks, provider state, and guest hostnames.
-Named startup waits for guest hostname setup: QEMU/UTM require the guest agent;
-Tart uses the existing Ansible/SSH connection; Hyper-V uses Vagrant's hostname
-setup. A Windows guest may reboot after a name change.
+Named startup waits for guest hostname setup. Tart uses the existing Ansible/SSH
+connection, and Hyper-V uses Vagrant's hostname setup. On libvirt, Sailwright
+requires the guest agent to return a process ID from `guest-exec`, then polls
+`guest-exec-status` for successful completion.
+
+On UTM, Sailwright selects the VM by its bundle UUID and waits for a guest-agent
+read to return recognizable guest data. On Linux it then applies the identity
+and reads back the running and configured hostnames, `/etc/machine-id`, and the
+exact instance name and machine ID in `/var/lib/sailwright/instance-identity`.
+On Windows it waits for confirmation of the configured and active computer name,
+including after any required reboot.
+Named `start` allows up to three minutes for bundle UUID lookup, guest-agent
+readiness, and identity verification together.
 
 On QEMU/UTM, named Linux guests also receive a fresh persistent machine ID on
 their first managed start, including clones of older cached images. The guest
 agent addresses the clone directly and refreshes its network clients before
-IP-based access. Later starts retain that ID and do not restart networking.
+IP-based access. A failed network restart is retried before identity setup
+completes. Later starts with a valid identity retain the ID and skip the network
+restart.
 Hyper-V Ubuntu images clear their machine ID before export so each clone gets
 its own identity before DHCP. Older images lack this guarantee: rebuild once
 with `sailwright build ubuntu --type server --arch amd64 --no-cache` (or
@@ -819,7 +832,7 @@ sailwright provision windows11 --arch $arch --check
 sailwright provision windows11 --arch $arch
 ```
 
-The wrapper discovers the VM IP automatically from the generated UTM config and `arp -a`, then runs `ansible-playbook` with an inline inventory target.
+The wrapper discovers the VM IP automatically from the generated UTM config and `arp -an`, then runs `ansible-playbook` with an inline inventory target.
 On macOS it also sets `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` for the Ansible process automatically.
 
 If you need to inspect the discovered IP manually:
@@ -874,7 +887,7 @@ sailwright provision ubuntu --type $type --arch $arch --check
 sailwright provision ubuntu --type $type --arch $arch
 ```
 
-The wrapper discovers the VM IP automatically from the generated UTM config and `arp -a`, then runs `ansible-playbook` with an inline inventory target.
+The wrapper discovers the VM IP automatically from the generated UTM config and `arp -an`, then runs `ansible-playbook` with an inline inventory target.
 On macOS it also sets `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` for the Ansible process automatically.
 
 If you need to inspect the discovered IP manually:
@@ -895,8 +908,9 @@ SAILWRIGHT_NAMED_VM_E2E=1 SAILWRIGHT_E2E_TARGET=ubuntu/server/amd64 \
 ```
 
 This refuses pre-existing `e2e-a`/`e2e-b`, creates and starts both from one image,
-checks distinct addresses and hostnames through SSH tunnels, checks both list
-rows, destroys `e2e-a`, and checks SSH to `e2e-b` and unchanged default state.
+checks distinct addresses, machine IDs and hostnames through SSH tunnels, checks
+both list rows, destroys `e2e-a`, and checks SSH to `e2e-b` and unchanged default
+state.
 Cleanup destroys both test names even after failures. Allow enough RAM/disk and
 room under `max_instances` for two guests. It requires `ssh`, `sshpass`, and
 `sailwright-gateway` on the controller PATH.
@@ -905,8 +919,10 @@ Portable tests cover all four providers' names/paths and legacy defaults. Before
 releasing on real macOS/Windows hosts, verify two named instances and a legacy
 default together, including create/start/info/provision/stop/destroy:
 
-- UTM: bundle registration, fresh UUID/MAC, guest-agent hostname setup and bridged
-  DHCP leases. Verify both architectures supported by the host.
+- UTM: bundle registration, fresh UUID/MAC, guest-agent hostname setup and
+  DHCP leases (Shared NAT by default, or Bridged when
+  `SAILWRIGHT_UTM_NETWORK_MODE=bridged` is set). Verify both architectures
+  supported by the host.
 - Tart: independent clones/MACs, configured SSH hostname setup, bridged mode where
   used, and rejection of `TART_MACOS_VM_NAME` together with `--name`.
 - Hyper-V: distinct Vagrant state and VM disks, switch/address discovery through

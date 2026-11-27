@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -229,6 +232,7 @@ func TestInspectNetworkModeWithFakeCommands(t *testing.T) {
 		t.Fatal(got)
 	}
 	vm.VirtualizationEngine = alchemy_build.VirtualizationEngineUtm
+	t.Setenv(UtmNetworkModeEnvVar, "")
 	file := filepath.Join(dirs.ProjectDir, "deployments", "utm", "ubuntu-amd64", "config.plist")
 	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
 		t.Fatal(err)
@@ -328,5 +332,308 @@ func TestLibvirtUserPortForwardExposure(t *testing.T) {
 				t.Fatalf("got %+v, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestShippedUtmTemplatesDefaultToSharedNat(t *testing.T) {
+	t.Setenv(UtmNetworkModeEnvVar, "")
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirs := alchemy_build.GetDirectoriesInstance()
+	oldDir := dirs.ProjectDir
+	t.Cleanup(func() { dirs.ProjectDir = oldDir })
+	dirs.ProjectDir = repoRoot
+
+	for _, template := range []string{"ubuntu-amd64", "ubuntu-arm64", "windows11-amd64", "windows11-arm64"} {
+		t.Run("template/"+template, func(t *testing.T) {
+			path := filepath.Join(repoRoot, "deployments", "utm", template, "config.plist")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			got := utmNetworkMode(data)
+			if got.Mode != "nat" || got.Detail != "UTM Shared" {
+				t.Fatalf("%s must default to Shared (nat), got %+v", template, got)
+			}
+			if strings.Contains(string(data), "<string>Bridged</string>") {
+				t.Fatalf("%s must not contain Bridged mode by default", template)
+			}
+			if !strings.Contains(string(data), "<key>IsolateFromHost</key>\n\t\t\t<false/>") {
+				t.Fatalf("%s must keep IsolateFromHost=false so host SSH/WinRM reaches Shared guests", template)
+			}
+		})
+	}
+
+	targets := []alchemy_build.VirtualMachineConfig{
+		{OS: "ubuntu", UbuntuType: "server", Arch: "amd64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineUtm},
+		{OS: "ubuntu", UbuntuType: "server", Arch: "arm64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineUtm},
+		{OS: "ubuntu", UbuntuType: "desktop", Arch: "amd64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineUtm},
+		{OS: "ubuntu", UbuntuType: "desktop", Arch: "arm64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineUtm},
+		{OS: "windows11", Arch: "amd64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineUtm},
+		{OS: "windows11", Arch: "arm64", HostOs: alchemy_build.HostOsDarwin, VirtualizationEngine: alchemy_build.VirtualizationEngineUtm},
+	}
+	for _, vm := range targets {
+		got := InspectNetworkMode(vm, true)
+		if got.Mode != "nat" {
+			t.Errorf("planned network for %s/%s/%s: got %+v, want nat", vm.OS, vm.UbuntuType, vm.Arch, got)
+		}
+	}
+}
+
+func TestUtmPlannedNetworkModeOverride(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirs := alchemy_build.GetDirectoriesInstance()
+	oldDir := dirs.ProjectDir
+	t.Cleanup(func() { dirs.ProjectDir = oldDir })
+	dirs.ProjectDir = repoRoot
+
+	vm := alchemy_build.VirtualMachineConfig{
+		OS:                   "ubuntu",
+		UbuntuType:           "server",
+		Arch:                 "arm64",
+		HostOs:               alchemy_build.HostOsDarwin,
+		VirtualizationEngine: alchemy_build.VirtualizationEngineUtm,
+	}
+
+	for _, tc := range []struct {
+		name     string
+		envValue string
+		wantMode string
+	}{
+		{"default unset", "", "nat"},
+		{"explicit shared lowercase", "shared", "nat"},
+		{"explicit shared mixed case", " Shared ", "nat"},
+		{"explicit bridged lowercase", "bridged", "bridged"},
+		{"explicit bridged mixed case", " Bridged ", "bridged"},
+		{"invalid mode fails closed", "host", "unknown"},
+		{"arbitrary value fails closed", "lan", "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(UtmNetworkModeEnvVar, tc.envValue)
+			if got := InspectNetworkMode(vm, true); got.Mode != tc.wantMode {
+				t.Fatalf("env=%q: got %+v, want %s", tc.envValue, got, tc.wantMode)
+			}
+		})
+	}
+
+	// Existing VMs must always be inspected from their on-disk config.plist,
+	// regardless of SAILWRIGHT_UTM_NETWORK_MODE.
+	t.Run("existing VM ignores env override", func(t *testing.T) {
+		utmDir := t.TempDir()
+		t.Setenv("SAILWRIGHT_UTM_VM_DIR", utmDir)
+		bundle, err := utmVirtualMachinePath(vm)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(bundle, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		plistPath := filepath.Join(bundle, "config.plist")
+
+		if err := os.WriteFile(plistPath, []byte(`<plist><dict><key>Network</key><array><dict><key>Mode</key><string>Shared</string></dict></array></dict></plist>`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(UtmNetworkModeEnvVar, "bridged")
+		if got := InspectNetworkMode(vm, false); got.Mode != "nat" {
+			t.Fatalf("existing Shared VM must remain nat even when env=bridged: %+v", got)
+		}
+
+		if err := os.WriteFile(plistPath, []byte(`<plist><dict><key>Network</key><array><dict><key>Mode</key><string>Bridged</string></dict></array></dict></plist>`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(UtmNetworkModeEnvVar, "shared")
+		if got := InspectNetworkMode(vm, false); got.Mode != "bridged" {
+			t.Fatalf("existing Bridged VM must remain bridged even when env=shared: %+v", got)
+		}
+	})
+}
+
+func TestRunUtmDeployOnMacOSNetworkMode(t *testing.T) {
+	oldRun := runUtmDeployCommandWithEnv
+	t.Cleanup(func() { runUtmDeployCommandWithEnv = oldRun })
+
+	vm := alchemy_build.VirtualMachineConfig{
+		OS:                   "ubuntu",
+		UbuntuType:           "server",
+		Arch:                 "arm64",
+		HostOs:               alchemy_build.HostOsDarwin,
+		VirtualizationEngine: alchemy_build.VirtualizationEngineUtm,
+	}
+	t.Setenv("SAILWRIGHT_UTM_VM_DIR", t.TempDir())
+
+	t.Run("default omits network flag", func(t *testing.T) {
+		t.Setenv(UtmNetworkModeEnvVar, "")
+		var gotArgs []string
+		runUtmDeployCommandWithEnv = func(_ string, _ time.Duration, _ string, args []string, _ []string, _ string) error {
+			gotArgs = append([]string(nil), args...)
+			return nil
+		}
+		if err := RunUtmDeployOnMacOS(vm); err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(gotArgs, "--network") {
+			t.Fatalf("default UTM deploy should not pass --network, got %v", gotArgs)
+		}
+	})
+
+	t.Run("bridged passes --network bridged", func(t *testing.T) {
+		t.Setenv(UtmNetworkModeEnvVar, "bridged")
+		var gotArgs []string
+		runUtmDeployCommandWithEnv = func(_ string, _ time.Duration, _ string, args []string, _ []string, _ string) error {
+			gotArgs = append([]string(nil), args...)
+			return nil
+		}
+		if err := RunUtmDeployOnMacOS(vm); err != nil {
+			t.Fatal(err)
+		}
+		idx := slices.Index(gotArgs, "--network")
+		if idx < 0 || idx+1 >= len(gotArgs) || gotArgs[idx+1] != "bridged" {
+			t.Fatalf("expected --network bridged in %v", gotArgs)
+		}
+	})
+
+	t.Run("shared passes --network shared", func(t *testing.T) {
+		t.Setenv(UtmNetworkModeEnvVar, "Shared")
+		var gotArgs []string
+		runUtmDeployCommandWithEnv = func(_ string, _ time.Duration, _ string, args []string, _ []string, _ string) error {
+			gotArgs = append([]string(nil), args...)
+			return nil
+		}
+		if err := RunUtmDeployOnMacOS(vm); err != nil {
+			t.Fatal(err)
+		}
+		idx := slices.Index(gotArgs, "--network")
+		if idx < 0 || idx+1 >= len(gotArgs) || gotArgs[idx+1] != "shared" {
+			t.Fatalf("expected --network shared in %v", gotArgs)
+		}
+	})
+
+	t.Run("invalid value fails before running script", func(t *testing.T) {
+		t.Setenv(UtmNetworkModeEnvVar, "bogus")
+		called := false
+		runUtmDeployCommandWithEnv = func(_ string, _ time.Duration, _ string, _ []string, _ []string, _ string) error {
+			called = true
+			return nil
+		}
+		err := RunUtmDeployOnMacOS(vm)
+		if err == nil || !strings.Contains(err.Error(), UtmNetworkModeEnvVar) {
+			t.Fatalf("expected error naming %s, got %v", UtmNetworkModeEnvVar, err)
+		}
+		if called {
+			t.Fatal("invalid network mode must fail before executing create-utm-vm.sh")
+		}
+	})
+}
+
+func TestCreateUtmVmScriptNetworkModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping bash script test on Windows")
+	}
+	for _, bin := range []string{"bash", "envsubst", "awk", "rsync"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("skipping create-utm-vm.sh execution test: %s not on PATH", bin)
+		}
+	}
+	pathEnv := os.Getenv("PATH")
+	if _, err := exec.LookPath("uuidgen"); err != nil {
+		stubDir := t.TempDir()
+		stubPath := filepath.Join(stubDir, "uuidgen")
+		stubScript := "#!/usr/bin/env bash\ncat /proc/sys/kernel/random/uuid 2>/dev/null || echo 11111111-2222-3333-4444-555555555555\n"
+		if err := os.WriteFile(stubPath, []byte(stubScript), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		pathEnv = stubDir + string(os.PathListSeparator) + pathEnv
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(repoRoot, "deployments", "utm", "create-utm-vm.sh")
+
+	cacheDir := t.TempDir()
+	diskPath := filepath.Join(cacheDir, "ubuntu", "qemu-ubuntu-server-packer-arm64.qcow2")
+	if err := os.MkdirAll(filepath.Dir(diskPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(diskPath, []byte("fake-qcow2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runScript := func(utmDir string, extraEnv []string, extraArgs ...string) (string, error) {
+		args := append([]string{script, "--arch", "arm64", "--os", "ubuntu-server"}, extraArgs...)
+		cmd := exec.Command("bash", args...)
+		env := append(os.Environ(),
+			"PATH="+pathEnv,
+			"DEV_ALCHEMY_CACHE_DIR="+cacheDir,
+			"SAILWRIGHT_UTM_VM_DIR="+utmDir,
+			UtmNetworkModeEnvVar+"=",
+		)
+		env = append(env, extraEnv...)
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	// Default creates Shared (nat).
+	defaultDir := t.TempDir()
+	if out, err := runScript(defaultDir, nil); err != nil {
+		t.Fatalf("default create failed: %v\n%s", err, out)
+	}
+	defaultPlist := filepath.Join(defaultDir, "ubuntu-server-arm64-dev-alchemy.utm", "config.plist")
+	data, err := os.ReadFile(defaultPlist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := utmNetworkMode(data); got.Mode != "nat" || got.Detail != "UTM Shared" {
+		t.Fatalf("default bundle must be Shared (nat), got %+v", got)
+	}
+
+	// Existing bundle must NOT be modified when invoked again with --network bridged.
+	if out, err := runScript(defaultDir, nil, "--network", "bridged"); err != nil {
+		t.Fatalf("re-run on existing bundle failed: %v\n%s", err, out)
+	}
+	afterData, err := os.ReadFile(defaultPlist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterData) != string(data) {
+		t.Fatal("existing UTM config.plist was modified on re-run")
+	}
+
+	// Explicit --network bridged produces Bridged.
+	bridgedFlagDir := t.TempDir()
+	if out, err := runScript(bridgedFlagDir, nil, "--network", "bridged"); err != nil {
+		t.Fatalf("--network bridged failed: %v\n%s", err, out)
+	}
+	bridgedData, err := os.ReadFile(filepath.Join(bridgedFlagDir, "ubuntu-server-arm64-dev-alchemy.utm", "config.plist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := utmNetworkMode(bridgedData); got.Mode != "bridged" || got.Detail != "UTM Bridged" {
+		t.Fatalf("--network bridged bundle must be Bridged, got %+v", got)
+	}
+
+	// Explicit SAILWRIGHT_UTM_NETWORK_MODE=bridged produces Bridged.
+	bridgedEnvDir := t.TempDir()
+	if out, err := runScript(bridgedEnvDir, []string{UtmNetworkModeEnvVar + "=bridged"}); err != nil {
+		t.Fatalf("env bridged failed: %v\n%s", err, out)
+	}
+	bridgedEnvData, err := os.ReadFile(filepath.Join(bridgedEnvDir, "ubuntu-server-arm64-dev-alchemy.utm", "config.plist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := utmNetworkMode(bridgedEnvData); got.Mode != "bridged" || got.Detail != "UTM Bridged" {
+		t.Fatalf("env bridged bundle must be Bridged, got %+v", got)
+	}
+
+	// Invalid network mode fails non-zero.
+	invalidDir := t.TempDir()
+	if _, err := runScript(invalidDir, nil, "--network", "invalid"); err == nil {
+		t.Fatal("expected invalid --network to fail")
 	}
 }

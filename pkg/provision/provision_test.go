@@ -2,15 +2,19 @@ package provision
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1708,6 +1712,86 @@ func TestExtractIPv4ForMacAddress(t *testing.T) {
 	}
 }
 
+func TestExtractIPv4ForMacAddress_MatchesBridge101AlongsideBridge100AndManyIncomplete(t *testing.T) {
+	var builder strings.Builder
+	builder.WriteString("? (127.0.0.1) at 00:00:00:00:00:00 on lo0 ifscope [loopback]\n")
+	builder.WriteString("? (192.168.64.1) at 3e:22:fb:10:0:1 on bridge100 ifscope [ethernet]\n")
+	builder.WriteString("? (192.168.64.12) at 7a:55:21:9:a:bc on bridge100 ifscope [ethernet]\n")
+	for host := 2; host <= 254; host++ {
+		if host == 12 {
+			continue
+		}
+		fmt.Fprintf(&builder, "? (192.168.64.%d) at (incomplete) on bridge100 ifscope [ethernet]\n", host)
+	}
+	builder.WriteString("? (192.168.65.1) at 3e:22:fb:10:0:2 on bridge101 ifscope [ethernet]\n")
+	builder.WriteString("? (192.168.65.2) at a6:45:87:fa:bc:c1 on bridge101 ifscope [ethernet]\n")
+	for host := 3; host <= 254; host++ {
+		if host%2 == 0 {
+			fmt.Fprintf(&builder, "? (192.168.65.%d) at (incomplete) on bridge101 ifscope [ethernet]\n", host)
+		} else {
+			fmt.Fprintf(&builder, "? (192.168.65.%d) at <incomplete> on bridge101 ifscope [ethernet]\n", host)
+		}
+	}
+	builder.WriteString("? (192.168.65.255) at ff:ff:ff:ff:ff:ff on bridge101 ifscope [ethernet]\n")
+
+	ip, err := extractIPv4ForMacAddress(builder.String(), "A6-45-87-FA-BC-C1")
+	if err != nil {
+		t.Fatalf("expected ARP IP extraction on bridge101 to succeed, got error: %v", err)
+	}
+	if ip != "192.168.65.2" {
+		t.Fatalf("expected 192.168.65.2, got %q", ip)
+	}
+}
+
+func TestExtractIPv4ForMacAddress_ManyIncompleteEntriesWithoutMatch(t *testing.T) {
+	var builder strings.Builder
+	for host := 2; host <= 254; host++ {
+		fmt.Fprintf(&builder, "? (192.168.64.%d) at (incomplete) on bridge100 ifscope [ethernet]\n", host)
+		fmt.Fprintf(&builder, "? (192.168.65.%d) at (incomplete) on bridge101 ifscope [ethernet]\n", host)
+	}
+	builder.WriteString("? (192.168.65.9) at <incomplete> on bridge101 ifscope [ethernet]\n")
+
+	ip, err := extractIPv4ForMacAddress(builder.String(), "A6:45:87:FA:BC:C1")
+	if err == nil {
+		t.Fatalf("expected no match when only incomplete entries exist, got %q", ip)
+	}
+	if !strings.Contains(err.Error(), "no IPv4 address found for MAC address") {
+		t.Fatalf("expected clean no-match message, got: %v", err)
+	}
+}
+
+func writeTestUtmConfigPlist(t *testing.T, vm alchemy_build.VirtualMachineConfig, mac string) {
+	t.Helper()
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("SAILWRIGHT_UTM_VM_DIR", "")
+
+	configPath, err := utmConfigPlistPath(vm)
+	if err != nil {
+		t.Fatalf("utmConfigPlistPath returned error: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("failed to create config directory: %v", err)
+	}
+
+	configContent := fmt.Sprintf(`
+<dict>
+  <key>Network</key>
+  <array>
+    <dict>
+      <key>MacAddress</key>
+      <string>%s</string>
+    </dict>
+  </array>
+</dict>
+`, mac)
+
+	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
+		t.Fatalf("failed to create UTM config fixture: %v", err)
+	}
+}
+
 func TestUtmConfigPlistPath(t *testing.T) {
 	t.Setenv("SAILWRIGHT_UTM_VM_DIR", "")
 	homeDir := t.TempDir()
@@ -1775,8 +1859,8 @@ func TestDiscoverUtmVMIPv4_RetriesAfterPrimingArpCache(t *testing.T) {
 	}
 
 	arpOutputs := []string{
-		"? (192.168.64.1) at 00:11:22:33:44:55 on en0 ifscope [ethernet]",
-		"? (192.168.64.21) at a6:1:b:c:d:ef on en0 ifscope [ethernet]",
+		"? (192.168.64.1) at 00:11:22:33:44:55 on bridge100 ifscope [ethernet]",
+		"? (192.168.65.21) at a6:1:b:c:d:ef on bridge101 ifscope [ethernet]",
 	}
 
 	var arpCalls int
@@ -1788,8 +1872,8 @@ func TestDiscoverUtmVMIPv4_RetriesAfterPrimingArpCache(t *testing.T) {
 			if executable != "arp" {
 				t.Fatalf("expected arp lookup, got executable %q", executable)
 			}
-			if len(args) != 1 || args[0] != "-a" {
-				t.Fatalf("expected arp -a invocation, got args %v", args)
+			if !reflect.DeepEqual(args, []string{"-an"}) {
+				t.Fatalf("expected arp -an invocation, got args %v", args)
 			}
 			if arpCalls >= len(arpOutputs) {
 				return arpOutputs[len(arpOutputs)-1], nil
@@ -1798,9 +1882,9 @@ func TestDiscoverUtmVMIPv4_RetriesAfterPrimingArpCache(t *testing.T) {
 			arpCalls++
 			return output, nil
 		},
-		primeARPCache: func() error {
+		primeARPCache: func(context.Context) ([]string, error) {
 			primeCalls++
-			return nil
+			return []string{"bridge100", "bridge101"}, nil
 		},
 		sleep:         func(time.Duration) {},
 		retryInterval: time.Millisecond,
@@ -1809,8 +1893,8 @@ func TestDiscoverUtmVMIPv4_RetriesAfterPrimingArpCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected UTM IPv4 discovery to succeed after retry, got error: %v", err)
 	}
-	if ip != "192.168.64.21" {
-		t.Fatalf("expected discovered IP 192.168.64.21, got %q", ip)
+	if ip != "192.168.65.21" {
+		t.Fatalf("expected discovered IP 192.168.65.21, got %q", ip)
 	}
 	if arpCalls != 2 {
 		t.Fatalf("expected 2 arp lookups before success, got %d", arpCalls)
@@ -1854,9 +1938,9 @@ func TestDiscoverUtmVMIPv4_RePrimesArpCacheUntilMacAddressAppears(t *testing.T) 
 	}
 
 	arpOutputs := []string{
-		"? (192.168.64.1) at 00:11:22:33:44:55 on en0 ifscope [ethernet]",
-		"? (192.168.64.1) at 00:11:22:33:44:55 on en0 ifscope [ethernet]",
-		"? (192.168.64.21) at a6:1:b:c:d:ef on en0 ifscope [ethernet]",
+		"? (192.168.64.1) at 00:11:22:33:44:55 on bridge100 ifscope [ethernet]",
+		"? (192.168.64.1) at 00:11:22:33:44:55 on bridge100 ifscope [ethernet]",
+		"? (192.168.65.21) at a6:1:b:c:d:ef on bridge101 ifscope [ethernet]",
 	}
 
 	var arpCalls int
@@ -1868,8 +1952,8 @@ func TestDiscoverUtmVMIPv4_RePrimesArpCacheUntilMacAddressAppears(t *testing.T) 
 			if executable != "arp" {
 				t.Fatalf("expected arp lookup, got executable %q", executable)
 			}
-			if len(args) != 1 || args[0] != "-a" {
-				t.Fatalf("expected arp -a invocation, got args %v", args)
+			if !reflect.DeepEqual(args, []string{"-an"}) {
+				t.Fatalf("expected arp -an invocation, got args %v", args)
 			}
 			if arpCalls >= len(arpOutputs) {
 				return arpOutputs[len(arpOutputs)-1], nil
@@ -1878,9 +1962,9 @@ func TestDiscoverUtmVMIPv4_RePrimesArpCacheUntilMacAddressAppears(t *testing.T) 
 			arpCalls++
 			return output, nil
 		},
-		primeARPCache: func() error {
+		primeARPCache: func(context.Context) ([]string, error) {
 			primeCalls++
-			return nil
+			return []string{"bridge100", "bridge101"}, nil
 		},
 		sleep:         func(time.Duration) {},
 		retryInterval: time.Millisecond,
@@ -1889,14 +1973,276 @@ func TestDiscoverUtmVMIPv4_RePrimesArpCacheUntilMacAddressAppears(t *testing.T) 
 	if err != nil {
 		t.Fatalf("expected UTM IPv4 discovery to succeed after repeated ARP cache priming, got error: %v", err)
 	}
-	if ip != "192.168.64.21" {
-		t.Fatalf("expected discovered IP 192.168.64.21, got %q", ip)
+	if ip != "192.168.65.21" {
+		t.Fatalf("expected discovered IP 192.168.65.21, got %q", ip)
 	}
 	if arpCalls != 3 {
 		t.Fatalf("expected 3 arp lookups before success, got %d", arpCalls)
 	}
 	if primeCalls != 2 {
 		t.Fatalf("expected ARP cache probe to run after each miss before success, got %d", primeCalls)
+	}
+}
+
+func TestDiscoverUtmVMIPv4_FirstAttemptHitSkipsProbe(t *testing.T) {
+	vm := alchemy_build.VirtualMachineConfig{
+		OS:         "ubuntu",
+		UbuntuType: "server",
+		Arch:       "arm64",
+	}
+	writeTestUtmConfigPlist(t, vm, "A6:45:87:FA:BC:C1")
+
+	var arpCalls int
+	var primeCalls int
+	var sleepCalls int
+
+	arpOutput := strings.Join([]string{
+		"? (192.168.64.1) at 3e:22:fb:10:0:1 on bridge100 ifscope [ethernet]",
+		"? (192.168.64.12) at 7a:55:21:9:a:bc on bridge100 ifscope [ethernet]",
+		"? (192.168.65.1) at 3e:22:fb:10:0:2 on bridge101 ifscope [ethernet]",
+		"? (192.168.65.2) at a6:45:87:fa:bc:c1 on bridge101 ifscope [ethernet]",
+		"? (192.168.65.3) at (incomplete) on bridge101 ifscope [ethernet]",
+	}, "\n")
+
+	ip, err := discoverUtmVMIPv4WithOptions(t.TempDir(), vm, utmIPv4DiscoveryOptions{
+		readFile: os.ReadFile,
+		runCommand: func(_ string, timeout time.Duration, executable string, args []string) (string, error) {
+			arpCalls++
+			if executable != "arp" {
+				t.Fatalf("expected arp lookup, got executable %q", executable)
+			}
+			if !reflect.DeepEqual(args, []string{"-an"}) {
+				t.Fatalf("expected numeric arp -an invocation, got args %v", args)
+			}
+			if timeout != utmIPv4ARPCommandTimeout {
+				t.Fatalf("expected default arp command timeout %s, got %s", utmIPv4ARPCommandTimeout, timeout)
+			}
+			return arpOutput, nil
+		},
+		primeARPCache: func(context.Context) ([]string, error) {
+			primeCalls++
+			t.Fatal("did not expect ARP cache probe when first arp -an lookup hits")
+			return nil, nil
+		},
+		sleep: func(time.Duration) {
+			sleepCalls++
+			t.Fatal("did not expect retry sleep when first arp -an lookup hits")
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected first-attempt UTM IPv4 discovery to succeed, got error: %v", err)
+	}
+	if ip != "192.168.65.2" {
+		t.Fatalf("expected discovered IP 192.168.65.2, got %q", ip)
+	}
+	if arpCalls != 1 {
+		t.Fatalf("expected exactly 1 arp -an call, got %d", arpCalls)
+	}
+	if primeCalls != 0 {
+		t.Fatalf("expected 0 probe invocations on first-attempt hit, got %d", primeCalls)
+	}
+	if sleepCalls != 0 {
+		t.Fatalf("expected 0 sleeps on first-attempt hit, got %d", sleepCalls)
+	}
+}
+
+func TestSelectUtmProbeTargets_FiltersStrictlyToActiveBridgeInterfaces(t *testing.T) {
+	cidr := func(raw string) *net.IPNet {
+		ip, ipNet, err := net.ParseCIDR(raw)
+		if err != nil {
+			t.Fatalf("ParseCIDR(%q): %v", raw, err)
+		}
+		return &net.IPNet{IP: ip, Mask: ipNet.Mask}
+	}
+
+	interfaces := []utmHostInterface{
+		{Name: "lo0", Flags: net.FlagUp | net.FlagLoopback, Addrs: []net.Addr{cidr("127.0.0.1/8")}},
+		{Name: "en0", Flags: net.FlagUp | net.FlagBroadcast, Addrs: []net.Addr{cidr("192.168.1.50/24")}},
+		{Name: "utun4", Flags: net.FlagUp | net.FlagPointToPoint, Addrs: []net.Addr{cidr("10.8.0.1/24")}},
+		{Name: "bridge102", Flags: net.FlagBroadcast, Addrs: []net.Addr{cidr("192.168.66.1/24")}},
+		{Name: "bridge103", Flags: net.FlagUp | net.FlagBroadcast, Addrs: []net.Addr{cidr("198.51.100.1/24")}},
+		{Name: "bridge104", Flags: net.FlagUp | net.FlagBroadcast, Addrs: []net.Addr{cidr("fe80::1/64")}},
+		{Name: "bridge101", Flags: net.FlagUp | net.FlagBroadcast, Addrs: []net.Addr{cidr("192.168.65.1/24"), cidr("fe80::2/64")}},
+		{Name: "bridge100", Flags: net.FlagUp | net.FlagBroadcast, Addrs: []net.Addr{cidr("192.168.64.1/24")}},
+	}
+
+	targets := selectUtmProbeTargets(interfaces)
+	wantInterfaces := []string{"bridge100", "bridge101"}
+	if !reflect.DeepEqual(targets.CheckedInterfaces, wantInterfaces) {
+		t.Fatalf("expected checked bridge interfaces %v, got %v", wantInterfaces, targets.CheckedInterfaces)
+	}
+
+	// Two /24 subnets minus network, host, and broadcast addresses each: 253 + 253 = 506 candidates.
+	if len(targets.CandidateIPs) != 506 {
+		t.Fatalf("expected 506 bridge candidate IPs, got %d", len(targets.CandidateIPs))
+	}
+
+	candidateSet := make(map[string]struct{}, len(targets.CandidateIPs))
+	for _, candidate := range targets.CandidateIPs {
+		candidateSet[candidate] = struct{}{}
+	}
+	for _, wantPresent := range []string{"192.168.64.2", "192.168.64.254", "192.168.65.2", "192.168.65.254"} {
+		if _, ok := candidateSet[wantPresent]; !ok {
+			t.Fatalf("expected bridge candidate IP %s to be included", wantPresent)
+		}
+	}
+	for _, wantExcluded := range []string{
+		"127.0.0.1", "127.0.0.2",
+		"192.168.1.2", "192.168.1.50",
+		"10.8.0.1", "10.8.0.2",
+		"192.168.66.2", "198.51.100.2",
+		"192.168.64.0", "192.168.64.1", "192.168.64.255",
+		"192.168.65.0", "192.168.65.1", "192.168.65.255",
+	} {
+		if _, ok := candidateSet[wantExcluded]; ok {
+			t.Fatalf("did not expect non-bridge/down/excluded IP %s in probe candidates", wantExcluded)
+		}
+	}
+}
+
+func TestDiscoverUtmVMIPv4_BoundedBudgetErrorIncludesMACAndCheckedInterfaces(t *testing.T) {
+	vm := alchemy_build.VirtualMachineConfig{
+		OS:         "ubuntu",
+		UbuntuType: "server",
+		Arch:       "arm64",
+	}
+	writeTestUtmConfigPlist(t, vm, "A6:45:87:FA:BC:C1")
+
+	nowTime := time.Date(2026, 11, 27, 20, 0, 0, 0, time.UTC)
+	startTime := nowTime
+	var arpCalls int
+	var probeCalls int
+
+	var incompleteARP strings.Builder
+	for host := 2; host <= 254; host++ {
+		fmt.Fprintf(&incompleteARP, "? (192.168.64.%d) at (incomplete) on bridge100 ifscope [ethernet]\n", host)
+		fmt.Fprintf(&incompleteARP, "? (192.168.65.%d) at (incomplete) on bridge101 ifscope [ethernet]\n", host)
+	}
+
+	_, err := discoverUtmVMIPv4WithOptions(t.TempDir(), vm, utmIPv4DiscoveryOptions{
+		readFile: os.ReadFile,
+		now:      func() time.Time { return nowTime },
+		sleep: func(d time.Duration) {
+			nowTime = nowTime.Add(d)
+		},
+		runCommand: func(_ string, timeout time.Duration, executable string, args []string) (string, error) {
+			arpCalls++
+			if executable != "arp" || !reflect.DeepEqual(args, []string{"-an"}) {
+				t.Fatalf("expected numeric arp -an, got %s %v", executable, args)
+			}
+			if timeout <= 0 || timeout > utmIPv4ARPCommandTimeout {
+				t.Fatalf("expected clamped arp timeout within (0, %s], got %s", utmIPv4ARPCommandTimeout, timeout)
+			}
+			nowTime = nowTime.Add(200 * time.Millisecond)
+			return incompleteARP.String(), nil
+		},
+		primeARPCache: func(ctx context.Context) ([]string, error) {
+			probeCalls++
+			if _, ok := ctx.Deadline(); !ok {
+				t.Fatal("expected probe context to carry discovery deadline")
+			}
+			nowTime = nowTime.Add(1500 * time.Millisecond)
+			return []string{"bridge101", "bridge100"}, nil
+		},
+		discoveryBudget: 10 * time.Second,
+		retryInterval:   2 * time.Second,
+		arpCommandTimer: 5 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected deadline-bounded UTM IPv4 discovery to return an error")
+	}
+
+	elapsed := nowTime.Sub(startTime)
+	if elapsed > 10*time.Second {
+		t.Fatalf("expected deterministic elapsed time <= 10s budget, got %s", elapsed)
+	}
+	if arpCalls < 2 || probeCalls < 2 {
+		t.Fatalf("expected multiple lookup/probe rounds before budget expired, got arpCalls=%d probeCalls=%d", arpCalls, probeCalls)
+	}
+	if !strings.Contains(err.Error(), "a6:45:87:fa:bc:c1") {
+		t.Fatalf("expected error to include normalized MAC address, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "bridge100, bridge101") {
+		t.Fatalf("expected error to include checked bridge interfaces, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "budget 10s") {
+		t.Fatalf("expected error to include discovery budget, got: %v", err)
+	}
+}
+
+func TestDiscoverUtmVMIPv4_ReportsNoneWhenNoBridgeInterfacesFound(t *testing.T) {
+	vm := alchemy_build.VirtualMachineConfig{
+		OS:         "ubuntu",
+		UbuntuType: "server",
+		Arch:       "arm64",
+	}
+	writeTestUtmConfigPlist(t, vm, "A6:45:87:FA:BC:C1")
+
+	nowTime := time.Date(2026, 11, 27, 20, 0, 0, 0, time.UTC)
+
+	_, err := discoverUtmVMIPv4WithOptions(t.TempDir(), vm, utmIPv4DiscoveryOptions{
+		readFile: os.ReadFile,
+		now:      func() time.Time { return nowTime },
+		sleep: func(d time.Duration) {
+			nowTime = nowTime.Add(d)
+		},
+		runCommand: func(_ string, _ time.Duration, executable string, args []string) (string, error) {
+			if executable != "arp" || !reflect.DeepEqual(args, []string{"-an"}) {
+				t.Fatalf("expected arp -an, got %s %v", executable, args)
+			}
+			return "? (192.168.1.1) at 00:11:22:33:44:55 on en0 ifscope [ethernet]\n", nil
+		},
+		primeARPCache: func(ctx context.Context) ([]string, error) {
+			return primeUtmARPCacheWith(ctx, func() ([]utmHostInterface, error) {
+				_, ipNet, _ := net.ParseCIDR("192.168.1.50/24")
+				return []utmHostInterface{
+					{Name: "en0", Flags: net.FlagUp, Addrs: []net.Addr{ipNet}},
+				}, nil
+			}, func(context.Context, string, string) (net.Conn, error) {
+				t.Fatal("did not expect non-bridge interface en0 to be dialed")
+				return nil, nil
+			})
+		},
+		discoveryBudget: 4 * time.Second,
+		retryInterval:   2 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected error when no bridge* interfaces exist")
+	}
+	if !strings.Contains(err.Error(), "a6:45:87:fa:bc:c1") {
+		t.Fatalf("expected error to include normalized MAC address, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "checked bridge interfaces: none") {
+		t.Fatalf("expected error to state no bridge interfaces were found, got: %v", err)
+	}
+}
+
+func TestProbeUtmCandidateIPsWithDialer_TargetsPortAndRespectsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var mu sync.Mutex
+	var dialed []string
+
+	err := probeUtmCandidateIPsWithDialer(
+		ctx,
+		[]string{"192.168.65.2", "192.168.65.3", "192.168.65.4"},
+		50*time.Millisecond,
+		1,
+		func(_ context.Context, network string, address string) (net.Conn, error) {
+			if network != "tcp4" {
+				t.Fatalf("expected tcp4 dial, got %q", network)
+			}
+			mu.Lock()
+			dialed = append(dialed, address)
+			mu.Unlock()
+			cancel()
+			return nil, errors.New("connection refused")
+		},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled when cancelled mid-probe, got %v", err)
+	}
+	if len(dialed) != 1 || dialed[0] != "192.168.65.2:5985" {
+		t.Fatalf("expected single dialed probe 192.168.65.2:5985 before cancel, got %v", dialed)
 	}
 }
 

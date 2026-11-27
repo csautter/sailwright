@@ -7,6 +7,7 @@ set -e
 arch="arm64"
 os="windows11"
 instance_name=""
+network_mode="${SAILWRIGHT_UTM_NETWORK_MODE:-}"
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -39,6 +40,14 @@ while [[ $# -gt 0 ]]; do
         instance_name="$2"
 		shift 2
 		;;
+	--network)
+		if [[ -z "${2:-}" ]]; then
+			echo "Invalid value for --network: empty. Allowed values are 'shared' or 'bridged'." >&2
+			exit 1
+		fi
+		network_mode="$2"
+		shift 2
+		;;
 	--verbose)
 		set -x
 		shift
@@ -49,6 +58,26 @@ while [[ $# -gt 0 ]]; do
 		;;
 	esac
 done
+
+network_mode_plist=""
+if [[ -n "$network_mode" ]]; then
+	network_mode_lower=$(printf '%s' "$network_mode" | awk '{gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print tolower($0)}')
+	case "$network_mode_lower" in
+	"")
+		network_mode_plist=""
+		;;
+	shared)
+		network_mode_plist="Shared"
+		;;
+	bridged)
+		network_mode_plist="Bridged"
+		;;
+	*)
+		echo "Invalid UTM network mode: '$network_mode'. Allowed values are 'shared' or 'bridged'." >&2
+		exit 1
+		;;
+	esac
+fi
 
 script_dir=$(
 	cd "$(dirname "$0")" || exit 1
@@ -102,16 +131,51 @@ generate_uuid() {
 os_lower=$(echo "$os" | awk '{print tolower($0)}')
 os_lower_first_part=$(echo "$os_lower" | cut -d'-' -f1)
 
+apply_utm_network_mode() {
+	target_mode="$1"
+	awk -v mode="$target_mode" '
+		in_network && prev_mode_key {
+			sub(/<string>[^<]*<\/string>/, "<string>" mode "</string>")
+			prev_mode_key = 0
+		}
+		/<key>Network<\/key>/ { waiting_network_array = 1; print; next }
+		waiting_network_array && /<array>/ {
+			in_network = 1
+			waiting_network_array = 0
+			array_depth = 1
+			print
+			next
+		}
+		in_network {
+			if (/<array>/) { array_depth++ }
+			if (/<\/array>/) {
+				array_depth--
+				if (array_depth <= 0) { in_network = 0 }
+			}
+			if (array_depth == 1 && /<key>Mode<\/key>/) { prev_mode_key = 1 }
+		}
+		{ print }
+	'
+}
+
 if [ ! -f "$utm_vm_dir/$vm_name.utm/config.plist" ]; then
 	echo "Creating UTM VM config..."
 
+	config_tmp="$utm_vm_dir/$vm_name.utm/config.plist.tmp"
 	QCOW_IMAGE="$os-$arch.qcow2" \
 		VM_NAME="$vm_name" \
 		MAC_ADDRESS="$mac_address" \
 		UUID="$(generate_uuid)" \
 		UUID_CD="$(generate_uuid)" \
 		UUID_DISK="$(generate_uuid)" \
-		envsubst <"$project_root/deployments/utm/$os_lower_first_part-$arch/config.plist" >"$utm_vm_dir/$vm_name.utm/config.plist"
+		envsubst <"$project_root/deployments/utm/$os_lower_first_part-$arch/config.plist" >"$config_tmp"
+
+	if [ -n "$network_mode_plist" ]; then
+		apply_utm_network_mode "$network_mode_plist" <"$config_tmp" >"$utm_vm_dir/$vm_name.utm/config.plist"
+		rm -f "$config_tmp"
+	else
+		mv "$config_tmp" "$utm_vm_dir/$vm_name.utm/config.plist"
+	fi
 fi
 
 utm_qcow2="$utm_vm_dir/$vm_name.utm/Data/$os_lower-$arch.qcow2"
