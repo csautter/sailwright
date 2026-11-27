@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "linux-lifecycle",
+  "repo": "https://example.org/team/sailwright.git",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "target": {
+    "os": "linux",
+    "arch": "amd64"
+  },
+  "operation_class": "vm-lifecycle",
+  "time_limit_seconds": 7200,
+  "cleanup": "destroy-owned-vms",
+  "agent_instructions": "Use a disposable Linux host with a cached Ubuntu Server image. Select a unique VM name for this run. Verify the name is absent before creating the VM. Destroy only the VM created for this request, including after failure, and verify its absence.",
+  "required_tools": [
+    "virsh"
+  ],
+  "minimum_free_gib": 30,
+  "test_commands": [
+    "go build -o sailwright ./cmd",
+    "virsh --connect qemu:///session list --all --name",
+    "./sailwright create ubuntu --type server --arch amd64 --name sw-linux-lifecycle-a1b2",
+    "./sailwright start ubuntu --type server --arch amd64 --name sw-linux-lifecycle-a1b2",
+    "./sailwright destroy ubuntu --type server --arch amd64 --name sw-linux-lifecycle-a1b2",
+    "virsh --connect qemu:///session list --all --name"
+  ]
+}

@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sailwright host test result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "id", "request_commit", "commit", "status", "host",
+    "binary_sha256", "steps", "cleanup", "open_items", "follow_up"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,47}(?!\\s|\\S)",
+      "not": {"pattern": "^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?!\\s|\\S)"}
+    },
+    "request_commit": {"$ref": "#/$defs/sha"},
+    "commit": {"$ref": "#/$defs/sha"},
+    "status": {"enum": ["passed", "failed", "timed-out"]},
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "os_version", "arch", "hypervisors"],
+      "properties": {
+        "os": {"enum": ["darwin", "linux", "windows"]},
+        "os_version": {"$ref": "#/$defs/text"},
+        "arch": {"enum": ["amd64", "arm64"]},
+        "hypervisors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "version"],
+            "properties": {
+              "name": {"$ref": "#/$defs/text"},
+              "version": {"$ref": "#/$defs/text"}
+            }
+          }
+        }
+      }
+    },
+    "binary_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}(?!\\s|\\S)"},
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "status", "exit_code", "command", "duration_seconds"],
+        "properties": {
+          "name": {"$ref": "#/$defs/text"},
+          "status": {"enum": ["passed", "failed", "timed-out", "skipped"]},
+          "exit_code": {"type": ["integer", "null"]},
+          "command": {"$ref": "#/$defs/text"},
+          "duration_seconds": {"type": "number", "minimum": 0}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"status": {"const": "passed"}}},
+            "then": {"properties": {"exit_code": {"const": 0}}}
+          },
+          {
+            "if": {"properties": {"status": {"const": "failed"}}},
+            "then": {"properties": {"exit_code": {"type": "integer", "not": {"const": 0}}}}
+          },
+          {
+            "if": {"properties": {"status": {"const": "skipped"}}},
+            "then": {"properties": {"exit_code": {"type": "null"}, "duration_seconds": {"const": 0}}}
+          }
+        ]
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "owned_vms", "remaining_vms", "evidence"],
+      "properties": {
+        "status": {"enum": ["verified", "incomplete"]},
+        "owned_vms": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/text"}
+        },
+        "remaining_vms": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/text"}
+        },
+        "evidence": {"$ref": "#/$defs/text"}
+      },
+      "if": {"properties": {"status": {"const": "verified"}}},
+      "then": {"properties": {"remaining_vms": {"maxItems": 0}}}
+    },
+    "open_items": {"type": "array", "items": {"$ref": "#/$defs/text"}},
+    "follow_up": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "proposal", "reason"],
+        "properties": {
+          "kind": {"enum": ["scenario_proposal", "skill_correction", "issue_draft"]},
+          "proposal": {"$ref": "#/$defs/text"},
+          "reason": {"$ref": "#/$defs/text"}
+        }
+      }
+    }
+  },
+  "if": {"properties": {"status": {"const": "passed"}}},
+  "then": {
+    "properties": {
+      "binary_sha256": {"type": "string"},
+      "steps": {
+        "items": {"properties": {"status": {"enum": ["passed", "skipped"]}}},
+        "contains": {"properties": {"status": {"const": "passed"}}}
+      },
+      "cleanup": {"properties": {"status": {"const": "verified"}}}
+    }
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}(?!\\s|\\S)"},
+    "text": {"type": "string", "pattern": "\\S"}
+  }
+}

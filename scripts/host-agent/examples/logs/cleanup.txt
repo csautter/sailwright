@@ -1,0 +1,3 @@
+$ virsh --connect qemu:///session list --all --name
+[No domains returned]
+Exit code 0

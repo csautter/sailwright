@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "id": "linux-lifecycle",
+  "request_commit": "89abcdef0123456789abcdef0123456789abcdef",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "status": "passed",
+  "host": {
+    "os": "linux",
+    "os_version": "Ubuntu 26.04",
+    "arch": "amd64",
+    "hypervisors": [
+      {
+        "name": "libvirt",
+        "version": "12.0.0"
+      }
+    ]
+  },
+  "binary_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "steps": [
+    {
+      "name": "build Sailwright",
+      "status": "passed",
+      "exit_code": 0,
+      "command": "go build -o sailwright ./cmd",
+      "duration_seconds": 6.5
+    },
+    {
+      "name": "verify the VM name is available",
+      "status": "passed",
+      "exit_code": 0,
+      "command": "virsh --connect qemu:///session list --all --name",
+      "duration_seconds": 0.1
+    },
+    {
+      "name": "create the test VM",
+      "status": "passed",
+      "exit_code": 0,
+      "command": "./sailwright create ubuntu --type server --arch amd64 --name sw-linux-lifecycle-a1b2",
+      "duration_seconds": 3.7
+    },
+    {
+      "name": "start the test VM",
+      "status": "passed",
+      "exit_code": 0,
+      "command": "./sailwright start ubuntu --type server --arch amd64 --name sw-linux-lifecycle-a1b2",
+      "duration_seconds": 86.2
+    },
+    {
+      "name": "destroy the test VM",
+      "status": "passed",
+      "exit_code": 0,
+      "command": "./sailwright destroy ubuntu --type server --arch amd64 --name sw-linux-lifecycle-a1b2",
+      "duration_seconds": 2.2
+    },
+    {
+      "name": "verify test VM is absent",
+      "status": "passed",
+      "exit_code": 0,
+      "command": "virsh --connect qemu:///session list --all --name",
+      "duration_seconds": 0.1
+    }
+  ],
+  "cleanup": {
+    "status": "verified",
+    "owned_vms": [
+      "sw-linux-lifecycle-a1b2"
+    ],
+    "remaining_vms": [],
+    "evidence": "The post-cleanup inventory in logs/cleanup.txt has no entry for sw-linux-lifecycle-a1b2."
+  },
+  "open_items": [],
+  "follow_up": [
+    {
+      "kind": "scenario_proposal",
+      "proposal": "Add an explicit post-destroy inventory assertion.",
+      "reason": "The absence check currently runs as a separate step."
+    },
+    {
+      "kind": "skill_correction",
+      "proposal": "Record the libvirt connection URI in the report.",
+      "reason": "A separate session or system inventory could produce different results."
+    },
+    {
+      "kind": "issue_draft",
+      "proposal": "Include the VM instance name directly in the lifecycle summary.",
+      "reason": "It would make reconciliation with the final inventory easier."
+    }
+  ]
+}

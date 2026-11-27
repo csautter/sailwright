@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sailwright host test request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "id", "repo", "commit", "target", "time_limit_seconds",
+    "cleanup", "agent_instructions"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,47}(?!\\s|\\S)",
+      "not": {"pattern": "^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?!\\s|\\S)"}
+    },
+    "repo": {"type": "string", "minLength": 1},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}(?!\\s|\\S)"},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "arch"],
+      "properties": {
+        "os": {"enum": ["darwin", "linux", "windows"]},
+        "arch": {"enum": ["amd64", "arm64"]}
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*(?!\\s|\\S)"}
+    },
+    "test_commands": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "pattern": "\\S"}
+    },
+    "operation_class": {
+      "enum": ["vm-lifecycle", "host-changing"],
+      "default": "vm-lifecycle"
+    },
+    "human_approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approved_by", "scope"],
+      "properties": {
+        "approved_by": {"type": "string", "pattern": "\\S"},
+        "scope": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "pattern": "\\S"}
+        }
+      }
+    },
+    "time_limit_seconds": {"type": "integer", "minimum": 1},
+    "cleanup": {"const": "destroy-owned-vms"},
+    "agent_instructions": {"type": "string", "pattern": "\\S"},
+    "required_tools": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]*(?!\\s|\\S)"}
+    },
+    "minimum_free_gib": {"type": "integer", "minimum": 1, "default": 10}
+  },
+  "anyOf": [{"required": ["scenarios"]}, {"required": ["test_commands"]}],
+  "if": {
+    "required": ["operation_class"],
+    "properties": {"operation_class": {"const": "host-changing"}}
+  },
+  "then": {"required": ["human_approval"]},
+  "else": {"not": {"required": ["human_approval"]}}
+}
