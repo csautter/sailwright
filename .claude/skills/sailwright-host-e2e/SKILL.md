@@ -14,6 +14,12 @@ and capability probes. This gives no access or authorization to the outer
 hypervisor host. Keep guest lifecycle operations on the gateway.
 Read `docs/agent-gateway.md` once if you have not seen it.
 
+For direct host execution without an MCP gateway (L3 host test requests started
+by a human on macOS, Linux, or Windows via `docs/host-test-protocol.md`), use
+[`.claude/skills/sailwright-host-agent/SKILL.md`](../sailwright-host-agent/SKILL.md)
+instead; it reuses the scenario, disposable-guest, and Windows Hyper-V guidance
+below.
+
 ## Ground rules
 
 - In a devcontainer, never try to reach its host another way (SSH, Docker
