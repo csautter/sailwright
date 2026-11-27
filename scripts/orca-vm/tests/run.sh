@@ -25,6 +25,8 @@ ORCA_VM_SRC="$(cd "${TESTS_DIR}/.." && pwd)"
 bash "${TESTS_DIR}/github-auth-isolation.sh" || exit 1
 bash "${TESTS_DIR}/github-auth-lifecycle.sh" || exit 1
 bash "${TESTS_DIR}/github-auth-regression.sh" || exit 1
+bash "${TESTS_DIR}/initialize-host-kvm.sh" || exit 1
+bash "${TESTS_DIR}/kvm-preflight.sh" || exit 1
 LINK_AUTH_SRC="$(cd "${ORCA_VM_SRC}/../.." && pwd)/.devcontainer/link-agent-auth.sh"
 IS_WINDOWS=false
 case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=true ;; esac
@@ -206,6 +208,25 @@ assert_eq "host_mount: volume kept" "type=volume,source=v,target=/x" "$(lib "hos
 assert_eq "host_mount: existing bind kept" "source=${TMP}/home,target=/x" "$(lib "host_mount 'source=${TMP}/home,target=/x'")"
 assert_eq "translate_mount: workspace bind dropped" "" \
     "$(lib 'translate_mount "type=bind,source=/r,target=/workspaces/fixture-repo"')"
+
+# --- host_device -----------------------------------------------------------------
+: >"${TMP}/fake-dev"
+assert_eq "host_device: existing device path kept" "${TMP_PATH}/fake-dev" \
+    "$(lib "host_device '${TMP_PATH}/fake-dev'")"
+assert_eq "host_device: existing source:target kept" "${TMP_PATH}/fake-dev:/dev/kvm" \
+    "$(lib "host_device '${TMP_PATH}/fake-dev:/dev/kvm'")"
+assert_eq "host_device: existing source:target:perms kept" "${TMP_PATH}/fake-dev:/dev/kvm:rwm" \
+    "$(lib "host_device '${TMP_PATH}/fake-dev:/dev/kvm:rwm'")"
+assert_eq "host_device: missing host device skipped" "" \
+    "$(lib "host_device '${TMP_PATH}/missing-kvm:/dev/kvm:rwm'" 2>"${TMP}/host-device.log")"
+assert_true "host_device: missing host device logged" \
+    grep -qF "skipping device ${TMP_PATH}/missing-kvm (not found on this host)" "${TMP}/host-device.log"
+for bad_dev in "" ":/dev/kvm" "${TMP_PATH}/fake-dev:" "${TMP_PATH}/fake-dev::rwm" \
+    "${TMP_PATH}/fake-dev:/dev/kvm:" "${TMP_PATH}/fake-dev:/dev/kvm:rwm:extra" \
+    "${TMP_PATH}/fake-dev:/dev/kvm:xyz"; do
+    assert_eq "host_device: malformed spec '${bad_dev}' skipped" "" \
+        "$(lib "host_device '${bad_dev}'" 2>/dev/null)"
+done
 if $IS_WINDOWS; then
     assert_eq "windows: HOME and USERPROFILE joined only once" "${TMP}/home/.x" \
         "$(lib 'expand_vars "\${localEnv:HOME}\${localEnv:USERPROFILE}/.x"')"
@@ -240,6 +261,10 @@ assert_true "unsupported JSONC rejected" lib_fails true
 # The docker stub answers `compose ... config --format json` with a fixture
 # (its project name taken from -p, like compose) and logs every call.
 mkdir -p "${TMP}/cb/bin" "${TMP}/home/shared-cfg"
+: >"${TMP}/cb/dev-kvm"
+: >"${TMP}/cb/dev-only"
+: >"${TMP}/cb/dev-perms"
+: >"${TMP}/cb/dev-str"
 cat >"${TMP}/cb/config.json" <<EOF
 {
   "name": "__PROJECT__",
@@ -254,6 +279,14 @@ cat >"${TMP}/cb/config.json" <<EOF
         { "type": "volume", "source": "named", "target": "/data", "volume": {} },
         { "type": "volume", "source": "cache", "target": "/cache", "volume": {} },
         { "type": "volume", "source": "vsc", "target": "/root/.vscode-server/data", "volume": {} }
+      ],
+      "devices": [
+        { "source": "${TMP_PATH}/cb/dev-kvm", "target": "/dev/kvm", "permissions": "rwm" },
+        { "source": "${TMP_PATH}/cb/dev-only" },
+        { "source": "${TMP_PATH}/cb/dev-perms", "permissions": "rw" },
+        "${TMP_PATH}/cb/dev-str:/dev/custom",
+        { "source": "${TMP_PATH}/cb/missing-kvm", "target": "/dev/kvm", "permissions": "rwm" },
+        "${TMP_PATH}/cb/missing-str:/dev/missing-str"
       ],
       "environment": { "A": "1 2", "B": null },
       "extra_hosts": ["h=host-gateway"],
@@ -307,6 +340,36 @@ assert_true "compose: environment passed" grep -qxF 'A=1 2' <<<"$run_args"
 assert_true "compose: unset environment skipped" bash -c "! grep -q '^B=' <<<\"\$1\"" _ "$run_args"
 assert_true "compose: extra_hosts passed" grep -qxF -- '--add-host=h=host-gateway' <<<"$run_args"
 assert_true "compose: cap_add passed" grep -qxF -- '--cap-add=SYS_PTRACE' <<<"$run_args"
+assert_true "compose: existing object device (source:target:perms) passed" \
+    grep -qxF "${TMP_PATH}/cb/dev-kvm:/dev/kvm:rwm" <<<"$run_args"
+assert_true "compose: existing object device (source only) passed" \
+    grep -qxF "${TMP_PATH}/cb/dev-only" <<<"$run_args"
+assert_true "compose: existing object device (source+perms) expands target" \
+    grep -qxF "${TMP_PATH}/cb/dev-perms:${TMP_PATH}/cb/dev-perms:rw" <<<"$run_args"
+assert_true "compose: existing string device passed" \
+    grep -qxF "${TMP_PATH}/cb/dev-str:/dev/custom" <<<"$run_args"
+assert_eq "compose: four --device flags emitted for existing devices" "4" \
+    "$(grep -cxF -- '--device' <<<"$run_args")"
+assert_true "compose: missing object device skipped" \
+    bash -c '! grep -q missing-kvm <<<"$1"' _ "$run_args"
+assert_true "compose: missing string device skipped" \
+    bash -c '! grep -q missing-str <<<"$1"' _ "$run_args"
+assert_true "compose: missing object device logged" \
+    grep -qF "skipping device ${TMP_PATH}/cb/missing-kvm (not found on this host)" "${TMP}/cb/log"
+assert_true "compose: missing string device logged" \
+    grep -qF "skipping device ${TMP_PATH}/cb/missing-str (not found on this host)" "${TMP}/cb/log"
+# When only an optional /dev/kvm device is configured and absent, collect_run_args
+# must still succeed and emit no --device arguments.
+cp "${TMP}/cb/config.json" "${TMP}/cb/config.full.json"
+jq --arg p "${TMP_PATH}/cb/missing-kvm" \
+    '.services.dev.devices = [{source: $p, target: "/dev/kvm", permissions: "rwm"}]' \
+    "${TMP}/cb/config.full.json" >"${TMP}/cb/config.json"
+missing_only_args="$(cl "collect_run_args 2>'${TMP}/cb/missing-only.log'; printf '%s\n' \"\${DOCKER_RUN_ARGS[@]}\"")"
+assert_true "compose: container args succeed with no --device when /dev/kvm is absent" \
+    bash -c '! grep -qxF -- "--device" <<<"$1"' _ "$missing_only_args"
+assert_true "compose: missing-only /dev/kvm logged" \
+    grep -qF "skipping device ${TMP_PATH}/cb/missing-kvm (not found on this host)" "${TMP}/cb/missing-only.log"
+mv "${TMP}/cb/config.full.json" "${TMP}/cb/config.json"
 assert_true "compose: missing override file left out" bash -c "! grep -q compose.local.yaml '${TMP}/cb/docker.log'"
 rm -f "${TMP}/cb/docker.log"
 assert_eq "compose: base image built from the service" "t" "$(cl '_build_base_image t' 2>/dev/null)"
