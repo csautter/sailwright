@@ -262,16 +262,33 @@ can continue to communicate normal exit statuses in the range 0–255.
 
 The production hook starts a separate foreground process group on POSIX and
 uses a Windows Job Object on Windows. It supervises descendants during the
-run and restores the POSIX terminal to the operator. Linux also adopts
-orphaned provider descendants. On macOS, the process inventory can miss a
-process that deliberately detaches and is reparented between inspections.
-The lane prohibits detached jobs, and the operator should check native
-processes and VMs whenever cleanup is uncertain.
+run and restores the POSIX terminal to the operator. Linux adopts orphaned
+provider descendants via `PR_SET_CHILD_SUBREAPER` and confirms process-tree
+termination before releasing the lock. On macOS (and any POSIX platform without
+kernel orphan adoption), an ordinary job-control subprocess in its own process
+group can outlive the provider and be reparented between process scans, so
+sampling cannot prove all descendants stopped; the hook therefore fails closed
+by **retaining the active request lock** even when artifacts validate and
+requiring the operator to verify native processes and hypervisor inventory
+before manually removing the lock directory.
 
 After the process tree stops, the hook verifies the request bytes, result
-schema and pinned identities, report, regular artifact paths, private-key
-patterns, and required cleanup evidence. It commits only that validated
-snapshot, as a single child of the pinned request, in a fresh repository.
+schema and pinned identities, report, regular artifact paths, supported text
+encodings, private-key patterns across normalized text, bounded owned VM
+prefixes, and canonical cleanup evidence. Supported encodings are UTF-8 for
+`request.json`, `result.json`, and `report.md`, and UTF-8 or BOM-marked
+UTF-16LE/UTF-16BE for files under `logs/`; unsupported or opaque binary files
+are rejected, while accepted files are published byte-for-byte. The scanner
+checks normalized text for PEM/PKCS/OpenSSH private keys, OpenPGP private/secret
+key armor (`-----BEGIN PGP PRIVATE KEY BLOCK-----`), and PuTTY private key
+headers (`PuTTY-User-Key-File-*`). For long request IDs (over 16 characters, up
+to the 48-character schema limit), the hook derives one bounded,
+collision-resistant owned VM selector prefix (`sw-<stem>-<10-hex-hash>-`) and
+enforces the same prefix in both `launch-brief.md` and post-run verification so
+Sailwright `--name` selectors stay within Sailwright's 24-character maximum
+while keeping the full request ID for the results ref and `selftest/<id>/`
+directory. The hook commits only that validated snapshot, as a single child of
+the pinned request, in a fresh repository.
 The hook publishes that one commit to the original destination and exact
 `--results-ref` using the pinned request as the expected remote tip. URL
 rewrites, redirects during push, and concurrent changes to the ref cause the
@@ -302,14 +319,27 @@ source and request SHAs, host OS and version, architecture, hypervisor versions,
 SHA-256 of the tested binary, step commands, exit codes and durations. Use a
 null hash if a failed run never produced a binary. A skipped step has a null
 exit code and zero duration. A timed-out step may have a null exit code if none
-was available. Record created VM names and any remaining owned VMs. For each
-owned VM, record successful `Before create: <name>` and `After destroy: <name>`
-sections in `logs/cleanup.txt`, with the command prefixed by `$ `, its captured
-output, and `Exit code 0` at the end of each section. When no VMs are owned,
-capture both inventories under the name `no-vms`. The hook checks the shape
-and outcome of the records. The records are provider-reported evidence and
-native hypervisor checks establish actual VM state. Put outstanding work
-under `open_items` and proposed fixes under `follow_up`.
+was available. Record created VM names and any remaining owned VMs. For each owned VM (or
+`no-vms` when no VMs are created), record ordered `Before create: <name>` and
+`After destroy: <name>` sections in `logs/cleanup.txt` using the canonical
+inventory format:
+
+- `Backend: <backend> (<connection>)` — identical across both phases, using
+  `libvirt (qemu:///system)`, `libvirt (qemu:///session)`, `hyperv (local)`,
+  `tart (local)`, or `utm (local)`
+- `$ <command>` — matching the declared backend/connection and emitting exact
+  one VM name per line (`virsh --connect <uri> list --all --name`,
+  `Get-VM | Select-Object -ExpandProperty Name`, `tart list -q`, or
+  `utmctl list | awk 'NR > 1 { sub(/^[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+/, ""); print }'`)
+- Exact one-name-per-line inventory output, or the single line
+  `[No VMs returned]` when empty (multi-column tables and surviving owned
+  guests are rejected)
+- `Exit code 0` at the end of each section
+
+The hook validates the canonical shape, backend/connection match, absence of
+declared owned VMs, and exit status. The records remain provider-reported
+evidence; native hypervisor checks establish actual host VM state. Put
+outstanding work under `open_items` and proposed fixes under `follow_up`.
 Each follow-up has a proposal and reason, and a kind
 of `scenario_proposal`, `skill_correction` or `issue_draft`.
 

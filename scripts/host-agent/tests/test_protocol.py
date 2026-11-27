@@ -56,7 +56,10 @@ class SchemaTests(unittest.TestCase):
             self.assertIn(domain, text)
         cleanup_log = (SCRIPTS / "examples" / "logs" / "cleanup.txt").read_text(encoding="utf-8")
         for phase in ("Before create", "After destroy"):
-            self.assertIn(f"{phase}: {domain}\n$ {commands[1]}\n[No domains returned]\nExit code 0", cleanup_log)
+            self.assertIn(
+                f"{phase}: {domain}\nBackend: libvirt ({uri})\n$ {commands[1]}\n[No VMs returned]\nExit code 0",
+                cleanup_log,
+            )
 
     def test_request_defaults_and_invalid_fields(self):
         request = example("request")

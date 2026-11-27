@@ -127,12 +127,18 @@ Follow these steps in order:
      and use the no-VM cleanup evidence format before reporting.
 
 5. **Run pre-create inventory and name owned VMs.**
-   - Derive every VM/clone/bundle name from `request.id` (for example
-     `sw-<id>-<suffix>`, keeping Sailwright `--name` values within 1–24
-     lowercase alphanumeric/hyphen characters).
-   - Run the hypervisor inventory command to prove each target VM/domain is
-     absent and record the phase header, exact command, output, and exit code
-     in `<artifacts-dir>/selftest/<id>/logs/cleanup.txt`.
+   - Use the bounded owned VM name prefix provided by the launch hook in
+     `launch-brief.md` (which is `sw-<id>-` for request IDs up to 16
+     characters, or a bounded hash-derived prefix `sw-<stem>-<hash>-` for
+     longer request IDs up to 48 characters) so every Sailwright `--name`
+     selector stays within 1–24 lowercase alphanumeric/hyphen characters
+     (for example `<prefix>a1b2`). Keep the full `request.id` intact for the
+     results branch and `selftest/<id>/` directory.
+   - Run the canonical hypervisor inventory command for the target backend to
+     prove each target VM/domain is absent and record the phase header,
+     `Backend: <backend> (<connection>)`, exact command, one-name-per-line
+     output (or `[No VMs returned]`), and `Exit code 0` in
+     `<artifacts-dir>/selftest/<id>/logs/cleanup.txt`.
    - Do not create any VM if the pre-create inventory fails or shows an
      existing VM with that name.
 
@@ -160,20 +166,28 @@ Follow these steps in order:
 8. **Clean up owned VMs and verify post-destroy inventory.**
    - Destroy every owned VM, clone, temporary UTM bundle, and temporary disk
      created during the run — even after failures or timeouts.
-   - Re-run the exact hypervisor inventory command and append the post-destroy
-     command, output, and exit code to
+   - Re-run the exact same hypervisor inventory command against the same
+     backend and connection, and append the post-destroy record to
      `<artifacts-dir>/selftest/<id>/logs/cleanup.txt`.
-   - For each name in `cleanup.owned_vms`, record a `Before create: <name>` and
-     later an `After destroy: <name>` section. Each section starts with the
-     inventory command prefixed by `$ `, includes its captured output (or
-     `[No domains returned]` for empty output), and ends with `Exit code 0`
-     when successful. Use `no-vms` as the name and capture both inventories
-     around the work when the run has no owned VMs.
+   - Use the canonical inventory record format for every entry in
+     `cleanup.owned_vms` (or `no-vms` when the run creates no VMs), with
+     `Before create: <name>` strictly before `After destroy: <name>` and an
+     identical `Backend: <backend> (<connection>)` line in both phases:
+     - `Backend: libvirt (qemu:///system)` or `Backend: libvirt (qemu:///session)` with `virsh --connect <uri> list --all --name`
+     - `Backend: hyperv (local)` with `Get-VM | Select-Object -ExpandProperty Name`
+     - `Backend: tart (local)` with `tart list -q`
+     - `Backend: utm (local)` with `utmctl list | awk 'NR > 1 { sub(/^[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+/, ""); print }'`
+     Each section has `Backend: <backend> (<connection>)`, the command prefixed
+     by `$ `, exact one-name-per-line inventory output (or the single line
+     `[No VMs returned]` when empty; never multi-column tables), and
+     `Exit code 0` when successful.
    - Set `cleanup.status` to `"verified"` only when the inventories succeed and
      confirm the required absence and `remaining_vms` is `[]`. Otherwise set
      `"incomplete"`, list any remaining owned VMs, and record manual recovery
      steps in `open_items`. The hook retains these artifacts locally and
      leaves the active lock for operator recovery.
+   - These records are provider-reported evidence; native hypervisor inspection
+     establishes actual host VM state.
 
 9. **Write and validate results.**
    - Confirm `<artifacts-dir>/selftest/<id>/request.json` is byte-for-byte
@@ -187,6 +201,10 @@ Follow these steps in order:
    - Write `<artifacts-dir>/selftest/<id>/report.md` summarizing host facts,
      steps, observed findings, cleanup evidence, open items, and follow-up
      proposals.
+   - Write `result.json` and `report.md` as UTF-8, and write files under
+     `logs/` only in supported text encodings (UTF-8, or UTF-16LE/BE with BOM);
+     the hook rejects opaque binary files and scans normalized text for PEM,
+     OpenSSH, OpenPGP, and PuTTY private keys.
    - Scan `result.json`, `report.md`, and `logs/` to ensure no secrets,
      passwords, or private keys appear.
    - Validate using the **trusted** protocol tool (never from `--source-dir`):
@@ -238,6 +256,16 @@ Follow these steps in order:
     loopback via QMP `hostfwd_add` (`127.0.0.1`), never on a wildcard address,
     and never record guest credentials in reports or logs.
 
+  - **Canonical macOS cleanup inventories:** Record `Backend: tart (local)`
+    with `$ tart list -q` for Tart clones, or `Backend: utm (local)` with
+    `$ utmctl list | awk 'NR > 1 { sub(/^[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+/, ""); print }'`
+    for UTM bundles, using exact one-name-per-line output or
+    `[No VMs returned]`.
+  - **macOS lock retention:** Because macOS lacks kernel orphan adoption, the
+    launch hook retains the active request lock after provider exit even when
+    artifacts validate; the operator must confirm native processes and
+    hypervisor inventory before removing the lock directory.
+
 ### Windows (Hyper-V)
 
 - Reuse [`.claude/skills/sailwright-host-e2e/SKILL.md#windows-hyper-v-test-host`](../sailwright-host-e2e/SKILL.md#windows-hyper-v-test-host)
@@ -250,8 +278,11 @@ Follow these steps in order:
   `operation_class: "host-changing"` with explicit `human_approval`, the
   operator passed `--approve-host-changes`, and the elevated command stays
   strictly within `human_approval.scope`.
-- Record pre-create and post-destroy `Get-VM` inventories in
-  `selftest/<id>/logs/cleanup.txt` and touch only request-owned VM names.
+- Record pre-create and post-destroy canonical inventories in
+  `selftest/<id>/logs/cleanup.txt` using `Backend: hyperv (local)` and
+  `$ Get-VM | Select-Object -ExpandProperty Name` (exact one VM name per line
+  or `[No VMs returned]`, never raw `Get-VM` table rows), and touch only
+  request-owned VM names.
 
 ### Linux (libvirt / QEMU)
 
@@ -260,10 +291,11 @@ Follow these steps in order:
   `DEV_ALCHEMY_LIBVIRT_URI` (`qemu:///system` or `qemu:///session`) for every
   `sailwright` invocation and pass the matching `--connect <uri>` to every
   `virsh` invocation. Never mix `qemu:///system` and `qemu:///session` across
-  create, destroy, and inventory checks, and record the URI in `report.md` and
-  `logs/cleanup.txt`.
+  create, destroy, and inventory checks, and record `Backend: libvirt (<uri>)`
+  in `logs/cleanup.txt` and the URI in `report.md`.
 - **Exact full-domain inventory checks:** Match the exact full libvirt domain
   name (for example `ubuntu-server-amd64-<name>-dev-alchemy`) against
   `virsh --connect <uri> list --all --name` line-by-line (never substring
-  matching), confirming both `virsh` exit code `0` and exact absence before
-  creation and after destruction.
+  matching), recording one domain name per line or `[No VMs returned]`, and
+  confirming both `virsh` exit code `0` and exact absence before creation and
+  after destruction.

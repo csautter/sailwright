@@ -4,12 +4,14 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 REPO_ROOT = SCRIPTS.parents[1]
@@ -160,6 +162,7 @@ def main():
     results_dir = Path(extract(prompt, "Results artifact directory"))
     request_commit = extract(prompt, "Pinned request commit SHA")
     protocol_path = Path(extract(prompt, "Trusted protocol validator"))
+    vm_prefix = extract(prompt, "Owned VM name prefix")
 
     request = json.loads(request_path.read_text(encoding="utf-8"))
     req_id = request["id"]
@@ -172,15 +175,19 @@ def main():
     logs_dir = result_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    domain = f"ubuntu-server-amd64-sw-{req_id}-a1b2-dev-alchemy"
+    selector = f"{vm_prefix}a1b2"
+    assert re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,22}[a-z0-9])?", selector), f"invalid selector: {selector}"
+    domain = f"ubuntu-server-amd64-{selector}-dev-alchemy"
     cleanup_log = (
         f"Before create: {domain}\n"
+        f"Backend: libvirt (qemu:///system)\n"
         f"$ virsh --connect qemu:///system list --all --name\n"
-        f"[No domains returned]\n"
+        f"[No VMs returned]\n"
         f"Exit code 0\n\n"
         f"After destroy: {domain}\n"
+        f"Backend: libvirt (qemu:///system)\n"
         f"$ virsh --connect qemu:///system list --all --name\n"
-        f"[No domains returned]\n"
+        f"[No VMs returned]\n"
         f"Exit code 0\n"
     )
     if behavior == "private_key_leak":
@@ -188,11 +195,83 @@ def main():
     if behavior == "invalid_inventory":
         cleanup_log = cleanup_log.replace("Exit code 0", "Exit code 1", 1)
     if behavior == "still_present":
-        cleanup_log = cleanup_log.replace("[No domains returned]", domain, 1)
+        cleanup_log = cleanup_log.replace("[No VMs returned]", domain, 1)
+    if behavior == "windows_running_row":
+        cleanup_log = (
+            f"Before create: {domain}\n"
+            f"Backend: hyperv (local)\n"
+            f"$ Get-VM | Select-Object -ExpandProperty Name\n"
+            f"[No VMs returned]\n"
+            f"Exit code 0\n\n"
+            f"After destroy: {domain}\n"
+            f"Backend: hyperv (local)\n"
+            f"$ Get-VM | Select-Object -ExpandProperty Name\n"
+            f"{domain}   Running   0   2048   00:01:23.4567890   Operating normally   10.0\n"
+            f"Exit code 0\n"
+        )
+    if behavior == "windows_raw_get_vm":
+        cleanup_log = (
+            f"Before create: {domain}\n"
+            f"Backend: hyperv (local)\n"
+            f"$ Get-VM\n"
+            f"Name State\n"
+            f"---- -----\n"
+            f"other Running\n"
+            f"Exit code 0\n\n"
+            f"After destroy: {domain}\n"
+            f"Backend: hyperv (local)\n"
+            f"$ Get-VM\n"
+            f"Name State\n"
+            f"---- -----\n"
+            f"other Running\n"
+            f"Exit code 0\n"
+        )
+    if behavior == "mismatched_libvirt_uri":
+        cleanup_log = (
+            f"Before create: {domain}\n"
+            f"Backend: libvirt (qemu:///system)\n"
+            f"$ virsh --connect qemu:///system list --all --name\n"
+            f"[No VMs returned]\n"
+            f"Exit code 0\n\n"
+            f"After destroy: {domain}\n"
+            f"Backend: libvirt (qemu:///session)\n"
+            f"$ virsh --connect qemu:///session list --all --name\n"
+            f"[No VMs returned]\n"
+            f"Exit code 0\n"
+        )
+    if behavior == "command_uri_mismatch":
+        cleanup_log = (
+            f"Before create: {domain}\n"
+            f"Backend: libvirt (qemu:///system)\n"
+            f"$ virsh --connect qemu:///system list --all --name\n"
+            f"[No VMs returned]\n"
+            f"Exit code 0\n\n"
+            f"After destroy: {domain}\n"
+            f"Backend: libvirt (qemu:///system)\n"
+            f"$ virsh --connect qemu:///session list --all --name\n"
+            f"[No VMs returned]\n"
+            f"Exit code 0\n"
+        )
     if behavior == "no_vms":
         cleanup_log = cleanup_log.replace(domain, "no-vms")
     if behavior != "missing_cleanup":
         (logs_dir / "cleanup.txt").write_text(cleanup_log, encoding="utf-8")
+    if behavior == "pgp_private_key_leak":
+        (logs_dir / "pgp.txt").write_text(
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\nfake-synthetic-body\n-----END PGP PRIVATE KEY BLOCK-----\n",
+            encoding="utf-8",
+        )
+    if behavior == "utf16_openssh_key_leak":
+        (logs_dir / "win-step.txt").write_bytes(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\r\nfake-synthetic-body\r\n-----END OPENSSH PRIVATE KEY-----\r\n"
+            .encode("utf-16")
+        )
+    if behavior == "opaque_binary_log":
+        (logs_dir / "opaque.bin").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00")
+    if behavior == "bomless_utf16_log":
+        (logs_dir / "bomless.txt").write_bytes("-----BEGIN OPENSSH PRIVATE KEY-----".encode("utf-16-le"))
+    if behavior == "utf16_valid_log":
+        (logs_dir / "win-redacted.txt").write_bytes("Guest password: [REDACTED]\r\n".encode("utf-16"))
     (logs_dir / "step.txt").write_bytes(b"Guest password: [REDACTED]\r\n")
 
     binary_sha = hashlib.sha256(f"fake-sailwright-{source_sha}".encode("utf-8")).hexdigest()
@@ -225,7 +304,7 @@ def main():
                 "name": "execute fixture lifecycle check",
                 "status": step_status,
                 "exit_code": step_exit,
-                "command": f"DEV_ALCHEMY_LIBVIRT_URI=qemu:///system ./sailwright create ubuntu --name sw-{req_id}-a1b2",
+                "command": f"DEV_ALCHEMY_LIBVIRT_URI=qemu:///system ./sailwright create ubuntu --name {selector}",
                 "duration_seconds": 0.4,
             },
         ],
@@ -385,6 +464,7 @@ class TemplateGuardrailTests(unittest.TestCase):
             "Bash(sudo:*)",
             "Bash(sailwright provision local:*)",
             "Bash(sailwright install:*)",
+            "Bash(sailwright self-update:*)",
             "Bash(git push -f)",
             "Bash(git -C * status *)",
             "Bash(claude --dangerously-skip-permissions:*)",
@@ -397,6 +477,7 @@ class TemplateGuardrailTests(unittest.TestCase):
         for removed_substring in (
             "provision local",
             "install",
+            "self-update",
             "sudo",
             "Bash(git:*)",
             "Bash(claude:*)",
@@ -478,6 +559,8 @@ class TemplateGuardrailTests(unittest.TestCase):
 
         for original in (
             'pattern = ["sailwright", "install"]',
+            'pattern = ["sailwright", "self-update"]',
+            'pattern = ["./sailwright", "self-update"]',
             'pattern = ["virsh", "--connect", "qemu:///system", "undefine"]',
             'pattern = ["virsh", "-c", "qemu:///session", "destroy"]',
         ):
@@ -497,8 +580,16 @@ class TemplateGuardrailTests(unittest.TestCase):
         self.assertNotIn("Bash(*sailwright* install*)", effective_claude["permissions"]["deny"])
         # Unapproved host-changing commands and bypass flags stay strictly denied.
         self.assertIn("Bash(*sailwright* provision local*)", effective_claude["permissions"]["deny"])
+        self.assertIn("Bash(*sailwright* self-update*)", effective_claude["permissions"]["deny"])
         self.assertIn("Bash(sudo:*)", effective_claude["permissions"]["deny"])
         self.assertIn("Bash(*--dangerously-skip-permissions*)", effective_claude["permissions"]["deny"])
+
+        self_update_categories = launch.approved_host_change_categories(["sailwright self-update"])
+        self.assertEqual(self_update_categories, {"self_update"})
+        effective_claude_su = launch.materialize_claude_settings(base_claude, self_update_categories)
+        self.assertIn("Bash(*sailwright* self-update*)", effective_claude_su["permissions"]["ask"])
+        self.assertIn("Bash(*sailwright* install*)", effective_claude_su["permissions"]["deny"])
+        self.assertIn("Bash(*sailwright* provision local*)", effective_claude_su["permissions"]["deny"])
 
         base_rules = launch.validate_codex_rules(launch.DEFAULT_CODEX_RULES.read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory(prefix="codex-rules-test-") as tmp:
@@ -532,10 +623,24 @@ class TemplateGuardrailTests(unittest.TestCase):
             self.assertEqual(parsed_approved[(str(source_dir / "sailwright"), "install")], "prompt")
             self.assertEqual(parsed_approved[(str(source_dir / "sailwright.exe"), "install")], "prompt")
             self.assertEqual(parsed_approved[("sailwright", "provision", "local")], "forbidden")
+            self.assertEqual(parsed_approved[("sailwright", "self-update")], "forbidden")
+            self.assertEqual(parsed_approved[("./sailwright", "self-update")], "forbidden")
             self.assertEqual(parsed_approved[(str(source_dir / "sailwright"), "provision", "local")], "forbidden")
+            self.assertEqual(parsed_approved[(str(source_dir / "sailwright"), "self-update")], "forbidden")
             self.assertEqual(parsed_approved[(str(source_dir / "sailwright"), "destroy", "all")], "forbidden")
             self.assertEqual(parsed_approved[("git",)], "forbidden")
             self.assertEqual(parsed_approved[("codex",)], "forbidden")
+
+            rendered_su = launch.render_codex_rules(
+                base_rules, self_update_categories, source_dir=source_dir
+            )
+            parsed_su = {
+                rule["pattern"]: rule["decision"] for rule in launch.parse_codex_rules(rendered_su)
+            }
+            self.assertEqual(parsed_su[("sailwright", "self-update")], "prompt")
+            self.assertEqual(parsed_su[("./sailwright", "self-update")], "prompt")
+            self.assertEqual(parsed_su[(str(source_dir / "sailwright"), "self-update")], "prompt")
+            self.assertEqual(parsed_su[("sailwright", "install")], "forbidden")
 
     @unittest.skipUnless(shutil.which("codex"), "offline Codex policy engine not installed")
     def test_codex_execpolicy_forbids_git_and_nested_launches(self):
@@ -554,6 +659,8 @@ class TemplateGuardrailTests(unittest.TestCase):
                 ("forbidden", ["claude.cmd", "--model", "test", "--dangerously-skip-permissions"]),
                 ("prompt", ["sailwright", "install"]),
                 ("forbidden", ["sailwright", "provision", "local"]),
+                ("forbidden", ["sailwright", "self-update"]),
+                ("forbidden", ["./sailwright", "self-update"]),
             ):
                 with self.subTest(argv=argv):
                     result = subprocess.check_output(
@@ -584,6 +691,132 @@ class TemplateGuardrailTests(unittest.TestCase):
         self.assertIn("launch-brief.md", doc_text)
         self.assertIn("/exit", doc_text)
         self.assertIn("Ctrl+C", doc_text)
+
+    def test_owned_vm_prefix_boundary_and_max_length(self):
+        selector_pattern = re.compile(r"^[a-z0-9]([a-z0-9-]{0,22}[a-z0-9])?$")
+        # Short IDs up to 16 chars preserve exact sw-<id>- compatibility.
+        self.assertEqual(launch.owned_vm_prefix("linux-lifecycle"), "sw-linux-lifecycle-")
+        id_16 = "a" * 16
+        prefix_16 = launch.owned_vm_prefix(id_16)
+        self.assertEqual(prefix_16, f"sw-{id_16}-")
+        self.assertEqual(len(prefix_16 + "a1b2"), 24)
+        self.assertRegex(prefix_16 + "a1b2", selector_pattern)
+
+        # Past the 16-char boundary (17, 27, 48 chars), prefix stays bounded <= 20 chars
+        # so a 4-char suffix always fits Sailwright's 24-character maximum.
+        for req_id in ("a" * 17, "a" * 27, "long-request-" + "a" * 35, "a----" + "b" * 43):
+            prefix = launch.owned_vm_prefix(req_id)
+            selector = f"{prefix}a1b2"
+            with self.subTest(req_id_len=len(req_id)):
+                self.assertLessEqual(len(prefix), launch.MAX_OWNED_VM_PREFIX_LEN)
+                self.assertLessEqual(len(selector), launch.MAX_SAILWRIGHT_SELECTOR_LEN)
+                self.assertTrue(prefix.startswith("sw-") and prefix.endswith("-"))
+                self.assertRegex(selector, selector_pattern)
+
+        # Collision-resistant across full 48-char IDs differing only in the last char.
+        max_a = "long-request-" + "a" * 34 + "1"
+        max_b = "long-request-" + "a" * 34 + "2"
+        self.assertEqual(len(max_a), 48)
+        self.assertEqual(len(max_b), 48)
+        self.assertNotEqual(launch.owned_vm_prefix(max_a), launch.owned_vm_prefix(max_b))
+
+    def test_posix_two_snapshot_reparented_child_cannot_confirm_termination(self):
+        class FakeProcess:
+            pid = 501
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        class FakeScanner:
+            def __init__(self, output):
+                self.pid = 9999
+                self.returncode = 0
+                self._output = output
+
+            def communicate(self, timeout=None):
+                return self._output, ""
+
+        snapshots = iter([
+            "501 100 501 S Mon Jan  1 00:00:00 2026\n",
+            "502 1 502 S Mon Jan  1 00:00:01 2026\n",
+        ])
+
+        with patch.object(launch.subprocess, "Popen", side_effect=lambda *a, **kw: FakeScanner(next(snapshots))):
+            tree = launch.PosixProcessTree(FakeProcess(), adopted_parent=None)
+            self.assertEqual(list(tree.live_members()), [501])
+            # Leader exited and ordinary job-control child 502 was reparented to PID 1.
+            self.assertEqual(tree.live_members(), {})
+
+        # stop() on a non-adopting POSIX path must NOT confirm termination even when live_members() is empty.
+        stop_snapshots = iter(["502 1 502 S Mon Jan  1 00:00:01 2026\n"])
+        with patch.object(launch.subprocess, "Popen", side_effect=lambda *a, **kw: FakeScanner(next(stop_snapshots))):
+            tree = launch.PosixProcessTree(FakeProcess(), adopted_parent=None)
+            self.assertFalse(tree.stop())
+
+        # With Linux subreaper adoption, a child reparented to adopted_parent stays tracked.
+        adopted_snapshots = iter(["502 100 502 S Mon Jan  1 00:00:01 2026\n"])
+        with patch.object(launch.subprocess, "Popen", side_effect=lambda *a, **kw: FakeScanner(next(adopted_snapshots))):
+            tree = launch.PosixProcessTree(FakeProcess(), adopted_parent=100)
+            self.assertEqual(list(tree.live_members()), [502])
+
+    def test_verify_cleanup_canonical_backends_and_rejections(self):
+        vm = "ubuntu-server-amd64-sw-demo-a1b2-dev-alchemy"
+        result_doc = {"cleanup": {"status": "verified", "owned_vms": [vm], "remaining_vms": []}}
+
+        valid_cases = [
+            ("libvirt", "qemu:///system", "$ virsh --connect qemu:///system list --all --name", "[No VMs returned]"),
+            ("libvirt", "qemu:///session", "$ virsh --connect qemu:///session list --all --name", "foreign-domain"),
+            ("hyperv", "local", "$ Get-VM | Select-Object -ExpandProperty Name", "Windows 11"),
+            ("tart", "local", "$ tart list -q", "tahoe-runner"),
+            (
+                "utm",
+                "local",
+                "$ utmctl list | awk 'NR > 1 { sub(/^[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+/, \"\"); print }'",
+                "Ubuntu Dev",
+            ),
+        ]
+        for backend, conn, cmd, output in valid_cases:
+            log = (
+                f"Before create: {vm}\nBackend: {backend} ({conn})\n{cmd}\n{output}\nExit code 0\n\n"
+                f"After destroy: {vm}\nBackend: {backend} ({conn})\n{cmd}\n{output}\nExit code 0\n"
+            )
+            with self.subTest(backend=backend, conn=conn):
+                launch.verify_cleanup(result_doc, log.encode("utf-8"))
+
+        # Legacy format without Backend header is rejected.
+        legacy = (
+            f"Before create: {vm}\n$ virsh --connect qemu:///system list --all --name\n[No VMs returned]\nExit code 0\n\n"
+            f"After destroy: {vm}\n$ virsh --connect qemu:///system list --all --name\n[No VMs returned]\nExit code 0\n"
+        )
+        with self.assertRaisesRegex(launch.LaunchError, "canonical `Backend:"):
+            launch.verify_cleanup(result_doc, legacy.encode("utf-8"))
+
+        # Single-space collapsed Hyper-V Running row is rejected.
+        collapsed_row = (
+            f"Before create: {vm}\nBackend: hyperv (local)\n$ Get-VM | Select-Object -ExpandProperty Name\n[No VMs returned]\nExit code 0\n\n"
+            f"After destroy: {vm}\nBackend: hyperv (local)\n$ Get-VM | Select-Object -ExpandProperty Name\n{vm} Running\nExit code 0\n"
+        )
+        with self.assertRaisesRegex(launch.LaunchError, "still lists an owned VM"):
+            launch.verify_cleanup(result_doc, collapsed_row.encode("utf-8"))
+
+        # Mixed empty sentinel and VM name is rejected.
+        mixed = (
+            f"Before create: {vm}\nBackend: tart (local)\n$ tart list -q\n[No VMs returned]\ntahoe-runner\nExit code 0\n\n"
+            f"After destroy: {vm}\nBackend: tart (local)\n$ tart list -q\n[No VMs returned]\nExit code 0\n"
+        )
+        with self.assertRaisesRegex(launch.LaunchError, "cannot mix"):
+            launch.verify_cleanup(result_doc, mixed.encode("utf-8"))
+
+        # Raw table command for Tart without -q/--quiet is rejected.
+        raw_tart = (
+            f"Before create: {vm}\nBackend: tart (local)\n$ tart list\n[No VMs returned]\nExit code 0\n\n"
+            f"After destroy: {vm}\nBackend: tart (local)\n$ tart list\n[No VMs returned]\nExit code 0\n"
+        )
+        with self.assertRaisesRegex(launch.LaunchError, "tart list -q"):
+            launch.verify_cleanup(result_doc, raw_tart.encode("utf-8"))
 
 
 @unittest.skipUnless(os.name == "nt", "requires native Windows Job Objects")
@@ -985,9 +1218,17 @@ class EndToEndDryRunTests(unittest.TestCase):
             ("outside_file", "unexpected path in results"),
             ("symlink_log", "symlinks and reparse points are forbidden"),
             ("private_key_leak", "private key material"),
+            ("pgp_private_key_leak", "private key material"),
+            ("utf16_openssh_key_leak", "private key material"),
+            ("opaque_binary_log", "unsupported opaque or binary bytes"),
+            ("bomless_utf16_log", "unsupported opaque or binary bytes"),
             ("missing_cleanup", "missing required nonempty logs/cleanup.txt"),
             ("invalid_inventory", "exit code 0 per phase"),
             ("still_present", "inventory still lists an owned VM"),
+            ("windows_running_row", "inventory still lists an owned VM"),
+            ("windows_raw_get_vm", "Hyper-V inventory command"),
+            ("mismatched_libvirt_uri", "same backend and connection"),
+            ("command_uri_mismatch", "libvirt inventory command must target only qemu:///system"),
             ("provider_git_history", "invalid result path '.git'"),
             ("incomplete_cleanup", "reports incomplete cleanup"),
         ]
@@ -1014,6 +1255,88 @@ class EndToEndDryRunTests(unittest.TestCase):
         env = {**self.env, "FAKE_PROVIDER_BEHAVIOR": "no_vms"}
         self.run_cli("bash", "-c", posix, env=env)
         self.assert_pushed_valid_result(ref, pin)
+
+    def test_valid_utf16_redacted_log_passes_and_preserves_original_bytes(self):
+        self.request["id"] = "dryrun-utf16-ok"
+        posix, _, ref, pin = self.publish()
+        env = {**self.env, "FAKE_PROVIDER_BEHAVIOR": "utf16_valid_log"}
+        self.run_cli("bash", "-c", posix, status=0, env=env)
+        self.assert_pushed_valid_result(ref, pin, expected_status="passed")
+        new_sha = self.git("--git-dir", str(self.results_repo), "rev-parse", ref).strip()
+        stored = subprocess.check_output([
+            "git", "--git-dir", str(self.results_repo), "show",
+            f"{new_sha}:selftest/{self.request['id']}/logs/win-redacted.txt",
+        ])
+        self.assertEqual(stored, "Guest password: [REDACTED]\r\n".encode("utf-16"))
+
+    def test_boundary_and_max_length_request_ids_publish_with_valid_selectors(self):
+        for req_id in ("a" * 16, "a" * 17, "long-request-" + "x" * 35):
+            with self.subTest(req_id_len=len(req_id)):
+                self.request["id"] = req_id
+                posix, _, ref, pin = self.publish()
+                self.run_cli("bash", "-c", posix, status=0)
+                self.assert_pushed_valid_result(ref, pin, expected_status="passed")
+                new_sha = self.git("--git-dir", str(self.results_repo), "rev-parse", ref).strip()
+                result_doc = json.loads(subprocess.check_output([
+                    "git", "--git-dir", str(self.results_repo), "show",
+                    f"{new_sha}:selftest/{req_id}/result.json",
+                ]).decode("utf-8"))
+                self.assertEqual(result_doc["id"], req_id)
+                prefix = launch.owned_vm_prefix(req_id)
+                expected_domain = f"ubuntu-server-amd64-{prefix}a1b2-dev-alchemy"
+                self.assertEqual(result_doc["cleanup"]["owned_vms"], [expected_domain])
+
+    def test_non_adopting_posix_retains_lock_even_with_valid_results(self):
+        # Simulate macOS (non-adopting POSIX) with the exact two-snapshot reparented
+        # job-control child scenario: valid artifacts must NOT release the active lock.
+        wrapper_hook = self.root / "non-adopting-hook.py"
+        wrapper_hook.write_text(
+            "import os, sys\n"
+            f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+            "import launch\n"
+            "real_popen = launch.subprocess.Popen\n"
+            "state = {'provider_pid': 501, 'calls': 0}\n"
+            "class FakeScanner:\n"
+            "    def __init__(self, out):\n"
+            "        self.pid = 999999\n"
+            "        self.returncode = 0\n"
+            "        self._out = out\n"
+            "    def communicate(self, timeout=None):\n"
+            "        return self._out, ''\n"
+            "def patched_popen(cmd, *args, **kwargs):\n"
+            "    if isinstance(cmd, list) and cmd and str(cmd[0]).endswith('ps'):\n"
+            "        state['calls'] += 1\n"
+            "        pid = state['provider_pid']\n"
+            "        if state['calls'] == 1:\n"
+            "            return FakeScanner(f'{pid} {os.getpid()} {pid} S Mon Jan  1 00:00:00 2026\\n')\n"
+            "        orphan = pid + 10000\n"
+            "        return FakeScanner(f'{orphan} 1 {orphan} S Mon Jan  1 00:00:01 2026\\n')\n"
+            "    proc = real_popen(cmd, *args, **kwargs)\n"
+            "    if kwargs.get('process_group') == 0:\n"
+            "        state['provider_pid'] = proc.pid\n"
+            "    return proc\n"
+            "launch.sys.platform = 'darwin'\n"
+            "launch.subprocess.Popen = patched_popen\n"
+            "raise SystemExit(launch.main())\n",
+            encoding="utf-8",
+        )
+        self.request["id"] = "dryrun-non-adopting"
+        posix, _, ref, pin = self.publish()
+        env = {**self.env, "SAILWRIGHT_HOST_AGENT_HOOK": str(wrapper_hook)}
+        run = self.run_cli("bash", "-c", posix, status=0, env=env)
+        self.assertIn("cannot confirm absence of reparented descendants", run.stderr)
+        self.assertIn("active request lock retained", run.stderr)
+        # Valid artifacts cannot clear the lock on a non-adopting POSIX path.
+        self.assertTrue((self.work / "active" / "cleanup-pending").is_file())
+
+        # Subsequent request stays blocked until operator recovery removes the lock.
+        self.request["id"] = "dryrun-after-non-adopting"
+        next_posix, _, next_ref, next_pin = self.publish()
+        blocked = self.run_cli("bash", "-c", next_posix, status=1)
+        self.assertIn("an active request lock exists", blocked.stderr)
+        shutil.rmtree(self.work / "active")
+        self.run_cli("bash", "-c", next_posix, status=0)
+        self.assert_pushed_valid_result(next_ref, next_pin, expected_status="passed")
 
     def test_provider_cannot_write_extra_results_ref(self):
         posix, _, ref, pin = self.publish()

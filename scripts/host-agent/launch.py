@@ -4,6 +4,7 @@
 import argparse
 import ast
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -59,13 +60,40 @@ FORBIDDEN_BYPASS_TOKENS = (
     "--bypass-approvals",
 )
 
-PRIVATE_KEY_PATTERN = re.compile(rb"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
+PRIVATE_KEY_PATTERNS = (
+    re.compile(r"-----BEGIN [A-Z0-9 -]*PRIVATE KEY(?: BLOCK)?-----", re.IGNORECASE),
+    re.compile(r"-----BEGIN PGP (?:PRIVATE|SECRET) KEY BLOCK-----", re.IGNORECASE),
+    re.compile(r"^PuTTY-User-Key-File-[0-9]+:", re.IGNORECASE | re.MULTILINE),
+)
+
+MAX_SAILWRIGHT_SELECTOR_LEN = 24
+MIN_SELECTOR_SUFFIX_LEN = 4
+MAX_OWNED_VM_PREFIX_LEN = MAX_SAILWRIGHT_SELECTOR_LEN - MIN_SELECTOR_SUFFIX_LEN
+OWNED_VM_HASH_LEN = 10
+
+EMPTY_INVENTORY_SENTINEL = "[No VMs returned]"
+SUPPORTED_INVENTORY_BACKENDS = {
+    "libvirt": frozenset({"qemu:///system", "qemu:///session"}),
+    "hyperv": frozenset({"local"}),
+    "tart": frozenset({"local"}),
+    "utm": frozenset({"local"}),
+}
+INVENTORY_TABLE_STATES = frozenset({
+    "running", "off", "saved", "paused", "starting", "stopping",
+    "started", "stopped", "suspended", "shut", "idle", "crashed", "pmsuspended",
+})
+INVENTORY_TABLE_HEADER = re.compile(
+    r"^(?:Name|Id|UUID|Source)\b.*(?:\bState\b|\bStatus\b|\bName\b|\bDisk\b|\bMemoryAssigned)",
+    re.IGNORECASE,
+)
 
 REQUIRED_CODEX_FORBIDDEN_PATTERNS = (
     ("sailwright", "provision", "local"),
     ("./sailwright", "provision", "local"),
     ("sailwright", "install"),
     ("./sailwright", "install"),
+    ("sailwright", "self-update"),
+    ("./sailwright", "self-update"),
     ("sailwright", "destroy", "all"),
     ("sailwright", "stop", "all"),
     ("sudo",),
@@ -264,6 +292,7 @@ def validate_claude_settings(settings):
     required_checks = [
         ("sailwright provision local", lambda r: "sailwright" in r and "provision local" in r),
         ("sailwright install", lambda r: "sailwright" in r and "install" in r),
+        ("sailwright self-update", lambda r: "sailwright" in r and "self-update" in r),
         ("sailwright destroy all", lambda r: "sailwright" in r and "destroy all" in r),
         ("sailwright stop all", lambda r: "sailwright" in r and "stop all" in r),
         ("sudo", lambda r: bool(re.search(r"\bsudo\b", r))),
@@ -551,8 +580,20 @@ def render_codex_rules(rules, approved_categories, source_dir=None):
     return "\n".join(lines)
 
 
+def owned_vm_prefix(request_id):
+    short_prefix = f"sw-{request_id}-"
+    if len(short_prefix) <= MAX_OWNED_VM_PREFIX_LEN:
+        return short_prefix
+    digest = hashlib.sha256(request_id.encode("ascii")).hexdigest()[:OWNED_VM_HASH_LEN]
+    max_stem = MAX_OWNED_VM_PREFIX_LEN - len("sw--") - OWNED_VM_HASH_LEN - 1
+    stem = request_id[:max_stem].rstrip("-")
+    if stem:
+        return f"sw-{stem}-{digest}-"
+    return f"sw-{digest}-"
+
+
 def render_prompt(args, request, skill_file, protocol_path, approved_categories, artifacts_dir):
-    vm_prefix = f"sw-{request['id']}-"
+    vm_prefix = owned_vm_prefix(request["id"])
     approval_lines = ["Host-changing approval: NOT approved (operation_class is vm-lifecycle)."]
     if request["operation_class"] == "host-changing" and args.approve_host_changes:
         human_approval = request["human_approval"]
@@ -584,6 +625,7 @@ def render_prompt(args, request, skill_file, protocol_path, approved_categories,
         f"- Time limit (seconds): `{request['time_limit_seconds']}`",
         f"- Cleanup policy: `{request['cleanup']}`",
         f"- Owned VM name prefix: `{vm_prefix}`",
+        f"- Sailwright `--name` selector rule: start with `{vm_prefix}` and stay within {MAX_SAILWRIGHT_SELECTOR_LEN} characters total (for example `{vm_prefix}a1b2`).",
         "",
         *approval_lines,
         "",
@@ -593,8 +635,10 @@ def render_prompt(args, request, skill_file, protocol_path, approved_categories,
         "- Never activate project settings, hooks, or MCP servers from `--source-dir`.",
         "- Never touch existing, default, or foreign VMs; use disposable clones only and verify absence before create.",
         "- Clean up every owned VM before exiting (including after failures or timeouts) and save pre-create and",
-        f"  post-destroy inventories with exit codes to `{artifacts_dir}/selftest/{request['id']}/logs/cleanup.txt`.",
-        "- Redact all secrets, tokens, private keys, and guest passwords before writing logs or reports.",
+        f"  post-destroy canonical inventories (`Backend:`, `$ <command>`, one VM name per line or `{EMPTY_INVENTORY_SENTINEL}`,",
+        f"  and `Exit code 0`) to `{artifacts_dir}/selftest/{request['id']}/logs/cleanup.txt`.",
+        "- Redact all secrets, tokens, private keys, and guest passwords before writing logs or reports, and write",
+        "  only supported text encodings (UTF-8 for JSON/Markdown; UTF-8 or BOM-marked UTF-16 for logs).",
         f"- Preserve `{artifacts_dir}/selftest/{request['id']}/request.json` byte-for-byte.",
         f"- Write `{artifacts_dir}/selftest/{request['id']}/result.json`, `report.md`, and `logs/`.",
         f"- Validate with `python3 -B {protocol_path} validate result {artifacts_dir}/selftest/{request['id']}/result.json`.",
@@ -714,7 +758,9 @@ class PosixProcessTree:
                 members = self.live_members()
                 if not members:
                     self.process.wait(timeout=5)
-                    return
+                    # Without kernel orphan adoption, a reparented job-control child
+                    # in its own process group can disappear between snapshots.
+                    return self.adopted_parent is not None
                 for pid, started in members.items():
                     identity = (pid, started)
                     if identity in signalled:
@@ -767,6 +813,7 @@ def run_posix_provider(command, cwd, env, timeout):
     # the provider gives them separate process groups.
     process = subprocess.Popen(command, cwd=cwd, env=env, process_group=0)
     tree = PosixProcessTree(process, adopted_parent)
+    termination_confirmed = False
     try:
         if foreground is not None and process.poll() is None:
             try:
@@ -774,16 +821,17 @@ def run_posix_provider(command, cwd, env, timeout):
                 os.killpg(process.pid, signal.SIGCONT)
             except ProcessLookupError:
                 pass
-        return tree.wait(timeout)
+        rc, timed_out = tree.wait(timeout)
     except KeyboardInterrupt as error:
         raise LaunchError("interrupted while running host agent provider") from error
     finally:
         try:
-            tree.stop()
+            termination_confirmed = tree.stop()
         finally:
             if foreground is not None:
                 set_foreground_group(fd, foreground)
                 termios.tcsetattr(fd, termios.TCSANOW, attributes)
+    return rc, timed_out, termination_confirmed
 
 
 def run_windows_provider(command, cwd, env, timeout, gate_dir):
@@ -923,14 +971,121 @@ def collect_artifacts(directory, request_id):
     return files
 
 
+def decode_supported_text(path, data, allow_utf16=False):
+    if data.startswith((b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")):
+        raise LaunchError(f"unsupported UTF-32 encoding in {path}")
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        if not allow_utf16:
+            raise LaunchError(f"unsupported UTF-16 encoding in {path} (UTF-8 required)")
+        try:
+            text = data.decode("utf-16")
+        except UnicodeDecodeError as error:
+            raise LaunchError(f"invalid UTF-16 text in {path}") from error
+        if "\x00" in text:
+            raise LaunchError(f"unsupported opaque or NUL bytes in {path}")
+        return text
+    if b"\x00" in data:
+        raise LaunchError(f"unsupported opaque or binary bytes in {path}")
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise LaunchError(f"unsupported non-UTF-8 encoding or binary bytes in {path}") from error
+
+
+def normalize_text_for_scan(text):
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def contains_private_key(text):
+    normalized = normalize_text_for_scan(text)
+    return any(pattern.search(normalized) for pattern in PRIVATE_KEY_PATTERNS)
+
+
+def validate_inventory_command(backend, connection, command):
+    if backend == "libvirt":
+        uris = [uri.rstrip("'\");&|") for uri in re.findall(r"qemu://[^\s'\");&|]+", command)]
+        if not uris or any(uri != connection for uri in uris):
+            raise LaunchError(f"libvirt inventory command must target only {connection}")
+        if not re.search(
+            rf"\bvirsh\s+(?:--connect(?:\s+|=)|-c\s+){re.escape(connection)}\s+list\b"
+            rf"(?:[^\r\n]*\s--all\b[^\r\n]*\s--name\b|[^\r\n]*\s--name\b[^\r\n]*\s--all\b)",
+            command,
+        ):
+            raise LaunchError(
+                f"libvirt inventory command must run `virsh --connect {connection} list --all --name`"
+            )
+    elif backend == "hyperv":
+        if not (
+            re.search(r"\bGet-VM\b[^|\r\n]*\|\s*Select-Object\b[^|\r\n]*-ExpandProperty\s+Name\b", command, re.IGNORECASE)
+            or re.search(r"\(\s*Get-VM\b[^)\r\n]*\)\.Name\b", command, re.IGNORECASE)
+            or re.search(r"\bGet-VM\b[^|\r\n]*\|\s*(?:ForEach-Object|%)\s*\{\s*\$_\.Name\s*\}", command, re.IGNORECASE)
+        ):
+            raise LaunchError(
+                "Hyper-V inventory command must output one VM name per line "
+                "(for example `Get-VM | Select-Object -ExpandProperty Name`)"
+            )
+    elif backend == "tart":
+        if not re.search(r"\btart\s+list\b[^\r\n]*(?:\s-q\b|\s--quiet\b)", command):
+            raise LaunchError("Tart inventory command must run `tart list -q` or `tart list --quiet`")
+    elif backend == "utm":
+        if not re.search(r"\butmctl\s+list\b[^\r\n]*\|\s*awk\b", command):
+            raise LaunchError("UTM inventory command must extract one VM name per line from `utmctl list`")
+
+
+def validate_inventory_output(backend, vm_name, output_lines, has_owned_vms):
+    if not output_lines:
+        raise LaunchError(
+            f"cleanup inventory requires captured output or {EMPTY_INVENTORY_SENTINEL} per phase"
+        )
+    if any(re.fullmatch(r"Exit code -?\d+", line) for line in output_lines):
+        raise LaunchError("cleanup inventory must record exactly one exit code per phase")
+    if output_lines == [EMPTY_INVENTORY_SENTINEL]:
+        return
+    if EMPTY_INVENTORY_SENTINEL in output_lines:
+        raise LaunchError(f"cleanup inventory cannot mix {EMPTY_INVENTORY_SENTINEL} with VM entries")
+    if "[No domains returned]" in output_lines:
+        raise LaunchError(
+            f"cleanup inventory must use the canonical empty representation {EMPTY_INVENTORY_SENTINEL}"
+        )
+    for line in output_lines:
+        if has_owned_vms and (line == vm_name or vm_name in line.split()):
+            raise LaunchError("cleanup inventory still lists an owned VM")
+        if "\t" in line or "  " in line or "|" in line:
+            raise LaunchError(f"cleanup inventory contains unsupported multi-column or table output: {line!r}")
+        if re.fullmatch(r"[-=_+\s]+", line):
+            raise LaunchError("cleanup inventory contains a table separator row")
+        if INVENTORY_TABLE_HEADER.match(line):
+            raise LaunchError("cleanup inventory contains a table header row")
+        if backend in {"libvirt", "tart"}:
+            if not re.fullmatch(r"[A-Za-z0-9._:@/+-]+", line):
+                raise LaunchError(
+                    f"cleanup inventory for {backend} must list one exact VM name per line: {line!r}"
+                )
+        else:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]*(?: [A-Za-z0-9._:/+-]+)*", line):
+                raise LaunchError(
+                    f"cleanup inventory for {backend} must list one exact VM name per line: {line!r}"
+                )
+            tokens = line.split()
+            if len(tokens) >= 2 and (
+                any(tok.lower() in INVENTORY_TABLE_STATES for tok in tokens[1:])
+                or any(re.fullmatch(r"\d{2}:\d{2}:\d{2}(?:\.\d+)?", tok) for tok in tokens[1:])
+            ):
+                raise LaunchError(f"cleanup inventory contains unsupported table row: {line!r}")
+
+
 def verify_cleanup(result_doc, log):
     cleanup = result_doc["cleanup"]
     if cleanup["status"] != "verified":
         raise LaunchError("result reports incomplete cleanup")
-    if not log or not log.strip():
+    if not log:
+        raise LaunchError("missing required nonempty logs/cleanup.txt")
+    text = decode_supported_text("logs/cleanup.txt", log, allow_utf16=True) if isinstance(log, bytes) else log
+    text = normalize_text_for_scan(text)
+    if not text.strip():
         raise LaunchError("missing required nonempty logs/cleanup.txt")
     phases = {}
-    for section in log.decode("utf-8").strip().splitlines():
+    for section in text.strip().splitlines():
         match = re.fullmatch(r"(Before create|After destroy): (\S+)", section)
         if match:
             phase, name = match.groups()
@@ -950,14 +1105,39 @@ def verify_cleanup(result_doc, log):
         before, after = (name, "Before create"), (name, "After destroy")
         if list(phases).index(before) >= list(phases).index(after):
             raise LaunchError("cleanup inventory records the post-destroy phase before the pre-create phase")
+        phase_contexts = {}
         for phase in (before, after):
             lines = [line.strip() for line in phases[phase] if line.strip()]
-            if (len(lines) < 3 or not lines[0].startswith("$ ") or lines[-1] != "Exit code 0"):
-                raise LaunchError("cleanup inventory requires a command, captured output and exit code 0 per phase")
-            if any(re.fullmatch(r"Exit code -?\d+", line) for line in lines[1:-1]):
-                raise LaunchError("cleanup inventory must record exactly one exit code per phase")
-            if name in lines[1:-1] and cleanup["owned_vms"]:
-                raise LaunchError("cleanup inventory still lists an owned VM")
+            if not lines:
+                raise LaunchError(
+                    "cleanup inventory requires Backend, command, captured output and exit code 0 per phase"
+                )
+            backend_match = re.fullmatch(r"Backend: ([a-z0-9_-]+) \(([^()\s]+)\)", lines[0])
+            if not backend_match:
+                raise LaunchError(
+                    "cleanup inventory requires a canonical `Backend: <backend> (<connection>)` header per phase"
+                )
+            if len(lines) < 4:
+                raise LaunchError(
+                    "cleanup inventory requires Backend, command, captured output and exit code 0 per phase"
+                )
+            backend, connection = backend_match.groups()
+            allowed_connections = SUPPORTED_INVENTORY_BACKENDS.get(backend)
+            if not allowed_connections or connection not in allowed_connections:
+                raise LaunchError(
+                    f"cleanup inventory declares unsupported backend/connection `{backend} ({connection})`"
+                )
+            if not lines[1].startswith("$ ") or not lines[1][2:].strip() or lines[-1] != "Exit code 0":
+                raise LaunchError(
+                    "cleanup inventory requires Backend, command, captured output and exit code 0 per phase"
+                )
+            validate_inventory_command(backend, connection, lines[1][2:].strip())
+            validate_inventory_output(backend, name, lines[2:-1], bool(cleanup["owned_vms"]))
+            phase_contexts[phase] = (backend, connection)
+        if phase_contexts[before] != phase_contexts[after]:
+            raise LaunchError(
+                "cleanup inventory must use the same backend and connection across Before create and After destroy"
+            )
 
 
 def verify_results(args, request, original_request_bytes, files):
@@ -966,9 +1146,13 @@ def verify_results(args, request, original_request_bytes, files):
     if files.get(f"{prefix}/request.json") != original_request_bytes:
         raise LaunchError("request.json must remain byte-for-byte unchanged")
 
+    decoded_files = {}
     for path, data in files.items():
-        if PRIVATE_KEY_PATTERN.search(data):
+        allow_utf16 = path.startswith(f"{prefix}/logs/")
+        text = decode_supported_text(path, data, allow_utf16=allow_utf16)
+        if contains_private_key(text):
             raise LaunchError(f"unredacted private key material detected in {path}")
+        decoded_files[path] = text
 
     try:
         result = protocol.validate("result", files[f"{prefix}/result.json"])
@@ -984,12 +1168,13 @@ def verify_results(args, request, original_request_bytes, files):
         raise LaunchError("result.json request_commit does not match --request-commit")
     if any(result["host"][key] != request["target"][key] for key in ("os", "arch")):
         raise LaunchError("result.json host does not match the request target")
-    if not files.get(f"{prefix}/report.md", b"").decode("utf-8").strip():
+    if not decoded_files.get(f"{prefix}/report.md", "").strip():
         raise LaunchError("missing required report.md or report is empty")
-    if any(not re.search(rf"(?:^|-)sw-{re.escape(request_id)}-", name)
+    vm_prefix = owned_vm_prefix(request_id)
+    if any(not re.search(rf"(?:^|-){re.escape(vm_prefix)}[a-z0-9]", name)
            for name in result["cleanup"]["owned_vms"]):
         raise LaunchError("cleanup lists a VM without the request's owned name prefix")
-    verify_cleanup(result, files.get(f"{prefix}/logs/cleanup.txt"))
+    verify_cleanup(result, decoded_files.get(f"{prefix}/logs/cleanup.txt"))
     return result
 
 
@@ -1139,7 +1324,7 @@ def run_hook(args):
         raise LaunchError("request.json does not match the pinned Git object")
     location = os.environ.get(protocol.RESULTS_REPO_ENV)
     if location is None:
-        # Direct hook callers still use the original SW-080 origin contract.
+        # Direct hook callers still use the original origin contract.
         location = protocol.git("config", "--local", "--get", "remote.origin.url", cwd=results_dir,
                                 description="cannot read original results destination").decode().rstrip("\r\n")
     location = protocol.git_location(location, "results repo")
@@ -1263,8 +1448,11 @@ def run_hook(args):
             timeout = request["time_limit_seconds"]
             if protocol.is_windows():
                 provider_rc, timed_out = run_windows_provider(command, agent_cwd, provider_env, timeout, runtime_dir)
+                termination_confirmed = True
             else:
-                provider_rc, timed_out = run_posix_provider(command, agent_cwd, provider_env, timeout)
+                provider_rc, timed_out, termination_confirmed = run_posix_provider(
+                    command, agent_cwd, provider_env, timeout
+                )
         finally:
             try:
                 if brief_path.exists():
@@ -1284,8 +1472,14 @@ def run_hook(args):
               file=sys.stderr)
         return 124
 
-    if cleanup_pending:
+    if cleanup_pending and termination_confirmed:
         cleanup_pending.unlink()
+    elif not termination_confirmed:
+        print(
+            "host-agent-launch: cannot confirm absence of reparented descendants without kernel orphan adoption; "
+            "retaining active request lock for manual process and hypervisor inventory verification",
+            file=sys.stderr,
+        )
     commit = publish_results(location, ref, args.request_commit, files)
     status = result["status"]
     print(f"host-agent-launch: published {ref} at {commit} (status: {status})", file=sys.stderr)
