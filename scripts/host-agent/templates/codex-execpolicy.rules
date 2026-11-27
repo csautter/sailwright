@@ -105,6 +105,24 @@ prefix_rule(
 )
 
 prefix_rule(
+    pattern = ["git", "push", "origin", "--force"],
+    decision = "forbidden",
+    justification = "Only regular fast-forward pushes to the assigned results ref are allowed.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", "origin", "-f"],
+    decision = "forbidden",
+    justification = "Only regular fast-forward pushes to the assigned results ref are allowed.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", "origin", "--force-with-lease"],
+    decision = "forbidden",
+    justification = "Only regular fast-forward pushes to the assigned results ref are allowed.",
+)
+
+prefix_rule(
     pattern = ["claude", "--dangerously-skip-permissions"],
     decision = "forbidden",
     justification = "Bypass and YOLO modes are prohibited.",
@@ -160,6 +178,78 @@ prefix_rule(
 
 prefix_rule(
     pattern = ["virsh", "destroy"],
+    decision = "forbidden",
+    justification = "Use Sailwright destroy on owned VMs instead of raw virsh destroy.",
+)
+
+prefix_rule(
+    pattern = ["virsh", "--connect", "qemu:///system", "undefine"],
+    decision = "forbidden",
+    justification = "Use Sailwright destroy on owned VMs instead of raw virsh undefine.",
+)
+
+prefix_rule(
+    pattern = ["virsh", "--connect", "qemu:///system", "destroy"],
+    decision = "forbidden",
+    justification = "Use Sailwright destroy on owned VMs instead of raw virsh destroy.",
+)
+
+prefix_rule(
+    pattern = ["virsh", "--connect", "qemu:///session", "undefine"],
+    decision = "forbidden",
+    justification = "Use Sailwright destroy on owned VMs instead of raw virsh undefine.",
+)
+
+prefix_rule(
+    pattern = ["virsh", "--connect", "qemu:///session", "destroy"],
+    decision = "forbidden",
+    justification = "Use Sailwright destroy on owned VMs instead of raw virsh destroy.",
+)
+
+prefix_rule(
+    pattern = ["virsh", "-c", "qemu:///system", "undefine"],
+    decision = "forbidden",
+    justification = "Use Sailwright destroy on owned VMs instead of raw virsh undefine.",
+)
+
+prefix_rule(
+    pattern = ["virsh", "-c", "qemu:///system", "destroy"],
+    decision = "forbidden",
+    justification = "Use Sailwright destroy on owned VMs instead of raw virsh destroy.",
+)
+
+prefix_rule(
+    pattern = ["virsh", "-c", "qemu:///session", "undefine"],
+    decision = "forbidden",
+    justification = "Use Sailwright destroy on owned VMs instead of raw virsh undefine.",
+)
+
+prefix_rule(
+    pattern = ["virsh", "-c", "qemu:///session", "destroy"],
+    decision = "forbidden",
+    justification = "Use Sailwright destroy on owned VMs instead of raw virsh destroy.",
+)
+
+prefix_rule(
+    pattern = ["virsh", "--connect=qemu:///system", "undefine"],
+    decision = "forbidden",
+    justification = "Use Sailwright destroy on owned VMs instead of raw virsh undefine.",
+)
+
+prefix_rule(
+    pattern = ["virsh", "--connect=qemu:///system", "destroy"],
+    decision = "forbidden",
+    justification = "Use Sailwright destroy on owned VMs instead of raw virsh destroy.",
+)
+
+prefix_rule(
+    pattern = ["virsh", "--connect=qemu:///session", "undefine"],
+    decision = "forbidden",
+    justification = "Use Sailwright destroy on owned VMs instead of raw virsh undefine.",
+)
+
+prefix_rule(
+    pattern = ["virsh", "--connect=qemu:///session", "destroy"],
     decision = "forbidden",
     justification = "Use Sailwright destroy on owned VMs instead of raw virsh destroy.",
 )

@@ -39,10 +39,69 @@ def extract(prompt, label):
     return match.group(1)
 
 
+def parse_provider_argv(argv):
+    add_dirs = []
+    positionals = []
+    seen_sep = False
+    value_flags = {
+        "--permission-mode",
+        "--settings",
+        "--setting-sources",
+        "--mcp-config",
+        "--append-system-prompt-file",
+        "-c",
+        "-C",
+    }
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            seen_sep = True
+            positionals.extend(argv[index + 1:])
+            break
+        if token == "--add-dir":
+            index += 1
+            while index < len(argv) and not argv[index].startswith("-"):
+                add_dirs.append(argv[index])
+                index += 1
+            continue
+        if token in value_flags:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        positionals.append(token)
+        index += 1
+    return add_dirs, positionals, seen_sep
+
+
 def main():
     argv = sys.argv[1:]
     behavior = os.environ.get("FAKE_PROVIDER_BEHAVIOR", "pass")
     record_file = os.environ.get("FAKE_PROVIDER_RECORD")
+
+    add_dirs, positionals, seen_sep = parse_provider_argv(argv)
+    for directory in add_dirs:
+        if not Path(directory).is_dir():
+            raise SystemExit(f"add-dir path was not found: {directory}")
+    if not seen_sep or argv.index("--") != len(argv) - 2:
+        raise SystemExit("positional prompt must be separated with '--'")
+    if len(positionals) != 1:
+        raise SystemExit(f"expected exactly 1 positional prompt, got {len(positionals)}")
+
+    positional_prompt = positionals[0]
+    if "\n" in positional_prompt or "\r" in positional_prompt or not positional_prompt.isascii():
+        raise SystemExit("positional prompt must be single-line ASCII")
+    if any(ch in positional_prompt for ch in '&|<>%^!"\'`$();*?'):
+        raise SystemExit(f"positional prompt contains shell/batch metacharacters: {positional_prompt!r}")
+
+    brief_path = Path.cwd() / "launch-brief.md"
+    if brief_path.is_symlink() or not brief_path.is_file():
+        raise SystemExit(f"missing launch-brief.md in cwd {Path.cwd()}")
+    brief_readonly = (brief_path.stat().st_mode & 0o222) == 0
+    prompt = brief_path.read_text(encoding="utf-8")
+
     if record_file:
         codex_home = os.environ.get("CODEX_HOME")
         codex_rules = None
@@ -63,6 +122,11 @@ def main():
             "exe": Path(sys.argv[0]).name,
             "cwd": os.getcwd(),
             "argv": argv,
+            "add_dirs": add_dirs,
+            "positional_prompt": positional_prompt,
+            "brief_exists": True,
+            "brief_readonly": brief_readonly,
+            "brief_text": prompt,
             "claude_settings": claude_settings,
             "codex_home": codex_home,
             "codex_cfg": codex_cfg,
@@ -73,7 +137,6 @@ def main():
         time.sleep(10)
         return 0
 
-    prompt = argv[-1]
     request_path = Path(extract(prompt, "Pinned request JSON"))
     source_dir = Path(extract(prompt, "Detached source checkout (untrusted code under test)"))
     results_dir = Path(extract(prompt, "Detached results checkout"))
@@ -108,9 +171,9 @@ def main():
     (logs_dir / "cleanup.txt").write_text(cleanup_log, encoding="utf-8")
 
     binary_sha = hashlib.sha256(f"fake-sailwright-{source_sha}".encode("utf-8")).hexdigest()
-    overall_status = "failed" if behavior == "report_failed" else "passed"
-    step_status = "failed" if behavior == "report_failed" else "passed"
-    step_exit = 2 if behavior == "report_failed" else 0
+    overall_status = "failed" if behavior in {"report_failed", "fail_then_idle"} else "passed"
+    step_status = "failed" if behavior in {"report_failed", "fail_then_idle"} else "passed"
+    step_exit = 2 if behavior in {"report_failed", "fail_then_idle"} else 0
 
     result_doc = {
         "schema_version": 1,
@@ -209,6 +272,8 @@ def main():
         ["git", "-C", str(results_dir), "push", "--quiet", "origin", f"HEAD:{results_ref}"],
         check=True,
     )
+    if behavior in {"pass_then_idle", "fail_then_idle"}:
+        time.sleep(10)
     return 0
 
 
@@ -223,14 +288,36 @@ class TemplateGuardrailTests(unittest.TestCase):
         validated = launch.validate_claude_settings(settings)
         self.assertEqual(validated["enableAllProjectMcpServers"], False)
         self.assertEqual(validated["disableAllHooks"], True)
+        self.assertEqual(validated["permissions"]["defaultMode"], "auto")
         self.assertIn(validated["permissions"]["defaultMode"], launch.ALLOWED_CLAUDE_MODES)
         self.assertNotIn("bypassPermissions", validated["permissions"]["defaultMode"])
         self.assertNotIn("dontAsk", validated["permissions"]["defaultMode"])
 
-        # Confirm Claude auto mode is also accepted when all guardrails stay intact.
-        auto_variant = copy.deepcopy(settings)
-        auto_variant["permissions"]["defaultMode"] = "auto"
-        launch.validate_claude_settings(auto_variant)
+        # Routine edits and guest VM provisioning are not stalled by blanket ask rules.
+        ask = validated["permissions"]["ask"]
+        self.assertNotIn("Edit", ask)
+        self.assertNotIn("Write", ask)
+        self.assertNotIn("Bash(./sailwright provision:*)", ask)
+        self.assertNotIn("Bash(sailwright provision:*)", ask)
+        self.assertIn("Bash(tart clone:*)", ask)
+        self.assertIn("Bash(tart run:*)", ask)
+        self.assertIn("Bash(utmctl:*)", ask)
+
+        # Static allow must use explicit virsh URIs and no wildcard git -C rules.
+        allow = validated["permissions"]["allow"]
+        self.assertIn("Bash(virsh --connect qemu:///system list *)", allow)
+        self.assertIn("Bash(virsh --connect qemu:///session list *)", allow)
+        self.assertFalse(any(rule.startswith("Bash(git -C *") for rule in allow))
+
+        # No rule may mix '*' with trailing ':*'.
+        for section in ("allow", "ask", "deny"):
+            for rule in validated["permissions"][section]:
+                self.assertFalse(launch.has_mixed_bash_glob_prefix(rule), rule)
+
+        # Confirm default fallback mode is also accepted when all guardrails stay intact.
+        fallback_variant = copy.deepcopy(settings)
+        fallback_variant["permissions"]["defaultMode"] = "default"
+        launch.validate_claude_settings(fallback_variant)
 
     def test_claude_template_rejects_bypass_and_tampering(self):
         base = json.loads(launch.DEFAULT_CLAUDE_SETTINGS.read_text(encoding="utf-8"))
@@ -251,12 +338,26 @@ class TemplateGuardrailTests(unittest.TestCase):
         with self.assertRaisesRegex(launch.LaunchError, "disableAllHooks"):
             launch.validate_claude_settings(tampered)
 
+        # Mixed '*' + trailing ':*' rules must be rejected across allow, ask, and deny.
+        for section, bad_rule in (
+            ("allow", "Bash(virsh --connect * list:*)"),
+            ("ask", "Bash(git -C * push:*)"),
+            ("deny", "Bash(virsh * undefine:*)"),
+        ):
+            tampered = copy.deepcopy(base)
+            tampered["permissions"][section].append(bad_rule)
+            with self.subTest(section=section, bad_rule=bad_rule), self.assertRaisesRegex(
+                launch.LaunchError, "mixes '\\*' with trailing ':\\*'"
+            ):
+                launch.validate_claude_settings(tampered)
+
         for bad_allow in (
             "Bash(*)",
             "Bash(sudo:*)",
             "Bash(sailwright provision local:*)",
             "Bash(sailwright install:*)",
             "Bash(git push -f)",
+            "Bash(git -C * status *)",
             "Bash(claude --dangerously-skip-permissions:*)",
         ):
             tampered = copy.deepcopy(base)
@@ -269,10 +370,16 @@ class TemplateGuardrailTests(unittest.TestCase):
             "install",
             "sudo",
             "-f ",
+            "-f)",
             "--force*",
+            " -c ",
+            "--exec-path",
+            "--upload-pack",
             "--yolo",
             "--dangerously-skip-permissions",
             "tahoe-runner",
+            "virsh * undefine",
+            "virsh * destroy",
             "~/.ssh/**",
             "find-generic-password",
         ):
@@ -284,6 +391,47 @@ class TemplateGuardrailTests(unittest.TestCase):
                 launch.LaunchError, "missing required guardrail rules"
             ):
                 launch.validate_claude_settings(tampered)
+
+    def test_materialize_claude_settings_anchors_git_and_protects_trusted_dirs(self):
+        base = json.loads(launch.DEFAULT_CLAUDE_SETTINGS.read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory(prefix="claude-materialize-test-") as tmp:
+            root = Path(tmp).resolve()
+            source_dir = root / "source"
+            results_dir = root / "results"
+            source_dir.mkdir()
+            results_dir.mkdir()
+
+            effective = launch.materialize_claude_settings(
+                base,
+                set(),
+                source_dir=source_dir,
+                results_dir=results_dir,
+                protected_dirs=(SCRIPTS, launch.DEFAULT_SKILL_FILE.parent),
+            )
+            allow = effective["permissions"]["allow"]
+            deny = effective["permissions"]["deny"]
+
+            for repo_dir in (source_dir, results_dir):
+                for subcmd in launch.READ_ONLY_GIT_SUBCOMMANDS:
+                    self.assertIn(f"Bash(git -C {repo_dir} {subcmd})", allow)
+                    self.assertIn(f"Bash(git -C {repo_dir} {subcmd} *)", allow)
+
+            self.assertIn(f"Bash(git -C {source_dir} push)", deny)
+            self.assertIn(f"Bash(git -C {source_dir} push*)", deny)
+            self.assertIn(f"Bash(git -C {source_dir} * push*)", deny)
+
+            for protected in (SCRIPTS, launch.DEFAULT_SKILL_FILE.parent):
+                glob = launch.claude_abs_dir_glob(protected)
+                self.assertTrue(glob.startswith("//"))
+                self.assertFalse(glob.startswith("///"))
+                self.assertIn(f"Edit({glob})", deny)
+                self.assertIn(f"Write({glob})", deny)
+
+            # Verify Windows path formatting avoids triple slashes and normalizes backslashes.
+            self.assertEqual(
+                launch.claude_abs_dir_glob(r"C:\trusted\sailwright\scripts\host-agent"),
+                "//C:/trusted/sailwright/scripts/host-agent/**",
+            )
 
     def test_default_codex_templates_pass_and_enforce_guardrails(self):
         config = tomllib.loads(launch.DEFAULT_CODEX_CONFIG.read_text(encoding="utf-8"))
@@ -323,9 +471,16 @@ class TemplateGuardrailTests(unittest.TestCase):
                 base_rules + '\nprefix_rule(pattern=["sudo"], decision="allow", justification="bad")\n'
             )
 
-        reduced = base_rules.replace('pattern = ["sailwright", "install"]', 'pattern = ["other", "cmd"]')
-        with self.assertRaisesRegex(launch.LaunchError, "missing required forbidden rules"):
-            launch.validate_codex_rules(reduced)
+        for original in (
+            'pattern = ["sailwright", "install"]',
+            'pattern = ["virsh", "--connect", "qemu:///system", "undefine"]',
+            'pattern = ["virsh", "-c", "qemu:///session", "destroy"]',
+        ):
+            reduced = base_rules.replace(original, 'pattern = ["other", "cmd"]')
+            with self.subTest(removed=original), self.assertRaisesRegex(
+                launch.LaunchError, "missing required forbidden rules"
+            ):
+                launch.validate_codex_rules(reduced)
 
     def test_scoped_host_change_approval_moves_only_matching_rules_to_prompt(self):
         base_claude = json.loads(launch.DEFAULT_CLAUDE_SETTINGS.read_text(encoding="utf-8"))
@@ -341,10 +496,50 @@ class TemplateGuardrailTests(unittest.TestCase):
         self.assertIn("Bash(*--dangerously-skip-permissions*)", effective_claude["permissions"]["deny"])
 
         base_rules = launch.validate_codex_rules(launch.DEFAULT_CODEX_RULES.read_text(encoding="utf-8"))
-        rendered = launch.render_codex_rules(base_rules, categories)
-        self.assertIn('pattern = ["sailwright", "install"],\n    decision = "prompt",', rendered)
-        self.assertIn('pattern = ["sailwright", "provision", "local"],\n    decision = "forbidden",', rendered)
-        self.assertIn('pattern = ["codex", "--yolo"],\n    decision = "forbidden",', rendered)
+        with tempfile.TemporaryDirectory(prefix="codex-rules-test-") as tmp:
+            root = Path(tmp).resolve()
+            source_dir = root / "source"
+            results_dir = root / "results"
+            source_dir.mkdir()
+            results_dir.mkdir()
+
+            rendered_default = launch.render_codex_rules(
+                base_rules, set(), source_dir=source_dir, results_dir=results_dir
+            )
+            parsed_default = {
+                rule["pattern"]: rule["decision"] for rule in launch.validate_codex_rules(rendered_default)
+            }
+            self.assertEqual(parsed_default[("git", "-C", str(source_dir), "push")], "forbidden")
+            for suffix in (
+                ("push", "--force"),
+                ("push", "-f"),
+                ("push", "--force-with-lease"),
+                ("push", "origin", "--force"),
+                ("push", "origin", "-f"),
+                ("push", "origin", "--force-with-lease"),
+            ):
+                self.assertEqual(parsed_default[("git", "-C", str(results_dir), *suffix)], "forbidden")
+            for bin_path in (str(source_dir / "sailwright"), str(source_dir / "sailwright.exe")):
+                self.assertEqual(parsed_default[(bin_path, "provision", "local")], "forbidden")
+                self.assertEqual(parsed_default[(bin_path, "install")], "forbidden")
+                self.assertEqual(parsed_default[(bin_path, "self-update")], "forbidden")
+                self.assertEqual(parsed_default[(bin_path, "destroy", "all")], "forbidden")
+                self.assertEqual(parsed_default[(bin_path, "stop", "all")], "forbidden")
+
+            rendered_approved = launch.render_codex_rules(
+                base_rules, categories, source_dir=source_dir, results_dir=results_dir
+            )
+            parsed_approved = {
+                rule["pattern"]: rule["decision"] for rule in launch.parse_codex_rules(rendered_approved)
+            }
+            self.assertEqual(parsed_approved[("sailwright", "install")], "prompt")
+            self.assertEqual(parsed_approved[(str(source_dir / "sailwright"), "install")], "prompt")
+            self.assertEqual(parsed_approved[(str(source_dir / "sailwright.exe"), "install")], "prompt")
+            self.assertEqual(parsed_approved[("sailwright", "provision", "local")], "forbidden")
+            self.assertEqual(parsed_approved[(str(source_dir / "sailwright"), "provision", "local")], "forbidden")
+            self.assertEqual(parsed_approved[(str(source_dir / "sailwright"), "destroy", "all")], "forbidden")
+            self.assertEqual(parsed_approved[("git", "-C", str(source_dir), "push")], "forbidden")
+            self.assertEqual(parsed_approved[("codex", "--yolo")], "forbidden")
 
     def test_skill_and_docs_document_required_guardrails_and_os_guidance(self):
         skill_text = launch.DEFAULT_SKILL_FILE.read_text(encoding="utf-8")
@@ -361,8 +556,13 @@ class TemplateGuardrailTests(unittest.TestCase):
         self.assertIn("hostfwd_add", skill_text)
         self.assertIn("virtiofs", skill_text)
         self.assertIn("DEV_ALCHEMY_LIBVIRT_URI", skill_text)
+        self.assertIn("/exit", skill_text)
+        self.assertIn("Ctrl+C", skill_text)
         self.assertIn("dedicated macOS user", doc_text)
         self.assertIn("launch.py", doc_text)
+        self.assertIn("launch-brief.md", doc_text)
+        self.assertIn("/exit", doc_text)
+        self.assertIn("Ctrl+C", doc_text)
 
 
 @unittest.skipIf(os.name == "nt", "fixture uses a POSIX container and shell stubs")
@@ -502,14 +702,33 @@ class EndToEndDryRunTests(unittest.TestCase):
 
         record = json.loads(self.record_file.read_text(encoding="utf-8"))
         self.assertEqual(record["exe"], "claude")
-        self.assertEqual(Path(record["cwd"]).resolve(), SCRIPTS.resolve())
+        self.assertNotEqual(Path(record["cwd"]).resolve(), SCRIPTS.resolve())
+        self.assertEqual(Path(record["cwd"]).name, "workspace")
+        self.assertFalse(Path(record["cwd"]).exists())
+        self.assertTrue(record["brief_exists"])
+        self.assertTrue(record["brief_readonly"])
+        self.assertEqual(record["argv"][-2], "--")
+        self.assertEqual(record["argv"][-1], launch.LAUNCH_PROMPT)
+        self.assertEqual(len(record["add_dirs"]), 2)
         self.assertIn("--permission-mode", record["argv"])
-        self.assertEqual(record["argv"][record["argv"].index("--permission-mode") + 1], "default")
+        self.assertEqual(record["argv"][record["argv"].index("--permission-mode") + 1], "auto")
         self.assertIn("--strict-mcp-config", record["argv"])
         self.assertEqual(record["argv"][record["argv"].index("--setting-sources") + 1], "user")
         self.assertNotIn("--dangerously-skip-permissions", record["argv"])
         self.assertEqual(record["claude_settings"]["enableAllProjectMcpServers"], False)
         self.assertEqual(record["claude_settings"]["disableAllHooks"], True)
+        source_dir, results_dir = record["add_dirs"]
+        self.assertIn(f"Bash(git -C {source_dir} rev-parse *)", record["claude_settings"]["permissions"]["allow"])
+        self.assertIn(f"Bash(git -C {results_dir} status *)", record["claude_settings"]["permissions"]["allow"])
+        self.assertIn(f"Bash(git -C {source_dir} push*)", record["claude_settings"]["permissions"]["deny"])
+        self.assertIn(
+            f"Edit({launch.claude_abs_dir_glob(SCRIPTS)})",
+            record["claude_settings"]["permissions"]["deny"],
+        )
+        self.assertIn(
+            f"Write({launch.claude_abs_dir_glob(launch.DEFAULT_SKILL_FILE.parent)})",
+            record["claude_settings"]["permissions"]["deny"],
+        )
 
     def test_end_to_end_dry_run_codex_via_bash_start(self):
         self.request["id"] = "dryrun-codex"
@@ -520,13 +739,52 @@ class EndToEndDryRunTests(unittest.TestCase):
 
         record = json.loads(self.record_file.read_text(encoding="utf-8"))
         self.assertEqual(record["exe"], "codex")
-        self.assertEqual(Path(record["cwd"]).resolve(), SCRIPTS.resolve())
+        self.assertNotEqual(Path(record["cwd"]).resolve(), SCRIPTS.resolve())
+        self.assertEqual(Path(record["cwd"]).name, "workspace")
+        self.assertFalse(Path(record["cwd"]).exists())
+        self.assertEqual(record["argv"][record["argv"].index("-C") + 1], record["cwd"])
+        self.assertEqual(record["argv"][-2], "--")
+        self.assertEqual(record["argv"][-1], launch.LAUNCH_PROMPT)
+        self.assertTrue(record["brief_exists"])
+        self.assertTrue(record["brief_readonly"])
         self.assertIn('approval_policy="on-request"', record["argv"])
         self.assertIn('sandbox_mode="workspace-write"', record["argv"])
         self.assertNotIn("--yolo", record["argv"])
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", record["argv"])
         self.assertIn('approval_policy = "on-request"', record["codex_cfg"])
         self.assertIn('pattern = ["sailwright", "install"]', record["codex_rules"])
+        source_dir, results_dir = record["add_dirs"]
+        self.assertIn(json.dumps(["git", "-C", source_dir, "push"]), record["codex_rules"])
+        self.assertIn(json.dumps(["git", "-C", results_dir, "push", "origin", "-f"]), record["codex_rules"])
+        self.assertIn(json.dumps([str(Path(source_dir) / "sailwright"), "install"]), record["codex_rules"])
+
+    def test_canonical_paths_resolved_through_symlinked_work_root(self):
+        self.request["id"] = "dryrun-symlink-root"
+        posix, _, ref, pin = self.publish()
+        self.work.mkdir(exist_ok=True)
+        work_link = self.root / "work-symlink"
+        work_link.symlink_to(self.work)
+        env = {**self.env, "SAILWRIGHT_HOST_AGENT_WORK_ROOT": str(work_link)}
+        self.run_cli("bash", "-c", posix, status=0, env=env)
+        self.assert_pushed_valid_result(ref, pin, expected_status="passed")
+
+        record = json.loads(self.record_file.read_text(encoding="utf-8"))
+        canonical_work = str(self.work.resolve())
+        for directory in record["add_dirs"]:
+            self.assertTrue(directory.startswith(canonical_work), f"{directory} not under {canonical_work}")
+            self.assertNotIn("work-symlink", directory)
+        self.assertNotIn("work-symlink", record["brief_text"])
+        self.assertIn(f"Bash(git -C {record['add_dirs'][0]} status *)", record["claude_settings"]["permissions"]["allow"])
+
+    def test_fake_provider_rejects_unseparated_variadic_add_dir_prompt(self):
+        # Proves the test stub fails if '--' is omitted after variadic --add-dir.
+        bad = self.run_cli(
+            str(self.bin_dir / "claude"),
+            "--add-dir", str(self.root),
+            "unseparated prompt text",
+            status=1,
+        )
+        self.assertIn("was not found", bad.stderr)
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh is unavailable")
     def test_end_to_end_dry_run_via_zsh_start(self):
@@ -568,6 +826,21 @@ class EndToEndDryRunTests(unittest.TestCase):
         run = self.run_cli("bash", "-c", posix, status=124, env=env)
         self.assertIn("timed out", run.stderr)
         self.assertFalse((self.work / "active").exists())
+
+    def test_post_push_interactive_tui_timeout_maps_exit_code_from_result_status(self):
+        self.request.update(id="dryrun-idle-pass", time_limit_seconds=2)
+        posix, _, ref, pin = self.publish()
+        env_pass = {**self.env, "FAKE_PROVIDER_BEHAVIOR": "pass_then_idle"}
+        run_pass = self.run_cli("bash", "-c", posix, status=0, env=env_pass)
+        self.assertIn("valid pushed result (status: passed)", run_pass.stderr)
+        self.assert_pushed_valid_result(ref, pin, expected_status="passed")
+
+        self.request.update(id="dryrun-idle-fail", time_limit_seconds=2)
+        posix_fail, _, ref_fail, pin_fail = self.publish()
+        env_fail = {**self.env, "FAKE_PROVIDER_BEHAVIOR": "fail_then_idle"}
+        run_fail = self.run_cli("bash", "-c", posix_fail, status=1, env=env_fail)
+        self.assertIn("valid pushed result (status: failed)", run_fail.stderr)
+        self.assert_pushed_valid_result(ref_fail, pin_fail, expected_status="failed")
 
     def test_published_failed_result_returns_exit_1(self):
         self.request["id"] = "dryrun-reported-fail"

@@ -26,6 +26,9 @@ DEFAULT_CLAUDE_SETTINGS = TEMPLATES_DIR / "claude-settings.json"
 DEFAULT_CODEX_CONFIG = TEMPLATES_DIR / "codex-config.toml"
 DEFAULT_CODEX_RULES = TEMPLATES_DIR / "codex-execpolicy.rules"
 DEFAULT_SKILL_FILE = HERE.parents[1] / ".claude" / "skills" / protocol.SKILL / "SKILL.md"
+LAUNCH_BRIEF_NAME = "launch-brief.md"
+LAUNCH_PROMPT = f"Read and execute ./{LAUNCH_BRIEF_NAME} strictly following all guardrails."
+READ_ONLY_GIT_SUBCOMMANDS = ("rev-parse", "status", "diff", "log", "ls-remote")
 
 ALLOWED_CLAUDE_MODES = {"default", "auto"}
 ALLOWED_CODEX_APPROVAL_POLICIES = {"on-request", "untrusted"}
@@ -55,6 +58,9 @@ REQUIRED_CODEX_FORBIDDEN_PATTERNS = (
     ("git", "push", "--force"),
     ("git", "push", "-f"),
     ("git", "push", "--force-with-lease"),
+    ("git", "push", "origin", "--force"),
+    ("git", "push", "origin", "-f"),
+    ("git", "push", "origin", "--force-with-lease"),
     ("claude", "--dangerously-skip-permissions"),
     ("codex", "--yolo"),
     ("codex", "--dangerously-bypass-approvals-and-sandbox"),
@@ -63,6 +69,14 @@ REQUIRED_CODEX_FORBIDDEN_PATTERNS = (
     ("tart", "delete", "tahoe-runner"),
     ("virsh", "undefine"),
     ("virsh", "destroy"),
+    ("virsh", "--connect", "qemu:///system", "undefine"),
+    ("virsh", "--connect", "qemu:///system", "destroy"),
+    ("virsh", "--connect", "qemu:///session", "undefine"),
+    ("virsh", "--connect", "qemu:///session", "destroy"),
+    ("virsh", "-c", "qemu:///system", "undefine"),
+    ("virsh", "-c", "qemu:///system", "destroy"),
+    ("virsh", "-c", "qemu:///session", "undefine"),
+    ("virsh", "-c", "qemu:///session", "destroy"),
     ("security", "find-generic-password"),
 )
 
@@ -175,6 +189,24 @@ def has_short_force_flag(text):
     return bool(re.search(r"(?<![a-z0-9-])-f(?![a-z0-9-])", text))
 
 
+def has_mixed_bash_glob_prefix(rule):
+    stripped = rule.strip()
+    if not (stripped[:5].lower() == "bash(" and stripped.endswith(")")):
+        return False
+    inner = stripped[5:-1]
+    if not inner.endswith(":*"):
+        return False
+    return "*" in inner[:-2]
+
+
+def claude_abs_dir_glob(path):
+    if isinstance(path, Path):
+        posix = path.resolve().as_posix().rstrip("/")
+    else:
+        posix = str(path).replace("\\", "/").rstrip("/")
+    return f"//{posix.lstrip('/')}/**"
+
+
 def validate_claude_settings(settings):
     if not isinstance(settings, dict):
         raise LaunchError("Claude settings template must be a JSON object")
@@ -198,6 +230,12 @@ def validate_claude_settings(settings):
         rules = permissions.get(key, [] if key != "deny" else None)
         if not isinstance(rules, list) or any(not isinstance(item, str) or not item.strip() for item in rules):
             raise LaunchError(f"Claude permissions.{key} must be a list of non-empty strings")
+        for rule in rules:
+            if has_mixed_bash_glob_prefix(rule):
+                raise LaunchError(
+                    f"Claude permissions.{key} rule {rule!r} mixes '*' with trailing ':*' "
+                    "(use pure '*' glob patterns instead)"
+                )
 
     deny = permissions["deny"]
     if not deny:
@@ -214,6 +252,11 @@ def validate_claude_settings(settings):
         lowered = rule.strip().lower()
         if lowered in {"bash", "bash(*)", "bash(:*)", "bash(*:*)", "*"}:
             raise LaunchError(f"Claude permissions.allow must not grant unrestricted shell rule {rule!r}")
+        if re.match(r"^bash\(git\s+-c\s+\*", lowered):
+            raise LaunchError(
+                f"Claude permissions.allow must not allow wildcard git -C rule {rule!r} "
+                "(anchor git -C rules to resolved checkout paths at runtime)"
+            )
         if has_short_force_flag(lowered):
             raise LaunchError(f"Claude permissions.allow must not allow {rule!r}")
         for forbidden in FORBIDDEN_ALLOW_SUBSTRINGS:
@@ -228,8 +271,12 @@ def validate_claude_settings(settings):
         ("sudo", lambda r: bool(re.search(r"\bsudo\b", r))),
         ("Windows admin elevation", lambda r: "runas" in r),
         ("git push --force", lambda r: "git" in r and "push" in r and "--force" in r and "--force-with-lease" not in r),
-        ("git push -f", lambda r: "git" in r and "push" in r and has_short_force_flag(r)),
+        ("git push -f (with arguments)", lambda r: "git" in r and "push" in r and "-f " in r),
+        ("git push -f (end-of-line)", lambda r: "git" in r and "push" in r and r.rstrip().endswith("-f)")),
+        ("git -C/option push -f (end-of-line)", lambda r: "git *" in r and "push" in r and r.rstrip().endswith("-f)")),
         ("git push --force-with-lease", lambda r: "git" in r and "push" in r and "--force-with-lease" in r),
+        ("git --exec-path protection", lambda r: "git" in r and "--exec-path" in r),
+        ("git --upload-pack protection", lambda r: "git" in r and "--upload-pack" in r),
         ("bypass flag --dangerously-skip-permissions", lambda r: "--dangerously-skip-permissions" in r),
         ("bypass flag --dangerously-bypass-approvals-and-sandbox",
          lambda r: "--dangerously-bypass-approvals-and-sandbox" in r),
@@ -239,6 +286,8 @@ def validate_claude_settings(settings):
         ("tahoe-runner run protection", lambda r: "tart run" in r and "tahoe-runner" in r),
         ("virsh undefine protection", lambda r: "virsh" in r and "undefine" in r),
         ("virsh destroy protection", lambda r: "virsh" in r and "destroy" in r),
+        ("virsh with options undefine protection", lambda r: "virsh *" in r and "undefine" in r),
+        ("virsh with options destroy protection", lambda r: "virsh *" in r and "destroy" in r),
         ("SSH key read protection", lambda r: "read(~/.ssh/**" in r),
         ("AWS credential read protection", lambda r: "read(~/.aws/**" in r),
         ("GPG key read protection", lambda r: "read(~/.gnupg/**" in r),
@@ -246,6 +295,8 @@ def validate_claude_settings(settings):
         ("macOS Keychain query protection", lambda r: "find-generic-password" in r),
     ]
     missing = [label for label, predicate in required_checks if not has_deny_rule(deny, predicate)]
+    if not any(rule.strip().startswith("Bash(git") and (" -c " in rule or "*-c " in rule) for rule in deny):
+        missing.append("git -c option injection protection")
     if missing:
         raise LaunchError("Claude permissions.deny is missing required guardrail rules: " + ", ".join(missing))
     return settings
@@ -284,7 +335,7 @@ def validate_codex_config(config):
     return config
 
 
-def validate_codex_rules(text):
+def parse_codex_rules(text):
     try:
         tree = ast.parse(text, mode="exec")
     except SyntaxError as error:
@@ -337,7 +388,11 @@ def validate_codex_rules(text):
             "decision": decision,
             "justification": justification_node.value,
         })
+    return rules
 
+
+def validate_codex_rules(text):
+    rules = parse_codex_rules(text)
     forbidden_patterns = {rule["pattern"] for rule in rules if rule["decision"] == "forbidden"}
     missing = [pattern for pattern in REQUIRED_CODEX_FORBIDDEN_PATTERNS if pattern not in forbidden_patterns]
     if missing:
@@ -362,7 +417,9 @@ def approved_host_change_categories(scope):
 
 
 def claude_rule_category(rule):
-    lowered = rule.lower()
+    lowered = rule.strip().lower()
+    if not lowered.startswith("bash("):
+        return None
     if "sailwright" in lowered and "provision local" in lowered:
         return "provision_local"
     if "sailwright" in lowered and "install" in lowered:
@@ -375,41 +432,143 @@ def claude_rule_category(rule):
 
 
 def codex_pattern_category(pattern):
-    if pattern in {("sailwright", "provision", "local"), ("./sailwright", "provision", "local")}:
-        return "provision_local"
-    if pattern in {("sailwright", "install"), ("./sailwright", "install")}:
-        return "install"
-    if pattern in {("sailwright", "self-update"), ("./sailwright", "self-update")}:
-        return "self_update"
+    if not pattern:
+        return None
+    exe_name = re.split(r"[/\\]", pattern[0])[-1].lower()
+    if exe_name in {"sailwright", "sailwright.exe"}:
+        if pattern[1:] == ("provision", "local"):
+            return "provision_local"
+        if pattern[1:] == ("install",):
+            return "install"
+        if pattern[1:] == ("self-update",):
+            return "self_update"
     if pattern in {("sudo",), ("runas",)}:
         return "elevation"
     return None
 
 
-def materialize_claude_settings(base_settings, approved_categories):
+def materialize_claude_settings(base_settings, approved_categories, source_dir=None, results_dir=None,
+                                protected_dirs=()):
     effective = copy.deepcopy(base_settings)
-    if not approved_categories:
-        return effective
-    kept_deny = []
+    allow = list(effective["permissions"].get("allow", []))
     ask = list(effective["permissions"].get("ask", []))
-    for rule in effective["permissions"]["deny"]:
-        category = claude_rule_category(rule)
-        if category and category in approved_categories:
-            if rule not in ask:
-                ask.append(rule)
-        else:
-            kept_deny.append(rule)
-    effective["permissions"]["deny"] = kept_deny
+    if approved_categories:
+        kept_deny = []
+        for rule in effective["permissions"]["deny"]:
+            category = claude_rule_category(rule)
+            if category and category in approved_categories:
+                if rule not in ask:
+                    ask.append(rule)
+            else:
+                kept_deny.append(rule)
+        deny = kept_deny
+    else:
+        deny = list(effective["permissions"]["deny"])
+
+    for repo_dir in (source_dir, results_dir):
+        if repo_dir is None:
+            continue
+        repo_str = str(Path(repo_dir).resolve())
+        for subcmd in READ_ONLY_GIT_SUBCOMMANDS:
+            for rule in (f"Bash(git -C {repo_str} {subcmd})", f"Bash(git -C {repo_str} {subcmd} *)"):
+                if rule not in allow:
+                    allow.append(rule)
+
+    if source_dir is not None:
+        source_str = str(Path(source_dir).resolve())
+        for rule in (
+            f"Bash(git -C {source_str} push)",
+            f"Bash(git -C {source_str} push*)",
+            f"Bash(git -C {source_str} * push)",
+            f"Bash(git -C {source_str} * push*)",
+        ):
+            if rule not in deny:
+                deny.append(rule)
+
+    for protected in protected_dirs:
+        if protected is None:
+            continue
+        glob = claude_abs_dir_glob(protected)
+        for tool in ("Edit", "Write"):
+            rule = f"{tool}({glob})"
+            if rule not in deny:
+                deny.append(rule)
+
+    effective["permissions"]["allow"] = allow
     effective["permissions"]["ask"] = ask
+    effective["permissions"]["deny"] = deny
     return effective
 
 
-def render_codex_rules(rules, approved_categories):
+def render_codex_rules(rules, approved_categories, source_dir=None, results_dir=None):
+    all_rules = list(rules)
+    existing_patterns = {rule["pattern"] for rule in all_rules}
+
+    def add_runtime_rule(pattern, decision, justification):
+        if pattern in existing_patterns:
+            return
+        existing_patterns.add(pattern)
+        all_rules.append({
+            "pattern": pattern,
+            "decision": decision,
+            "justification": justification,
+        })
+
+    if source_dir is not None:
+        resolved_source = Path(source_dir).resolve()
+        add_runtime_rule(
+            ("git", "-C", str(resolved_source), "push"),
+            "forbidden",
+            "Never push from the untrusted source checkout; push only --results-ref from the results checkout.",
+        )
+        for bin_path in (str(resolved_source / "sailwright"), str(resolved_source / "sailwright.exe")):
+            add_runtime_rule(
+                (bin_path, "provision", "local"),
+                "forbidden",
+                "Host-changing operation requires --approve-host-changes and explicit human approval.",
+            )
+            add_runtime_rule(
+                (bin_path, "install"),
+                "forbidden",
+                "Host-changing operation requires --approve-host-changes and explicit human approval.",
+            )
+            add_runtime_rule(
+                (bin_path, "self-update"),
+                "forbidden",
+                "Host-changing operation requires --approve-host-changes and explicit human approval.",
+            )
+            add_runtime_rule(
+                (bin_path, "destroy", "all"),
+                "forbidden",
+                "Bulk VM destruction can touch foreign or default VMs.",
+            )
+            add_runtime_rule(
+                (bin_path, "stop", "all"),
+                "forbidden",
+                "Bulk VM stop can touch foreign or default VMs.",
+            )
+
+    if results_dir is not None:
+        resolved_results = Path(results_dir).resolve()
+        for suffix in (
+            ("push", "--force"),
+            ("push", "-f"),
+            ("push", "--force-with-lease"),
+            ("push", "origin", "--force"),
+            ("push", "origin", "-f"),
+            ("push", "origin", "--force-with-lease"),
+        ):
+            add_runtime_rule(
+                ("git", "-C", str(resolved_results), *suffix),
+                "forbidden",
+                "Only regular fast-forward pushes to the assigned results ref are allowed.",
+            )
+
     lines = [
         "# Runtime Codex execpolicy rules generated by sailwright host-agent launch hook.",
         "",
     ]
-    for rule in rules:
+    for rule in all_rules:
         decision = rule["decision"]
         justification = rule["justification"]
         if decision == "forbidden" and approved_categories:
@@ -479,6 +638,8 @@ def render_prompt(args, request, skill_file, protocol_path, approved_categories)
         f"- Write `{args.results_dir}/selftest/{request['id']}/result.json`, `report.md`, and `logs/`.",
         f"- Validate with `python3 -B {protocol_path} validate result {args.results_dir}/selftest/{request['id']}/result.json`.",
         f"- Commit only under `selftest/{request['id']}/` and fast-forward push ONLY `HEAD:{args.results_ref}` to `origin`.",
+        "- After pushing `--results-ref`, print a completion notice with the pushed ref, commit SHA, and result status,",
+        "  and remind the operator to close an idle interactive TUI with `/exit` (not `Ctrl+C`).",
     ]
     if args.provider == "codex":
         lines.extend([
@@ -702,18 +863,25 @@ def run_hook(args):
     if args.request.is_symlink() or not args.request.is_file():
         raise LaunchError("--request must be a regular file")
 
-    untrusted_roots = (args.source_dir.resolve(), args.results_dir.resolve())
+    source_dir = args.source_dir.resolve()
+    results_dir = args.results_dir.resolve()
+    request_path = args.request.resolve()
+    args.source_dir = source_dir
+    args.results_dir = results_dir
+    args.request = request_path
+
+    untrusted_roots = (source_dir, results_dir)
     ensure_outside(HERE, untrusted_roots, "launch hook directory")
 
-    original_request_bytes = args.request.read_bytes()
+    original_request_bytes = request_path.read_bytes()
     try:
         request = protocol.validate("request", original_request_bytes)
     except protocol.ProtocolError as error:
         raise LaunchError(f"invalid request: {error}") from error
 
     request_id = request["id"]
-    expected_request_path = (args.results_dir / "selftest" / request_id / "request.json").resolve()
-    if args.request.resolve() != expected_request_path:
+    expected_request_path = (results_dir / "selftest" / request_id / "request.json").resolve()
+    if request_path != expected_request_path:
         raise LaunchError(f"--request must point to {expected_request_path}")
     if not args.results_ref.endswith(f"/{request_id}"):
         raise LaunchError(f"--results-ref {args.results_ref!r} does not end with /{request_id}")
@@ -732,11 +900,11 @@ def run_hook(args):
 
     try:
         source_head = protocol.git(
-            "rev-parse", "--verify", "HEAD^{commit}", cwd=args.source_dir,
+            "rev-parse", "--verify", "HEAD^{commit}", cwd=source_dir,
             description="cannot inspect source checkout HEAD", isolated=True,
         ).decode("ascii").strip()
         results_head = protocol.git(
-            "rev-parse", "--verify", "HEAD^{commit}", cwd=args.results_dir,
+            "rev-parse", "--verify", "HEAD^{commit}", cwd=results_dir,
             description="cannot inspect results checkout HEAD", isolated=True,
         ).decode("ascii").strip()
     except protocol.ProtocolError as error:
@@ -765,90 +933,115 @@ def run_hook(args):
     provider_env = protocol.git_environment()
 
     with tempfile.TemporaryDirectory(prefix="sailwright-host-agent-run-") as tmp:
-        runtime_dir = Path(tmp)
+        runtime_dir = Path(tmp).resolve()
         runtime_dir.chmod(0o700)
+        agent_cwd = runtime_dir / "workspace"
+        agent_cwd.mkdir(mode=0o700)
+        brief_path = agent_cwd / LAUNCH_BRIEF_NAME
+        brief_path.write_text(prompt_text, encoding="utf-8")
+        brief_path.chmod(0o400)
 
-        if args.provider == "claude":
-            claude_template_path = resolve_trusted_file(
-                "SAILWRIGHT_HOST_AGENT_CLAUDE_SETTINGS",
-                DEFAULT_CLAUDE_SETTINGS,
-                untrusted_roots,
-                "Claude settings template",
-            )
-            try:
-                raw_settings = json.loads(claude_template_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError as error:
-                raise LaunchError(f"invalid JSON in Claude settings template: {error}") from error
-            base_settings = validate_claude_settings(raw_settings)
-            effective_settings = materialize_claude_settings(base_settings, approved_categories)
-            settings_path = runtime_dir / "claude-settings.json"
-            settings_path.write_text(json.dumps(effective_settings, indent=2) + "\n", encoding="utf-8")
-            empty_mcp_path = runtime_dir / "empty-mcp.json"
-            empty_mcp_path.write_text('{"mcpServers": {}}\n', encoding="utf-8")
-
-            command = [
-                str(provider_bin),
-                "--permission-mode", effective_settings["permissions"]["defaultMode"],
-                "--settings", str(settings_path),
-                "--setting-sources", "user",
-                "--strict-mcp-config",
-                "--mcp-config", str(empty_mcp_path),
-                "--append-system-prompt-file", str(skill_file),
-                "--add-dir", str(args.source_dir),
-                "--add-dir", str(args.results_dir),
-                prompt_text,
-            ]
-        else:
-            codex_config_path = resolve_trusted_file(
-                "SAILWRIGHT_HOST_AGENT_CODEX_CONFIG",
-                DEFAULT_CODEX_CONFIG,
-                untrusted_roots,
-                "Codex config template",
-            )
-            codex_rules_path = resolve_trusted_file(
-                "SAILWRIGHT_HOST_AGENT_CODEX_RULES",
-                DEFAULT_CODEX_RULES,
-                untrusted_roots,
-                "Codex execpolicy rules template",
-            )
-            try:
-                codex_config = tomllib.loads(codex_config_path.read_text(encoding="utf-8"))
-            except tomllib.TOMLDecodeError as error:
-                raise LaunchError(f"invalid TOML in Codex config template: {error}") from error
-            validate_codex_config(codex_config)
-            parsed_rules = validate_codex_rules(codex_rules_path.read_text(encoding="utf-8"))
-            rendered_rules = render_codex_rules(parsed_rules, approved_categories)
-            codex_home = prepare_codex_home(runtime_dir, codex_config_path, rendered_rules)
-            provider_env["CODEX_HOME"] = str(codex_home)
-
-            command = [
-                str(provider_bin),
-                "-c", f'approval_policy="{codex_config["approval_policy"]}"',
-                "-c", f'sandbox_mode="{codex_config["sandbox_mode"]}"',
-                "-c", "project_doc_max_bytes=0",
-                "-C", str(HERE),
-                "--add-dir", str(args.source_dir),
-                "--add-dir", str(args.results_dir),
-                prompt_text,
-            ]
-
-        new_session = (not protocol.is_windows()) and (not sys.stdin.isatty())
-        process = subprocess.Popen(
-            command,
-            cwd=HERE,
-            env=provider_env,
-            start_new_session=new_session,
-        )
-        timed_out = False
         try:
-            provider_rc = process.wait(timeout=request["time_limit_seconds"])
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            terminate_process(process, new_session)
-            provider_rc = 124
-        except KeyboardInterrupt as error:
-            terminate_process(process, new_session)
-            raise LaunchError("interrupted while running host agent provider") from error
+            if args.provider == "claude":
+                claude_template_path = resolve_trusted_file(
+                    "SAILWRIGHT_HOST_AGENT_CLAUDE_SETTINGS",
+                    DEFAULT_CLAUDE_SETTINGS,
+                    untrusted_roots,
+                    "Claude settings template",
+                )
+                try:
+                    raw_settings = json.loads(claude_template_path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError as error:
+                    raise LaunchError(f"invalid JSON in Claude settings template: {error}") from error
+                base_settings = validate_claude_settings(raw_settings)
+                effective_settings = materialize_claude_settings(
+                    base_settings,
+                    approved_categories,
+                    source_dir=source_dir,
+                    results_dir=results_dir,
+                    protected_dirs=(HERE, skill_file.parent),
+                )
+                settings_path = runtime_dir / "claude-settings.json"
+                settings_path.write_text(json.dumps(effective_settings, indent=2) + "\n", encoding="utf-8")
+                empty_mcp_path = runtime_dir / "empty-mcp.json"
+                empty_mcp_path.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+
+                command = [
+                    str(provider_bin),
+                    "--permission-mode", effective_settings["permissions"]["defaultMode"],
+                    "--settings", str(settings_path),
+                    "--setting-sources", "user",
+                    "--strict-mcp-config",
+                    "--mcp-config", str(empty_mcp_path),
+                    "--append-system-prompt-file", str(skill_file),
+                    "--add-dir", str(source_dir),
+                    "--add-dir", str(results_dir),
+                    "--",
+                    LAUNCH_PROMPT,
+                ]
+            else:
+                codex_config_path = resolve_trusted_file(
+                    "SAILWRIGHT_HOST_AGENT_CODEX_CONFIG",
+                    DEFAULT_CODEX_CONFIG,
+                    untrusted_roots,
+                    "Codex config template",
+                )
+                codex_rules_path = resolve_trusted_file(
+                    "SAILWRIGHT_HOST_AGENT_CODEX_RULES",
+                    DEFAULT_CODEX_RULES,
+                    untrusted_roots,
+                    "Codex execpolicy rules template",
+                )
+                try:
+                    codex_config = tomllib.loads(codex_config_path.read_text(encoding="utf-8"))
+                except tomllib.TOMLDecodeError as error:
+                    raise LaunchError(f"invalid TOML in Codex config template: {error}") from error
+                validate_codex_config(codex_config)
+                parsed_rules = validate_codex_rules(codex_rules_path.read_text(encoding="utf-8"))
+                rendered_rules = render_codex_rules(
+                    parsed_rules,
+                    approved_categories,
+                    source_dir=source_dir,
+                    results_dir=results_dir,
+                )
+                codex_home = prepare_codex_home(runtime_dir, codex_config_path, rendered_rules)
+                provider_env["CODEX_HOME"] = str(codex_home)
+
+                command = [
+                    str(provider_bin),
+                    "-c", f'approval_policy="{codex_config["approval_policy"]}"',
+                    "-c", f'sandbox_mode="{codex_config["sandbox_mode"]}"',
+                    "-c", "project_doc_max_bytes=0",
+                    "-C", str(agent_cwd),
+                    "--add-dir", str(source_dir),
+                    "--add-dir", str(results_dir),
+                    "--",
+                    LAUNCH_PROMPT,
+                ]
+
+            new_session = (not protocol.is_windows()) and (not sys.stdin.isatty())
+            process = subprocess.Popen(
+                command,
+                cwd=agent_cwd,
+                env=provider_env,
+                start_new_session=new_session,
+            )
+            timed_out = False
+            try:
+                provider_rc = process.wait(timeout=request["time_limit_seconds"])
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                terminate_process(process, new_session)
+                provider_rc = 124
+            except KeyboardInterrupt as error:
+                terminate_process(process, new_session)
+                raise LaunchError("interrupted while running host agent provider") from error
+        finally:
+            try:
+                if brief_path.exists():
+                    brief_path.chmod(0o600)
+            except OSError:
+                pass
 
     if timed_out:
         try:
@@ -861,11 +1054,16 @@ def run_hook(args):
             )
             return 124
         print(
-            f"host-agent-launch: provider timed out after {request['time_limit_seconds']}s; "
-            f"validated result status is {result_doc['status']}",
+            f"host-agent-launch: interactive provider session reached time limit after "
+            f"{request['time_limit_seconds']}s with a valid pushed result "
+            f"(status: {result_doc['status']})",
             file=sys.stderr,
         )
-        return 124
+        if result_doc["status"] == "passed":
+            return 0
+        if result_doc["status"] == "timed-out":
+            return 124
+        return 1
 
     result_doc = verify_results(args, request, original_request_bytes)
     if provider_rc != 0:
