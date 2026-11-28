@@ -1,0 +1,11 @@
+Before create: ubuntu-server-amd64-sw-linux-lifecycle-a1b2-dev-alchemy
+Backend: libvirt (qemu:///system)
+$ inventory=$(virsh --connect qemu:///system list --all --name) && printf '%s\n' "$inventory" | awk '$0 == "ubuntu-server-amd64-sw-linux-lifecycle-a1b2-dev-alchemy" { found = 1 } { print } END { exit (found ? 1 : 0) }'
+[No VMs returned]
+Exit code 0
+
+After destroy: ubuntu-server-amd64-sw-linux-lifecycle-a1b2-dev-alchemy
+Backend: libvirt (qemu:///system)
+$ inventory=$(virsh --connect qemu:///system list --all --name) && printf '%s\n' "$inventory" | awk '$0 == "ubuntu-server-amd64-sw-linux-lifecycle-a1b2-dev-alchemy" { found = 1 } { print } END { exit (found ? 1 : 0) }'
+[No VMs returned]
+Exit code 0

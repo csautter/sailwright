@@ -308,6 +308,7 @@ next level of detail:
 - [Agent Gateway](./docs/agent-gateway.md) (experimental) for letting coding
   agents in a devcontainer drive Sailwright on the host through an MCP gateway
   with host-side approval
+- [Host Test Protocol](./docs/host-test-protocol.md) for preparing and starting a requested host test
 - [Demo Recordings](./docs/demo-recordings.md) for how the quick-start
   recordings and website terminal demo are produced
 - [Managed Application Data](./docs/managed-application-data.md) for cache,

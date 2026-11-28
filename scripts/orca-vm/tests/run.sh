@@ -14,7 +14,7 @@ set -uo pipefail
 
 # Never inherit personal credential paths or launcher configuration into fixtures.
 for test_env_name in ${!ORCA_DOCKER_@}; do unset "$test_env_name"; done
-unset XDG_CONFIG_HOME CONFIG_HOME GITHUB_AUTH_DIR GITHUB_AUTH_STATE GH_CMD GITHUB_SCOPES_CMD GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR BASH_ENV
+unset XDG_CONFIG_HOME CONFIG_HOME GITHUB_AUTH_DIR GITHUB_AUTH_STATE GH_CMD GITHUB_SCOPES_CMD GH_TOKEN GITHUB_TOKEN GH_CONFIG_DIR COLIMA_HOME COLIMA_PROFILE DOCKER_HOST DOCKER_CONTEXT BASH_ENV
 HOME="$(mktemp -d)/home"
 export HOME
 export XDG_CONFIG_HOME="$HOME/.config" USERPROFILE="" GIT_CONFIG_GLOBAL="$HOME/.gitconfig"
@@ -25,6 +25,8 @@ ORCA_VM_SRC="$(cd "${TESTS_DIR}/.." && pwd)"
 bash "${TESTS_DIR}/github-auth-isolation.sh" || exit 1
 bash "${TESTS_DIR}/github-auth-lifecycle.sh" || exit 1
 bash "${TESTS_DIR}/github-auth-regression.sh" || exit 1
+bash "${TESTS_DIR}/initialize-host-kvm.sh" || exit 1
+bash "${TESTS_DIR}/kvm-preflight.sh" || exit 1
 LINK_AUTH_SRC="$(cd "${ORCA_VM_SRC}/../.." && pwd)/.devcontainer/link-agent-auth.sh"
 IS_WINDOWS=false
 case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=true ;; esac
@@ -206,6 +208,160 @@ assert_eq "host_mount: volume kept" "type=volume,source=v,target=/x" "$(lib "hos
 assert_eq "host_mount: existing bind kept" "source=${TMP}/home,target=/x" "$(lib "host_mount 'source=${TMP}/home,target=/x'")"
 assert_eq "translate_mount: workspace bind dropped" "" \
     "$(lib 'translate_mount "type=bind,source=/r,target=/workspaces/fixture-repo"')"
+
+# --- host_device -----------------------------------------------------------------
+: >"${TMP}/fake-dev"
+assert_eq "host_device: existing device path kept" "${TMP_PATH}/fake-dev" \
+    "$(lib "host_device '${TMP_PATH}/fake-dev'")"
+assert_eq "host_device: existing source:target kept" "${TMP_PATH}/fake-dev:/dev/kvm" \
+    "$(lib "host_device '${TMP_PATH}/fake-dev:/dev/kvm'")"
+assert_eq "host_device: existing source:target:perms kept" "${TMP_PATH}/fake-dev:/dev/kvm:rwm" \
+    "$(lib "host_device '${TMP_PATH}/fake-dev:/dev/kvm:rwm'")"
+assert_eq "host_device: missing host device skipped" "" \
+    "$(lib "host_device '${TMP_PATH}/missing-kvm:/dev/kvm:rwm'" 2>"${TMP}/host-device.log")"
+assert_true "host_device: missing host device logged" \
+    grep -qF "skipping device ${TMP_PATH}/missing-kvm (not found on this host)" "${TMP}/host-device.log"
+for bad_dev in "" ":/dev/kvm" "${TMP_PATH}/fake-dev:" "${TMP_PATH}/fake-dev::rwm" \
+    "${TMP_PATH}/fake-dev:/dev/kvm:" "${TMP_PATH}/fake-dev:/dev/kvm:rwm:extra" \
+    "${TMP_PATH}/fake-dev:/dev/kvm:xyz"; do
+    assert_eq "host_device: malformed spec '${bad_dev}' skipped" "" \
+        "$(lib "host_device '${bad_dev}'" 2>/dev/null)"
+done
+
+# --- host_device: macOS/Darwin Colima VM probing ---------------------------------
+mkdir -p "${TMP}/darwin/bin" "${TMP}/darwin/nocolima"
+cat >"${TMP}/darwin/bin/uname" <<'EOF'
+#!/bin/sh
+printf '%s\n' "${TEST_UNAME_S:-Darwin}"
+EOF
+cat >"${TMP}/darwin/bin/colima" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"${TEST_COLIMA_LOG}"
+if [ "${TEST_DRAIN_STDIN:-0}" = 1 ]; then
+    cat >/dev/null
+fi
+if [ "${TEST_COLIMA_FAIL:-0}" = "1" ]; then
+    exit 1
+fi
+printf '%s\n' "${TEST_COLIMA_OUT:-absent}"
+EOF
+cat >"${TMP}/darwin/bin/docker" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"${TEST_DOCKER_LOG}"
+case "$1 ${2:-}" in
+    "context inspect")
+        [ "${3:-}" = --format ] || exit 1
+        if [ "${TEST_UNAME_S:-Darwin}" = Linux ]; then
+            printf '%s\n' "${TEST_DOCKER_ENDPOINT:-unix:///var/run/docker.sock}"
+        else
+            printf '%s\n' "${TEST_DOCKER_ENDPOINT:-unix:///Users/dev/.colima/default/docker.sock}"
+        fi
+        exit 0
+        ;;
+    "image inspect")
+        if [ -n "${TEST_DOCKER_TRUSTED_IMAGE:-}" ]; then
+            if [ "${3:-}" = "${TEST_DOCKER_TRUSTED_IMAGE}" ]; then
+                exit 0
+            fi
+            exit 1
+        fi
+        exit "${TEST_DOCKER_INSPECT_RC:-1}"
+        ;;
+    "images -q")
+        if [ -n "${TEST_DOCKER_IMAGE:-}" ]; then
+            printf '%s\n' "${TEST_DOCKER_IMAGE}"
+            exit 0
+        fi
+        exit 1
+        ;;
+    "run --rm")
+        if [ "${TEST_DRAIN_STDIN:-0}" = 1 ]; then
+            cat >/dev/null
+        fi
+        exit "${TEST_DOCKER_RUN_RC:-125}"
+        ;;
+esac
+exit 1
+EOF
+chmod +x "${TMP}/darwin/bin/uname" "${TMP}/darwin/bin/colima" "${TMP}/darwin/bin/docker"
+cp "${TMP}/darwin/bin/uname" "${TMP}/darwin/bin/docker" "${TMP}/darwin/nocolima/"
+DARWIN_DEV="/dev/sailwright-test-kvm"
+dlib() {
+    rm -f "${TMP}/darwin/colima.log" "${TMP}/darwin/docker.log"
+    COLIMA_HOME=/Users/dev/.colima TEST_COLIMA_LOG="${TMP}/darwin/colima.log" TEST_DOCKER_LOG="${TMP}/darwin/docker.log" \
+        lib "PATH='${TMP_PATH}/darwin/${1}:/usr/bin:/bin'; $2"
+}
+assert_eq "host_device Darwin+Colima present: keeps /dev/* spec" "${DARWIN_DEV}:/dev/kvm:rwm" \
+    "$(TEST_UNAME_S=Darwin TEST_COLIMA_OUT=present dlib bin "host_device '${DARWIN_DEV}:/dev/kvm:rwm'")"
+assert_true "host_device Darwin+Colima present: invokes colima with default profile and positional path" \
+    grep -qF -- "--profile default ssh -- sh -c if [ -e \"\$1\" ]; then echo present; else echo absent; fi _ ${DARWIN_DEV}" "${TMP}/darwin/colima.log"
+assert_eq "host_device Darwin+Colima absent (M2): skips /dev/* spec" "" \
+    "$(TEST_UNAME_S=Darwin TEST_COLIMA_OUT=absent TEST_DOCKER_IMAGE=img1 TEST_DOCKER_RUN_RC=0 dlib bin "host_device '${DARWIN_DEV}:/dev/kvm:rwm'" 2>"${TMP}/darwin/absent.log")"
+assert_true "host_device Darwin+Colima absent (M2): logs skipped device" \
+    grep -qF "skipping device ${DARWIN_DEV} (not found on this host)" "${TMP}/darwin/absent.log"
+assert_true "host_device Darwin+Colima absent (M2): does not run docker fallback" \
+    bash -c "! grep -q '^run ' '${TMP}/darwin/docker.log'"
+assert_eq "host_device Linux absent /dev/*: skips without probing colima" "" \
+    "$(TEST_UNAME_S=Linux TEST_COLIMA_OUT=present dlib bin "host_device '${DARWIN_DEV}:/dev/kvm'" 2>/dev/null)"
+assert_true "host_device Linux absent /dev/*: never invokes colima" test ! -s "${TMP}/darwin/colima.log"
+assert_eq "host_device Darwin DOCKER_HOST: derives profile" "${DARWIN_DEV}:/dev/kvm" \
+    "$(DOCKER_HOST='unix:///Users/dev/.colima/custom-kvm/docker.sock' TEST_UNAME_S=Darwin TEST_COLIMA_OUT=present dlib bin "host_device '${DARWIN_DEV}:/dev/kvm'")"
+assert_true "host_device Darwin DOCKER_HOST: logged" \
+    grep -q '^--profile custom-kvm ssh ' "${TMP}/darwin/colima.log"
+assert_eq "host_device Darwin active context endpoint overrides DOCKER_HOST and COLIMA_PROFILE" "${DARWIN_DEV}:/dev/kvm" \
+    "$(DOCKER_CONTEXT=renamed DOCKER_HOST=tcp://wrong:2375 COLIMA_PROFILE=wrong \
+        TEST_DOCKER_ENDPOINT=unix:///Users/dev/.colima/work/docker.sock TEST_COLIMA_OUT=present \
+        dlib bin "host_device '${DARWIN_DEV}:/dev/kvm'")"
+assert_true "host_device Darwin context socket: identifies profile" \
+    grep -q '^--profile work ssh ' "${TMP}/darwin/colima.log"
+assert_eq "host_device Darwin invalid socket profile: skips safely" "" \
+    "$(TEST_DOCKER_ENDPOINT='unix:///Users/dev/.colima/-bad;id/docker.sock' TEST_COLIMA_OUT=present \
+        dlib bin "host_device '${DARWIN_DEV}:/dev/kvm'" 2>/dev/null)"
+assert_true "host_device Darwin invalid socket profile: doesn't query Colima" test ! -s "${TMP}/darwin/colima.log"
+for docker_rc in 0 125; do
+    expected=""
+    colima_out=present
+    if [ "$docker_rc" = 0 ]; then
+        expected="${DARWIN_DEV}:/dev/kvm"
+        colima_out=absent
+    fi
+    assert_eq "host_device Darwin mixed engines: uses active Docker run exit $docker_rc" "$expected" \
+        "$(DOCKER_CONTEXT=desktop-linux DOCKER_HOST=unix:///Users/dev/.colima/default/docker.sock \
+            COLIMA_PROFILE=default TEST_DOCKER_ENDPOINT=unix:///Users/dev/.docker/run/docker.sock \
+            TEST_COLIMA_OUT="$colima_out" TEST_DOCKER_IMAGE=unrelated-cached-image \
+            TEST_DOCKER_TRUSTED_IMAGE="mcr.microsoft.com/devcontainers/base:debian" TEST_DOCKER_RUN_RC="$docker_rc" \
+            dlib bin "host_device '${DARWIN_DEV}:/dev/kvm'" 2>/dev/null)"
+    assert_true "host_device Darwin mixed engines: no unrelated Colima VM queried" test ! -s "${TMP}/darwin/colima.log"
+    assert_true "host_device Darwin mixed engines: active Docker queried with trusted image" \
+        grep -qF "run --rm --pull=never --device ${DARWIN_DEV} --entrypoint sh mcr.microsoft.com/devcontainers/base:debian" "${TMP}/darwin/docker.log"
+    assert_true "host_device Darwin mixed engines: never runs unrelated cached image" \
+        bash -c "! grep -qF unrelated-cached-image '${TMP}/darwin/docker.log'"
+done
+assert_eq "host_device Darwin unrelated-image-first without trusted image: skips cleanly" "" \
+    "$(TEST_UNAME_S=Darwin TEST_DOCKER_ENDPOINT=unix:///Users/dev/.docker/run/docker.sock \
+        TEST_DOCKER_IMAGE=unrelated-cached-image TEST_DOCKER_INSPECT_RC=1 TEST_DOCKER_RUN_RC=0 \
+        dlib nocolima "host_device '${DARWIN_DEV}:/dev/kvm'" 2>"${TMP}/darwin/no-trusted.log")"
+assert_true "host_device Darwin unrelated-image-first without trusted image: never invokes docker run" \
+    bash -c "! grep -q '^run ' '${TMP}/darwin/docker.log'"
+assert_true "host_device Darwin unrelated-image-first without trusted image: never lists arbitrary cache" \
+    bash -c "! grep -q '^images ' '${TMP}/darwin/docker.log'"
+assert_true "host_device Darwin unrelated-image-first without trusted image: logs clear diagnostic" \
+    grep -qF "skipping device ${DARWIN_DEV} (no trusted local probe image available)" "${TMP}/darwin/no-trusted.log"
+assert_eq "host_device Darwin failing colima without trusted image: skips cleanly" "" \
+    "$(TEST_UNAME_S=Darwin TEST_COLIMA_FAIL=1 TEST_DOCKER_IMAGE=unrelated-cached-image TEST_DOCKER_INSPECT_RC=1 TEST_DOCKER_RUN_RC=0 \
+        dlib bin "host_device '${DARWIN_DEV}:/dev/kvm'" 2>"${TMP}/darwin/fail-colima.log")"
+assert_true "host_device Darwin failing colima without trusted image: logs clear diagnostic" \
+    grep -qF "skipping device ${DARWIN_DEV} (no trusted local probe image available)" "${TMP}/darwin/fail-colima.log"
+assert_eq "host_device Darwin docker fallback with local IMAGE_TAG: keeps device" "${DARWIN_DEV}:/dev/kvm" \
+    "$(TEST_UNAME_S=Darwin TEST_DOCKER_ENDPOINT=unix:///Users/dev/.docker/run/docker.sock \
+        TEST_DOCKER_IMAGE=unrelated-cached-image TEST_DOCKER_TRUSTED_IMAGE=orca-test:1 TEST_DOCKER_RUN_RC=0 \
+        dlib nocolima "IMAGE_TAG=orca-test:1; host_device '${DARWIN_DEV}:/dev/kvm'")"
+assert_true "host_device Darwin docker fallback with local IMAGE_TAG: runs IMAGE_TAG only" \
+    grep -qF "run --rm --pull=never --device ${DARWIN_DEV} --entrypoint sh orca-test:1" "${TMP}/darwin/docker.log"
+assert_eq "host_device Darwin docker fallback absent: skips cleanly" "" \
+    "$(TEST_UNAME_S=Darwin TEST_DOCKER_ENDPOINT=unix:///Users/dev/.docker/run/docker.sock \
+        TEST_DOCKER_TRUSTED_IMAGE=orca-test:1 TEST_DOCKER_RUN_RC=125 \
+        dlib nocolima "IMAGE_TAG=orca-test:1; host_device '${DARWIN_DEV}:/dev/kvm'" 2>/dev/null)"
 if $IS_WINDOWS; then
     assert_eq "windows: HOME and USERPROFILE joined only once" "${TMP}/home/.x" \
         "$(lib 'expand_vars "\${localEnv:HOME}\${localEnv:USERPROFILE}/.x"')"
@@ -240,6 +396,10 @@ assert_true "unsupported JSONC rejected" lib_fails true
 # The docker stub answers `compose ... config --format json` with a fixture
 # (its project name taken from -p, like compose) and logs every call.
 mkdir -p "${TMP}/cb/bin" "${TMP}/home/shared-cfg"
+: >"${TMP}/cb/dev-kvm"
+: >"${TMP}/cb/dev-only"
+: >"${TMP}/cb/dev-perms"
+: >"${TMP}/cb/dev-str"
 cat >"${TMP}/cb/config.json" <<EOF
 {
   "name": "__PROJECT__",
@@ -254,6 +414,14 @@ cat >"${TMP}/cb/config.json" <<EOF
         { "type": "volume", "source": "named", "target": "/data", "volume": {} },
         { "type": "volume", "source": "cache", "target": "/cache", "volume": {} },
         { "type": "volume", "source": "vsc", "target": "/root/.vscode-server/data", "volume": {} }
+      ],
+      "devices": [
+        { "source": "${TMP_PATH}/cb/dev-kvm", "target": "/dev/kvm", "permissions": "rwm" },
+        { "source": "${TMP_PATH}/cb/dev-only" },
+        { "source": "${TMP_PATH}/cb/dev-perms", "permissions": "rw" },
+        "${TMP_PATH}/cb/dev-str:/dev/custom",
+        { "source": "${TMP_PATH}/cb/missing-kvm", "target": "/dev/kvm", "permissions": "rwm" },
+        "${TMP_PATH}/cb/missing-str:/dev/missing-str"
       ],
       "environment": { "A": "1 2", "B": null },
       "extra_hosts": ["h=host-gateway"],
@@ -307,6 +475,69 @@ assert_true "compose: environment passed" grep -qxF 'A=1 2' <<<"$run_args"
 assert_true "compose: unset environment skipped" bash -c "! grep -q '^B=' <<<\"\$1\"" _ "$run_args"
 assert_true "compose: extra_hosts passed" grep -qxF -- '--add-host=h=host-gateway' <<<"$run_args"
 assert_true "compose: cap_add passed" grep -qxF -- '--cap-add=SYS_PTRACE' <<<"$run_args"
+assert_true "compose: existing object device (source:target:perms) passed" \
+    grep -qxF "${TMP_PATH}/cb/dev-kvm:/dev/kvm:rwm" <<<"$run_args"
+assert_true "compose: existing object device (source only) passed" \
+    grep -qxF "${TMP_PATH}/cb/dev-only" <<<"$run_args"
+assert_true "compose: existing object device (source+perms) expands target" \
+    grep -qxF "${TMP_PATH}/cb/dev-perms:${TMP_PATH}/cb/dev-perms:rw" <<<"$run_args"
+assert_true "compose: existing string device passed" \
+    grep -qxF "${TMP_PATH}/cb/dev-str:/dev/custom" <<<"$run_args"
+assert_eq "compose: four --device flags emitted for existing devices" "4" \
+    "$(grep -cxF -- '--device' <<<"$run_args")"
+assert_true "compose: missing object device skipped" \
+    bash -c '! grep -q missing-kvm <<<"$1"' _ "$run_args"
+assert_true "compose: missing string device skipped" \
+    bash -c '! grep -q missing-str <<<"$1"' _ "$run_args"
+assert_true "compose: missing object device logged" \
+    grep -qF "skipping device ${TMP_PATH}/cb/missing-kvm (not found on this host)" "${TMP}/cb/log"
+assert_true "compose: missing string device logged" \
+    grep -qF "skipping device ${TMP_PATH}/cb/missing-str (not found on this host)" "${TMP}/cb/log"
+# When only an optional /dev/kvm device is configured and absent, collect_run_args
+# must still succeed and emit no --device arguments.
+cp "${TMP}/cb/config.json" "${TMP}/cb/config.full.json"
+jq --arg p "${TMP_PATH}/cb/missing-kvm" \
+    '.services.dev.devices = [{source: $p, target: "/dev/kvm", permissions: "rwm"}]' \
+    "${TMP}/cb/config.full.json" >"${TMP}/cb/config.json"
+missing_only_args="$(cl "collect_run_args 2>'${TMP}/cb/missing-only.log'; printf '%s\n' \"\${DOCKER_RUN_ARGS[@]}\"")"
+assert_true "compose: container args succeed with no --device when /dev/kvm is absent" \
+    bash -c '! grep -qxF -- "--device" <<<"$1"' _ "$missing_only_args"
+assert_true "compose: missing-only /dev/kvm logged" \
+    grep -qF "skipping device ${TMP_PATH}/cb/missing-kvm (not found on this host)" "${TMP}/cb/missing-only.log"
+# On macOS/Darwin with Colima, collect_run_args keeps /dev/* when present in the
+# Colima VM (M3+/M5 --nested-virtualization) and skips it when absent (M2).
+jq --arg p "${DARWIN_DEV}" \
+    '.services.dev.devices = [{source: $p, target: "/dev/kvm", permissions: "rwm"}]' \
+    "${TMP}/cb/config.full.json" >"${TMP}/cb/config.json"
+darwin_present_args="$(
+    COLIMA_HOME=/Users/dev/.colima DOCKER_HOST=unix:///Users/dev/.colima/default/docker.sock TEST_UNAME_S=Darwin TEST_COLIMA_OUT=present TEST_COLIMA_LOG="${TMP}/darwin/compose-colima.log" \
+        cl "PATH='${TMP_PATH}/cb/bin:${TMP_PATH}/darwin/bin':\$PATH; collect_run_args 2>/dev/null; printf '%s\n' \"\${DOCKER_RUN_ARGS[@]}\""
+)"
+assert_true "compose Darwin+Colima present: emits --device" \
+    grep -qxF -- '--device' <<<"$darwin_present_args"
+assert_true "compose Darwin+Colima present: keeps /dev/* device spec" \
+    grep -qxF "${DARWIN_DEV}:/dev/kvm:rwm" <<<"$darwin_present_args"
+darwin_absent_args="$(
+    COLIMA_HOME=/Users/dev/.colima DOCKER_HOST=unix:///Users/dev/.colima/default/docker.sock TEST_UNAME_S=Darwin TEST_COLIMA_OUT=absent TEST_COLIMA_LOG="${TMP}/darwin/compose-colima.log" \
+        cl "PATH='${TMP_PATH}/cb/bin:${TMP_PATH}/darwin/bin':\$PATH; collect_run_args 2>'${TMP}/cb/darwin-absent.log'; printf '%s\n' \"\${DOCKER_RUN_ARGS[@]}\""
+)"
+assert_true "compose Darwin+Colima absent: omits --device" \
+    bash -c '! grep -qxF -- "--device" <<<"$1"' _ "$darwin_absent_args"
+assert_true "compose Darwin+Colima absent: logs skipped device" \
+    grep -qF "skipping device ${DARWIN_DEV} (not found on this host)" "${TMP}/cb/darwin-absent.log"
+for endpoint in unix:///Users/dev/.colima/default/docker.sock unix:///Users/dev/.docker/run/docker.sock; do
+    drain_args="$(
+        DOCKER_HOST="$endpoint" TEST_UNAME_S=Darwin TEST_DRAIN_STDIN=1 TEST_COLIMA_OUT=present \
+        TEST_DOCKER_TRUSTED_IMAGE=orca-test:1 TEST_DOCKER_RUN_RC=0 \
+        dlib bin "IMAGE_TAG=orca-test:1; is_compose() { return 0; }
+            compose_run_args() { printf '%s\n' --device '${DARWIN_DEV}:/dev/kvm' --device '${DARWIN_DEV}-2:/dev/kvm2' --privileged; }
+            collect_run_args; printf '%s\n' \"\${DOCKER_RUN_ARGS[@]}\""
+    )"
+    expected_args="$(printf '%s\n' --device "${DARWIN_DEV}:/dev/kvm" --device "${DARWIN_DEV}-2:/dev/kvm2" --privileged)"
+    assert_true "compose draining probe ($endpoint) preserves both devices and following flag" \
+        bash -c '[[ "$1" == *"$2"* ]]' _ "$drain_args" "$expected_args"
+done
+mv "${TMP}/cb/config.full.json" "${TMP}/cb/config.json"
 assert_true "compose: missing override file left out" bash -c "! grep -q compose.local.yaml '${TMP}/cb/docker.log'"
 rm -f "${TMP}/cb/docker.log"
 assert_eq "compose: base image built from the service" "t" "$(cl '_build_base_image t' 2>/dev/null)"

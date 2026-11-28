@@ -183,4 +183,39 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm -f /tmp/gh.tar.gz \
     && gh --version
 
+ENV DEV_ALCHEMY_LIBVIRT_URI="qemu:///session"
+
+# Local VM tooling for KVM-accelerated Linux and Windows self-tests
+# (Packer QEMU builds, libvirt user-session domains, and Ansible provisioning).
+# Architecture-specific QEMU system emulators and UEFI firmware keep the image
+# footprint bounded; desktop GUI viewers (qemu-system-gui, virt-manager,
+# virt-viewer) remain omitted, while headless SPICE modules required by
+# Sailwright's libvirt domain XML and build/provision runtime helpers
+# (ipxe-qemu, libarchive-tools, sshpass, python3-winrm) are included.
+RUN arch="$(dpkg --print-architecture)" \
+    && case "${arch}" in \
+        amd64) vm_arch_pkgs="qemu-system-x86 ovmf" ;; \
+        arm64) vm_arch_pkgs="qemu-system-arm qemu-efi-aarch64" ;; \
+        *) echo "Unsupported VM tooling architecture: ${arch}" >&2; exit 1 ;; \
+    esac \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ${vm_arch_pkgs} \
+        ipxe-qemu \
+        libarchive-tools \
+        libvirt-clients \
+        libvirt-daemon \
+        libvirt-daemon-driver-qemu \
+        libvirt-daemon-driver-storage \
+        passt \
+        python3-winrm \
+        qemu-system-modules-spice \
+        qemu-utils \
+        sshpass \
+        swtpm \
+        swtpm-tools \
+        virtinst \
+        xorriso \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0

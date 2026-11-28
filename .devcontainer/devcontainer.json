@@ -8,7 +8,8 @@
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "containerEnv": {
     "GOTOOLCHAIN": "auto",
-    "CLAUDE_CONFIG_DIR": "/root/.claude"
+    "CLAUDE_CONFIG_DIR": "/root/.claude",
+    "DEV_ALCHEMY_LIBVIRT_URI": "qemu:///session"
   },
   "initializeCommand": "bash .devcontainer/initialize-host.sh",
   "customizations": {

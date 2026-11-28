@@ -232,7 +232,7 @@ PROJECT_ROOT_IN_CONTAINER="${PROJECT_ROOT_IN_CONTAINER:-/workspaces/${REPO_NAME}
 # devcontainer's service in the merged compose configuration
 # (`docker compose config`), including override files that initializeCommand
 # generates. Only the service's build/image, volumes, environment,
-# extra_hosts, cap_add, security_opt and privileged are applied.
+# extra_hosts, cap_add, security_opt, devices and privileged are applied.
 COMPOSE_SERVICE=""
 if dc_json -e 'has("dockerComposeFile")' >/dev/null; then
     COMPOSE_SERVICE="$(dc_json -r '.service // empty')"
@@ -311,6 +311,147 @@ host_mount() {
         return 0
     fi
     printf '%s' "$out"
+}
+
+_docker_endpoint() {
+    if [ -n "${DOCKER_HOST:-}" ] && [ -z "${DOCKER_CONTEXT:-}" ]; then
+        printf '%s' "$DOCKER_HOST"
+    else
+        docker context inspect --format '{{.Endpoints.docker.Host}}' </dev/null 2>/dev/null
+    fi
+}
+
+# The socket has to belong to a profile managed by this Colima installation.
+_colima_profile() {
+    local endpoint="$1" colima_home="${COLIMA_HOME:-$HOME/.colima}" profile
+    case "$endpoint" in
+        "unix://${colima_home%/}/"*/docker.sock)
+            profile="${endpoint#"unix://${colima_home%/}/"}"
+            profile="${profile%/docker.sock}"
+            ;;
+        *) return 1 ;;
+    esac
+    [[ "$profile" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+    printf '%s' "$profile"
+}
+
+_dockerfile_base_image() {
+    local dockerfile="$1" img
+    [ -f "$dockerfile" ] || return 1
+    img="$(awk '
+        /^[[:space:]]*([Ff][Rr][Oo][Mm])[[:space:]]+/ {
+            for (i = 2; i <= NF; i++) {
+                if ($i ~ /^--/) continue
+                sub(/\r$/, "", $i)
+                print $i
+                exit
+            }
+        }
+    ' "$dockerfile")"
+    case "$img" in
+        ''|scratch|SCRATCH|*'$'*) return 1 ;;
+        *) printf '%s' "$img"; return 0 ;;
+    esac
+}
+
+# Select only an explicitly trusted, already-local image for Docker device probes.
+_trusted_probe_image() {
+    local candidate dc_img="" df_img=""
+    dc_img="$(dc_json -r '.image // empty' 2>/dev/null || true)"
+    df_img="$(_dockerfile_base_image "${DEVCONTAINER_DIR}/Dockerfile" || true)"
+    for candidate in "${ORCA_DOCKER_KVM_PROBE_IMAGE:-}" "${DEVCONTAINER_KVM_PROBE_IMAGE:-}" "${IMAGE_TAG:-}" "$dc_img" "$df_img"; do
+        [ -n "$candidate" ] || continue
+        if docker image inspect "$candidate" </dev/null >/dev/null 2>&1; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Checks local Linux devices directly and probes the active engine otherwise.
+# Pass the device as a positional argument and treat probe errors as absence.
+HOST_DEVICE_SKIP_REASON=""
+host_device_exists() {
+    local src="$1" host_os endpoint profile probe_out probe_img=""
+    HOST_DEVICE_SKIP_REASON=""
+    case "$src" in
+        /dev/*) ;;
+        *) [ -e "$src" ]; return ;;
+    esac
+    host_os="$(uname -s 2>/dev/null || echo unknown)"
+    endpoint="$(_docker_endpoint)" || endpoint=""
+    endpoint="${endpoint%$'\r'}"
+    if [ "$host_os" = "Linux" ]; then
+        case "$endpoint" in
+            unix:///var/run/docker.sock|unix:///run/docker.sock|unix:///run/user/*/docker.sock)
+                [ -e "$src" ]; return ;;
+        esac
+    fi
+    if command -v colima >/dev/null 2>&1 && profile="$(_colima_profile "$endpoint")"; then
+        probe_out="$(colima --profile "$profile" ssh -- sh -c 'if [ -e "$1" ]; then echo present; else echo absent; fi' _ "$src" </dev/null 2>/dev/null | tr -d '\r')" || probe_out=""
+        case "$probe_out" in
+            present) return 0 ;;
+            absent) return 1 ;;
+        esac
+    fi
+    if command -v docker >/dev/null 2>&1; then
+        if probe_img="$(_trusted_probe_image)"; then
+            if docker run --rm --pull=never --device "$src" --entrypoint sh "$probe_img" -c 'exit 0' </dev/null >/dev/null 2>&1; then
+                return 0
+            fi
+            return 1
+        fi
+        HOST_DEVICE_SKIP_REASON="no trusted local probe image available"
+        return 1
+    fi
+    HOST_DEVICE_SKIP_REASON="no trusted local probe image available"
+    return 1
+}
+
+# Prints one --device spec when its host source exists (locally on Linux or
+# inside the Linux Docker VM on non-Linux hosts), or nothing (and a log line)
+# when the host device is absent or the spec is malformed: Docker would refuse
+# to start the container when an optional host device such as /dev/kvm is
+# missing.
+host_device() {
+    local spec="$1" src rest target perms
+    [ -n "$spec" ] || return 0
+    case "$spec" in
+        *:*)
+            src="${spec%%:*}"
+            rest="${spec#*:}"
+            case "$rest" in
+                *:*)
+                    target="${rest%%:*}"
+                    perms="${rest#*:}"
+                    if [ -z "$target" ] || [ -z "$perms" ] || [[ "$perms" == *:* ]] || ! [[ "$perms" =~ ^[rwm]+$ ]]; then
+                        log "skipping invalid device spec '${spec}'"
+                        return 0
+                    fi
+                    ;;
+                *)
+                    target="$rest"
+                    if [ -z "$target" ]; then
+                        log "skipping invalid device spec '${spec}'"
+                        return 0
+                    fi
+                    ;;
+            esac
+            ;;
+        *)
+            src="$spec"
+            ;;
+    esac
+    if [ -z "$src" ]; then
+        log "skipping invalid device spec '${spec}'"
+        return 0
+    fi
+    if ! host_device_exists "$src"; then
+        log "skipping device ${src} (${HOST_DEVICE_SKIP_REASON:-not found on this host})"
+        return 0
+    fi
+    printf '%s' "$spec"
 }
 
 # Prints the Orca form of one expanded --mount spec, or nothing to drop it.
@@ -451,6 +592,18 @@ compose_run_args() {
           (($s.extra_hosts // []) | if type == "object" then to_entries[] | "\(.key)=\(.value)" else .[] end | "--add-host=\(.)"),
           (($s.cap_add // [])[] | "--cap-add=\(.)"),
           (($s.security_opt // [])[] | "--security-opt=\(.)"),
+          (($s.devices // [])[]
+            | if type == "string" then
+                  select(length > 0) | "--device", .
+              elif type == "object" and (.source | type == "string" and length > 0) then
+                  "--device",
+                  (.source
+                    + (if (.target | type == "string" and length > 0) then ":" + .target
+                       elif (.permissions | type == "string" and length > 0) then ":" + .source
+                       else "" end)
+                    + (if (.permissions | type == "string" and length > 0) then ":" + .permissions
+                       else "" end))
+              else empty end),
           (if $s.privileged then "--privileged" else empty end)'
 }
 
@@ -473,10 +626,14 @@ collect_run_args() {
                 [ -n "$spec" ] && spec="$(translate_mount "$spec")"
                 [ -n "$spec" ] && DOCKER_RUN_ARGS+=(--mount "$spec")
                 pending=""
+            elif [ "$pending" = --device ]; then
+                spec="$(host_device "$raw")"
+                [ -n "$spec" ] && DOCKER_RUN_ARGS+=(--device "$spec")
+                pending=""
             elif [ "$pending" = -e ]; then
                 DOCKER_RUN_ARGS+=(-e "$raw")
                 pending=""
-            elif [ "$raw" = --mount ] || [ "$raw" = -e ]; then
+            elif [ "$raw" = --mount ] || [ "$raw" = --device ] || [ "$raw" = -e ]; then
                 pending="$raw"
             elif [ -n "$raw" ]; then
                 DOCKER_RUN_ARGS+=("$raw")

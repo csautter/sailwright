@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v python3 >/dev/null; then
+  printf '%s\n' 'host-agent: Python 3 is required on PATH as python3' >&2
+  exit 1
+fi
+exec python3 -B "$(dirname "$0")/protocol.py" start "$@"
