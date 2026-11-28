@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0](https://github.com/csautter/sailwright/compare/v0.29.0...v0.30.0) (2026-11-28)
+
+
+### Added
+
+* **gh-runner-func:** repository allowlist and Idempotency-Key retries ([d227412](https://github.com/csautter/sailwright/commit/d227412cf8acc67f32272205aacc237ec21f7318)), closes [#299](https://github.com/csautter/sailwright/issues/299)
+
+
+### Fixed
+
+* **broker:** bind Blob requests to the deployment storage account (R-04) ([9e88d2e](https://github.com/csautter/sailwright/commit/9e88d2e00798c0a18da5bbe2bbe628b06fee2366))
+* **broker:** defer keyed registration tokens until network readiness (R-02) ([6ca809a](https://github.com/csautter/sailwright/commit/6ca809ad4dc07f9015f71ac0bd15e2a78147ab4a))
+* **broker:** fall back after definitive Spot rejection (R-03) ([d4e19d0](https://github.com/csautter/sailwright/commit/d4e19d0bdc02f74cc0e3500dbbb95da67538ee48))
+* **broker:** persist keyed resource group binding (R-06) ([269b473](https://github.com/csautter/sailwright/commit/269b4730aa2e1a0cfe688764858ca2994452e4a2))
+* **broker:** preserve ARM write reconciliation (R-01) ([757527b](https://github.com/csautter/sailwright/commit/757527b497d2941f4bddeb7ece1f6d0cbbc85629))
+* **ci:** verify Hyper-V host IPv4 before runner registration ([8401786](https://github.com/csautter/sailwright/commit/8401786add0feeb23331dea271796a85eb6e1f37))
+* **gh-runner:** broker least privilege, repository allowlist and idempotent retries ([a168ad8](https://github.com/csautter/sailwright/commit/a168ad8e0f7c6b9f10725b33613bb3224a78bcdd))
+* **gh-runner:** remove CI identity's Function App access and narrow broker role ([d91093f](https://github.com/csautter/sailwright/commit/d91093fc7642bdfed9d1099b49439300db6c89c5))
+* **gh-runner:** serialize keyed runner provisioning ([e7c6000](https://github.com/csautter/sailwright/commit/e7c6000243e3d829335177175d75425095fab6d5))
+* **release:** preserve publishing across pushes to main ([b4d87bf](https://github.com/csautter/sailwright/commit/b4d87bf79184f42f300cf9280b7e4648bc6fc938))
+* **release:** preserve publishing across pushes to main ([358ea07](https://github.com/csautter/sailwright/commit/358ea07a403b0a71ef7a108d7b0b81b592fd4911))
+* **runners:** provision Azure CLI as a Homebrew cask ([e5dfddc](https://github.com/csautter/sailwright/commit/e5dfddc3fe04eb3ae53b01cc681da92d97e8b68f))
+
 ## [0.29.0](https://github.com/csautter/sailwright/compare/v0.28.0...v0.29.0) (2026-11-26)
 
 
